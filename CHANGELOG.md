@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0] - 2026-03-14
+
+### Added
+- Zero-dependency GraphQL implementation (matching tina4php-graphql)
+- Recursive descent GraphQL parser (queries, mutations, fragments, variables, aliases)
+- Depth-first AST executor with resolver pattern
+- GraphQL schema with programmatic type registration
+- ORM auto-schema generation (`schema.from_orm(User)`) — auto-creates CRUD queries/mutations
+- GraphiQL UI served at GET /graphql
+- Route integration via `gql.register_route("/graphql")`
+- Full GraphQL type system (scalars, objects, lists, non-null, input objects)
+
 ## [0.2.0] - 2026-03-14
 
 ### Added

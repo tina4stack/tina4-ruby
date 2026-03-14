@@ -37,6 +37,7 @@ require_relative "tina4/wsdl"
 require_relative "tina4/scss_compiler"
 require_relative "tina4/dev_reload"
 require_relative "tina4/localization"
+require_relative "tina4/graphql"
 require_relative "tina4/testing"
 
 module Tina4
