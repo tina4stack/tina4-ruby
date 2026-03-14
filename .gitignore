@@ -1,0 +1,43 @@
+# Environment & secrets
+.env
+.keys/
+
+# Logs & sessions
+logs/
+sessions/
+
+# Queue storage
+.queue/
+
+# Database files
+*.db
+*.sqlite3
+
+# Ruby / Bundler
+vendor/
+.bundle/
+Gemfile.lock
+
+# Temp & build
+tmp/
+tmp_preview.rb
+*.gem
+pkg/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
+spec/integration/
+
+# Benchmark
+benchmark/
