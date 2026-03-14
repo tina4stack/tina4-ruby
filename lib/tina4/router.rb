@@ -5,28 +5,32 @@ module Tina4
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta, :path_regex, :param_names
 
     def initialize(method, path, handler, auth_handler: nil, swagger_meta: {})
-      @method = method.to_s.upcase
-      @path = normalize_path(path)
+      @method = method.to_s.upcase.freeze
+      @path = normalize_path(path).freeze
       @handler = handler
       @auth_handler = auth_handler
       @swagger_meta = swagger_meta
       @param_names = []
       @path_regex = compile_pattern(@path)
+      @param_names.freeze
     end
 
-    def match?(request_path, request_method)
-      return false unless request_method.upcase == @method
-
-      normalized = normalize_path(request_path)
-      match = @path_regex.match(normalized)
+    # Returns params hash if matched, false otherwise
+    def match_path(request_path)
+      match = @path_regex.match(request_path)
       return false unless match
 
-      params = {}
-      @param_names.each_with_index do |param_def, i|
-        raw_value = match[i + 1]
-        params[param_def[:name]] = cast_param(raw_value, param_def[:type])
+      if @param_names.empty?
+        # Static route — no params to extract
+        {}
+      else
+        params = {}
+        @param_names.each_with_index do |param_def, i|
+          raw_value = match[i + 1]
+          params[param_def[:name]] = cast_param(raw_value, param_def[:type])
+        end
+        params
       end
-      params
     end
 
     private
@@ -82,16 +86,30 @@ module Tina4
         @routes ||= []
       end
 
+      # Routes indexed by HTTP method for O(1) method lookup
+      def method_index
+        @method_index ||= Hash.new { |h, k| h[k] = [] }
+      end
+
       def add_route(method, path, handler, auth_handler: nil, swagger_meta: {})
         route = Route.new(method, path, handler, auth_handler: auth_handler, swagger_meta: swagger_meta)
         routes << route
+        method_index[route.method] << route
         Tina4::Debug.debug("Route registered: #{method.upcase} #{path}")
         route
       end
 
       def find_route(path, method)
-        routes.each do |route|
-          params = route.match?(path, method)
+        normalized_method = method.upcase
+        # Normalize path once (not per-route)
+        normalized_path = path.gsub("\\", "/")
+        normalized_path = "/#{normalized_path}" unless normalized_path.start_with?("/")
+        normalized_path = normalized_path.chomp("/") unless normalized_path == "/"
+
+        # Only scan routes matching this HTTP method
+        candidates = method_index[normalized_method]
+        candidates.each do |route|
+          params = route.match_path(normalized_path)
           return [route, params] if params
         end
         nil
@@ -99,6 +117,7 @@ module Tina4
 
       def clear!
         @routes = []
+        @method_index = Hash.new { |h, k| h[k] = [] }
       end
 
       def group(prefix, auth_handler: nil, &block)

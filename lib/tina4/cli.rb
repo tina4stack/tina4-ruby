@@ -35,13 +35,32 @@ module Tina4
         Tina4::ScssCompiler.compile_all(root_dir)
       end
 
-      # Try rackup first, fall back to WEBrick
       app = Tina4::RackApp.new(root_dir: root_dir)
 
+      # Try Puma first (production-grade), fall back to WEBrick
       begin
-        require "rackup"
-        Rackup::Handler::WEBrick.run(app, Host: options[:host], Port: options[:port])
+        require "puma"
+        require "puma/configuration"
+        require "puma/launcher"
+
+        puma_host = options[:host]
+        puma_port = options[:port]
+
+        config = Puma::Configuration.new do |user_config|
+          user_config.bind "tcp://#{puma_host}:#{puma_port}"
+          user_config.app app
+          user_config.threads 0, 16
+          user_config.workers 0
+          user_config.environment "development"
+          user_config.log_requests false
+          user_config.quiet
+        end
+
+        Tina4::Debug.info("Starting Puma server on http://#{puma_host}:#{puma_port}")
+        launcher = Puma::Launcher.new(config)
+        launcher.run
       rescue LoadError
+        Tina4::Debug.info("Puma not found, falling back to WEBrick")
         server = Tina4::WebServer.new(app, host: options[:host], port: options[:port])
         server.start
       end

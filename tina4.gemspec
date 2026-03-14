@@ -19,6 +19,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.add_dependency "rack", "~> 3.0"
   spec.add_dependency "rackup", "~> 2.1"
+  spec.add_dependency "puma", "~> 6.0"
   spec.add_dependency "webrick", "~> 1.8"
   spec.add_dependency "dotenv", "~> 3.0"
   spec.add_dependency "jwt", "~> 2.7"

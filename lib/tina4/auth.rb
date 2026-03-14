@@ -64,6 +64,14 @@ module Tina4
           return false unless auth_header =~ /\ABearer\s+(.+)\z/i
 
           token = Regexp.last_match(1)
+
+          # API_KEY bypass — matches tina4_python behavior
+          api_key = ENV["API_KEY"]
+          if api_key && !api_key.empty? && token == api_key
+            env["tina4.auth"] = { "api_key" => true }
+            return true
+          end
+
           result = validate_token(token)
           if result[:valid]
             env["tina4.auth"] = result[:payload]
@@ -72,6 +80,12 @@ module Tina4
             false
           end
         end
+      end
+
+      # Default auth handler for secured routes (POST/PUT/PATCH/DELETE)
+      # Used automatically unless auth: false is passed
+      def default_secure_auth
+        @default_secure_auth ||= bearer_auth
       end
 
       def private_key

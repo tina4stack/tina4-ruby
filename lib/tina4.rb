@@ -90,29 +90,37 @@ module Tina4
     end
 
     # DSL methods for route registration
-    def get(path, swagger_meta: {}, &block)
-      Tina4::Router.add_route("GET", path, block, swagger_meta: swagger_meta)
+    # GET is public by default (matching tina4_python behavior)
+    # POST/PUT/PATCH/DELETE are secured by default — use auth: false to make public
+    def get(path, auth: nil, swagger_meta: {}, &block)
+      auth_handler = auth == false ? nil : auth
+      Tina4::Router.add_route("GET", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
-    def post(path, swagger_meta: {}, &block)
-      Tina4::Router.add_route("POST", path, block, swagger_meta: swagger_meta)
+    def post(path, auth: :default, swagger_meta: {}, &block)
+      auth_handler = resolve_auth(auth)
+      Tina4::Router.add_route("POST", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
-    def put(path, swagger_meta: {}, &block)
-      Tina4::Router.add_route("PUT", path, block, swagger_meta: swagger_meta)
+    def put(path, auth: :default, swagger_meta: {}, &block)
+      auth_handler = resolve_auth(auth)
+      Tina4::Router.add_route("PUT", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
-    def patch(path, swagger_meta: {}, &block)
-      Tina4::Router.add_route("PATCH", path, block, swagger_meta: swagger_meta)
+    def patch(path, auth: :default, swagger_meta: {}, &block)
+      auth_handler = resolve_auth(auth)
+      Tina4::Router.add_route("PATCH", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
-    def delete(path, swagger_meta: {}, &block)
-      Tina4::Router.add_route("DELETE", path, block, swagger_meta: swagger_meta)
+    def delete(path, auth: :default, swagger_meta: {}, &block)
+      auth_handler = resolve_auth(auth)
+      Tina4::Router.add_route("DELETE", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
-    def any(path, swagger_meta: {}, &block)
+    def any(path, auth: false, swagger_meta: {}, &block)
+      auth_handler = resolve_auth(auth)
       %w[GET POST PUT PATCH DELETE].each do |method|
-        Tina4::Router.add_route(method, path, block, swagger_meta: swagger_meta)
+        Tina4::Router.add_route(method, path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
       end
     end
 
@@ -120,29 +128,29 @@ module Tina4
       Tina4::Router.add_route("OPTIONS", path, block)
     end
 
-    # Secure route variants
+    # Explicit secure variants (always secured, regardless of HTTP method)
     def secure_get(path, auth: nil, swagger_meta: {}, &block)
-      auth_handler = auth || Tina4::Auth.bearer_auth
+      auth_handler = auth || Tina4::Auth.default_secure_auth
       Tina4::Router.add_route("GET", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
     def secure_post(path, auth: nil, swagger_meta: {}, &block)
-      auth_handler = auth || Tina4::Auth.bearer_auth
+      auth_handler = auth || Tina4::Auth.default_secure_auth
       Tina4::Router.add_route("POST", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
     def secure_put(path, auth: nil, swagger_meta: {}, &block)
-      auth_handler = auth || Tina4::Auth.bearer_auth
+      auth_handler = auth || Tina4::Auth.default_secure_auth
       Tina4::Router.add_route("PUT", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
     def secure_patch(path, auth: nil, swagger_meta: {}, &block)
-      auth_handler = auth || Tina4::Auth.bearer_auth
+      auth_handler = auth || Tina4::Auth.default_secure_auth
       Tina4::Router.add_route("PATCH", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
     def secure_delete(path, auth: nil, swagger_meta: {}, &block)
-      auth_handler = auth || Tina4::Auth.bearer_auth
+      auth_handler = auth || Tina4::Auth.default_secure_auth
       Tina4::Router.add_route("DELETE", path, block, auth_handler: auth_handler, swagger_meta: swagger_meta)
     end
 
@@ -176,6 +184,22 @@ module Tina4
     end
 
     private
+
+    # Resolve auth option for route registration
+    # :default => use bearer auth (default for POST/PUT/PATCH/DELETE)
+    # false    => no auth (public route)
+    # nil      => no auth
+    # Proc/Lambda => custom auth handler
+    def resolve_auth(auth)
+      case auth
+      when :default
+        Tina4::Auth.default_secure_auth
+      when false, nil
+        nil
+      else
+        auth  # Custom auth handler (proc/lambda)
+      end
+    end
 
     def setup_database
       db_url = ENV["DATABASE_URL"] || ENV["DB_URL"]

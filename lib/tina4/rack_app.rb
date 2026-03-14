@@ -5,31 +5,45 @@ module Tina4
   class RackApp
     STATIC_DIRS = %w[public src/public src/assets assets].freeze
 
+    # Pre-built frozen responses for zero-allocation fast paths
+    CORS_HEADERS = {
+      "access-control-allow-origin" => "*",
+      "access-control-allow-methods" => "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+      "access-control-allow-headers" => "Content-Type, Authorization, Accept",
+      "access-control-max-age" => "86400"
+    }.freeze
+
+    OPTIONS_RESPONSE = [204, CORS_HEADERS, [""]].freeze
+
     def initialize(root_dir: Dir.pwd)
       @root_dir = root_dir
+      # Pre-compute static roots at boot (not per-request)
+      @static_roots = STATIC_DIRS.map { |d| File.join(root_dir, d) }
+                                  .select { |d| Dir.exist?(d) }
+                                  .freeze
     end
 
     def call(env)
-      path = env["PATH_INFO"] || "/"
       method = env["REQUEST_METHOD"]
+      path = env["PATH_INFO"] || "/"
 
-      # CORS preflight
-      if method == "OPTIONS"
-        return handle_options(env)
+      # Fast-path: OPTIONS preflight (zero allocation)
+      return OPTIONS_RESPONSE if method == "OPTIONS"
+
+      # Fast-path: API routes skip static file + swagger checks entirely
+      unless path.start_with?("/api/")
+        # Swagger
+        if path == "/swagger" || path == "/swagger/"
+          return serve_swagger_ui
+        end
+        if path == "/swagger/openapi.json"
+          return serve_openapi_json
+        end
+
+        # Static files (only for non-API paths)
+        static_response = try_static(path)
+        return static_response if static_response
       end
-
-      # Swagger UI
-      if path == "/swagger" || path == "/swagger/"
-        return serve_swagger_ui
-      end
-
-      if path == "/swagger/openapi.json"
-        return serve_openapi_json
-      end
-
-      # Static files
-      static_response = try_static(path)
-      return static_response if static_response
 
       # Route matching
       result = Tina4::Router.find_route(path, method)
@@ -45,51 +59,48 @@ module Tina4
 
     private
 
-    def handle_options(_env)
-      response = Tina4::Response.new
-      response.status = 204
-      response.add_cors_headers
-      response.to_rack
-    end
-
     def handle_route(env, route, path_params)
       # Auth check
       if route.auth_handler
         auth_result = route.auth_handler.call(env)
-        unless auth_result
-          return handle_403
-        end
+        return handle_403 unless auth_result
       end
 
       request = Tina4::Request.new(env, path_params)
       response = Tina4::Response.new
-      response.add_cors_headers
 
+      # Execute handler
       result = route.handler.call(request, response)
-      final_response = Tina4::Response.auto_detect(result, response)
+
+      # Skip auto_detect if handler already returned the response object
+      final_response = result.equal?(response) ? result : Tina4::Response.auto_detect(result, response)
       final_response.to_rack
     end
 
     def try_static(path)
       return nil if path.include?("..")
 
-      STATIC_DIRS.each do |dir|
-        full_path = File.join(@root_dir, dir, path)
+      @static_roots.each do |root|
+        full_path = File.join(root, path)
         if File.file?(full_path)
-          response = Tina4::Response.new
-          response.file(full_path)
-          return response.to_rack
+          return serve_static_file(full_path)
         end
 
-        # Try index.html
-        index_path = File.join(full_path, "index.html")
-        if File.file?(index_path)
-          response = Tina4::Response.new
-          response.file(index_path)
-          return response.to_rack
+        # Only try index.html for directory-like paths
+        if path.end_with?("/") || !path.include?(".")
+          index_path = File.join(full_path, "index.html")
+          if File.file?(index_path)
+            return serve_static_file(index_path)
+          end
         end
       end
       nil
+    end
+
+    def serve_static_file(full_path)
+      ext = File.extname(full_path).downcase
+      content_type = Tina4::Response::MIME_TYPES[ext] || "application/octet-stream"
+      [200, { "content-type" => content_type }, [File.binread(full_path)]]
     end
 
     def serve_swagger_ui
@@ -110,16 +121,12 @@ module Tina4
         </body>
         </html>
       HTML
-      response = Tina4::Response.new
-      response.html(html)
-      response.to_rack
+      [200, { "content-type" => "text/html; charset=utf-8" }, [html]]
     end
 
     def serve_openapi_json
       spec = Tina4::Swagger.generate
-      response = Tina4::Response.new
-      response.json(spec)
-      response.to_rack
+      [200, { "content-type" => "application/json; charset=utf-8" }, [JSON.generate(spec)]]
     end
 
     def handle_403

@@ -20,39 +20,45 @@ module Tina4
       ".webm" => "video/webm"
     }.freeze
 
+    # Pre-frozen header values
+    JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+    HTML_CONTENT_TYPE = "text/html; charset=utf-8"
+    TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
+    XML_CONTENT_TYPE  = "application/xml; charset=utf-8"
+
     attr_accessor :status, :headers, :body, :cookies
 
     def initialize
       @status = 200
-      @headers = { "content-type" => "text/html; charset=utf-8" }
+      @headers = { "content-type" => HTML_CONTENT_TYPE }
       @body = ""
-      @cookies = []
+      @cookies = nil  # Lazy — most responses have no cookies
     end
 
     def json(data, status_or_opts = nil, status: nil)
       @status = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
-      @headers["content-type"] = "application/json; charset=utf-8"
+      @headers["content-type"] = JSON_CONTENT_TYPE
       @body = data.is_a?(String) ? data : JSON.generate(data)
       self
     end
 
     def html(content, status_or_opts = nil, status: nil)
       @status = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
-      @headers["content-type"] = "text/html; charset=utf-8"
+      @headers["content-type"] = HTML_CONTENT_TYPE
       @body = content.to_s
       self
     end
 
     def text(content, status_or_opts = nil, status: nil)
       @status = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
-      @headers["content-type"] = "text/plain; charset=utf-8"
+      @headers["content-type"] = TEXT_CONTENT_TYPE
       @body = content.to_s
       self
     end
 
     def xml(content, status: 200)
       @status = status
-      @headers["content-type"] = "application/xml; charset=utf-8"
+      @headers["content-type"] = XML_CONTENT_TYPE
       @body = content.to_s
       self
     end
@@ -89,7 +95,7 @@ module Tina4
 
     def render(template_path, data = {}, status: 200)
       @status = status
-      @headers["content-type"] = "text/html; charset=utf-8"
+      @headers["content-type"] = HTML_CONTENT_TYPE
       @body = Tina4::Template.render(template_path, data)
       self
     end
@@ -102,12 +108,18 @@ module Tina4
       cookie += "; SameSite=#{opts[:same_site] || 'Lax'}"
       cookie += "; Max-Age=#{opts[:max_age]}" if opts[:max_age]
       cookie += "; Expires=#{opts[:expires].httpdate}" if opts[:expires]
+      @cookies ||= []
       @cookies << cookie
       self
     end
 
     def delete_cookie(name, path: "/")
       set_cookie(name, "", max_age: 0, path: path)
+    end
+
+    def add_header(key, value)
+      @headers[key] = value
+      self
     end
 
     def add_cors_headers(origin: "*", methods: "GET, POST, PUT, PATCH, DELETE, OPTIONS",
@@ -121,15 +133,14 @@ module Tina4
     end
 
     def to_rack
-      final_headers = @headers.dup
-      @cookies.each_with_index do |cookie, i|
-        if i == 0
-          final_headers["set-cookie"] = cookie
-        else
-          existing = [final_headers["set-cookie"]].flatten
-          final_headers["set-cookie"] = existing.push(cookie).join("\n")
-        end
+      # Fast path: no cookies (99% of API responses)
+      if @cookies.nil? || @cookies.empty?
+        return [@status, @headers, [@body.to_s]]
       end
+
+      # Cookie path
+      final_headers = @headers.dup
+      final_headers["set-cookie"] = @cookies.join("\n")
       [@status, final_headers, [@body.to_s]]
     end
 
@@ -140,7 +151,7 @@ module Tina4
       when Hash, Array
         response.json(result)
       when String
-        if result.strip.start_with?("<")
+        if result.start_with?("<")
           response.html(result)
         else
           response.text(result)

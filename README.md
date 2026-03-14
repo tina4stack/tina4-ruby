@@ -59,9 +59,39 @@ Tina4.any "/webhook" do |request, response|
 end
 ```
 
+### Auth Defaults
+
+Tina4 Ruby matches tina4_python's auth behavior:
+
+- **GET** routes are **public** by default
+- **POST/PUT/PATCH/DELETE** routes are **secured** by default (require `Authorization: Bearer <token>`)
+- Use `auth: false` to make a write route public (equivalent to tina4_python's `@noauth()`)
+- Set `API_KEY` in `.env` to allow API key bypass (token matches `API_KEY` → access granted)
+
+```ruby
+# POST is secured by default — requires Bearer token
+Tina4.post "/api/users" do |request, response|
+  response.json({ created: true })
+end
+
+# Make a POST route public (no auth required)
+Tina4.post "/api/webhook", auth: false do |request, response|
+  response.json({ received: true })
+end
+
+# Custom auth handler
+custom_auth = lambda do |env|
+  env["HTTP_X_API_KEY"] == "my-secret"
+end
+
+Tina4.post "/api/custom", auth: custom_auth do |request, response|
+  response.json({ ok: true })
+end
+```
+
 ### Secured Routes
 
-Routes that require JWT Bearer authentication:
+For explicitly securing GET routes (which are public by default):
 
 ```ruby
 Tina4.secure_get "/api/profile" do |request, response|
@@ -520,10 +550,13 @@ Tina4 auto-creates and loads `.env` files:
 PROJECT_NAME=My App
 VERSION=1.0.0
 SECRET=my-jwt-secret
+API_KEY=your-api-key-here
 DATABASE_URL=sqlite://app.db
 TINA4_DEBUG_LEVEL=[TINA4_LOG_DEBUG]
 ENVIRONMENT=development
 ```
+
+`API_KEY` enables a static bearer token bypass — any request with `Authorization: Bearer <API_KEY>` is granted access without JWT validation.
 
 Supports environment-specific files: `.env.development`, `.env.production`, `.env.test`.
 
