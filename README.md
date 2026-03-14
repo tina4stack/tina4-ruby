@@ -517,6 +517,102 @@ end
 
 Visit `http://localhost:7145/swagger` for the interactive Swagger UI.
 
+## GraphQL
+
+Zero-dependency GraphQL support with a custom parser, executor, and ORM auto-schema generation.
+
+### Manual Schema
+
+```ruby
+schema = Tina4::GraphQLSchema.new
+
+# Add queries
+schema.add_query("hello", type: "String") { |_root, _args, _ctx| "Hello World!" }
+
+schema.add_query("user", type: "User", args: { "id" => { type: "ID!" } }) do |_root, args, _ctx|
+  User.find(args["id"])&.to_hash
+end
+
+# Add mutations
+schema.add_mutation("createUser", type: "User",
+  args: { "name" => { type: "String!" }, "email" => { type: "String!" } }
+) do |_root, args, _ctx|
+  User.create(name: args["name"], email: args["email"]).to_hash
+end
+
+# Register the /graphql endpoint
+gql = Tina4::GraphQL.new(schema)
+gql.register_route  # POST /graphql + GET /graphql (GraphiQL UI)
+```
+
+### ORM Auto-Schema
+
+Generate full CRUD queries and mutations from your ORM models with one line:
+
+```ruby
+schema = Tina4::GraphQLSchema.new
+schema.from_orm(User)     # Creates: user, users, createUser, updateUser, deleteUser
+schema.from_orm(Product)  # Creates: product, products, createProduct, updateProduct, deleteProduct
+
+gql = Tina4::GraphQL.new(schema)
+gql.register_route("/graphql")
+```
+
+This auto-generates:
+- **Queries:** `user(id)` (single), `users(limit, offset)` (list with pagination)
+- **Mutations:** `createUser(input)`, `updateUser(id, input)`, `deleteUser(id)`
+
+### Query Examples
+
+```graphql
+# Simple query
+{ hello }
+
+# Nested fields with arguments
+{ user(id: 42) { id name email } }
+
+# List with pagination
+{ users(limit: 10, offset: 0) { id name } }
+
+# Aliases
+{ admin: user(id: 1) { name } guest: user(id: 2) { name } }
+
+# Variables
+query GetUser($userId: ID!) {
+  user(id: $userId) { id name email }
+}
+
+# Fragments
+fragment UserFields on User { id name email }
+{ user(id: 1) { ...UserFields } }
+
+# Mutations
+mutation {
+  createUser(name: "Alice", email: "alice@example.com") { id name }
+}
+```
+
+### Programmatic Execution
+
+```ruby
+gql = Tina4::GraphQL.new(schema)
+
+# Execute a query directly
+result = gql.execute('{ hello }')
+puts result["data"]["hello"]  # "Hello World!"
+
+# With variables
+result = gql.execute(
+  'query($id: ID!) { user(id: $id) { name } }',
+  variables: { "id" => 42 }
+)
+
+# Handle an HTTP request body (JSON string)
+result = gql.handle_request('{"query": "{ hello }"}')
+```
+
+Visit `http://localhost:7145/graphql` for the interactive GraphiQL UI.
+
 ## REST API Client
 
 ```ruby
