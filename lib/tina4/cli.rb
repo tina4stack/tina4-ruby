@@ -143,6 +143,42 @@ module Tina4
       puts "Total: #{Tina4::Router.routes.length} routes\n"
     end
 
+    desc "seed", "Run all seed files in seeds/"
+    option :clear, type: :boolean, default: false, desc: "Clear tables before seeding"
+    def seed
+      require_relative "../tina4"
+      Tina4.initialize!(Dir.pwd)
+      load_routes(Dir.pwd)
+      Tina4.seed(seed_folder: "seeds", clear: options[:clear])
+    end
+
+    desc "seed:create NAME", "Create a new seed file"
+    def seed_create(name)
+      dir = File.join(Dir.pwd, "seeds")
+      FileUtils.mkdir_p(dir)
+
+      existing = Dir.glob(File.join(dir, "*.rb")).select { |f| File.basename(f)[0] =~ /\d/ }.sort
+      numbers = existing.map { |f| File.basename(f).match(/^(\d+)/)[1].to_i }
+      next_num = numbers.empty? ? 1 : numbers.max + 1
+
+      clean_name = name.strip.downcase.gsub(/[^a-z0-9]+/, "_").gsub(/^_|_$/, "")
+      filename = format("%03d_%s.rb", next_num, clean_name)
+      filepath = File.join(dir, filename)
+
+      File.write(filepath, <<~RUBY)
+        # Seed: #{name.strip}
+        #
+        # This file is executed by `tina4 seed`.
+        # Use Tina4.seed_orm or Tina4.seed_table to populate data.
+        #
+        # Examples:
+        #   Tina4.seed_orm(User, count: 50)
+        #   Tina4.seed_table("audit_log", { action: :string, created_at: :datetime }, count: 100)
+      RUBY
+
+      puts "Created seed file: #{filepath}"
+    end
+
     desc "console", "Start an interactive console"
     def console
       require_relative "../tina4"
@@ -227,12 +263,13 @@ module Tina4
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>{% block title %}#{project_name}{% endblock %}</title>
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="stylesheet" href="/css/tina4.min.css">
             {% block head %}{% endblock %}
           </head>
           <body>
             {% block content %}{% endblock %}
-            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+            <script src="/js/tina4.js"></script>
+            <script src="/js/tina4helper.js"></script>
             {% block scripts %}{% endblock %}
           </body>
           </html>

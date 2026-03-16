@@ -39,6 +39,7 @@ require_relative "tina4/dev_reload"
 require_relative "tina4/localization"
 require_relative "tina4/graphql"
 require_relative "tina4/testing"
+require_relative "tina4/seeder"
 
 module Tina4
   BANNER = <<~'BANNER'
