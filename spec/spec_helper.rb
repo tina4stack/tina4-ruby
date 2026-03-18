@@ -30,5 +30,6 @@ RSpec.configure do |config|
   config.after(:each) do
     Tina4::Router.clear! if defined?(Tina4::Router) && Tina4::Router.respond_to?(:clear!)
     Tina4::Middleware.clear! if defined?(Tina4::Middleware) && Tina4::Middleware.respond_to?(:clear!)
+    Tina4::Container.clear! if defined?(Tina4::Container) && Tina4::Container.respond_to?(:clear!)
   end
 end

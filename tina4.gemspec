@@ -4,7 +4,7 @@ require_relative "lib/tina4/version"
 
 Gem::Specification.new do |spec|
   spec.name = "tina4"
-  spec.version = "0.5.0"
+  spec.version = "0.5.2"
   spec.authors = ["Tina4 Team"]
   spec.email = ["info@tina4.com"]
   spec.summary = "Transitional package — use tina4ruby instead."

@@ -26,6 +26,7 @@ require_relative "tina4/auth"
 require_relative "tina4/session"
 require_relative "tina4/middleware"
 require_relative "tina4/localization"
+require_relative "tina4/container"
 require_relative "tina4/queue"
 
 module Tina4
@@ -215,6 +216,15 @@ module Tina4
     # Translation shortcut
     def t(key, **options)
       Tina4::Localization.t(key, **options)
+    end
+
+    # DI container shortcuts
+    def register(name, instance = nil, &block)
+      Tina4::Container.register(name, instance, &block)
+    end
+
+    def resolve(name)
+      Tina4::Container.resolve(name)
     end
 
     private
