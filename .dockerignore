@@ -1,0 +1,11 @@
+.git
+.env
+.keys/
+logs/
+sessions/
+.queue/
+*.db
+*.gem
+tmp/
+spec/
+vendor/bundle
