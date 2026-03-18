@@ -1,6 +1,4 @@
 # frozen_string_literal: true
-require "webrick"
-require "stringio"
 
 module Tina4
   class WebServer
@@ -11,6 +9,8 @@ module Tina4
     end
 
     def start
+      require "webrick"
+      require "stringio"
       Tina4.print_banner
       Tina4::Debug.info("Starting Tina4 WEBrick server on http://#{@host}:#{@port}")
       @server = WEBrick::HTTPServer.new(

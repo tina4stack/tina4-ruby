@@ -3,7 +3,7 @@
 require_relative "lib/tina4/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "tina4"
+  spec.name = "tina4ruby"
   spec.version = Tina4::VERSION
   spec.authors = ["Tina4 Team"]
   spec.email = ["info@tina4.com"]
@@ -20,13 +20,13 @@ Gem::Specification.new do |spec|
   spec.add_dependency "rack", "~> 3.0"
   spec.add_dependency "rackup", "~> 2.1"
   spec.add_dependency "puma", "~> 6.0"
-  spec.add_dependency "webrick", "~> 1.8"
   spec.add_dependency "dotenv", "~> 3.0"
   spec.add_dependency "jwt", "~> 2.7"
   spec.add_dependency "bcrypt", "~> 3.1"
-  spec.add_dependency "listen", "~> 3.8"
   spec.add_dependency "thor", "~> 1.3"
   spec.add_dependency "json", "~> 2.7"
+  spec.add_development_dependency "webrick", "~> 1.8"
+  spec.add_development_dependency "listen", "~> 3.8"
   spec.add_development_dependency "sqlite3", "~> 2.0"
   spec.add_development_dependency "pg", "~> 1.5"
   spec.add_development_dependency "rake", "~> 13.0"

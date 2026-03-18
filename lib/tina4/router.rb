@@ -16,6 +16,12 @@ module Tina4
     end
 
     # Returns params hash if matched, false otherwise
+    def match?(request_path, request_method = nil)
+      return false if request_method && @method != request_method.to_s.upcase
+      match_path(request_path)
+    end
+
+    # Returns params hash if matched, false otherwise
     def match_path(request_path)
       match = @path_regex.match(request_path)
       return false unless match

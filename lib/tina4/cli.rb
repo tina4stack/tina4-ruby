@@ -236,7 +236,7 @@ module Tina4
       unless File.exist?(File.join(dir, "Gemfile"))
         File.write(File.join(dir, "Gemfile"), <<~RUBY)
           source "https://rubygems.org"
-          gem "tina4"
+          gem "tina4ruby"
         RUBY
       end
 

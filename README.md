@@ -7,7 +7,7 @@ A lightweight, zero-configuration, Windows-friendly Ruby web framework. If you k
 ## Quick Start
 
 ```bash
-gem install tina4
+gem install tina4ruby
 tina4 init myapp
 cd myapp
 bundle install

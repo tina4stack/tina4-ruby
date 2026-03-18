@@ -12,6 +12,7 @@ ENV["ENVIRONMENT"] = "test"
 $LOAD_PATH.unshift File.join(File.dirname(__FILE__), "..", "lib")
 
 require "tina4"
+require "tina4/dev"
 
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|

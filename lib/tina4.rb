@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+# ── Core (always loaded) ──────────────────────────────────────────────
 require_relative "tina4/version"
 require_relative "tina4/debug"
 require_relative "tina4/env"
@@ -7,41 +8,64 @@ require_relative "tina4/router"
 require_relative "tina4/request"
 require_relative "tina4/response"
 require_relative "tina4/rack_app"
-require_relative "tina4/webserver"
 require_relative "tina4/database"
 require_relative "tina4/database_result"
-require_relative "tina4/drivers/sqlite_driver"
-require_relative "tina4/drivers/postgres_driver"
-require_relative "tina4/drivers/mysql_driver"
-require_relative "tina4/drivers/mssql_driver"
-require_relative "tina4/drivers/firebird_driver"
 require_relative "tina4/field_types"
 require_relative "tina4/orm"
 require_relative "tina4/migration"
 require_relative "tina4/template"
 require_relative "tina4/auth"
 require_relative "tina4/session"
-require_relative "tina4/session_handlers/file_handler"
-require_relative "tina4/session_handlers/redis_handler"
-require_relative "tina4/session_handlers/mongo_handler"
 require_relative "tina4/middleware"
-require_relative "tina4/swagger"
-require_relative "tina4/crud"
-require_relative "tina4/api"
-require_relative "tina4/queue"
-require_relative "tina4/queue_backends/lite_backend"
-require_relative "tina4/queue_backends/rabbitmq_backend"
-require_relative "tina4/queue_backends/kafka_backend"
-require_relative "tina4/websocket"
-require_relative "tina4/wsdl"
-require_relative "tina4/scss_compiler"
-require_relative "tina4/dev_reload"
 require_relative "tina4/localization"
-require_relative "tina4/graphql"
-require_relative "tina4/testing"
-require_relative "tina4/seeder"
+require_relative "tina4/queue"
 
 module Tina4
+  # ── Lazy-loaded: database drivers ─────────────────────────────────────
+  module Drivers
+    autoload :SqliteDriver,   File.expand_path("tina4/drivers/sqlite_driver", __dir__)
+    autoload :PostgresDriver, File.expand_path("tina4/drivers/postgres_driver", __dir__)
+    autoload :MysqlDriver,    File.expand_path("tina4/drivers/mysql_driver", __dir__)
+    autoload :MssqlDriver,    File.expand_path("tina4/drivers/mssql_driver", __dir__)
+    autoload :FirebirdDriver, File.expand_path("tina4/drivers/firebird_driver", __dir__)
+  end
+
+  # ── Lazy-loaded: session handlers ─────────────────────────────────────
+  module SessionHandlers
+    autoload :FileHandler,  File.expand_path("tina4/session_handlers/file_handler", __dir__)
+    autoload :RedisHandler, File.expand_path("tina4/session_handlers/redis_handler", __dir__)
+    autoload :MongoHandler, File.expand_path("tina4/session_handlers/mongo_handler", __dir__)
+  end
+
+  # ── Lazy-loaded: queue backends ───────────────────────────────────────
+  module QueueBackends
+    autoload :LiteBackend,     File.expand_path("tina4/queue_backends/lite_backend", __dir__)
+    autoload :RabbitmqBackend, File.expand_path("tina4/queue_backends/rabbitmq_backend", __dir__)
+    autoload :KafkaBackend,    File.expand_path("tina4/queue_backends/kafka_backend", __dir__)
+  end
+
+  # ── Lazy-loaded: web server ───────────────────────────────────────────
+  autoload :WebServer, File.expand_path("tina4/webserver", __dir__)
+
+  # ── Lazy-loaded: optional modules ─────────────────────────────────────
+  autoload :Swagger,             File.expand_path("tina4/swagger", __dir__)
+  autoload :Crud,                File.expand_path("tina4/crud", __dir__)
+  autoload :API,                 File.expand_path("tina4/api", __dir__)
+  autoload :APIResponse,         File.expand_path("tina4/api", __dir__)
+  autoload :GraphQLType,         File.expand_path("tina4/graphql", __dir__)
+  autoload :GraphQLSchema,       File.expand_path("tina4/graphql", __dir__)
+  autoload :GraphQLParser,       File.expand_path("tina4/graphql", __dir__)
+  autoload :GraphQLExecutor,     File.expand_path("tina4/graphql", __dir__)
+  autoload :GraphQLError,        File.expand_path("tina4/graphql", __dir__)
+  autoload :GraphQL,             File.expand_path("tina4/graphql", __dir__)
+  autoload :WebSocket,           File.expand_path("tina4/websocket", __dir__)
+  autoload :WebSocketConnection, File.expand_path("tina4/websocket", __dir__)
+  autoload :Testing,             File.expand_path("tina4/testing", __dir__)
+  autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
+  autoload :DevReload,           File.expand_path("tina4/dev_reload", __dir__)
+  autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)
+  autoload :Seeder,              File.expand_path("tina4/seeder", __dir__)
+  autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
   BANNER = <<~'BANNER'
 
     ████████╗██╗███╗   ██╗ █████╗ ██╗  ██╗
