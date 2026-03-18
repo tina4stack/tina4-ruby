@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0] - 2026-03-18
+
+### Added
+- Multi-stage Dockerfile (ruby:3.3-alpine, build + runtime stages, optimized layer caching)
+- .dockerignore for clean Docker builds
+- `tina4 init` now generates Dockerfile and .dockerignore alongside project scaffolding
+
 ## [0.3.0] - 2026-03-14
 
 ### Added
