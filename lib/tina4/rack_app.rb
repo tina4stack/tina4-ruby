@@ -125,8 +125,8 @@ module Tina4
     end
 
     def serve_openapi_json
-      spec = Tina4::Swagger.generate
-      [200, { "content-type" => "application/json; charset=utf-8" }, [JSON.generate(spec)]]
+      @openapi_json ||= JSON.generate(Tina4::Swagger.generate)
+      [200, { "content-type" => "application/json; charset=utf-8" }, [@openapi_json]]
     end
 
     def handle_403

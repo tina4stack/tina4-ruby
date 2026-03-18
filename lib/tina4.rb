@@ -1,5 +1,13 @@
 # frozen_string_literal: true
 
+# ── Fast JSON: use oj if available, fall back to stdlib json ──────────
+begin
+  require "oj"
+  Oj.default_options = { mode: :compat, symbol_keys: false }
+rescue LoadError
+  # oj not installed — stdlib json is fine
+end
+
 # ── Core (always loaded) ──────────────────────────────────────────────
 require_relative "tina4/version"
 require_relative "tina4/debug"

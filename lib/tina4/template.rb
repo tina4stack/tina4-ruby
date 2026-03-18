@@ -125,9 +125,11 @@ module Tina4
         content
       end
 
+      HTML_ESCAPE = { "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", '"' => "&quot;", "'" => "&#39;" }.freeze
+      HTML_ESCAPE_PATTERN = /[&<>"']/
+
       def self.escape_html(str)
-        str.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
-           .gsub('"', "&quot;").gsub("'", "&#39;")
+        str.gsub(HTML_ESCAPE_PATTERN, HTML_ESCAPE)
       end
 
       def self.format_date(value, fmt)
@@ -186,7 +188,7 @@ module Tina4
             collection_expr = Regexp.last_match(3)
             body = Regexp.last_match(4)
             collection = evaluate_expression(collection_expr)
-            output = ""
+            output = +""
             items = case collection
                     when Array then collection
                     when Hash then collection.to_a
@@ -210,7 +212,7 @@ module Tina4
                 loop_context[key_or_val] = item
               end
               sub_engine = TwigEngine.new(loop_context, @base_dir)
-              output += sub_engine.render(body)
+              output << sub_engine.render(body)
             end
             output
           end
@@ -292,24 +294,24 @@ module Tina4
 
       def parse_filter_args(args_str)
         args = []
-        current = ""
+        current = +""
         in_quote = nil
         args_str.each_char do |ch|
           if in_quote
             if ch == in_quote
-              current += ch
+              current << ch
               in_quote = nil
             else
-              current += ch
+              current << ch
             end
           elsif ch == '"' || ch == "'"
             in_quote = ch
-            current += ch
+            current << ch
           elsif ch == ","
             args << current.strip
-            current = ""
+            current = +""
           else
-            current += ch
+            current << ch
           end
         end
         args << current.strip unless current.strip.empty?
