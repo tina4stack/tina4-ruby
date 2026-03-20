@@ -37,6 +37,7 @@ require_relative "tina4/shutdown"
 require_relative "tina4/localization"
 require_relative "tina4/container"
 require_relative "tina4/queue"
+require_relative "tina4/service_runner"
 
 module Tina4
   # ── Lazy-loaded: database drivers ─────────────────────────────────────
@@ -225,6 +226,11 @@ module Tina4
     # Translation shortcut
     def t(key, **options)
       Tina4::Localization.t(key, **options)
+    end
+
+    # Service runner DSL
+    def service(name, options = {}, &block)
+      Tina4::ServiceRunner.register(name, nil, options, &block)
     end
 
     # DI container shortcuts
