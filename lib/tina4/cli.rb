@@ -38,7 +38,7 @@ module Tina4
     def cmd_init(argv)
       options = { template: "default" }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: tina4 init [NAME] [options]"
+        opts.banner = "Usage: tina4ruby init [NAME] [options]"
         opts.on("--template TEMPLATE", "Project template (default: default)") { |v| options[:template] = v }
       end
       parser.parse!(argv)
@@ -51,7 +51,7 @@ module Tina4
       create_sample_files(dir, name == "." ? File.basename(Dir.pwd) : name)
 
       puts "Tina4 project initialized in #{dir}"
-      puts "Run 'cd #{name} && bundle install && tina4 start' to get started" unless name == "."
+      puts "Run 'cd #{name} && bundle install && tina4ruby start' to get started" unless name == "."
     end
 
     # ── start ─────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ module Tina4
     def cmd_start(argv)
       options = { port: 7145, host: "0.0.0.0", dev: false }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: tina4 start [options]"
+        opts.banner = "Usage: tina4ruby start [options]"
         opts.on("-p", "--port PORT", Integer, "Port (default: 7145)") { |v| options[:port] = v }
         opts.on("-h", "--host HOST", "Host (default: 0.0.0.0)") { |v| options[:host] = v }
         opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
@@ -122,7 +122,7 @@ module Tina4
     def cmd_migrate(argv)
       options = {}
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: tina4 migrate [options]"
+        opts.banner = "Usage: tina4ruby migrate [options]"
         opts.on("--create NAME", "Create a new migration") { |v| options[:create] = v }
         opts.on("--rollback N", Integer, "Rollback N migrations") { |v| options[:rollback] = v }
       end
@@ -163,7 +163,7 @@ module Tina4
     def cmd_seed(argv)
       options = { clear: false }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: tina4 seed [options]"
+        opts.banner = "Usage: tina4ruby seed [options]"
         opts.on("--clear", "Clear tables before seeding") { options[:clear] = true }
       end
       parser.parse!(argv)
@@ -179,7 +179,7 @@ module Tina4
     def cmd_seed_create(argv)
       name = argv.shift
       unless name
-        puts "Usage: tina4 seed:create NAME"
+        puts "Usage: tina4ruby seed:create NAME"
         exit 1
       end
 
@@ -197,7 +197,7 @@ module Tina4
       File.write(filepath, <<~RUBY)
         # Seed: #{name.strip}
         #
-        # This file is executed by `tina4 seed`.
+        # This file is executed by `tina4ruby seed`.
         # Use Tina4.seed_orm or Tina4.seed_table to populate data.
         #
         # Examples:
@@ -271,7 +271,7 @@ module Tina4
       puts <<~HELP
         Tina4 Ruby CLI
 
-        Usage: tina4 COMMAND [options]
+        Usage: tina4ruby COMMAND [options]
 
         Commands:
           init [NAME]        Initialize a new Tina4 project
@@ -285,7 +285,7 @@ module Tina4
           console            Start an interactive console
           help               Show this help message
 
-        Run 'tina4 COMMAND --help' for more information on a command.
+        Run 'tina4ruby COMMAND --help' for more information on a command.
       HELP
     end
 
@@ -399,7 +399,7 @@ module Tina4
           ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
 
           # Start the server on all interfaces
-          CMD ["bundle", "exec", "tina4", "start", "-p", "7145", "-h", "0.0.0.0"]
+          CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7145", "-h", "0.0.0.0"]
         DOCKERFILE
         puts "  Created Dockerfile"
       end

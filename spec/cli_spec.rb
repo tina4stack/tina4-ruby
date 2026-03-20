@@ -15,15 +15,15 @@ RSpec.describe Tina4::CLI do
 
     describe "help" do
       it "prints help text" do
-        expect { cli.run(["help"]) }.to output(/Usage: tina4 COMMAND/).to_stdout
+        expect { cli.run(["help"]) }.to output(/Usage: tina4ruby COMMAND/).to_stdout
       end
 
       it "prints help for --help flag" do
-        expect { cli.run(["--help"]) }.to output(/Usage: tina4 COMMAND/).to_stdout
+        expect { cli.run(["--help"]) }.to output(/Usage: tina4ruby COMMAND/).to_stdout
       end
 
       it "prints help for -h flag" do
-        expect { cli.run(["-h"]) }.to output(/Usage: tina4 COMMAND/).to_stdout
+        expect { cli.run(["-h"]) }.to output(/Usage: tina4ruby COMMAND/).to_stdout
       end
     end
 

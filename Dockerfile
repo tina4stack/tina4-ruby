@@ -41,4 +41,4 @@ ENV SWAGGER_VERSION="0.1.0"
 ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
 
 # Start the server on all interfaces
-CMD ["bundle", "exec", "tina4", "start", "-p", "7145", "-h", "0.0.0.0"]
+CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7145", "-h", "0.0.0.0"]

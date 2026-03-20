@@ -8,8 +8,8 @@ Lightweight Ruby web framework. See https://tina4.com for full documentation.
 - Install: `bundle install`
 - Run all tests: `bundle exec rspec`
 - Run single test: `bundle exec rspec spec/file_spec.rb:LINE`
-- Start server: `ruby app.rb` or `tina4` CLI
-- CLI: `tina4` (Thor-based, exe in `exe/tina4`)
+- Start server: `ruby app.rb` or `tina4ruby` CLI
+- CLI: `tina4ruby` (Thor-based, exe in `exe/tina4ruby`)
 
 ## Code Principles
 
@@ -33,7 +33,7 @@ Lightweight Ruby web framework. See https://tina4.com for full documentation.
 Start with `--dev` flag to enable development features:
 
 ```bash
-tina4 serve --dev
+tina4ruby serve --dev
 ```
 
 Or set `TINA4_DEBUG_LEVEL=ALL` / `DEBUG` in `.env`:
@@ -64,7 +64,7 @@ lib/
     public/             # Built-in static assets
     scss/               # Built-in SCSS
 exe/
-  tina4                # CLI executable
+  tina4ruby            # CLI executable
 spec/                  # RSpec test files (19 spec files)
 ```
 
@@ -197,7 +197,7 @@ Tina4::Log.error(message, *args)
 - Routes auto-discovered from `routes/`
 - ORM uses DSL methods (`integer_field`, `string_field`) with `FieldTypes` module
 - Templates use ERB and Twig (custom engine)
-- CLI (Thor): `tina4 serve` (--dev, --port), `tina4 seed` (--clear), `tina4 seed_create NAME`, `tina4 migrate`
+- CLI (Thor): `tina4ruby serve` (--dev, --port), `tina4ruby seed` (--clear), `tina4ruby seed_create NAME`, `tina4ruby migrate`
 - SCSS compilation built-in
 - JWT auth via `jwt` gem
 - Password hashing via `bcrypt`

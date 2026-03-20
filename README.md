@@ -31,9 +31,9 @@
 
 ```bash
 gem install tina4ruby
-tina4 init my-app
+tina4ruby init my-app
 cd my-app
-tina4 serve
+tina4ruby serve
 # -> http://localhost:7145
 ```
 
@@ -90,7 +90,7 @@ gem install fb                   # Firebird
 ### 1. Create a project
 
 ```bash
-tina4 init my-app
+tina4ruby init my-app
 cd my-app
 ```
 
@@ -140,7 +140,7 @@ DATABASE_URL=sqlite://data/app.db
 Create and run a migration:
 
 ```bash
-tina4 migrate --create "create users table"
+tina4ruby migrate --create "create users table"
 ```
 
 Edit the generated SQL:
@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS users (
 ```
 
 ```bash
-tina4 migrate
+tina4ruby migrate
 ```
 
 ### 4. Create an ORM model
@@ -243,9 +243,9 @@ end
 ### 7. Seed, test, deploy
 
 ```bash
-tina4 seed                          # Run seeders from src/seeds/
-tina4 test                          # Run test suite
-tina4 build                         # Build distributable
+tina4ruby seed                          # Run seeders from src/seeds/
+tina4ruby test                          # Run test suite
+tina4ruby build                         # Build distributable
 ```
 
 For the complete step-by-step guide, visit **[tina4.com](https://tina4.com)**.
@@ -496,16 +496,16 @@ Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
 ## CLI Reference
 
 ```bash
-tina4 init [dir]             # Scaffold a new project
-tina4 serve [port]           # Start dev server (default: 7145)
-tina4 migrate                # Run pending migrations
-tina4 migrate --create <desc># Create a migration file
-tina4 migrate --rollback     # Rollback last batch
-tina4 seed                   # Run seeders from src/seeds/
-tina4 routes                 # List all registered routes
-tina4 test                   # Run test suite
-tina4 build                  # Build distributable gem
-tina4 ai [--all]             # Detect AI tools and install context
+tina4ruby init [dir]             # Scaffold a new project
+tina4ruby serve [port]           # Start dev server (default: 7145)
+tina4ruby migrate                # Run pending migrations
+tina4ruby migrate --create <desc># Create a migration file
+tina4ruby migrate --rollback     # Rollback last batch
+tina4ruby seed                   # Run seeders from src/seeds/
+tina4ruby routes                 # List all registered routes
+tina4ruby test                   # Run test suite
+tina4ruby build                  # Build distributable gem
+tina4ruby ai [--all]             # Detect AI tools and install context
 ```
 
 ## Environment
