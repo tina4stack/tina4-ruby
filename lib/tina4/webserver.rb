@@ -20,6 +20,9 @@ module Tina4
         AccessLog: []
       )
 
+      # Setup graceful shutdown with WEBrick server reference
+      Tina4::Shutdown.setup(server: @server)
+
       # Use a custom servlet that passes ALL methods (including OPTIONS) to Rack
       rack_app = @app
       servlet = Class.new(WEBrick::HTTPServlet::AbstractServlet) do
@@ -35,21 +38,31 @@ module Tina4
         end
 
         define_method(:handle_request) do |webrick_req, webrick_res|
-          env = build_rack_env(webrick_req)
-          status, headers, body = @app.call(env)
-
-          webrick_res.status = status
-          headers.each do |key, value|
-            if key.downcase == "set-cookie"
-              Array(value.split("\n")).each { |c| webrick_res.cookies << WEBrick::Cookie.parse_set_cookie(c) }
-            else
-              webrick_res[key] = value
-            end
+          # Reject new requests during shutdown
+          if Tina4::Shutdown.shutting_down?
+            webrick_res.status = 503
+            webrick_res.body = '{"error":"Service shutting down"}'
+            webrick_res["content-type"] = "application/json"
+            return
           end
 
-          response_body = ""
-          body.each { |chunk| response_body += chunk }
-          webrick_res.body = response_body
+          Tina4::Shutdown.track_request do
+            env = build_rack_env(webrick_req)
+            status, headers, body = @app.call(env)
+
+            webrick_res.status = status
+            headers.each do |key, value|
+              if key.downcase == "set-cookie"
+                Array(value.split("\n")).each { |c| webrick_res.cookies << WEBrick::Cookie.parse_set_cookie(c) }
+              else
+                webrick_res[key] = value
+              end
+            end
+
+            response_body = ""
+            body.each { |chunk| response_body += chunk }
+            webrick_res.body = response_body
+          end
         end
 
         define_method(:build_rack_env) do |req|
@@ -88,9 +101,6 @@ module Tina4
       servlet.define_method(:webrick_req_port) { port }
 
       @server.mount("/", servlet, rack_app)
-
-      trap("INT") { @server.shutdown }
-      trap("TERM") { @server.shutdown }
       @server.start
     end
 

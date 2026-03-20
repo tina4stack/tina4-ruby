@@ -5,15 +5,7 @@ module Tina4
   class RackApp
     STATIC_DIRS = %w[public src/public src/assets assets].freeze
 
-    # Pre-built frozen responses for zero-allocation fast paths
-    CORS_HEADERS = {
-      "access-control-allow-origin" => "*",
-      "access-control-allow-methods" => "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-      "access-control-allow-headers" => "Content-Type, Authorization, Accept",
-      "access-control-max-age" => "86400"
-    }.freeze
-
-    OPTIONS_RESPONSE = [204, CORS_HEADERS, [""]].freeze
+    # CORS is now handled by Tina4::CorsMiddleware
 
     def initialize(root_dir: Dir.pwd)
       @root_dir = root_dir
@@ -27,8 +19,8 @@ module Tina4
       method = env["REQUEST_METHOD"]
       path = env["PATH_INFO"] || "/"
 
-      # Fast-path: OPTIONS preflight (zero allocation)
-      return OPTIONS_RESPONSE if method == "OPTIONS"
+      # Fast-path: OPTIONS preflight
+      return Tina4::CorsMiddleware.preflight_response(env) if method == "OPTIONS"
 
       # Fast-path: API routes skip static file + swagger checks entirely
       unless path.start_with?("/api/")

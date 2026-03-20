@@ -1,12 +1,49 @@
 # frozen_string_literal: true
-require "thor"
+
+require "optparse"
 require "fileutils"
 
 module Tina4
-  class CLI < Thor
-    desc "init [NAME]", "Initialize a new Tina4 project"
-    option :template, type: :string, default: "default", desc: "Project template"
-    def init(name = ".")
+  class CLI
+    COMMANDS = %w[init start migrate seed seed:create test version routes console help].freeze
+
+    def self.start(argv)
+      new.run(argv)
+    end
+
+    def run(argv)
+      command = argv.shift || "help"
+      case command
+      when "init"       then cmd_init(argv)
+      when "start"      then cmd_start(argv)
+      when "migrate"    then cmd_migrate(argv)
+      when "seed"       then cmd_seed(argv)
+      when "seed:create" then cmd_seed_create(argv)
+      when "test"       then cmd_test(argv)
+      when "version"    then cmd_version
+      when "routes"     then cmd_routes
+      when "console"    then cmd_console
+      when "help", "-h", "--help" then cmd_help
+      else
+        puts "Unknown command: #{command}"
+        cmd_help
+        exit 1
+      end
+    end
+
+    private
+
+    # ── init ──────────────────────────────────────────────────────────────
+
+    def cmd_init(argv)
+      options = { template: "default" }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: tina4 init [NAME] [options]"
+        opts.on("--template TEMPLATE", "Project template (default: default)") { |v| options[:template] = v }
+      end
+      parser.parse!(argv)
+
+      name = argv.shift || "."
       dir = name == "." ? Dir.pwd : File.join(Dir.pwd, name)
       FileUtils.mkdir_p(dir)
 
@@ -17,15 +54,25 @@ module Tina4
       puts "Run 'cd #{name} && bundle install && tina4 start' to get started" unless name == "."
     end
 
-    desc "start", "Start the Tina4 web server"
-    option :port, type: :numeric, default: 7145, aliases: "-p"
-    option :host, type: :string, default: "0.0.0.0", aliases: "-h"
-    option :dev, type: :boolean, default: false, aliases: "-d", desc: "Enable dev mode with auto-reload"
-    def start
+    # ── start ─────────────────────────────────────────────────────────────
+
+    def cmd_start(argv)
+      options = { port: 7145, host: "0.0.0.0", dev: false }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: tina4 start [options]"
+        opts.on("-p", "--port PORT", Integer, "Port (default: 7145)") { |v| options[:port] = v }
+        opts.on("-h", "--host HOST", "Host (default: 0.0.0.0)") { |v| options[:host] = v }
+        opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
+      end
+      parser.parse!(argv)
+
       require_relative "../tina4"
 
       root_dir = Dir.pwd
       Tina4.initialize!(root_dir)
+
+      # Register health check endpoint
+      Tina4::Health.register!
 
       # Load route files
       load_routes(root_dir)
@@ -57,6 +104,10 @@ module Tina4
         end
 
         Tina4::Debug.info("Starting Puma server on http://#{puma_host}:#{puma_port}")
+
+        # Setup graceful shutdown (Puma manages its own signals, but we handle DB cleanup)
+        Tina4::Shutdown.setup
+
         launcher = Puma::Launcher.new(config)
         launcher.run
       rescue LoadError
@@ -66,10 +117,17 @@ module Tina4
       end
     end
 
-    desc "migrate", "Run database migrations"
-    option :create, type: :string, desc: "Create a new migration"
-    option :rollback, type: :numeric, desc: "Rollback N migrations"
-    def migrate
+    # ── migrate ───────────────────────────────────────────────────────────
+
+    def cmd_migrate(argv)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: tina4 migrate [options]"
+        opts.on("--create NAME", "Create a new migration") { |v| options[:create] = v }
+        opts.on("--rollback N", Integer, "Rollback N migrations") { |v| options[:rollback] = v }
+      end
+      parser.parse!(argv)
+
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
 
@@ -100,60 +158,31 @@ module Tina4
       end
     end
 
-    desc "test", "Run inline tests"
-    def test
-      require_relative "../tina4"
-      Tina4.initialize!(Dir.pwd)
+    # ── seed ──────────────────────────────────────────────────────────────
 
-      # Load test files
-      test_dirs = %w[tests test spec src/tests]
-      test_dirs.each do |dir|
-        test_dir = File.join(Dir.pwd, dir)
-        next unless Dir.exist?(test_dir)
-        Dir.glob(File.join(test_dir, "**/*_test.rb")).sort.each { |f| load f }
-        Dir.glob(File.join(test_dir, "**/test_*.rb")).sort.each { |f| load f }
+    def cmd_seed(argv)
+      options = { clear: false }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: tina4 seed [options]"
+        opts.on("--clear", "Clear tables before seeding") { options[:clear] = true }
       end
+      parser.parse!(argv)
 
-      # Also load inline tests from routes
-      load_routes(Dir.pwd)
-
-      results = Tina4::Testing.run_all
-      exit(1) if results[:failed] > 0 || results[:errors] > 0
-    end
-
-    desc "version", "Show Tina4 version"
-    def version
-      require_relative "version"
-      puts "Tina4 Ruby v#{Tina4::VERSION}"
-    end
-
-    desc "routes", "List all registered routes"
-    def routes
-      require_relative "../tina4"
-      Tina4.initialize!(Dir.pwd)
-      load_routes(Dir.pwd)
-
-      puts "\nRegistered Routes:"
-      puts "-" * 60
-      Tina4::Router.routes.each do |route|
-        auth = route.auth_handler ? " [AUTH]" : ""
-        puts "  #{route.method.ljust(8)} #{route.path}#{auth}"
-      end
-      puts "-" * 60
-      puts "Total: #{Tina4::Router.routes.length} routes\n"
-    end
-
-    desc "seed", "Run all seed files in seeds/"
-    option :clear, type: :boolean, default: false, desc: "Clear tables before seeding"
-    def seed
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
       load_routes(Dir.pwd)
       Tina4.seed(seed_folder: "seeds", clear: options[:clear])
     end
 
-    desc "seed:create NAME", "Create a new seed file"
-    def seed_create(name)
+    # ── seed:create ───────────────────────────────────────────────────────
+
+    def cmd_seed_create(argv)
+      name = argv.shift
+      unless name
+        puts "Usage: tina4 seed:create NAME"
+        exit 1
+      end
+
       dir = File.join(Dir.pwd, "seeds")
       FileUtils.mkdir_p(dir)
 
@@ -179,8 +208,55 @@ module Tina4
       puts "Created seed file: #{filepath}"
     end
 
-    desc "console", "Start an interactive console"
-    def console
+    # ── test ──────────────────────────────────────────────────────────────
+
+    def cmd_test(argv)
+      require_relative "../tina4"
+      Tina4.initialize!(Dir.pwd)
+
+      # Load test files
+      test_dirs = %w[tests test spec src/tests]
+      test_dirs.each do |dir|
+        test_dir = File.join(Dir.pwd, dir)
+        next unless Dir.exist?(test_dir)
+        Dir.glob(File.join(test_dir, "**/*_test.rb")).sort.each { |f| load f }
+        Dir.glob(File.join(test_dir, "**/test_*.rb")).sort.each { |f| load f }
+      end
+
+      # Also load inline tests from routes
+      load_routes(Dir.pwd)
+
+      results = Tina4::Testing.run_all
+      exit(1) if results[:failed] > 0 || results[:errors] > 0
+    end
+
+    # ── version ───────────────────────────────────────────────────────────
+
+    def cmd_version
+      require_relative "version"
+      puts "Tina4 Ruby v#{Tina4::VERSION}"
+    end
+
+    # ── routes ────────────────────────────────────────────────────────────
+
+    def cmd_routes
+      require_relative "../tina4"
+      Tina4.initialize!(Dir.pwd)
+      load_routes(Dir.pwd)
+
+      puts "\nRegistered Routes:"
+      puts "-" * 60
+      Tina4::Router.routes.each do |route|
+        auth = route.auth_handler ? " [AUTH]" : ""
+        puts "  #{route.method.ljust(8)} #{route.path}#{auth}"
+      end
+      puts "-" * 60
+      puts "Total: #{Tina4::Router.routes.length} routes\n"
+    end
+
+    # ── console ───────────────────────────────────────────────────────────
+
+    def cmd_console
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
       load_routes(Dir.pwd)
@@ -189,7 +265,31 @@ module Tina4
       IRB.start
     end
 
-    private
+    # ── help ──────────────────────────────────────────────────────────────
+
+    def cmd_help
+      puts <<~HELP
+        Tina4 Ruby CLI
+
+        Usage: tina4 COMMAND [options]
+
+        Commands:
+          init [NAME]        Initialize a new Tina4 project
+          start              Start the Tina4 web server
+          migrate            Run database migrations
+          seed               Run all seed files in seeds/
+          seed:create NAME   Create a new seed file
+          test               Run inline tests
+          version            Show Tina4 version
+          routes             List all registered routes
+          console            Start an interactive console
+          help               Show this help message
+
+        Run 'tina4 COMMAND --help' for more information on a command.
+      HELP
+    end
+
+    # ── shared helpers ────────────────────────────────────────────────────
 
     def load_routes(root_dir)
       route_dirs = %w[routes src/routes src/api api]

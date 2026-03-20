@@ -23,7 +23,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "dotenv", "~> 3.0"
   spec.add_dependency "jwt", "~> 2.7"
   spec.add_dependency "bcrypt", "~> 3.1"
-  spec.add_dependency "thor", "~> 1.3"
+
   spec.add_dependency "json", "~> 2.7"
   spec.add_dependency "oj", "~> 3.16"
   spec.add_development_dependency "webrick", "~> 1.8"
