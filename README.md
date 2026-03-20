@@ -16,6 +16,33 @@ tina4 start
 
 Your app is now running at `http://localhost:7145`.
 
+## What's Included
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| HTTP Server | ✅ | Rack 3 + Puma, zero ceremony |
+| Router | ✅ | DSL-based + file discovery, `{id}` params, groups |
+| Callable Response | ✅ | `response.json`, `response.html`, `response.render` |
+| ORM | ✅ | ActiveRecord-style, field DSL, CRUD operations |
+| Auto-CRUD | ✅ | Auto-generated REST endpoints from ORM models |
+| Migrations | ✅ | Up/down with rollback and status tracking |
+| Twig Templates | ✅ | Twig-compatible engine with filters and inheritance |
+| Auth/JWT | ✅ | RS256 tokens, bcrypt password hashing |
+| Sessions | ✅ | File, Redis, and Mongo backends |
+| Queue | ✅ | Lite, RabbitMQ, and Kafka backends |
+| GraphQL | ✅ | Zero-dep parser, ORM auto-schema generation |
+| WebSocket | ✅ | Built-in WebSocket server support |
+| i18n | ✅ | Localization support |
+| Seeder | ✅ | Fake data generators for models and tables |
+| SCSS Compiler | ✅ | Built-in SCSS compilation |
+| Swagger/OpenAPI | ✅ | Auto-generated from routes + models |
+| CORS | ✅ | Auto-added via RackApp |
+| Middleware | ✅ | Before/after hooks with pattern matching |
+| DotEnv | ✅ | .env file loading with environment overrides |
+| REST API Client | ✅ | Built-in HTTP client for external APIs |
+| Multi-DB Support | ✅ | SQLite, PostgreSQL, MySQL, MSSQL, Firebird |
+| CLI | ✅ | Thor-based: init, serve, migrate, seed, console |
+
 ## Routing
 
 Register routes using a clean Ruby DSL:
