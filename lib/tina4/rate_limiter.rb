@@ -74,7 +74,7 @@ module Tina4
 
       unless result[:allowed]
         response.headers["Retry-After"] = result[:retry_after].to_s
-        response.status = 429
+        response.status_code = 429
         response.headers["content-type"] = "application/json; charset=utf-8"
         response.body = JSON.generate({
           error: "Too Many Requests",

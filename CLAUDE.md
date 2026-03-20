@@ -23,7 +23,7 @@ Lightweight Ruby web framework. See https://tina4.com for full documentation.
 - **Migrations for all schema changes** — Never execute DDL outside migration files
 - **Constants** — No magic strings or numbers in routes. Put constants in a dedicated constants module
 - **Service layer pattern** — For complex business logic, create service classes in `app/`. Routes should be thin wrappers
-- **Error handling in routes** — Wrap route logic in `begin/rescue`, log with `Tina4::Debug.error()`, return response with appropriate status
+- **Error handling in routes** — Wrap route logic in `begin/rescue`, log with `Tina4::Log.error()`, return response with appropriate status
 - **All links and references** should point to https://tina4.com
 - **Push to staging only** — Never push to production without explicit approval
 - Linting: `rubocop`
@@ -55,7 +55,8 @@ lib/
     queue.rb, session.rb, graphql.rb, wsdl.rb, crud.rb,
     websocket.rb, localization.rb, middleware.rb, cli.rb,
     auth.rb, field_types.rb, rack_app.rb, scss_compiler.rb,
-    dev_reload.rb, debug.rb, env.rb, api.rb, version.rb ...
+    dev_reload.rb, log.rb, debug.rb (compat alias), env.rb,
+    api.rb, version.rb ...
     drivers/            # Database drivers (sqlite, postgres, mysql, mssql, firebird)
     queue_backends/     # Queue backends (lite, rabbitmq, kafka)
     session_handlers/   # Session storage (file, redis, mongo)
@@ -86,6 +87,9 @@ Tina4::Router.add_route(method, path, handler, auth_handler: nil, swagger_meta: 
 Tina4::Router.find_route(path, method)
 Tina4::Router.clear!
 Tina4::Router.routes
+# Route params use {id} syntax (NOT :id). Matches Python exactly.
+# Type hints: {id:int}, {amount:float}, {slug:path}
+# Handler receives |request, response| block params
 ```
 
 ### Database — Multi-driver abstraction
@@ -119,7 +123,7 @@ model.save -> Boolean
 model.delete -> Boolean
 model.load(id = nil) -> Boolean
 model.persisted? -> Boolean
-model.to_hash(exclude_nil: false) -> Hash
+model.to_h -> Hash              # Ruby idiom (alias: to_hash)
 model.to_json -> String
 
 MyModel.find(id) -> MyModel | nil
@@ -176,14 +180,15 @@ auth.get_payload(token) -> Hash | nil
 auth.generate_secure_keys!
 ```
 
-### Debug — Logging
+### Log — Logging
 
 ```ruby
-Tina4::Debug.info(message, *args)
-Tina4::Debug.debug(message, *args)
-Tina4::Debug.warning(message, *args)
-Tina4::Debug.error(message, *args)
+Tina4::Log.info(message, *args)
+Tina4::Log.debug(message, *args)
+Tina4::Log.warning(message, *args)
+Tina4::Log.error(message, *args)
 # Controlled by TINA4_DEBUG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], etc.
+# Tina4::Debug is a backward-compat alias for Tina4::Log
 ```
 
 ## Key Architecture

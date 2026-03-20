@@ -85,6 +85,12 @@ RSpec.describe Tina4::Router do
       route, _ = Tina4::Router.find_route("/hello/", "GET")
       expect(route).not_to be_nil
     end
+
+    it "does NOT support Ruby :id syntax (only {id})" do
+      Tina4::Router.add_route("GET", "/users/:id", proc { "user" })
+      result = Tina4::Router.find_route("/users/42", "GET")
+      expect(result).to be_nil
+    end
   end
 
   describe ".clear!" do

@@ -28,9 +28,9 @@ module Tina4
     def connect
       @driver.connect(@connection_string)
       @connected = true
-      Tina4::Debug.info("Database connected: #{@driver_name}")
+      Tina4::Log.info("Database connected: #{@driver_name}")
     rescue => e
-      Tina4::Debug.error("Database connection failed: #{e.message}")
+      Tina4::Log.error("Database connection failed: #{e.message}")
       @connected = false
     end
 

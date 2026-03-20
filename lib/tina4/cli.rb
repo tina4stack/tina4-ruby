@@ -103,7 +103,7 @@ module Tina4
           user_config.quiet
         end
 
-        Tina4::Debug.info("Starting Puma server on http://#{puma_host}:#{puma_port}")
+        Tina4::Log.info("Starting Puma server on http://#{puma_host}:#{puma_port}")
 
         # Setup graceful shutdown (Puma manages its own signals, but we handle DB cleanup)
         Tina4::Shutdown.setup
@@ -111,7 +111,7 @@ module Tina4
         launcher = Puma::Launcher.new(config)
         launcher.run
       rescue LoadError
-        Tina4::Debug.info("Puma not found, falling back to WEBrick")
+        Tina4::Log.info("Puma not found, falling back to WEBrick")
         server = Tina4::WebServer.new(app, host: options[:host], port: options[:port])
         server.start
       end

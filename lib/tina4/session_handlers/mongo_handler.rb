@@ -20,7 +20,7 @@ module Tina4
       rescue LoadError
         raise "MongoDB session handler requires the 'mongo' gem. Install with: gem install mongo"
       rescue Mongo::Error => e
-        Tina4::Debug.error("MongoDB session setup failed: #{e.message}")
+        Tina4::Log.error("MongoDB session setup failed: #{e.message}")
       end
 
       def read(session_id)

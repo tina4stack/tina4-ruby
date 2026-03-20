@@ -44,7 +44,7 @@ module Tina4
     def publish(topic, payload)
       message = QueueMessage.new(topic: topic, payload: payload)
       @backend.enqueue(message)
-      Tina4::Debug.debug("Message published to #{topic}: #{message.id}")
+      Tina4::Log.debug("Message published to #{topic}: #{message.id}")
       message
     end
 
@@ -68,7 +68,7 @@ module Tina4
 
     def start(poll_interval: 1)
       @running = true
-      Tina4::Debug.info("Consumer started for topic: #{@topic}")
+      Tina4::Log.info("Consumer started for topic: #{@topic}")
 
       while @running
         message = @backend.dequeue(@topic)
@@ -82,7 +82,7 @@ module Tina4
 
     def stop
       @running = false
-      Tina4::Debug.info("Consumer stopped for topic: #{@topic}")
+      Tina4::Log.info("Consumer stopped for topic: #{@topic}")
     end
 
     def process_one
@@ -103,7 +103,7 @@ module Tina4
       message.status = :completed
       @backend.acknowledge(message)
     rescue => e
-      Tina4::Debug.error("Queue message failed: #{message.id} - #{e.message}")
+      Tina4::Log.error("Queue message failed: #{message.id} - #{e.message}")
       message.status = :failed
 
       if message.attempts < @max_retries

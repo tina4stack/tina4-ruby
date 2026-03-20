@@ -328,13 +328,13 @@ module Tina4
     table = orm_class.table_name
 
     if fields.empty?
-      Tina4::Debug.error("Seeder: No fields found on #{orm_class.name}")
+      Tina4::Log.error("Seeder: No fields found on #{orm_class.name}")
       return 0
     end
 
     db = Tina4.database
     unless db
-      Tina4::Debug.error("Seeder: No database connection. Set Tina4.database first.")
+      Tina4::Log.error("Seeder: No database connection. Set Tina4.database first.")
       return 0
     end
 
@@ -343,7 +343,7 @@ module Tina4
       begin
         result = db.fetch_one("SELECT count(*) as cnt FROM #{table}")
         if result && result[:cnt].to_i >= count
-          Tina4::Debug.info("Seeder: #{table} already has #{result[:cnt]} records, skipping")
+          Tina4::Log.info("Seeder: #{table} already has #{result[:cnt]} records, skipping")
           return 0
         end
       rescue => e
@@ -355,9 +355,9 @@ module Tina4
     if clear
       begin
         db.execute("DELETE FROM #{table}")
-        Tina4::Debug.info("Seeder: Cleared #{table}")
+        Tina4::Log.info("Seeder: Cleared #{table}")
       rescue => e
-        Tina4::Debug.warn("Seeder: Could not clear #{table}: #{e.message}")
+        Tina4::Log.warn("Seeder: Could not clear #{table}: #{e.message}")
       end
     end
 
@@ -384,14 +384,14 @@ module Tina4
         if obj.save
           inserted += 1
         else
-          Tina4::Debug.warn("Seeder: Insert failed for #{table} row #{i + 1}: #{obj.errors.join(', ')}")
+          Tina4::Log.warn("Seeder: Insert failed for #{table} row #{i + 1}: #{obj.errors.join(', ')}")
         end
       rescue => e
-        Tina4::Debug.warn("Seeder: Insert failed for #{table} row #{i + 1}: #{e.message}")
+        Tina4::Log.warn("Seeder: Insert failed for #{table} row #{i + 1}: #{e.message}")
       end
     end
 
-    Tina4::Debug.info("Seeder: Inserted #{inserted}/#{count} records into #{table}")
+    Tina4::Log.info("Seeder: Inserted #{inserted}/#{count} records into #{table}")
     inserted
   end
 
@@ -409,7 +409,7 @@ module Tina4
     db = Tina4.database
 
     unless db
-      Tina4::Debug.error("Seeder: No database connection.")
+      Tina4::Log.error("Seeder: No database connection.")
       return 0
     end
 
@@ -417,7 +417,7 @@ module Tina4
       begin
         db.execute("DELETE FROM #{table_name}")
       rescue => e
-        Tina4::Debug.warn("Seeder: Could not clear #{table_name}: #{e.message}")
+        Tina4::Log.warn("Seeder: Could not clear #{table_name}: #{e.message}")
       end
     end
 
@@ -438,11 +438,11 @@ module Tina4
         db.insert(table_name, row)
         inserted += 1
       rescue => e
-        Tina4::Debug.warn("Seeder: Insert failed for #{table_name} row #{i + 1}: #{e.message}")
+        Tina4::Log.warn("Seeder: Insert failed for #{table_name} row #{i + 1}: #{e.message}")
       end
     end
 
-    Tina4::Debug.info("Seeder: Inserted #{inserted}/#{count} records into #{table_name}")
+    Tina4::Log.info("Seeder: Inserted #{inserted}/#{count} records into #{table_name}")
     inserted
   end
 
@@ -475,9 +475,9 @@ module Tina4
         @tasks.reverse_each do |task|
           begin
             Tina4.database&.execute("DELETE FROM #{task[:orm_class].table_name}")
-            Tina4::Debug.info("Seeder: Cleared #{task[:orm_class].table_name}")
+            Tina4::Log.info("Seeder: Cleared #{task[:orm_class].table_name}")
           rescue => e
-            Tina4::Debug.warn("Seeder: Could not clear #{task[:orm_class].table_name}: #{e.message}")
+            Tina4::Log.warn("Seeder: Could not clear #{task[:orm_class].table_name}: #{e.message}")
           end
         end
       end
@@ -502,7 +502,7 @@ module Tina4
   # @param seed_folder [String] path to seed files (default: "seeds")
   def self.seed(seed_folder: "seeds", clear: false)
     unless Dir.exist?(seed_folder)
-      Tina4::Debug.info("Seeder: No seeds folder found at #{seed_folder}")
+      Tina4::Log.info("Seeder: No seeds folder found at #{seed_folder}")
       return
     end
 
@@ -510,19 +510,19 @@ module Tina4
     files.reject! { |f| File.basename(f).start_with?("_") }
 
     if files.empty?
-      Tina4::Debug.info("Seeder: No seed files found in #{seed_folder}")
+      Tina4::Log.info("Seeder: No seed files found in #{seed_folder}")
       return
     end
 
-    Tina4::Debug.info("Seeder: Found #{files.length} seed file(s) in #{seed_folder}")
+    Tina4::Log.info("Seeder: Found #{files.length} seed file(s) in #{seed_folder}")
 
     files.each do |filepath|
       begin
-        Tina4::Debug.info("Seeder: Running #{File.basename(filepath)}...")
+        Tina4::Log.info("Seeder: Running #{File.basename(filepath)}...")
         load filepath
-        Tina4::Debug.info("Seeder: Completed #{File.basename(filepath)}")
+        Tina4::Log.info("Seeder: Completed #{File.basename(filepath)}")
       rescue => e
-        Tina4::Debug.error("Seeder: Failed to run #{File.basename(filepath)}: #{e.message}")
+        Tina4::Log.error("Seeder: Failed to run #{File.basename(filepath)}: #{e.message}")
       end
     end
   end

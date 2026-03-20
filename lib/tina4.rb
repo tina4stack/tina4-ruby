@@ -10,7 +10,9 @@ end
 
 # ── Core (always loaded) ──────────────────────────────────────────────
 require_relative "tina4/version"
-require_relative "tina4/debug"
+require_relative "tina4/constants"
+require_relative "tina4/log"
+require_relative "tina4/debug"  # backward compat alias
 require_relative "tina4/env"
 require_relative "tina4/router"
 require_relative "tina4/request"
@@ -21,6 +23,8 @@ require_relative "tina4/database_result"
 require_relative "tina4/field_types"
 require_relative "tina4/orm"
 require_relative "tina4/migration"
+require_relative "tina4/auto_crud"
+require_relative "tina4/database/sqlite3_adapter"
 require_relative "tina4/template"
 require_relative "tina4/auth"
 require_relative "tina4/session"
@@ -110,8 +114,8 @@ module Tina4
       Tina4::Env.load(root_dir)
 
       # Setup debug logging
-      Tina4::Debug.setup(root_dir)
-      Tina4::Debug.info("Tina4 Ruby v#{VERSION} initializing...")
+      Tina4::Log.setup(root_dir)
+      Tina4::Log.info("Tina4 Ruby v#{VERSION} initializing...")
 
       # Setup auth keys
       Tina4::Auth.setup(root_dir)
@@ -125,7 +129,7 @@ module Tina4
       # Auto-discover routes
       auto_discover(root_dir)
 
-      Tina4::Debug.info("Tina4 initialized successfully")
+      Tina4::Log.info("Tina4 initialized successfully")
     end
 
     # DSL methods for route registration
@@ -254,9 +258,9 @@ module Tina4
       if db_url && !db_url.empty?
         begin
           @database = Tina4::Database.new(db_url)
-          Tina4::Debug.info("Database connected: #{db_url.sub(/:[^:@]+@/, ':***@')}")
+          Tina4::Log.info("Database connected: #{db_url.sub(/:[^:@]+@/, ':***@')}")
         rescue => e
-          Tina4::Debug.error("Database connection failed: #{e.message}")
+          Tina4::Log.error("Database connection failed: #{e.message}")
         end
       end
     end
@@ -270,9 +274,9 @@ module Tina4
         Dir.glob(File.join(full_dir, "**/*.rb")).sort.each do |file|
           begin
             load file
-            Tina4::Debug.debug("Auto-loaded: #{file}")
+            Tina4::Log.debug("Auto-loaded: #{file}")
           rescue => e
-            Tina4::Debug.error("Failed to load #{file}: #{e.message}")
+            Tina4::Log.error("Failed to load #{file}: #{e.message}")
           end
         end
       end

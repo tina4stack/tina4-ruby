@@ -17,25 +17,25 @@ module Tina4
         # Also watch root for .rb files
         dirs << root_dir
 
-        Tina4::Debug.info("Dev reload watching: #{dirs.join(', ')}")
+        Tina4::Log.info("Dev reload watching: #{dirs.join(', ')}")
 
         @listener = Listen.to(*dirs, only: /\.(#{WATCH_EXTENSIONS.map { |e| e.delete('.') }.join('|')})$/, ignore: build_ignore_regex) do |modified, added, removed|
           changes = { modified: modified, added: added, removed: removed }
           all_files = modified + added + removed
           next if all_files.empty?
 
-          Tina4::Debug.info("File changes detected:")
-          modified.each { |f| Tina4::Debug.debug("  Modified: #{f}") }
-          added.each { |f| Tina4::Debug.debug("  Added: #{f}") }
-          removed.each { |f| Tina4::Debug.debug("  Removed: #{f}") }
+          Tina4::Log.info("File changes detected:")
+          modified.each { |f| Tina4::Log.debug("  Modified: #{f}") }
+          added.each { |f| Tina4::Log.debug("  Added: #{f}") }
+          removed.each { |f| Tina4::Log.debug("  Removed: #{f}") }
 
           # Reload Ruby files
           modified.select { |f| f.end_with?(".rb") }.each do |file|
             begin
               load file
-              Tina4::Debug.info("Reloaded: #{file}")
+              Tina4::Log.info("Reloaded: #{file}")
             rescue => e
-              Tina4::Debug.error("Reload failed: #{file} - #{e.message}")
+              Tina4::Log.error("Reload failed: #{file} - #{e.message}")
             end
           end
 
@@ -49,12 +49,12 @@ module Tina4
         end
 
         @listener.start
-        Tina4::Debug.info("Dev reload started")
+        Tina4::Log.info("Dev reload started")
       end
 
       def stop
         @listener&.stop
-        Tina4::Debug.info("Dev reload stopped")
+        Tina4::Log.info("Dev reload stopped")
       end
 
       private

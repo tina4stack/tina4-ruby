@@ -72,8 +72,14 @@ RSpec.describe Tina4::Response do
       expect(location).to eq("/new-location")
     end
 
-    it "accepts custom redirect status" do
+    it "accepts custom redirect status via keyword" do
       response.redirect("/permanent", status: 301)
+      status, _, _ = response.to_rack
+      expect(status).to eq(301)
+    end
+
+    it "accepts custom redirect status as positional arg" do
+      response.redirect("/permanent", 301)
       status, _, _ = response.to_rack
       expect(status).to eq(301)
     end

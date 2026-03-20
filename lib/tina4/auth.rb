@@ -107,7 +107,7 @@ module Tina4
       end
 
       def generate_keys
-        Tina4::Debug.info("Generating RSA key pair for JWT authentication")
+        Tina4::Log.info("Generating RSA key pair for JWT authentication")
         key = OpenSSL::PKey::RSA.generate(2048)
         File.write(private_key_path, key.to_pem)
         File.write(public_key_path, key.public_key.to_pem)

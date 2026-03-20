@@ -26,53 +26,63 @@ module Tina4
     TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
     XML_CONTENT_TYPE  = "application/xml; charset=utf-8"
 
-    attr_accessor :status, :headers, :body, :cookies
+    attr_accessor :status_code, :headers, :body, :cookies
 
     def initialize
-      @status = 200
+      @status_code = 200
       @headers = { "content-type" => HTML_CONTENT_TYPE }
       @body = ""
-      @cookies = nil  # Lazy — most responses have no cookies
+      @cookies = nil  # Lazy -- most responses have no cookies
+    end
+
+    # Chainable status setter
+    def status(code = nil)
+      if code.nil?
+        @status_code
+      else
+        @status_code = code
+        self
+      end
     end
 
     def json(data, status_or_opts = nil, status: nil)
-      @status = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
+      @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
       @headers["content-type"] = JSON_CONTENT_TYPE
       @body = data.is_a?(String) ? data : JSON.generate(data)
       self
     end
 
     def html(content, status_or_opts = nil, status: nil)
-      @status = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
+      @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
       @headers["content-type"] = HTML_CONTENT_TYPE
       @body = content.to_s
       self
     end
 
     def text(content, status_or_opts = nil, status: nil)
-      @status = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
+      @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
       @headers["content-type"] = TEXT_CONTENT_TYPE
       @body = content.to_s
       self
     end
 
     def xml(content, status: 200)
-      @status = status
+      @status_code = status
       @headers["content-type"] = XML_CONTENT_TYPE
       @body = content.to_s
       self
     end
 
     def csv(content, filename: "export.csv", status: 200)
-      @status = status
+      @status_code = status
       @headers["content-type"] = "text/csv"
       @headers["content-disposition"] = "attachment; filename=\"#{filename}\""
       @body = content.to_s
       self
     end
 
-    def redirect(url, status: 302)
-      @status = status
+    def redirect(url, status_or_opts = nil, status: nil)
+      @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 302)
       @headers["location"] = url
       @body = ""
       self
@@ -80,7 +90,7 @@ module Tina4
 
     def file(path, content_type: nil, download: false)
       unless ::File.exist?(path)
-        @status = 404
+        @status_code = 404
         @body = "File not found"
         return self
       end
@@ -94,22 +104,37 @@ module Tina4
     end
 
     def render(template_path, data = {}, status: 200)
-      @status = status
+      @status_code = status
       @headers["content-type"] = HTML_CONTENT_TYPE
       @body = Tina4::Template.render(template_path, data)
       self
     end
 
+    # Chainable header setter
+    def header(name, value = nil)
+      if value.nil?
+        @headers[name]
+      else
+        @headers[name] = value
+        self
+      end
+    end
+
+    # Chainable cookie setter
+    def cookie(name, value, opts = {})
+      set_cookie(name, value, opts)
+    end
+
     def set_cookie(name, value, opts = {})
-      cookie = "#{name}=#{URI.encode_www_form_component(value)}"
-      cookie += "; Path=#{opts[:path] || '/'}"
-      cookie += "; HttpOnly" if opts.fetch(:http_only, true)
-      cookie += "; Secure" if opts[:secure]
-      cookie += "; SameSite=#{opts[:same_site] || 'Lax'}"
-      cookie += "; Max-Age=#{opts[:max_age]}" if opts[:max_age]
-      cookie += "; Expires=#{opts[:expires].httpdate}" if opts[:expires]
+      cookie_str = "#{name}=#{URI.encode_www_form_component(value)}"
+      cookie_str += "; Path=#{opts[:path] || '/'}"
+      cookie_str += "; HttpOnly" if opts.fetch(:http_only, true)
+      cookie_str += "; Secure" if opts[:secure]
+      cookie_str += "; SameSite=#{opts[:same_site] || 'Lax'}"
+      cookie_str += "; Max-Age=#{opts[:max_age]}" if opts[:max_age]
+      cookie_str += "; Expires=#{opts[:expires].httpdate}" if opts[:expires]
       @cookies ||= []
-      @cookies << cookie
+      @cookies << cookie_str
       self
     end
 
@@ -132,16 +157,21 @@ module Tina4
       self
     end
 
+    # Flush / finalize -- alias for to_rack for semantic clarity
+    def send
+      to_rack
+    end
+
     def to_rack
       # Fast path: no cookies (99% of API responses)
       if @cookies.nil? || @cookies.empty?
-        return [@status, @headers, [@body.to_s]]
+        return [@status_code, @headers, [@body.to_s]]
       end
 
       # Cookie path
       final_headers = @headers.dup
       final_headers["set-cookie"] = @cookies.join("\n")
-      [@status, final_headers, [@body.to_s]]
+      [@status_code, final_headers, [@body.to_s]]
     end
 
     def self.auto_detect(result, response)
@@ -157,11 +187,11 @@ module Tina4
           response.text(result)
         end
       when Integer
-        response.status = result
+        response.status_code = result
         response.body = ""
         response
       when NilClass
-        response.status = 204
+        response.status_code = 204
         response.body = ""
         response
       else

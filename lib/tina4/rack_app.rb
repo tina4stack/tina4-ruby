@@ -61,6 +61,13 @@ module Tina4
       request = Tina4::Request.new(env, path_params)
       response = Tina4::Response.new
 
+      # Run per-route middleware
+      if route.respond_to?(:run_middleware)
+        unless route.run_middleware(request, response)
+          return [403, { "content-type" => "text/html" }, ["403 Forbidden"]]
+        end
+      end
+
       # Execute handler
       result = route.handler.call(request, response)
 
@@ -127,14 +134,14 @@ module Tina4
     end
 
     def handle_404(path)
-      Tina4::Debug.warning("404 Not Found: #{path}")
+      Tina4::Log.warning("404 Not Found: #{path}")
       body = Tina4::Template.render_error(404) rescue "404 Not Found"
       [404, { "content-type" => "text/html" }, [body]]
     end
 
     def handle_500(error)
-      Tina4::Debug.error("500 Internal Server Error: #{error.message}")
-      Tina4::Debug.error(error.backtrace&.first(10)&.join("\n"))
+      Tina4::Log.error("500 Internal Server Error: #{error.message}")
+      Tina4::Log.error(error.backtrace&.first(10)&.join("\n"))
       body = Tina4::Template.render_error(500) rescue "500 Internal Server Error: #{error.message}"
       [500, { "content-type" => "text/html" }, [body]]
     end

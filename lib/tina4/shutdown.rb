@@ -38,7 +38,7 @@ module Tina4
         return if @shutting_down
 
         @shutting_down = true
-        Tina4::Debug.info("Shutdown signal received, stopping gracefully...")
+        Tina4::Log.info("Shutdown signal received, stopping gracefully...")
 
         # Wait for in-flight requests with timeout
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @timeout
@@ -46,7 +46,7 @@ module Tina4
           while @in_flight_count > 0
             remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
             if remaining <= 0
-              Tina4::Debug.warning("Shutdown timeout reached with #{@in_flight_count} requests still in flight")
+              Tina4::Log.warning("Shutdown timeout reached with #{@in_flight_count} requests still in flight")
               break
             end
             @in_flight_cv.wait(@mutex, remaining)
@@ -57,13 +57,13 @@ module Tina4
         if Tina4.database
           begin
             Tina4.database.close
-            Tina4::Debug.info("Database connections closed")
+            Tina4::Log.info("Database connections closed")
           rescue => e
-            Tina4::Debug.error("Error closing database: #{e.message}")
+            Tina4::Log.error("Error closing database: #{e.message}")
           end
         end
 
-        Tina4::Debug.info("Shutdown complete")
+        Tina4::Log.info("Shutdown complete")
 
         # Stop the server
         @server&.shutdown if @server.respond_to?(:shutdown)

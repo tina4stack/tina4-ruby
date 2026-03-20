@@ -28,7 +28,7 @@ module Tina4
             data = JSON.parse(File.read(file))
             translations[locale] ||= {}
             translations[locale].merge!(data)
-            Tina4::Debug.debug("Loaded locale: #{locale} from #{file}")
+            Tina4::Log.debug("Loaded locale: #{locale} from #{file}")
           end
 
           # Also support YAML
@@ -40,7 +40,7 @@ module Tina4
               translations[locale] ||= {}
               translations[locale].merge!(data) if data.is_a?(Hash)
             rescue LoadError
-              Tina4::Debug.warning("YAML support requires the 'yaml' gem")
+              Tina4::Log.warning("YAML support requires the 'yaml' gem")
             end
           end
         end

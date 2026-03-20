@@ -25,13 +25,14 @@ RSpec.describe Tina4::Migration do
     it "creates migration files" do
       path = migration.create("add users table")
       expect(File.exist?(path)).to be true
-      expect(File.basename(path)).to match(/\d{14}_add_users_table\.sql/)
+      expect(File.basename(path)).to match(/\d{14}_add_users_table\.rb/)
     end
 
-    it "creates rollback file" do
+    it "creates migration with up and down methods" do
       path = migration.create("add users table")
-      down_path = path.sub(".sql", ".down.sql")
-      expect(File.exist?(down_path)).to be true
+      content = File.read(path)
+      expect(content).to include("def up(db)")
+      expect(content).to include("def down(db)")
     end
   end
 

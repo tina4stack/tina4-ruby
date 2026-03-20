@@ -31,9 +31,9 @@ module Tina4
         css_content = compile_scss(scss_content, File.dirname(scss_file))
         File.write(css_file, css_content)
 
-        Tina4::Debug.debug("Compiled SCSS: #{scss_file} -> #{css_file}")
+        Tina4::Log.debug("Compiled SCSS: #{scss_file} -> #{css_file}")
       rescue => e
-        Tina4::Debug.error("SCSS compilation failed: #{scss_file} - #{e.message}")
+        Tina4::Log.error("SCSS compilation failed: #{scss_file} - #{e.message}")
       end
 
       def compile_scss(content, base_dir)
