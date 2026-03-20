@@ -6,7 +6,7 @@ Tina4 Ruby includes JWT authentication with RS256 signing, password hashing via 
 
 ```ruby
 # Generate a JWT token with custom payload
-token = Tina4::Auth.generate_token(
+token = Tina4::Auth.create_token(
   { user_id: 42, role: "admin" },
   expires_in: 3600  # 1 hour (default)
 )
@@ -36,10 +36,10 @@ hashed = Tina4::Auth.hash_password("my-secret-password")
 # => "$2a$12$..."
 
 # Verify a password
-Tina4::Auth.verify_password("my-secret-password", hashed)
+Tina4::Auth.check_password("my-secret-password", hashed)
 # => true
 
-Tina4::Auth.verify_password("wrong-password", hashed)
+Tina4::Auth.check_password("wrong-password", hashed)
 # => false
 ```
 
@@ -80,11 +80,11 @@ Tina4.post "/api/login", auth: false do |request, response|
       next response.json({ error: "Invalid credentials" }, status: 401)
     end
 
-    unless Tina4::Auth.verify_password(password, user.password_hash)
+    unless Tina4::Auth.check_password(password, user.password_hash)
       next response.json({ error: "Invalid credentials" }, status: 401)
     end
 
-    token = Tina4::Auth.generate_token(
+    token = Tina4::Auth.create_token(
       { user_id: user.id, email: user.email, role: user.role },
       expires_in: 86400  # 24 hours
     )

@@ -15,7 +15,7 @@ module Tina4
         ensure_keys
       end
 
-      def generate_token(payload, expires_in: 3600)
+      def create_token(payload, expires_in: 3600)
         ensure_keys
         now = Time.now.to_i
         claims = payload.merge(
@@ -26,6 +26,7 @@ module Tina4
         require "jwt"
         JWT.encode(claims, private_key, "RS256")
       end
+
 
       def validate_token(token)
         ensure_keys
@@ -43,11 +44,51 @@ module Tina4
         BCrypt::Password.create(password)
       end
 
-      def verify_password(password, hash)
+      def check_password(password, hash)
         require "bcrypt"
         BCrypt::Password.new(hash) == password
       rescue BCrypt::Errors::InvalidHash
         false
+      end
+
+
+      def get_payload(token)
+        require "jwt"
+        decoded = JWT.decode(token, nil, false)
+        decoded[0]
+      rescue JWT::DecodeError
+        nil
+      end
+
+      def refresh_token(token, expires_in: 3600)
+        result = validate_token(token)
+        return nil unless result[:valid]
+
+        payload = result[:payload].reject { |k, _| %w[iat exp nbf].include?(k) }
+        create_token(payload, expires_in: expires_in)
+      end
+
+      def authenticate_request(headers)
+        auth_header = headers["HTTP_AUTHORIZATION"] || headers["Authorization"] || ""
+        return { valid: false, error: "No authorization header" } unless auth_header =~ /\ABearer\s+(.+)\z/i
+
+        token = Regexp.last_match(1)
+
+        # API_KEY bypass — matches tina4_python behavior
+        api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+        if api_key && !api_key.empty? && token == api_key
+          return { valid: true, payload: { "api_key" => true } }
+        end
+
+        validate_token(token)
+      end
+
+      def validate_api_key(provided, expected: nil)
+        expected ||= ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+        return false if expected.nil? || expected.empty?
+        return false if provided.nil? || provided.empty?
+
+        provided == expected
       end
 
       def auth_handler(&block)

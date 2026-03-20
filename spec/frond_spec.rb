@@ -768,4 +768,40 @@ RSpec.describe Tina4::Frond do
       expect(engine.render_string(template, {})).to eq("1, 2, 3")
     end
   end
+
+  # ===========================================================================
+  # Form Token
+  # ===========================================================================
+
+  describe "form_token" do
+    it "renders a hidden input with JWT via {{ form_token() }}" do
+      result = engine.render_string("{{ form_token() | raw }}", {})
+      expect(result).to include('<input type="hidden" name="formToken" value="')
+      # Extract JWT and verify structure
+      token = result.match(/value="([^"]+)"/)[1]
+      parts = token.split(".")
+      expect(parts.length).to eq(3)
+    end
+
+    it "renders via form_token filter {{ '' | form_token }}" do
+      result = engine.render_string('{{ "" | form_token | raw }}', {})
+      expect(result).to include('<input type="hidden" name="formToken" value="')
+    end
+
+    it "generates a valid JWT that Auth can validate" do
+      result = engine.render_string("{{ form_token() | raw }}", {})
+      token = result.match(/value="([^"]+)"/)[1]
+      validated = Tina4::Auth.validate_token(token)
+      expect(validated[:valid]).to be true
+      expect(validated[:payload]["type"]).to eq("form")
+    end
+
+    it "supports descriptor to add context" do
+      result = engine.render_string('{{ "admin" | form_token | raw }}', {})
+      token = result.match(/value="([^"]+)"/)[1]
+      payload = Tina4::Auth.get_payload(token)
+      expect(payload["type"]).to eq("form")
+      expect(payload["context"]).to eq("admin")
+    end
+  end
 end

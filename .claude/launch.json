@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "tina4-server",
-      "runtimeExecutable": "bundle",
-      "runtimeArgs": ["exec", "ruby", "-e", "require 'tina4'; Tina4.get('/') { |req, res| res.html('<h1>Welcome to Tina4 Ruby!</h1><p>Simple. Fast. Human. This is not a framework.</p><hr><h3>API Endpoints</h3><ul><li><a href=\"/api/hello\">/api/hello</a> - JSON greeting</li><li><a href=\"/api/users/42\">/api/users/42</a> - Path parameters</li><li><a href=\"/swagger\">/swagger</a> - API Documentation</li></ul>') }; Tina4.get('/api/hello') { |req, res| res.json({ message: 'Hello World!', framework: 'tina4_ruby', timestamp: Time.now.iso8601 }) }; Tina4.get('/api/users/{id:int}') { |req, res| res.json({ user_id: req.params['id'], name: 'Test User' }) }; app = Tina4::RackApp.new(root_dir: Dir.pwd); server = Tina4::WebServer.new(app, host: '0.0.0.0', port: 7145); server.start"],
+      "name": "ruby-demo",
+      "runtimeExecutable": "/opt/homebrew/opt/ruby/bin/ruby",
+      "runtimeArgs": ["-I", "/Users/andrevanzuydam/IdeaProjects/tina4-ruby/lib", "-e", "require 'tina4'; Tina4.get('/') { |req, res| res.html('<h1>Tina4 Ruby</h1><p><a href=\"/__dev\">Dev Dashboard</a></p>') }; app = Tina4::RackApp.new(root_dir: '/Users/andrevanzuydam/IdeaProjects/tina4-ruby'); server = Tina4::WebServer.new(app, host: '0.0.0.0', port: 7145); server.start"],
       "port": 7145
     }
   ]

@@ -38,6 +38,15 @@ require_relative "tina4/localization"
 require_relative "tina4/container"
 require_relative "tina4/queue"
 require_relative "tina4/service_runner"
+require_relative "tina4/events"
+require_relative "tina4/dev_admin"
+require_relative "tina4/messenger"
+require_relative "tina4/dev_mailbox"
+require_relative "tina4/ai"
+require_relative "tina4/sql_translation"
+require_relative "tina4/response_cache"
+require_relative "tina4/html_element"
+require_relative "tina4/error_overlay"
 
 module Tina4
   # ── Lazy-loaded: database drivers ─────────────────────────────────────
@@ -53,7 +62,8 @@ module Tina4
   module SessionHandlers
     autoload :FileHandler,  File.expand_path("tina4/session_handlers/file_handler", __dir__)
     autoload :RedisHandler, File.expand_path("tina4/session_handlers/redis_handler", __dir__)
-    autoload :MongoHandler, File.expand_path("tina4/session_handlers/mongo_handler", __dir__)
+    autoload :MongoHandler,  File.expand_path("tina4/session_handlers/mongo_handler", __dir__)
+    autoload :ValkeyHandler, File.expand_path("tina4/session_handlers/valkey_handler", __dir__)
   end
 
   # ── Lazy-loaded: queue backends ───────────────────────────────────────
@@ -83,7 +93,6 @@ module Tina4
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
   autoload :DevReload,           File.expand_path("tina4/dev_reload", __dir__)
   autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)
-  autoload :Seeder,              File.expand_path("tina4/seeder", __dir__)
   autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
   BANNER = <<~'BANNER'
 
@@ -113,7 +122,7 @@ module Tina4
       print_banner
 
       # Load environment
-      Tina4::Env.load(root_dir)
+      Tina4::Env.load_env(root_dir)
 
       # Setup debug logging
       Tina4::Log.setup(root_dir)

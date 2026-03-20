@@ -423,11 +423,11 @@ RSpec.describe "Tina4.seed_table" do
 end
 
 # ===================================================================
-# Seeder Builder Tests
+# seed_batch Tests
 # ===================================================================
 
-RSpec.describe Tina4::Seeder do
-  let(:tmp_dir) { Dir.mktmpdir("tina4_seeder_builder_test") }
+RSpec.describe "Tina4.seed_batch" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_seed_batch_test") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
   let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
 
@@ -444,18 +444,18 @@ RSpec.describe Tina4::Seeder do
   end
 
   it "seeds a single class" do
-    seeder = Tina4::Seeder.new
-    seeder.add(SeedTestUser, count: 7, seed: 42)
-    results = seeder.run
+    results = Tina4.seed_batch([
+      { orm_class: SeedTestUser, count: 7, seed: 42 }
+    ])
 
     expect(results["SeedTestUser"]).to eq(7)
   end
 
-  it "supports method chaining" do
-    results = Tina4::Seeder.new
-      .add(SeedTestUser, count: 5, seed: 1)
-      .add(SeedTestCategory, count: 3, seed: 2)
-      .run
+  it "seeds multiple classes" do
+    results = Tina4.seed_batch([
+      { orm_class: SeedTestUser, count: 5, seed: 1 },
+      { orm_class: SeedTestCategory, count: 3, seed: 2 }
+    ])
 
     expect(results["SeedTestUser"]).to eq(5)
     expect(results["SeedTestCategory"]).to eq(3)
@@ -464,9 +464,9 @@ RSpec.describe Tina4::Seeder do
   it "clears in reverse order" do
     Tina4.seed_orm(SeedTestUser, count: 20, clear: true, seed: 1)
 
-    results = Tina4::Seeder.new
-      .add(SeedTestUser, count: 3, seed: 99)
-      .run(clear: true)
+    results = Tina4.seed_batch([
+      { orm_class: SeedTestUser, count: 3, seed: 99 }
+    ], clear: true)
 
     expect(results["SeedTestUser"]).to eq(3)
     result = db.fetch_one("SELECT count(*) as cnt FROM seed_users")
@@ -474,9 +474,9 @@ RSpec.describe Tina4::Seeder do
   end
 
   it "supports overrides" do
-    Tina4::Seeder.new
-      .add(SeedTestCategory, count: 5, overrides: { name: "Test" }, seed: 42)
-      .run
+    Tina4.seed_batch([
+      { orm_class: SeedTestCategory, count: 5, overrides: { name: "Test" }, seed: 42 }
+    ])
 
     results = db.fetch("SELECT name FROM seed_categories")
     results.each do |row|
@@ -532,7 +532,7 @@ end
 # Large Batch / Edge Cases
 # ===================================================================
 
-RSpec.describe "Seeder edge cases" do
+RSpec.describe "FakeData edge cases" do
   it "FakeData handles many calls without error" do
     fake = Tina4::FakeData.new(seed: 1)
     1000.times do

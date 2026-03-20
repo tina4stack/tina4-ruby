@@ -2,6 +2,22 @@
 
 Practical, copy-paste ready examples for every feature in the Tina4 Ruby framework.
 
+## How to Run the Interactive Demo
+
+```bash
+cd tina4-ruby/demo
+bundle install          # from the tina4-ruby root if not already done
+ruby app.rb
+```
+
+Then visit **http://localhost:7145** in your browser.
+
+The demo app starts a WEBrick server on port 7145 and provides an HTML landing page
+with links to every feature demo. Each demo route returns JSON with the feature name,
+status (working/partial/missing), output data, and notes.
+
+**Requirements:** Ruby >= 3.1, sqlite3 gem, jwt gem, bcrypt gem (all listed in the gemspec).
+
 ## Getting Started
 
 ```bash

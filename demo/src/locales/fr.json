@@ -1,0 +1,12 @@
+{
+  "greeting": "Bonjour, %{name}! Bienvenue sur Tina4 Ruby.",
+  "farewell": "Au revoir, %{name}!",
+  "demo": {
+    "title": "Application de demonstration Tina4 Ruby",
+    "description": "Cette demonstration presente toutes les fonctionnalites du framework Tina4 Ruby."
+  },
+  "errors": {
+    "not_found": "La ressource demandee est introuvable.",
+    "unauthorized": "Vous n'etes pas autorise a acceder a cette ressource."
+  }
+}

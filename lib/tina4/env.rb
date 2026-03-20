@@ -12,12 +12,41 @@ module Tina4
     }.freeze
 
     class << self
-      def load(root_dir = Dir.pwd)
+      def load_env(root_dir = Dir.pwd)
         env_file = resolve_env_file(root_dir)
         unless File.exist?(env_file)
           create_default_env(env_file)
         end
         parse_env_file(env_file)
+      end
+
+      # Get an env var value, with optional default
+      def get_env(key, default = nil)
+        ENV[key.to_s] || default
+      end
+
+      # Check if an env var exists
+      def has_env?(key)
+        ENV.key?(key.to_s)
+      end
+
+      # Return all current ENV vars as a hash
+      def all_env
+        ENV.to_h
+      end
+
+      # Raise if any of the given keys are missing from ENV
+      def require_env!(*keys)
+        missing = keys.map(&:to_s).reject { |k| ENV.key?(k) }
+        unless missing.empty?
+          raise KeyError, "Missing required env vars: #{missing.join(', ')}"
+        end
+      end
+
+      # Reset: clear all env vars that were loaded (restore to process defaults)
+      def reset_env
+        @loaded_keys&.each { |k| ENV.delete(k) }
+        @loaded_keys = []
       end
 
       private
@@ -47,6 +76,8 @@ module Tina4
             key = match[1]
             value = match[2].gsub(/["']\z/, "")
             ENV[key] ||= value
+            @loaded_keys ||= []
+            @loaded_keys << key
           end
         end
       end

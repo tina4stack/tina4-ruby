@@ -1,6 +1,6 @@
 # Migrations
 
-Tina4 Ruby provides database schema migrations with both Ruby and SQL file support. Migrations are tracked in a `tina4_migrations` table, support batched execution, and can be rolled back.
+Tina4 Ruby provides database schema migrations with both Ruby and SQL file support. Migrations are tracked in a `tina4_migration` table, support batched execution, and can be rolled back.
 
 ## Creating a Migration
 
@@ -161,7 +161,7 @@ migration = Tina4::Migration.new(db, migrations_dir: "db/migrations")
 
 ## Tracking Table
 
-Tina4 creates a `tina4_migrations` table automatically to track which migrations have been applied:
+Tina4 creates a `tina4_migration` table automatically to track which migrations have been applied:
 
 | Column | Type | Description |
 |---|---|---|

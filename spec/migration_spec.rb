@@ -17,7 +17,7 @@ RSpec.describe Tina4::Migration do
   describe "#initialize" do
     it "creates migration tracking table" do
       migration # force lazy evaluation
-      expect(db.table_exists?("tina4_migrations")).to be true
+      expect(db.table_exists?("tina4_migration")).to be true
     end
   end
 

@@ -48,6 +48,7 @@ module Tina4
         @console_logger.formatter = @json_mode ? method(:json_formatter) : method(:color_formatter)
 
         @request_id = nil
+        @current_context = {}
         @mutex = Mutex.new
         @initialized = true
 
@@ -71,20 +72,20 @@ module Tina4
         @json_mode
       end
 
-      def info(message, *args)
-        log(:info, message, *args)
+      def info(message, context = {})
+        log(:info, message, context)
       end
 
-      def debug(message, *args)
-        log(:debug, message, *args)
+      def debug(message, context = {})
+        log(:debug, message, context)
       end
 
-      def warning(message, *args)
-        log(:warn, message, *args)
+      def warning(message, context = {})
+        log(:warn, message, context)
       end
 
-      def error(message, *args)
-        log(:error, message, *args)
+      def error(message, context = {})
+        log(:error, message, context)
       end
 
       private
@@ -94,11 +95,12 @@ module Tina4
         env.downcase == "production"
       end
 
-      def log(level, message, *args)
+      def log(level, message, context = {})
         setup unless @initialized
-        full_message = args.empty? ? message.to_s : "#{message} #{args.map(&:to_s).join(' ')}"
-        @console_logger.send(level, full_message)
-        @file_logger.send(level, full_message)
+        @current_context = context.is_a?(Hash) ? context : {}
+        @console_logger.send(level, message.to_s)
+        @file_logger.send(level, message.to_s)
+        @current_context = {}
       end
 
       def resolve_level
@@ -106,40 +108,54 @@ module Tina4
         LEVELS[env_level] || Logger::DEBUG
       end
 
-      def color_formatter(severity, datetime, _progname, message)
-        color = case severity
-                when "DEBUG" then COLORS[:gray]
-                when "INFO"  then COLORS[:green]
-                when "WARN"  then COLORS[:yellow]
-                when "ERROR" then COLORS[:red]
-                else COLORS[:reset]
-                end
-        ts = datetime.strftime("%Y-%m-%d %H:%M:%S")
-        rid = request_id
-        rid_str = rid ? " #{COLORS[:cyan]}[#{rid}]#{COLORS[:reset]}" : ""
-        "#{COLORS[:gray]}[#{ts}]#{COLORS[:reset]} #{color}[#{severity}]#{COLORS[:reset]}#{rid_str} #{message}\n"
+      def severity_to_level(severity)
+        severity == "WARN" ? "WARNING" : severity
       end
 
-      def json_formatter(severity, datetime, _progname, message)
+      def utc_timestamp
+        now = Time.now.utc
+        now.strftime("%Y-%m-%dT%H:%M:%S.") + format("%03d", now.usec / 1000) + "Z"
+      end
+
+      def color_formatter(severity, _datetime, _progname, message)
+        level = severity_to_level(severity)
+        color = case level
+                when "DEBUG"   then COLORS[:cyan]
+                when "INFO"    then COLORS[:green]
+                when "WARNING" then COLORS[:yellow]
+                when "ERROR"   then COLORS[:red]
+                else COLORS[:reset]
+                end
+        ts = utc_timestamp
+        rid = request_id
+        rid_str = rid ? " [#{rid}]" : ""
+        ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
+        "#{color}#{ts} [#{level.ljust(7)}]#{rid_str} #{message}#{ctx}#{COLORS[:reset]}\n"
+      end
+
+      def json_formatter(severity, _datetime, _progname, message)
+        level = severity_to_level(severity)
         entry = {
-          timestamp: datetime.iso8601(3),
-          level: severity.downcase,
-          message: message,
-          framework: "tina4-ruby",
-          version: Tina4::VERSION
+          timestamp: utc_timestamp,
+          level: level,
+          message: message
         }
         rid = request_id
         entry[:request_id] = rid if rid
+        entry[:context] = @current_context if @current_context && !@current_context.empty?
         "#{JSON.generate(entry)}\n"
       end
 
-      def file_formatter(severity, datetime, _progname, message)
+      def file_formatter(severity, _datetime, _progname, message)
         if @json_mode
-          json_formatter(severity, datetime, nil, message)
+          json_formatter(severity, _datetime, nil, message)
         else
+          level = severity_to_level(severity)
+          ts = utc_timestamp
           rid = request_id
           rid_str = rid ? " [#{rid}]" : ""
-          "[#{datetime.strftime('%Y-%m-%d %H:%M:%S')}] [#{severity}]#{rid_str} #{message}\n"
+          ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
+          "#{ts} [#{level.ljust(7)}]#{rid_str} #{message}#{ctx}\n"
         end
       end
 

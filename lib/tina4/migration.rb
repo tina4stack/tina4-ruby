@@ -3,7 +3,7 @@ require "fileutils"
 
 module Tina4
   class Migration
-    TRACKING_TABLE = "tina4_migrations"
+    TRACKING_TABLE = "tina4_migration"
 
     attr_reader :db, :migrations_dir
 

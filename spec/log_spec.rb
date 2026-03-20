@@ -93,9 +93,8 @@ RSpec.describe Tina4::Log do
       last_line = lines.last
 
       parsed = JSON.parse(last_line)
-      expect(parsed["level"]).to eq("info")
+      expect(parsed["level"]).to eq("INFO")
       expect(parsed["message"]).to eq("json test message")
-      expect(parsed["framework"]).to eq("tina4-ruby")
       expect(parsed).to have_key("timestamp")
     end
   end

@@ -21,12 +21,12 @@ RSpec.describe "Migration v3 features" do
   describe "tracking table" do
     it "creates tracking table on init" do
       migration  # trigger lazy let
-      expect(db.table_exists?("tina4_migrations")).to be true
+      expect(db.table_exists?("tina4_migration")).to be true
     end
 
     it "tracking table has batch column" do
       migration  # trigger lazy let
-      cols = db.columns("tina4_migrations")
+      cols = db.columns("tina4_migration")
       col_names = cols.map { |c| c[:name] }
       expect(col_names).to include("batch")
     end
@@ -51,7 +51,7 @@ RSpec.describe "Migration v3 features" do
 
       migration.migrate
 
-      result = db.fetch_one("SELECT batch FROM tina4_migrations WHERE migration_name = ?",
+      result = db.fetch_one("SELECT batch FROM tina4_migration WHERE migration_name = ?",
                             ["20240101000001_first.sql"])
       expect(result[:batch]).to eq(1)
     end
@@ -71,7 +71,7 @@ RSpec.describe "Migration v3 features" do
       migration2 = Tina4::Migration.new(db, migrations_dir: migrations_dir)
       migration2.migrate
 
-      result = db.fetch_one("SELECT batch FROM tina4_migrations WHERE migration_name = ?",
+      result = db.fetch_one("SELECT batch FROM tina4_migration WHERE migration_name = ?",
                             ["20240101000002_batch2.sql"])
       expect(result[:batch]).to eq(2)
     end

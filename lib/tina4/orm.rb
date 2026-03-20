@@ -119,6 +119,11 @@ module Tina4
         results.map { |row| from_hash(row) }
       end
 
+      def select(sql, params = [], limit: nil, skip: nil)
+        results = db.fetch(sql, params, limit: limit, skip: skip)
+        results.map { |row| from_hash(row) }
+      end
+
       def count(conditions = nil, params = [])
         sql = "SELECT COUNT(*) as cnt FROM #{table_name}"
         where_parts = []
@@ -135,6 +140,24 @@ module Tina4
         instance = new(attributes)
         instance.save
         instance
+      end
+
+      def find_or_fail(id)
+        result = find(id)
+        raise "#{name} with #{primary_key_field || :id}=#{id} not found" if result.nil?
+        result
+      end
+
+      def with_trashed(conditions = "1=1", params = [], limit: 20, skip: 0)
+        sql = "SELECT * FROM #{table_name} WHERE #{conditions}"
+        results = db.fetch(sql, params, limit: limit, skip: skip)
+        results.map { |row| from_hash(row) }
+      end
+
+      def scope(name, filter_sql, params = [])
+        define_singleton_method(name) do |limit: 20, skip: 0|
+          where(filter_sql, params)
+        end
       end
 
       def from_hash(hash)
@@ -238,6 +261,43 @@ module Tina4
       true
     end
 
+    def force_delete
+      pk = self.class.primary_key_field || :id
+      pk_value = __send__(pk)
+      raise "Cannot delete: no primary key value" unless pk_value
+
+      self.class.db.delete(self.class.table_name, { pk => pk_value })
+      @persisted = false
+      true
+    end
+
+    def restore
+      raise "Model does not support soft delete" unless self.class.soft_delete
+
+      pk = self.class.primary_key_field || :id
+      pk_value = __send__(pk)
+      raise "Cannot restore: no primary key value" unless pk_value
+
+      self.class.db.update(
+        self.class.table_name,
+        { self.class.soft_delete_field => 0 },
+        { pk => pk_value }
+      )
+      __send__("#{self.class.soft_delete_field}=", 0) if respond_to?("#{self.class.soft_delete_field}=")
+      true
+    end
+
+    def validate
+      errors = []
+      self.class.field_definitions.each do |name, opts|
+        value = __send__(name)
+        if !opts[:nullable] && value.nil? && !opts[:auto_increment] && !opts[:default]
+          errors << "#{name} cannot be null"
+        end
+      end
+      errors
+    end
+
     def load(id = nil)
       pk = self.class.primary_key_field || :id
       id ||= __send__(pk)
@@ -276,6 +336,14 @@ module Tina4
     end
 
     alias to_hash to_h
+    alias to_dict to_h
+    alias to_object to_h
+
+    def to_array
+      to_h.values
+    end
+
+    alias to_list to_array
 
     def to_json(*_args)
       JSON.generate(to_h)

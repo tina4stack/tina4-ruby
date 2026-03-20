@@ -90,6 +90,13 @@ module Tina4
       @rng = seed ? Random.new(seed) : Random.new
     end
 
+    # Static factory — create a seeded FakeData instance.
+    #   fake = FakeData.seed(42)
+    #   fake.name  # deterministic
+    def self.seed(seed)
+      new(seed: seed)
+    end
+
     def first_name
       FIRST_NAMES[@rng.rand(FIRST_NAMES.length)]
     end
@@ -446,55 +453,43 @@ module Tina4
     inserted
   end
 
-  # Builder class for seeding multiple ORM classes with dependency resolution.
+  # Seed multiple ORM classes in batch with optional dependency-aware clearing.
+  #
+  # @param tasks [Array<Hash>] each hash has :orm_class, :count, :overrides, :seed
+  # @param clear [Boolean] delete existing records (in reverse order) before seeding
+  # @return [Hash] { "ClassName" => inserted_count, ... }
   #
   # @example
-  #   seeder = Tina4::Seeder.new
-  #   seeder.add(User, count: 20)
-  #   seeder.add(Order, count: 100, overrides: { status: "pending" })
-  #   seeder.run(clear: true)
-  class Seeder
-    def initialize
-      @tasks = []
-    end
+  #   Tina4.seed_batch([
+  #     { orm_class: User, count: 20 },
+  #     { orm_class: Order, count: 100, overrides: { status: "pending" } }
+  #   ], clear: true)
+  def self.seed_batch(tasks, clear: false)
+    results = {}
 
-    def add(orm_class, count: 10, overrides: {}, seed: nil)
-      @tasks << {
-        orm_class: orm_class,
-        count: count,
-        overrides: overrides,
-        seed: seed
-      }
-      self
-    end
-
-    def run(clear: false)
-      results = {}
-
-      if clear
-        @tasks.reverse_each do |task|
-          begin
-            Tina4.database&.execute("DELETE FROM #{task[:orm_class].table_name}")
-            Tina4::Log.info("Seeder: Cleared #{task[:orm_class].table_name}")
-          rescue => e
-            Tina4::Log.warn("Seeder: Could not clear #{task[:orm_class].table_name}: #{e.message}")
-          end
+    if clear
+      tasks.reverse_each do |task|
+        begin
+          Tina4.database&.execute("DELETE FROM #{task[:orm_class].table_name}")
+          Tina4::Log.info("Seeder: Cleared #{task[:orm_class].table_name}")
+        rescue => e
+          Tina4::Log.warn("Seeder: Could not clear #{task[:orm_class].table_name}: #{e.message}")
         end
       end
-
-      @tasks.each do |task|
-        n = Tina4.seed_orm(
-          task[:orm_class],
-          count: task[:count],
-          overrides: task[:overrides],
-          clear: false,
-          seed: task[:seed]
-        )
-        results[task[:orm_class].name] = n
-      end
-
-      results
     end
+
+    tasks.each do |task|
+      n = Tina4.seed_orm(
+        task[:orm_class],
+        count: task[:count] || 10,
+        overrides: task[:overrides] || {},
+        clear: false,
+        seed: task[:seed]
+      )
+      results[task[:orm_class].name] = n
+    end
+
+    results
   end
 
   # Run all seed files in the given folder.

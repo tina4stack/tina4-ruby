@@ -121,17 +121,16 @@ Tina4.seed_table("audit_log", {
 }, count: 100)
 ```
 
-## Seeder Builder (Multiple Models)
+## Batch Seeding (Multiple Models)
 
 ```ruby
-seeder = Tina4::Seeder.new
-seeder.add(User, count: 20)
-seeder.add(Product, count: 50)
-seeder.add(Order, count: 200, overrides: {
-  status: ->(f) { f.choice(%w[pending shipped delivered]) }
-})
-
-results = seeder.run(clear: true)
+results = Tina4.seed_batch([
+  { orm_class: User, count: 20 },
+  { orm_class: Product, count: 50 },
+  { orm_class: Order, count: 200, overrides: {
+    status: ->(f) { f.choice(%w[pending shipped delivered]) }
+  }}
+], clear: true)
 # => { "User" => 20, "Product" => 50, "Order" => 200 }
 ```
 

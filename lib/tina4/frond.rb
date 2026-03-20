@@ -15,6 +15,10 @@ require "date"
 require "time"
 
 module Tina4
+  # Marker class for strings that should not be auto-escaped in Frond.
+  class SafeString < String
+  end
+
   class Frond
     # -- Token types ----------------------------------------------------------
     TEXT    = :text
@@ -51,6 +55,9 @@ module Tina4
 
       # Fragment cache: key => [html, expires_at]
       @fragment_cache  = {}
+
+      # Built-in global functions
+      register_builtin_globals
     end
 
     # Render a template file with data.
@@ -306,8 +313,8 @@ module Tina4
         end
       end
 
-      # Auto-escape HTML unless marked safe
-      if @auto_escape && !is_safe && value.is_a?(String)
+      # Auto-escape HTML unless marked safe or SafeString
+      if @auto_escape && !is_safe && value.is_a?(String) && !value.is_a?(SafeString)
         value = Frond.escape_html(value)
       end
 
@@ -1202,7 +1209,45 @@ module Tina4
             v.to_s
           end
         },
+        "form_token" => ->(_v, *_a) { Frond.generate_form_token(_v.to_s) },
       }
+    end
+
+    # -----------------------------------------------------------------------
+    # Built-in globals
+    # -----------------------------------------------------------------------
+
+    def register_builtin_globals
+      @globals["form_token"] = ->(descriptor = "") { Frond.generate_form_token(descriptor.to_s) }
+    end
+
+    # Generate a JWT form token and return a hidden input element.
+    #
+    # @param descriptor [String] Optional string to enrich the token payload.
+    #   - Empty: payload is {"type" => "form"}
+    #   - "admin_panel": payload is {"type" => "form", "context" => "admin_panel"}
+    #   - "checkout|order_123": payload is {"type" => "form", "context" => "checkout", "ref" => "order_123"}
+    #
+    # @return [String] <input type="hidden" name="formToken" value="TOKEN">
+    def self.generate_form_token(descriptor = "")
+      require_relative "log"
+      require_relative "auth"
+
+      payload = { "type" => "form" }
+      if descriptor && !descriptor.empty?
+        if descriptor.include?("|")
+          parts = descriptor.split("|", 2)
+          payload["context"] = parts[0]
+          payload["ref"] = parts[1]
+        else
+          payload["context"] = descriptor
+        end
+      end
+
+      ttl_minutes = (ENV["TINA4_TOKEN_LIMIT"] || "30").to_i
+      expires_in = ttl_minutes * 60
+      token = Tina4::Auth.create_token(payload, expires_in: expires_in)
+      Tina4::SafeString.new(%(<input type="hidden" name="formToken" value="#{CGI.escapeHTML(token)}">))
     end
   end
 end

@@ -5,7 +5,7 @@ require "fileutils"
 
 module Tina4
   class CLI
-    COMMANDS = %w[init start migrate seed seed:create test version routes console help].freeze
+    COMMANDS = %w[init start migrate seed seed:create test version routes console ai help].freeze
 
     def self.start(argv)
       new.run(argv)
@@ -23,6 +23,7 @@ module Tina4
       when "version"    then cmd_version
       when "routes"     then cmd_routes
       when "console"    then cmd_console
+      when "ai"         then cmd_ai(argv)
       when "help", "-h", "--help" then cmd_help
       else
         puts "Unknown command: #{command}"
@@ -265,6 +266,36 @@ module Tina4
       IRB.start
     end
 
+    # ── ai ────────────────────────────────────────────────────────────────
+
+    def cmd_ai(argv)
+      options = { all: false, force: false }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: tina4ruby ai [options]"
+        opts.on("--all", "Install context for ALL AI tools (not just detected ones)") { options[:all] = true }
+        opts.on("--force", "Overwrite existing context files") { options[:force] = true }
+      end
+      parser.parse!(argv)
+
+      require_relative "ai"
+
+      root_dir = Dir.pwd
+      puts Tina4::AI.status_report(root_dir)
+
+      if options[:all]
+        created = Tina4::AI.install_all(root_dir, force: options[:force])
+      else
+        created = Tina4::AI.install_ai_context(root_dir, force: options[:force])
+      end
+
+      if created.any?
+        puts "Created/updated context files:"
+        created.each { |f| puts "  #{f}" }
+      else
+        puts "No context files were created (files already exist; use --force to overwrite)."
+      end
+    end
+
     # ── help ──────────────────────────────────────────────────────────────
 
     def cmd_help
@@ -283,6 +314,7 @@ module Tina4
           version            Show Tina4 version
           routes             List all registered routes
           console            Start an interactive console
+          ai                 Detect AI tools and install context files
           help               Show this help message
 
         Run 'tina4ruby COMMAND --help' for more information on a command.

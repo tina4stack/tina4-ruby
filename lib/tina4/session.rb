@@ -57,6 +57,56 @@ module Tina4
       @data = {}
     end
 
+    # Get a session value with optional default
+    def get(key, default = nil)
+      @data[key.to_s] || default
+    end
+
+    # Set a session value
+    def set(key, value)
+      @data[key.to_s] = value
+      @modified = true
+    end
+
+    # Check if a key exists in the session
+    def has?(key)
+      @data.key?(key.to_s)
+    end
+
+    # Return all session data
+    def all
+      @data.dup
+    end
+
+    # Flash data: set a value that is removed after next read.
+    # Call with value to set, call without value to get (and remove).
+    def flash(key, value = nil)
+      flash_key = "_flash_#{key}"
+      if value.nil?
+        val = @data.delete(flash_key.to_s)
+        @modified = true if val
+        val
+      else
+        @data[flash_key.to_s] = value
+        @modified = true
+        value
+      end
+    end
+
+    # Regenerate the session ID while preserving data
+    def regenerate
+      old_id = @id
+      @id = SecureRandom.hex(32)
+      @handler.destroy(old_id)
+      @modified = true
+    end
+
+    # Garbage collection: remove expired sessions from the handler
+    def gc(max_age = nil)
+      max_age ||= @options[:max_age]
+      @handler.gc(max_age) if @handler.respond_to?(:gc)
+    end
+
     def cookie_header
       "#{@options[:cookie_name]}=#{@id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=#{@options[:max_age]}"
     end
@@ -124,6 +174,41 @@ module Tina4
 
     def destroy
       @session&.destroy
+    end
+
+    def get(key, default = nil)
+      ensure_loaded
+      @session.get(key, default)
+    end
+
+    def set(key, value)
+      ensure_loaded
+      @session.set(key, value)
+    end
+
+    def has?(key)
+      ensure_loaded
+      @session.has?(key)
+    end
+
+    def all
+      ensure_loaded
+      @session.all
+    end
+
+    def flash(key, value = nil)
+      ensure_loaded
+      @session.flash(key, value)
+    end
+
+    def regenerate
+      ensure_loaded
+      @session.regenerate
+    end
+
+    def gc(max_age = nil)
+      ensure_loaded
+      @session.gc(max_age)
     end
 
     def cookie_header
