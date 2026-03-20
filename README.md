@@ -1,788 +1,558 @@
-# Tina4 Ruby
+<p align="center">
+  <img src="https://tina4.com/logo.svg" alt="Tina4" width="200">
+</p>
 
-**Simple. Fast. Human. This is not a framework.**
+<h1 align="center">Tina4 Ruby</h1>
+<h3 align="center">This is not a framework</h3>
 
-A lightweight, zero-configuration, Windows-friendly Ruby web framework. If you know [tina4_python](https://tina4.com) or tina4_php, you'll feel right at home.
+<p align="center">
+  Laravel joy. Ruby speed. 10x less code. Zero third-party dependencies.
+</p>
 
-## Quick Start
+<p align="center">
+  <a href="https://tina4.com">Documentation</a> &bull;
+  <a href="#getting-started">Getting Started</a> &bull;
+  <a href="#features">Features</a> &bull;
+  <a href="#cli-reference">CLI Reference</a> &bull;
+  <a href="https://tina4.com">tina4.com</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/tests-676%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/carbonah-A%2B%20rated-00cc44" alt="Carbonah A+">
+  <img src="https://img.shields.io/badge/zero--dep-core-blue" alt="Zero Dependencies">
+  <img src="https://img.shields.io/badge/ruby-3.1%2B-blue" alt="Ruby 3.1+">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT License">
+</p>
+
+---
+
+## Quickstart
 
 ```bash
 gem install tina4ruby
-tina4 init myapp
-cd myapp
-bundle install
-tina4 start
+tina4 init my-app
+cd my-app
+tina4 serve
+# -> http://localhost:7145
 ```
 
-Your app is now running at `http://localhost:7145`.
+That's it. Zero configuration, zero classes, zero boilerplate.
+
+---
 
 ## What's Included
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| HTTP Server | ✅ | Rack 3 + Puma, zero ceremony |
-| Router | ✅ | DSL-based + file discovery, `{id}` params, groups |
-| Callable Response | ✅ | `response.json`, `response.html`, `response.render` |
-| ORM | ✅ | ActiveRecord-style, field DSL, CRUD operations |
-| Auto-CRUD | ✅ | Auto-generated REST endpoints from ORM models |
-| Migrations | ✅ | Up/down with rollback and status tracking |
-| Twig Templates | ✅ | Twig-compatible engine with filters and inheritance |
-| Auth/JWT | ✅ | RS256 tokens, bcrypt password hashing |
-| Sessions | ✅ | File, Redis, and Mongo backends |
-| Queue | ✅ | Lite, RabbitMQ, and Kafka backends |
-| GraphQL | ✅ | Zero-dep parser, ORM auto-schema generation |
-| WebSocket | ✅ | Built-in WebSocket server support |
-| i18n | ✅ | Localization support |
-| Seeder | ✅ | Fake data generators for models and tables |
-| SCSS Compiler | ✅ | Built-in SCSS compilation |
-| Swagger/OpenAPI | ✅ | Auto-generated from routes + models |
-| CORS | ✅ | Auto-added via RackApp |
-| Middleware | ✅ | Before/after hooks with pattern matching |
-| DotEnv | ✅ | .env file loading with environment overrides |
-| REST API Client | ✅ | Built-in HTTP client for external APIs |
-| Multi-DB Support | ✅ | SQLite, PostgreSQL, MySQL, MSSQL, Firebird |
-| CLI | ✅ | Thor-based: init, serve, migrate, seed, console |
+Every feature is built from scratch -- no gem install, no node_modules, no third-party runtime dependencies in core.
 
-## Routing
+| Category | Features |
+|----------|----------|
+| **HTTP** | Rack 3 server, block routing, path params (`{id:int}`, `{p:path}`), middleware pipeline, CORS, rate limiting, graceful shutdown |
+| **Templates** | Frond engine (Twig-compatible), inheritance, partials, 35+ filters, macros, fragment caching, sandboxing |
+| **ORM** | Active Record, typed fields with validation, soft delete, relationships (`has_one`/`has_many`/`belongs_to`), scopes, result caching, multi-database |
+| **Database** | SQLite, PostgreSQL, MySQL, MSSQL, Firebird -- unified adapter interface |
+| **Auth** | Zero-dep JWT (RS256), sessions (file, Redis, MongoDB), password hashing, form tokens |
+| **API** | Swagger/OpenAPI auto-generation, GraphQL with ORM auto-schema and GraphiQL IDE |
+| **Background** | DB-backed queue with priority, delayed jobs, retry, batch processing, multi-queue |
+| **Real-time** | Native WebSocket (RFC 6455), per-path routing, connection manager |
+| **Frontend** | tina4-css (~24 KB), frond.js helper, SCSS compiler, live reload, CSS hot-reload |
+| **DX** | Dev admin dashboard, error overlay, request inspector, AI tool integration, Carbonah green benchmarks |
+| **Data** | Migrations with rollback, 50+ fake data generators, ORM and table seeders |
+| **Other** | REST client, localization (6 languages), in-memory cache (TTL/tags/LRU), event system, inline testing, configurable error pages |
 
-Register routes using a clean Ruby DSL:
+**676 tests across 28 modules. All Carbonah benchmarks rated A+.**
+
+For full documentation visit **[tina4.com](https://tina4.com)**.
+
+---
+
+## Install
+
+```bash
+gem install tina4ruby
+```
+
+### Optional database drivers
+
+Install only what you need:
+
+```bash
+gem install pg                   # PostgreSQL
+gem install mysql2               # MySQL / MariaDB
+gem install tiny_tds             # Microsoft SQL Server
+gem install fb                   # Firebird
+```
+
+---
+
+## Getting Started
+
+### 1. Create a project
+
+```bash
+tina4 init my-app
+cd my-app
+```
+
+This creates:
+
+```
+my-app/
+├── app.rb              # Entry point
+├── .env                # Configuration
+├── Gemfile
+├── src/
+│   ├── routes/         # API + page routes (auto-discovered)
+│   ├── orm/            # Database models
+│   ├── app/            # Service classes and shared helpers
+│   ├── templates/      # Frond/Twig templates
+│   ├── seeds/          # Database seeders
+│   ├── scss/           # SCSS (auto-compiled to public/css/)
+│   └── public/         # Static assets served at /
+├── migrations/         # SQL migration files
+└── tests/              # RSpec tests
+```
+
+### 2. Create a route
+
+Create `src/routes/hello.rb`:
 
 ```ruby
-require "tina4"
-
-# GET request
-Tina4.get "/hello" do |request, response|
-  response.json({ message: "Hello World!" })
+Tina4.get "/api/hello" do |request, response|
+  response.json({ message: "Hello from Tina4!" })
 end
 
-# POST request
-Tina4.post "/api/users" do |request, response|
-  data = request.json_body
-  response.json({ created: true, name: data["name"] }, 201)
-end
-
-# Path parameters with type constraints
-Tina4.get "/api/users/{id:int}" do |request, response|
-  user_id = request.params["id"]  # auto-cast to Integer
-  response.json({ user_id: user_id })
-end
-
-Tina4.get "/files/{path:path}" do |request, response|
-  response.json({ path: request.params["path"] })
-end
-
-# PUT, PATCH, DELETE
-Tina4.put "/api/users/{id:int}" do |request, response|
-  response.json({ updated: true })
-end
-
-Tina4.delete "/api/users/{id:int}" do |request, response|
-  response.json({ deleted: true })
-end
-
-# Match any HTTP method
-Tina4.any "/webhook" do |request, response|
-  response.json({ method: request.method })
+Tina4.get "/api/hello/{name}" do |request, response|
+  response.json({ message: "Hello, #{request.params["name"]}!" })
 end
 ```
 
-### Auth Defaults
+Visit `http://localhost:7145/api/hello` -- routes are auto-discovered, no requires needed.
 
-Tina4 Ruby matches tina4_python's auth behavior:
+### 3. Add a database
 
-- **GET** routes are **public** by default
-- **POST/PUT/PATCH/DELETE** routes are **secured** by default (require `Authorization: Bearer <token>`)
-- Use `auth: false` to make a write route public (equivalent to tina4_python's `@noauth()`)
-- Set `API_KEY` in `.env` to allow API key bypass (token matches `API_KEY` → access granted)
+Edit `.env`:
+
+```bash
+DATABASE_URL=sqlite://data/app.db
+```
+
+Create and run a migration:
+
+```bash
+tina4 migrate --create "create users table"
+```
+
+Edit the generated SQL:
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+```bash
+tina4 migrate
+```
+
+### 4. Create an ORM model
+
+Create `src/orm/user.rb`:
 
 ```ruby
-# POST is secured by default — requires Bearer token
-Tina4.post "/api/users" do |request, response|
-  response.json({ created: true })
-end
-
-# Make a POST route public (no auth required)
-Tina4.post "/api/webhook", auth: false do |request, response|
-  response.json({ received: true })
-end
-
-# Custom auth handler
-custom_auth = lambda do |env|
-  env["HTTP_X_API_KEY"] == "my-secret"
-end
-
-Tina4.post "/api/custom", auth: custom_auth do |request, response|
-  response.json({ ok: true })
+class User < Tina4::ORM
+  integer_field :id, primary_key: true, auto_increment: true
+  string_field  :name, nullable: false, length: 100
+  string_field  :email, length: 255
+  datetime_field :created_at
 end
 ```
 
-### Secured Routes
+### 5. Build a REST API
 
-For explicitly securing GET routes (which are public by default):
-
-```ruby
-Tina4.secure_get "/api/profile" do |request, response|
-  response.json({ user: "authenticated" })
-end
-
-Tina4.secure_post "/api/admin/action" do |request, response|
-  response.json({ success: true })
-end
-```
-
-### Route Groups
+Create `src/routes/users.rb`:
 
 ```ruby
-Tina4.group "/api/v1" do
-  get("/users") { |req, res| res.json(users) }
-  post("/users") { |req, res| res.json({ created: true }) }
+Tina4.get "/api/users" do |request, response|
+  response.json(User.all(limit: 100).map(&:to_hash))
 end
-```
 
-## Request Object
+Tina4.get "/api/users/{id}" do |request, response|
+  user = User.find(request.params["id"])
+  if user
+    response.json(user.to_hash)
+  else
+    response.json({ error: "Not found" }, 404)
+  end
+end
 
-```ruby
-Tina4.post "/example" do |request, response|
-  request.method        # "POST"
-  request.path          # "/example"
-  request.params        # merged path + query params
-  request.headers       # HTTP headers hash
-  request.cookies       # parsed cookies
-  request.body          # raw body string
-  request.json_body     # parsed JSON body (hash)
-  request.bearer_token  # extracted Bearer token
-  request.ip            # client IP address
-  request.files         # uploaded files
-  request.session       # lazy-loaded session
+Tina4.post "/api/users", auth: false do |request, response|
+  user = User.create(request.json_body)
+  response.json(user.to_hash, 201)
 end
 ```
 
-## Response Object
+### 6. Add a template
 
-```ruby
-# JSON response
-response.json({ key: "value" })
-response.json({ key: "value" }, 201)  # custom status
-
-# HTML response
-response.html("<h1>Hello</h1>")
-
-# Template rendering
-response.render("pages/home.twig", { title: "Welcome" })
-
-# Redirect
-response.redirect("/dashboard")
-response.redirect("/login", 301)  # permanent redirect
-
-# Plain text
-response.text("OK")
-
-# File download
-response.file("path/to/document.pdf")
-
-# Custom headers
-response.add_header("X-Custom", "value")
-
-# Cookies
-response.set_cookie("theme", "dark", max_age: 86400)
-response.delete_cookie("theme")
-
-# CORS headers (auto-added by RackApp)
-response.add_cors_headers
-```
-
-## Templates (Twig)
-
-Tina4 uses a Twig-compatible template engine. Templates go in `templates/` or `src/templates/`.
-
-### Base template (`templates/base.twig`)
+Create `src/templates/base.twig`:
 
 ```twig
 <!DOCTYPE html>
 <html>
 <head>
-  <title>{% block title %}My App{% endblock %}</title>
+    <title>{% block title %}My App{% endblock %}</title>
+    <link rel="stylesheet" href="/css/tina4.min.css">
+    {% block stylesheets %}{% endblock %}
 </head>
 <body>
-  {% block content %}{% endblock %}
+    {% block content %}{% endblock %}
+    <script src="/js/frond.js"></script>
+    {% block javascripts %}{% endblock %}
 </body>
 </html>
 ```
 
-### Child template (`templates/home.twig`)
+Create `src/templates/pages/home.twig`:
 
 ```twig
 {% extends "base.twig" %}
-
-{% block title %}Home{% endblock %}
-
 {% block content %}
-  <h1>Hello {{ name }}!</h1>
-
-  {% if items %}
+<div class="container mt-4">
+    <h1>{{ title }}</h1>
     <ul>
-    {% for item in items %}
-      <li>{{ loop.index }}. {{ item | capitalize }}</li>
+    {% for user in users %}
+        <li>{{ user.name }} -- {{ user.email }}</li>
     {% endfor %}
     </ul>
-  {% else %}
-    <p>No items found.</p>
-  {% endif %}
+</div>
 {% endblock %}
 ```
 
-### Rendering
+Render it from a route:
 
 ```ruby
-Tina4.get "/home" do |request, response|
-  response.render("home.twig", {
-    name: "Alice",
-    items: ["apple", "banana", "cherry"]
-  })
+Tina4.get "/" do |request, response|
+  users = User.all(limit: 20).map(&:to_hash)
+  response.render("pages/home.twig", { title: "Users", users: users })
 end
 ```
 
-### Filters
+### 7. Seed, test, deploy
 
-```twig
-{{ name | upper }}              {# ALICE #}
-{{ name | lower }}              {# alice #}
-{{ name | capitalize }}         {# Alice #}
-{{ "hello world" | title }}     {# Hello World #}
-{{ "  hi  " | trim }}           {# hi #}
-{{ items | length }}            {# 3 #}
-{{ items | join(", ") }}        {# a, b, c #}
-{{ missing | default("N/A") }} {# N/A #}
-{{ html | escape }}             {# &lt;b&gt;hi&lt;/b&gt; #}
-{{ text | nl2br }}              {# line<br>break #}
-{{ 3.14159 | round(2) }}        {# 3.14 #}
-{{ data | json_encode }}        {# {"key":"value"} #}
+```bash
+tina4 seed                          # Run seeders from src/seeds/
+tina4 test                          # Run test suite
+tina4 build                         # Build distributable
 ```
 
-### Includes
+For the complete step-by-step guide, visit **[tina4.com](https://tina4.com)**.
 
-```twig
-{% include "partials/header.twig" %}
-```
+---
 
-### Variables and Math
+## Features
 
-```twig
-{% set greeting = "Hello" %}
-{{ greeting ~ " " ~ name }}     {# string concatenation #}
-{{ price * quantity }}           {# math #}
-```
-
-### Comments
-
-```twig
-{# This is a comment and won't be rendered #}
-```
-
-## Database
-
-Multi-database support with a unified API:
+### Routing
 
 ```ruby
-# SQLite (default, zero-config)
-db = Tina4::Database.new("sqlite://app.db")
-
-# PostgreSQL
-db = Tina4::Database.new("postgresql://localhost:5432/mydb")
-
-# MySQL
-db = Tina4::Database.new("mysql://localhost:3306/mydb")
-
-# MSSQL
-db = Tina4::Database.new("mssql://localhost:1433/mydb")
-```
-
-### Querying
-
-```ruby
-# Fetch multiple rows
-result = db.fetch("SELECT * FROM users WHERE age > ?", [18])
-result.each { |row| puts row[:name] }
-
-# Fetch one row
-user = db.fetch_one("SELECT * FROM users WHERE id = ?", [1])
-
-# Pagination
-result = db.fetch("SELECT * FROM users", [], limit: 10, skip: 20)
-
-# Insert
-db.insert("users", { name: "Alice", email: "alice@example.com" })
-
-# Update
-db.update("users", { name: "Alice Updated" }, { id: 1 })
-
-# Delete
-db.delete("users", { id: 1 })
-
-# Raw SQL
-db.execute("CREATE INDEX idx_email ON users(email)")
-
-# Transactions
-db.transaction do |tx|
-  tx.insert("accounts", { name: "Savings", balance: 1000 })
-  tx.update("accounts", { balance: 500 }, { id: 1 })
+Tina4.get "/api/items" do |request, response|       # Public by default
+  response.json({ items: [] })
 end
 
-# Introspection
-db.tables                    # ["users", "posts", ...]
-db.table_exists?("users")   # true
-db.columns("users")         # [{name: "id", type: "INTEGER", ...}, ...]
+Tina4.post "/api/webhook", auth: false do |request, response|  # Make a write route public
+  response.json({ ok: true })
+end
+
+Tina4.secure_get "/api/admin/stats" do |request, response|     # Protect a GET route
+  response.json({ secret: true })
+end
 ```
 
-### DatabaseResult
+Path parameter types: `{id}` (string), `{id:int}`, `{price:float}`, `{path:path}` (greedy).
 
-```ruby
-result = db.fetch("SELECT * FROM users")
-result.count          # number of rows
-result.empty?         # true/false
-result.first          # first row hash
-result.to_array       # array of hashes
-result.to_json        # JSON string
-result.to_csv         # CSV text
-result.to_paginate    # { records_total:, record_count:, data: }
-```
+### ORM
 
-## ORM
-
-Define models with a field DSL:
+Active Record with typed fields, validation, soft delete, relationships, scopes, and multi-database support.
 
 ```ruby
 class User < Tina4::ORM
   integer_field :id, primary_key: true, auto_increment: true
-  string_field  :name, nullable: false
+  string_field  :name, nullable: false, length: 100
   string_field  :email, length: 255
+  string_field  :role, default: "user"
   integer_field :age, default: 0
-  datetime_field :created_at
 end
 
-# Set the database connection
-Tina4.database = Tina4::Database.new("sqlite://app.db")
-```
-
-### CRUD Operations
-
-```ruby
-# Create
+# CRUD
 user = User.new(name: "Alice", email: "alice@example.com")
 user.save
-
-# Or create in one step
-user = User.create(name: "Bob", email: "bob@example.com")
-
-# Read
-user = User.find(1)                              # by primary key
-users = User.where("age > ?", [18])              # with conditions
-all_users = User.all                             # all records
-all_users = User.all(limit: 10, order_by: "name")
-
-# Update
 user = User.find(1)
-user.name = "Alice Updated"
-user.save
-
-# Delete
 user.delete
 
-# Load into existing instance
-user = User.new
-user.id = 1
-user.load
+# Relationships
+orders = user.has_many("Order", "user_id")
+profile = user.has_one("Profile", "user_id")
 
-# Serialization
-user.to_hash   # { id: 1, name: "Alice", ... }
-user.to_json   # '{"id":1,"name":"Alice",...}'
+# Soft delete, scopes, caching
+user.soft_delete
+active_admins = User.scope("active").scope("admin").select
+users = User.cached("SELECT * FROM users", ttl: 300)
+
+# Multi-database
+Tina4.database = Tina4::Database.new("sqlite://app.db")           # Default
+Tina4.database("audit", Tina4::Database.new("sqlite://audit.db")) # Named
+
+class AuditLog < Tina4::ORM
+  self.db_name = "audit"          # Uses named connection
+end
 ```
 
-### Field Types
+### Database
+
+Unified interface across 5 engines:
 
 ```ruby
-integer_field   :id
-string_field    :name, length: 255
-text_field      :bio
-float_field     :score
-decimal_field   :price, precision: 10, scale: 2
-boolean_field   :active
-date_field      :birthday
-datetime_field  :created_at
-timestamp_field :updated_at
-blob_field      :avatar
-json_field      :metadata
+db = Tina4::Database.new("sqlite://data/app.db")
+db = Tina4::Database.new("postgresql://localhost:5432/mydb", "user", "pass")
+db = Tina4::Database.new("mysql://localhost:3306/mydb", "user", "pass")
+db = Tina4::Database.new("mssql://localhost:1433/mydb", "sa", "pass")
+db = Tina4::Database.new("firebird://localhost:3050/path/to/db", "SYSDBA", "masterkey")
+
+result = db.fetch("SELECT * FROM users WHERE age > ?", [18], limit: 20, skip: 0)
+row = db.fetch_one("SELECT * FROM users WHERE id = ?", [1])
+db.insert("users", { name: "Alice", email: "alice@test.com" })
+db.commit
 ```
 
-## Migrations
-
-```bash
-# Create a migration
-tina4 migrate --create "create users table"
-
-# Run pending migrations
-tina4 migrate
-
-# Rollback
-tina4 migrate --rollback 1
-```
-
-Migration files are plain SQL in `migrations/`:
-
-```sql
--- migrations/20260313120000_create_users_table.sql
-CREATE TABLE users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  email TEXT UNIQUE,
-  age INTEGER DEFAULT 0,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## Authentication
-
-JWT RS256 tokens with auto-generated RSA keys:
+### Middleware
 
 ```ruby
-# Generate a token
-token = Tina4::Auth.generate_token({ user_id: 42, role: "admin" })
-
-# Validate a token
-result = Tina4::Auth.validate_token(token)
-if result[:valid]
-  payload = result[:payload]
-  puts payload["user_id"]  # 42
+Tina4.before("/protected") do |request, response|
+  unless request.headers["authorization"]
+    return request, response.json({ error: "Unauthorized" }, 401)
+  end
 end
 
-# Password hashing (bcrypt)
-hash = Tina4::Auth.hash_password("secret123")
-Tina4::Auth.verify_password("secret123", hash)  # true
-Tina4::Auth.verify_password("wrong", hash)       # false
+Tina4.get "/protected" do |request, response|
+  response.json({ secret: true })
+end
 ```
 
-### Protecting Routes
+### JWT Authentication
 
 ```ruby
-# Built-in Bearer auth
-Tina4.secure_get "/api/profile" do |request, response|
-  # Only runs if valid JWT Bearer token is provided
-  response.json({ user: "authenticated" })
-end
-
-# Custom auth handler
-custom_auth = lambda do |env|
-  api_key = env["HTTP_X_API_KEY"]
-  api_key == "my-secret-key"
-end
-
-Tina4.secure_get "/api/data", auth: custom_auth do |request, response|
-  response.json({ data: "protected" })
-end
+auth = Tina4::Auth.new
+token = auth.get_token({ user_id: 42 })
+payload = auth.get_payload(token)
 ```
 
-## Sessions
+POST/PUT/PATCH/DELETE routes require `Authorization: Bearer <token>` by default. Use `auth: false` to make public, `secure_get` to protect GET routes.
+
+### Sessions
 
 ```ruby
-Tina4.post "/login" do |request, response|
-  request.session["user_id"] = 42
-  request.session["role"] = "admin"
-  request.session.save
-  response.json({ logged_in: true })
-end
-
-Tina4.get "/profile" do |request, response|
-  user_id = request.session["user_id"]
-  response.json({ user_id: user_id })
-end
-
-Tina4.post "/logout" do |request, response|
-  request.session.destroy
-  response.json({ logged_out: true })
-end
+request.session["user_id"] = 42
+user_id = request.session["user_id"]
 ```
 
-Session backends: `:file` (default), `:redis`, `:mongo`.
+Backends: file (default), Redis, MongoDB. Set via `TINA4_SESSION_HANDLER` in `.env`.
 
-## Middleware
+### Queues
 
 ```ruby
-# Run before every request
-Tina4.before do |request, response|
-  puts "Request: #{request.method} #{request.path}"
-end
+producer = Tina4::Producer.new(Tina4::Queue.new(topic: "emails"))
+producer.produce({ to: "alice@example.com" })
 
-# Run after every request
-Tina4.after do |request, response|
-  puts "Response: #{response.status}"
-end
+consumer = Tina4::Consumer.new(Tina4::Queue.new(topic: "emails"))
+consumer.each { |msg| send_email(msg.data) }
+```
 
-# Pattern matching
-Tina4.before("/api") do |request, response|
-  # Only runs for paths starting with /api
-end
+### GraphQL
 
-Tina4.before(/\/admin\/.*/) do |request, response|
-  # Regex pattern matching
-  return false unless request.session["role"] == "admin"  # halts request
+```ruby
+gql = Tina4::GraphQL.new
+gql.schema.from_orm(User)
+gql.register_route("/graphql")   # GET = GraphiQL IDE, POST = queries
+```
+
+### WebSocket
+
+```ruby
+ws = Tina4::WebSocketManager.new
+
+ws.route "/ws/chat" do |connection, message|
+  ws.broadcast("/ws/chat", "User said: #{message}")
 end
 ```
 
-## Swagger / OpenAPI
+### Swagger / OpenAPI
 
-Auto-generated API documentation at `/swagger`:
+Auto-generated at `/swagger`:
 
 ```ruby
 Tina4.get "/api/users", swagger_meta: {
-  summary: "List all users",
-  tags: ["Users"],
-  description: "Returns a paginated list of users"
+  summary: "Get all users",
+  tags: ["users"]
 } do |request, response|
-  response.json(users)
-end
-```
-
-Visit `http://localhost:7145/swagger` for the interactive Swagger UI.
-
-## GraphQL
-
-Zero-dependency GraphQL support with a custom parser, executor, and ORM auto-schema generation.
-
-### Manual Schema
-
-```ruby
-schema = Tina4::GraphQLSchema.new
-
-# Add queries
-schema.add_query("hello", type: "String") { |_root, _args, _ctx| "Hello World!" }
-
-schema.add_query("user", type: "User", args: { "id" => { type: "ID!" } }) do |_root, args, _ctx|
-  User.find(args["id"])&.to_hash
-end
-
-# Add mutations
-schema.add_mutation("createUser", type: "User",
-  args: { "name" => { type: "String!" }, "email" => { type: "String!" } }
-) do |_root, args, _ctx|
-  User.create(name: args["name"], email: args["email"]).to_hash
-end
-
-# Register the /graphql endpoint
-gql = Tina4::GraphQL.new(schema)
-gql.register_route  # POST /graphql + GET /graphql (GraphiQL UI)
-```
-
-### ORM Auto-Schema
-
-Generate full CRUD queries and mutations from your ORM models with one line:
-
-```ruby
-schema = Tina4::GraphQLSchema.new
-schema.from_orm(User)     # Creates: user, users, createUser, updateUser, deleteUser
-schema.from_orm(Product)  # Creates: product, products, createProduct, updateProduct, deleteProduct
-
-gql = Tina4::GraphQL.new(schema)
-gql.register_route("/graphql")
-```
-
-This auto-generates:
-- **Queries:** `user(id)` (single), `users(limit, offset)` (list with pagination)
-- **Mutations:** `createUser(input)`, `updateUser(id, input)`, `deleteUser(id)`
-
-### Query Examples
-
-```graphql
-# Simple query
-{ hello }
-
-# Nested fields with arguments
-{ user(id: 42) { id name email } }
-
-# List with pagination
-{ users(limit: 10, offset: 0) { id name } }
-
-# Aliases
-{ admin: user(id: 1) { name } guest: user(id: 2) { name } }
-
-# Variables
-query GetUser($userId: ID!) {
-  user(id: $userId) { id name email }
-}
-
-# Fragments
-fragment UserFields on User { id name email }
-{ user(id: 1) { ...UserFields } }
-
-# Mutations
-mutation {
-  createUser(name: "Alice", email: "alice@example.com") { id name }
-}
-```
-
-### Programmatic Execution
-
-```ruby
-gql = Tina4::GraphQL.new(schema)
-
-# Execute a query directly
-result = gql.execute('{ hello }')
-puts result["data"]["hello"]  # "Hello World!"
-
-# With variables
-result = gql.execute(
-  'query($id: ID!) { user(id: $id) { name } }',
-  variables: { "id" => 42 }
-)
-
-# Handle an HTTP request body (JSON string)
-result = gql.handle_request('{"query": "{ hello }"}')
-```
-
-Visit `http://localhost:7145/graphql` for the interactive GraphiQL UI.
-
-## REST API Client
-
-```ruby
-api = Tina4::API.new("https://api.example.com", headers: {
-  "Authorization" => "Bearer sk-abc123"
-})
-
-# GET
-response = api.get("/users", params: { page: 1 })
-puts response.json  # parsed response body
-
-# POST
-response = api.post("/users", body: { name: "Alice" })
-puts response.success?  # true for 2xx status
-puts response.status    # 201
-
-# PUT, PATCH, DELETE
-api.put("/users/1", body: { name: "Updated" })
-api.patch("/users/1", body: { name: "Patched" })
-api.delete("/users/1")
-
-# File upload
-api.upload("/files", "path/to/file.pdf")
-```
-
-## Environment Variables
-
-Tina4 auto-creates and loads `.env` files:
-
-```env
-PROJECT_NAME=My App
-VERSION=1.0.0
-SECRET=my-jwt-secret
-API_KEY=your-api-key-here
-DATABASE_URL=sqlite://app.db
-TINA4_DEBUG_LEVEL=[TINA4_LOG_DEBUG]
-ENVIRONMENT=development
-```
-
-`API_KEY` enables a static bearer token bypass — any request with `Authorization: Bearer <API_KEY>` is granted access without JWT validation.
-
-Supports environment-specific files: `.env.development`, `.env.production`, `.env.test`.
-
-## CLI Commands
-
-```bash
-tina4 init [NAME]       # Scaffold a new project
-tina4 start             # Start the web server (default port 7145)
-tina4 start -p 3000     # Custom port
-tina4 start -d          # Dev mode with auto-reload
-tina4 migrate           # Run pending migrations
-tina4 migrate --create "desc"   # Create a migration
-tina4 migrate --rollback 1      # Rollback migrations
-tina4 test              # Run inline tests
-tina4 routes            # List all registered routes
-tina4 console           # Interactive Ruby console
-tina4 version           # Show version
-```
-
-## Project Structure
-
-```
-myapp/
-├── app.rb               # Entry point
-├── .env                 # Environment config
-├── Gemfile
-├── migrations/          # SQL migrations
-├── routes/              # Auto-discovered route files
-├── templates/           # Twig/ERB templates
-├── public/              # Static files (CSS, JS, images)
-│   ├── css/
-│   ├── js/
-│   └── images/
-├── src/                 # Application code
-└── logs/                # Log files
-```
-
-Routes in `routes/` are auto-discovered at startup:
-
-```ruby
-# routes/users.rb
-Tina4.get "/api/users" do |request, response|
   response.json(User.all.map(&:to_hash))
 end
 ```
 
-## Auto-Discovery
-
-Tina4 automatically loads:
-- Route files from `routes/`, `src/routes/`, `src/api/`, `api/`
-- `app.rb` and `index.rb` from the project root
-
-## Full Example App
+### Event System
 
 ```ruby
-# app.rb
-require "tina4"
-
-# Database
-Tina4.database = Tina4::Database.new("sqlite://app.db")
-
-# Model
-class Todo < Tina4::ORM
-  integer_field :id, primary_key: true, auto_increment: true
-  string_field  :title, nullable: false
-  boolean_field :done, default: false
+Tina4.on("user.created", priority: 10) do |user|
+  send_notification("New user: #{user[:name]}")
 end
 
-# Routes
-Tina4.get "/" do |request, response|
-  response.render("home.twig", { todos: Todo.all.map(&:to_hash) })
-end
+Tina4.emit("user.created", { name: "Alice" })
+```
 
-Tina4.get "/api/todos" do |request, response|
-  response.json(Todo.all.map(&:to_hash))
-end
+### Template Engine (Frond)
 
-Tina4.post "/api/todos" do |request, response|
-  todo = Todo.create(title: request.json_body["title"])
-  response.json(todo.to_hash, 201)
-end
+Twig-compatible, 35+ filters, macros, inheritance, fragment caching, sandboxing:
 
-Tina4.put "/api/todos/{id:int}" do |request, response|
-  todo = Todo.find(request.params["id"])
-  todo.done = request.json_body["done"]
-  todo.save
-  response.json(todo.to_hash)
-end
+```twig
+{% extends "base.twig" %}
+{% block content %}
+<h1>{{ title | upper }}</h1>
+{% for item in items %}
+    <p>{{ item.name }} -- {{ item.price | number_format(2) }}</p>
+{% endfor %}
 
-Tina4.delete "/api/todos/{id:int}" do |request, response|
-  Todo.find(request.params["id"]).delete
-  response.json({ deleted: true })
+{% cache "sidebar" 300 %}
+    {% include "partials/sidebar.twig" %}
+{% endcache %}
+{% endblock %}
+```
+
+### CRUD Scaffolding
+
+```ruby
+Tina4.get "/admin/users" do |request, response|
+  response.json(Tina4::CRUD.to_crud(request, {
+    sql: "SELECT id, name, email FROM users",
+    title: "User Management",
+    primary_key: "id"
+  }))
 end
 ```
 
-## Requirements
+### REST Client
 
-- Ruby >= 3.1.0
-- Works on Windows, macOS, and Linux
+```ruby
+api = Tina4::API.new("https://api.example.com", headers: {
+  "Authorization" => "Bearer xyz"
+})
+result = api.get("/users/42")
+```
+
+### Data Seeder
+
+```ruby
+fake = Tina4::FakeData.new
+fake.name      # "Alice Johnson"
+fake.email     # "alice.johnson@example.com"
+
+Tina4.seed_orm(User, count: 50)
+```
+
+### Email / Messenger
+
+```ruby
+mail = Tina4::Messenger.new
+mail.send(to: "user@test.com", subject: "Welcome", body: "<h1>Hi!</h1>", html: true)
+```
+
+### In-Memory Cache
+
+```ruby
+cache = Tina4::Cache.new
+cache.set("key", "value", ttl: 300)
+cache.tag("users").flush
+```
+
+### SCSS, Localization, Inline Testing
+
+- **SCSS**: Drop `.scss` in `src/scss/` -- auto-compiled to CSS. Variables, nesting, mixins, `@import`, `@extend`.
+- **i18n**: JSON translation files, 6 languages (en, fr, af, zh, ja, es), placeholder interpolation.
+- **Inline tests**: `test_method :add, assert_equal: [[5, 3], 8]` on any method.
+
+---
+
+## Dev Mode
+
+Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
+
+- **Live reload** -- browser auto-refreshes on code changes
+- **CSS hot-reload** -- SCSS changes apply without page refresh
+- **Error overlay** -- rich error display in the browser
+- **Dev admin** at `/__dev/` with tabs: Routes, Queue, Mailbox, Messages, Database, Requests, Errors, WebSocket, System, Tools, Tina4
+
+---
+
+## CLI Reference
+
+```bash
+tina4 init [dir]             # Scaffold a new project
+tina4 serve [port]           # Start dev server (default: 7145)
+tina4 migrate                # Run pending migrations
+tina4 migrate --create <desc># Create a migration file
+tina4 migrate --rollback     # Rollback last batch
+tina4 seed                   # Run seeders from src/seeds/
+tina4 routes                 # List all registered routes
+tina4 test                   # Run test suite
+tina4 build                  # Build distributable gem
+tina4 ai [--all]             # Detect AI tools and install context
+```
+
+## Environment
+
+```bash
+SECRET=your-jwt-secret
+DATABASE_URL=sqlite://data/app.db
+TINA4_DEBUG_LEVEL=DEBUG              # DEBUG, INFO, WARNING, ERROR, ALL
+TINA4_LANGUAGE=en                    # en, fr, af, zh, ja, es
+TINA4_SESSION_HANDLER=SessionFileHandler
+SWAGGER_TITLE=My API
+```
+
+## Carbonah Green Benchmarks
+
+All 9 benchmarks rated **A+** (South Africa grid, 1000 iterations each):
+
+| Benchmark | SCI (gCO2eq) | Grade |
+|-----------|-------------|-------|
+| JSON Hello World | 0.000897 | A+ |
+| Single DB Query | 0.000561 | A+ |
+| Multiple DB Queries | 0.001402 | A+ |
+| Template Rendering | 0.003351 | A+ |
+| Large JSON Payload | 0.001019 | A+ |
+| Plaintext Response | 0.000391 | A+ |
+| CRUD Cycle | 0.000473 | A+ |
+| Paginated Query | 0.001027 | A+ |
+| Framework Startup | 0.00267 | A+ |
+
+Startup: 37ms | Memory: 34.9MB | SCI: 0.00267
+
+Run locally: `ruby benchmarks/run_carbonah.rb`
+
+---
+
+## Documentation
+
+Full guides, API reference, and examples at **[tina4.com](https://tina4.com)**.
 
 ## License
 
-MIT
+MIT (c) 2007-2025 Tina4 Stack
+https://opensource.org/licenses/MIT
+
+---
+
+<p align="center"><b>Tina4</b> -- The framework that keeps out of the way of your coding.</p>
 
 ---
 
