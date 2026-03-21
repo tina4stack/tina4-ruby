@@ -120,7 +120,7 @@ module Tina4
       end
 
       def enabled?
-        ENV["TINA4_DEBUG"] == "true"
+        Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
       end
 
       # Handle a /__dev request; returns [status, headers, body] or nil if not a dev path

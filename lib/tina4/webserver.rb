@@ -11,7 +11,7 @@ module Tina4
     def start
       require "webrick"
       require "stringio"
-      Tina4.print_banner
+      Tina4.print_banner(host: @host, port: @port)
       Tina4::Log.info("Starting Tina4 WEBrick server on http://#{@host}:#{@port}")
       @server = WEBrick::HTTPServer.new(
         BindAddress: @host,

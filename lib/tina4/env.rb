@@ -12,6 +12,14 @@ module Tina4
       "SECRET" => "tina4-secret-change-me"
     }.freeze
 
+    # Check if a value is truthy for env boolean checks.
+    #
+    # Accepts: "true", "True", "TRUE", "1", "yes", "Yes", "YES", "on", "On", "ON".
+    # Everything else is falsy (including empty string, nil, not set).
+    def self.truthy?(val)
+      %w[true 1 yes on].include?(val.to_s.strip.downcase)
+    end
+
     class << self
       def load_env(root_dir = Dir.pwd)
         env_file = resolve_env_file(root_dir)

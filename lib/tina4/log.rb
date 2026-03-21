@@ -1,19 +1,21 @@
 # frozen_string_literal: true
 
-require "logger"
 require "fileutils"
 require "json"
-require "zlib"
 
 module Tina4
   module Log
     LEVELS = {
-      "[TINA4_LOG_ALL]" => Logger::DEBUG,
-      "[TINA4_LOG_DEBUG]" => Logger::DEBUG,
-      "[TINA4_LOG_INFO]" => Logger::INFO,
-      "[TINA4_LOG_WARNING]" => Logger::WARN,
-      "[TINA4_LOG_ERROR]" => Logger::ERROR,
-      "[TINA4_LOG_NONE]" => Logger::FATAL
+      "[TINA4_LOG_ALL]" => 0,
+      "[TINA4_LOG_DEBUG]" => 0,
+      "[TINA4_LOG_INFO]" => 1,
+      "[TINA4_LOG_WARNING]" => 2,
+      "[TINA4_LOG_ERROR]" => 3,
+      "[TINA4_LOG_NONE]" => 4
+    }.freeze
+
+    SEVERITY_MAP = {
+      debug: 0, info: 1, warn: 2, error: 3
     }.freeze
 
     COLORS = {
@@ -22,11 +24,8 @@ module Tina4
       cyan: "\e[36m", gray: "\e[90m"
     }.freeze
 
-    # Default max log file size: 10 MB
-    DEFAULT_MAX_SIZE = 10 * 1024 * 1024
-
-    # Number of rotated files to keep before gzip
-    DEFAULT_KEEP_FILES = 10
+    # ANSI escape code regex for stripping from file output
+    ANSI_RE = /\033\[[0-9;]*m/
 
     class << self
       attr_reader :log_dir
@@ -35,25 +34,17 @@ module Tina4
         @log_dir = File.join(root_dir, "logs")
         FileUtils.mkdir_p(@log_dir)
 
-        @max_size = (ENV["TINA4_LOG_MAX_SIZE"] || DEFAULT_MAX_SIZE).to_i
+        @max_size_mb = (ENV["TINA4_LOG_MAX_SIZE"] || "10").to_i
+        @max_size = @max_size_mb * 1024 * 1024
+        @keep = (ENV["TINA4_LOG_KEEP"] || "5").to_i
         @json_mode = production?
+        @log_file = File.join(@log_dir, "tina4.log")
 
-        log_file = File.join(@log_dir, "debug.log")
-        @file_logger = Logger.new(log_file, DEFAULT_KEEP_FILES, @max_size)
-        @file_logger.level = Logger::DEBUG
-        @file_logger.formatter = method(:file_formatter)
-
-        @console_logger = Logger.new($stdout)
-        @console_logger.level = resolve_level
-        @console_logger.formatter = @json_mode ? method(:json_formatter) : method(:color_formatter)
-
+        @console_level = resolve_level
         @request_id = nil
         @current_context = {}
         @mutex = Mutex.new
         @initialized = true
-
-        # Compress old rotated log files on startup
-        compress_old_logs
       end
 
       def set_request_id(id)
@@ -98,18 +89,38 @@ module Tina4
       def log(level, message, context = {})
         setup unless @initialized
         @current_context = context.is_a?(Hash) ? context : {}
-        @console_logger.send(level, message.to_s)
-        @file_logger.send(level, message.to_s)
+
+        formatted = format_line(level, message)
+
+        # Console output respects TINA4_LOG_LEVEL
+        severity = SEVERITY_MAP[level] || 0
+        if severity >= @console_level
+          if @json_mode
+            $stdout.puts json_line(level, message)
+          else
+            $stdout.puts colorize(level, formatted)
+          end
+        end
+
+        # File always gets ALL levels, plain text (no ANSI)
+        write_to_file(strip_ansi(formatted))
+
         @current_context = {}
       end
 
       def resolve_level
         env_level = ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]"
-        LEVELS[env_level] || Logger::DEBUG
+        LEVELS[env_level] || 0
       end
 
-      def severity_to_level(severity)
-        severity == "WARN" ? "WARNING" : severity
+      def severity_to_level(level)
+        case level
+        when :debug then "DEBUG"
+        when :info  then "INFO"
+        when :warn  then "WARNING"
+        when :error then "ERROR"
+        else level.to_s.upcase
+        end
       end
 
       def utc_timestamp
@@ -117,72 +128,75 @@ module Tina4
         now.strftime("%Y-%m-%dT%H:%M:%S.") + format("%03d", now.usec / 1000) + "Z"
       end
 
-      def color_formatter(severity, _datetime, _progname, message)
-        level = severity_to_level(severity)
-        color = case level
-                when "DEBUG"   then COLORS[:cyan]
-                when "INFO"    then COLORS[:green]
-                when "WARNING" then COLORS[:yellow]
-                when "ERROR"   then COLORS[:red]
-                else COLORS[:reset]
-                end
+      def strip_ansi(text)
+        text.gsub(ANSI_RE, "")
+      end
+
+      def format_line(level, message)
+        level_str = severity_to_level(level)
         ts = utc_timestamp
         rid = request_id
         rid_str = rid ? " [#{rid}]" : ""
         ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
-        "#{color}#{ts} [#{level.ljust(7)}]#{rid_str} #{message}#{ctx}#{COLORS[:reset]}\n"
+        "#{ts} [#{level_str.ljust(7)}]#{rid_str} #{message}#{ctx}"
       end
 
-      def json_formatter(severity, _datetime, _progname, message)
-        level = severity_to_level(severity)
+      def json_line(level, message)
+        level_str = severity_to_level(level)
         entry = {
           timestamp: utc_timestamp,
-          level: level,
+          level: level_str,
           message: message
         }
         rid = request_id
         entry[:request_id] = rid if rid
         entry[:context] = @current_context if @current_context && !@current_context.empty?
-        "#{JSON.generate(entry)}\n"
+        JSON.generate(entry)
       end
 
-      def file_formatter(severity, _datetime, _progname, message)
-        if @json_mode
-          json_formatter(severity, _datetime, nil, message)
-        else
-          level = severity_to_level(severity)
-          ts = utc_timestamp
-          rid = request_id
-          rid_str = rid ? " [#{rid}]" : ""
-          ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
-          "#{ts} [#{level.ljust(7)}]#{rid_str} #{message}#{ctx}\n"
-        end
-      end
-
-      def compress_old_logs
-        return unless @log_dir && Dir.exist?(@log_dir)
-
-        Dir.glob(File.join(@log_dir, "debug.log.*")).each do |rotated|
-          next if rotated.end_with?(".gz")
-          next unless File.file?(rotated)
-
-          gz_path = "#{rotated}.gz"
-          next if File.exist?(gz_path)
-
-          begin
-            Zlib::GzipWriter.open(gz_path) do |gz|
-              File.open(rotated, "rb") do |f|
-                while (chunk = f.read(65_536))
-                  gz.write(chunk)
+      def colorize(level, line)
+        color = case level
+                when :debug   then COLORS[:cyan]
+                when :info    then COLORS[:green]
+                when :warn    then COLORS[:yellow]
+                when :error   then COLORS[:red]
+                else COLORS[:reset]
                 end
-              end
-            end
-            File.delete(rotated)
-          rescue => e
-            # Don't crash on compression failure
-            $stderr.puts "Log compression failed for #{rotated}: #{e.message}"
-          end
+        "#{color}#{line}#{COLORS[:reset]}"
+      end
+
+      def write_to_file(line)
+        rotate_if_needed
+        begin
+          File.open(@log_file, "a") { |f| f.puts(line) }
+        rescue IOError, SystemCallError
+          # Don't crash on log write failure
         end
+      end
+
+      # Numbered rotation: tina4.log → tina4.log.1 → tina4.log.2 → ... → tina4.log.{keep}
+      def rotate_if_needed
+        return unless File.exist?(@log_file)
+
+        begin
+          return if File.size(@log_file) < @max_size
+        rescue SystemCallError
+          return
+        end
+
+        # Delete the oldest rotated file if it exists
+        oldest = "#{@log_file}.#{@keep}"
+        File.delete(oldest) if File.exist?(oldest)
+
+        # Shift existing rotated files: .{n} → .{n+1}
+        (@keep - 1).downto(1) do |n|
+          src = "#{@log_file}.#{n}"
+          dst = "#{@log_file}.#{n + 1}"
+          File.rename(src, dst) if File.exist?(src)
+        end
+
+        # Rename current log to .1
+        File.rename(@log_file, "#{@log_file}.1") rescue nil
       end
     end
   end

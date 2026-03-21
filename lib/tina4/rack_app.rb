@@ -347,7 +347,7 @@ module Tina4
     end
 
     def dev_mode?
-      ENV["TINA4_DEBUG"] == "true"
+      Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
     end
 
     def inject_dev_overlay(body, request_info)

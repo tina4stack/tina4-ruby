@@ -438,7 +438,7 @@ module Tina4
   # Factory: returns a DevMailbox-intercepting messenger in dev mode,
   # or a real Messenger in production.
   def self.create_messenger(**options)
-    dev_mode = ENV["TINA4_DEBUG"] == "true"
+    dev_mode = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
 
     smtp_configured = ENV["SMTP_HOST"] && !ENV["SMTP_HOST"].empty?
 

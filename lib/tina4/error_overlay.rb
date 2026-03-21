@@ -140,7 +140,7 @@ module Tina4
 
       # Return true if TINA4_DEBUG is enabled.
       def debug_mode?
-        ENV.fetch("TINA4_DEBUG", "").downcase == "true"
+        Tina4::Env.truthy?(ENV.fetch("TINA4_DEBUG", ""))
       end
 
       private

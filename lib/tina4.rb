@@ -96,23 +96,35 @@ module Tina4
   autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
   BANNER = <<~'BANNER'
 
-    ████████╗██╗███╗   ██╗ █████╗ ██╗  ██╗
-    ╚══██╔══╝██║████╗  ██║██╔══██╗██║  ██║
-       ██║   ██║██╔██╗ ██║███████║███████║
-       ██║   ██║██║╚██╗██║██╔══██║╚════██║
-       ██║   ██║██║ ╚████║██║  ██║     ██║
-       ╚═╝   ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝     ╚═╝
+  ______ _             __ __
+ /_  __/(_)___  ____ _/ // /
+  / /  / / __ \/ __ `/ // /_
+ / /  / / / / / /_/ /__  __/
+/_/  /_/_/ /_/\__,_/  /_/
   BANNER
 
   class << self
     attr_accessor :root_dir, :database
 
-    def print_banner
-      puts "\e[35m#{BANNER}\e[0m"
-      puts "    \e[35mTina4 Ruby v#{VERSION} - This is not a framework\e[0m"
+    def print_banner(host: "0.0.0.0", port: 7147)
+      is_tty = $stdout.respond_to?(:isatty) && $stdout.isatty
+      color = is_tty ? "\e[31m" : ""
+      reset = is_tty ? "\e[0m" : ""
+
+      is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+      log_level = (ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]").upcase
+      display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
+
+      puts "#{color}#{BANNER}#{reset}"
+      puts "  Tina4 Ruby v#{VERSION} — This is not a framework"
+      puts ""
+      puts "  Server:    http://#{display}:#{port}"
+      puts "  Swagger:   http://localhost:#{port}/swagger"
+      puts "  Dashboard: http://localhost:#{port}/__dev"
+      puts "  Debug:     #{is_debug ? 'ON' : 'OFF'} (Log level: #{log_level})"
       puts ""
     rescue
-      puts "\e[35mTINA4 Ruby v#{VERSION}\e[0m"
+      puts "#{color}TINA4 Ruby v#{VERSION}#{reset}"
     end
 
     def initialize!(root_dir = Dir.pwd)
