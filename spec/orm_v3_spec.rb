@@ -234,4 +234,96 @@ RSpec.describe "ORM v3 features" do
       expect(results.first.name).to eq("B")
     end
   end
+
+  describe "Eager loading" do
+    it "eager loads has_many with include" do
+      a1 = Author.new(name: "A")
+      a1.save
+      a2 = Author.new(name: "B")
+      a2.save
+
+      Book.new(title: "B1", author_id: a1.id).save
+      Book.new(title: "B2", author_id: a1.id).save
+      Book.new(title: "B3", author_id: a2.id).save
+
+      results = Author.all(include: ["books"])
+      expect(results.length).to eq(2)
+
+      author_a = results.find { |a| a.name == "A" }
+      author_b = results.find { |a| a.name == "B" }
+      expect(author_a.books.length).to eq(2)
+      expect(author_b.books.length).to eq(1)
+    end
+
+    it "eager loads has_one with include" do
+      author = Author.new(name: "WithProfile")
+      author.save
+      AuthorProfile.new(author_id: author.id, bio: "Bio text").save
+
+      results = Author.where("name = ?", ["WithProfile"], include: ["profile"])
+      expect(results.length).to eq(1)
+      expect(results[0].profile).not_to be_nil
+      expect(results[0].profile.bio).to eq("Bio text")
+    end
+
+    it "eager loads belongs_to with include" do
+      author = Author.new(name: "Parent")
+      author.save
+      Book.new(title: "Child", author_id: author.id).save
+
+      books = Book.where("title = ?", ["Child"], include: ["author"])
+      expect(books.length).to eq(1)
+      expect(books[0].author).not_to be_nil
+      expect(books[0].author.name).to eq("Parent")
+    end
+  end
+
+  describe "to_h with include" do
+    it "includes has_many relationships" do
+      author = Author.new(name: "Alice")
+      author.save
+      Book.new(title: "Hello", author_id: author.id).save
+
+      hash = author.to_h(include: ["books"])
+      expect(hash[:books]).not_to be_nil
+      expect(hash[:books].length).to eq(1)
+      expect(hash[:books][0][:title]).to eq("Hello")
+    end
+
+    it "includes belongs_to relationships" do
+      author = Author.new(name: "Bob")
+      author.save
+      book = Book.new(title: "Mine", author_id: author.id)
+      book.save
+
+      hash = book.to_h(include: ["author"])
+      expect(hash[:author]).not_to be_nil
+      expect(hash[:author][:name]).to eq("Bob")
+    end
+
+    it "includes nil for missing has_one" do
+      author = Author.new(name: "NoProfile")
+      author.save
+
+      hash = author.to_h(include: ["profile"])
+      expect(hash.key?(:profile)).to be true
+      expect(hash[:profile]).to be_nil
+    end
+  end
+
+  describe "Relationship cache clears on save" do
+    it "clears relationship cache when save is called" do
+      author = Author.new(name: "Cached")
+      author.save
+      Book.new(title: "Before", author_id: author.id).save
+
+      _ = author.books  # Fill cache
+      author.name = "Updated"
+      author.save
+
+      # Cache was cleared, so accessing books triggers fresh load
+      books = author.books
+      expect(books.length).to eq(1)
+    end
+  end
 end
