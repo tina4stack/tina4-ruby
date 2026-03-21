@@ -1,22 +1,9 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>404 Not Found</title>
-  <style>
-    body { font-family: -apple-system, sans-serif; text-align: center; padding: 80px 20px; background: #f8f9fa; }
-    h1 { font-size: 6rem; color: #ffc107; margin: 0; }
-    p { font-size: 1.2rem; color: #6c757d; }
-    a { color: #0d6efd; text-decoration: none; }
-    .container { max-width: 600px; margin: 0 auto; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>404</h1>
-    <p>Page not found. The requested resource could not be located.</p>
-    <p><a href="/">Go Home</a></p>
-  </div>
-</body>
-</html>
+{% extends "errors/base.twig" %}
+{% block title %}404 — Not Found{% endblock %}
+{% block content %}
+    <div class="error-code" style="color:var(--primary)">404</div>
+    <div class="error-title">Page Not Found</div>
+    <div class="error-msg">The page you're looking for doesn't exist or has been moved.</div>
+    <div class="error-path" style="color:var(--primary)">{{ path }}</div>
+    <a href="/" class="error-home">Go Home</a>
+{% endblock %}

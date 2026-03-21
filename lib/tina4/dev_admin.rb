@@ -133,7 +133,7 @@ module Tina4
         case [method, path]
         when ["GET", "/__dev"], ["GET", "/__dev/"]
           serve_dashboard
-        when ["GET", "/__dev/js/tina4-dev-admin.js"]
+        when ["GET", "/__dev/js/tina4-dev-admin.min.js"]
           serve_dev_js
         when ["GET", "/__dev/api/status"]
           json_response(status_payload)
@@ -276,11 +276,11 @@ module Tina4
       end
 
       def serve_dev_js
-        js_path = File.join(File.dirname(__FILE__), "public", "js", "tina4-dev-admin.js")
+        js_path = File.join(File.dirname(__FILE__), "public", "js", "tina4-dev-admin.min.js")
         if File.file?(js_path)
           [200, { "content-type" => "application/javascript; charset=utf-8" }, [File.read(js_path)]]
         else
-          [404, { "content-type" => "text/plain" }, ["tina4-dev-admin.js not found"]]
+          [404, { "content-type" => "text/plain" }, ["tina4-dev-admin.min.js not found"]]
         end
       end
 
@@ -1082,14 +1082,14 @@ module Tina4
 
           </div>
 
-          <script src="/__dev/js/tina4-dev-admin.js"></script>
+          <script src="/__dev/js/tina4-dev-admin.min.js"></script>
           <script>
           // Self-diagnostic — detect if the external JS failed to load
           (function() {
               if (typeof showTab !== 'function') {
                   var banner = document.createElement('div');
                   banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#ef4444;color:#fff;padding:0.75rem 1rem;font-family:system-ui;font-size:0.85rem;text-align:center';
-                  banner.innerHTML = '<strong>Dev Admin Error:</strong> tina4-dev-admin.js failed to load. Check that /__dev/js/tina4-dev-admin.js is accessible.';
+                  banner.innerHTML = '<strong>Dev Admin Error:</strong> tina4-dev-admin.min.js failed to load. Check that /__dev/js/tina4-dev-admin.min.js is accessible.';
                   document.body.insertBefore(banner, document.body.firstChild);
               }
           })();

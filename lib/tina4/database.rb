@@ -56,6 +56,16 @@ module Tina4
     end
 
     def insert(table, data)
+      # List of hashes — batch insert
+      if data.is_a?(Array)
+        return { success: true, affected_rows: 0 } if data.empty?
+        keys = data.first.keys.map(&:to_s)
+        placeholders = @driver.placeholders(keys.length)
+        sql = "INSERT INTO #{table} (#{keys.join(', ')}) VALUES (#{placeholders})"
+        params_list = data.map { |row| keys.map { |k| row[k.to_sym] || row[k] } }
+        return execute_many(sql, params_list)
+      end
+
       columns = data.keys.map(&:to_s)
       placeholders = @driver.placeholders(columns.length)
       sql = "INSERT INTO #{table} (#{columns.join(', ')}) VALUES (#{placeholders})"
@@ -74,6 +84,21 @@ module Tina4
     end
 
     def delete(table, filter = {})
+      # List of hashes — delete each row
+      if filter.is_a?(Array)
+        filter.each { |row| delete(table, row) }
+        return { success: true }
+      end
+
+      # String filter — raw WHERE clause
+      if filter.is_a?(String)
+        sql = "DELETE FROM #{table}"
+        sql += " WHERE #{filter}" unless filter.empty?
+        @driver.execute(sql)
+        return { success: true }
+      end
+
+      # Hash filter — build WHERE from keys
       where_parts = filter.keys.map { |k| "#{k} = #{@driver.placeholder}" }
       sql = "DELETE FROM #{table}"
       sql += " WHERE #{where_parts.join(' AND ')}" unless filter.empty?
@@ -83,6 +108,15 @@ module Tina4
 
     def execute(sql, params = [])
       @driver.execute(sql, params)
+    end
+
+    def execute_many(sql, params_list = [])
+      total_affected = 0
+      params_list.each do |params|
+        @driver.execute(sql, params)
+        total_affected += 1
+      end
+      { success: true, affected_rows: total_affected }
     end
 
     def transaction

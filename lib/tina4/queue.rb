@@ -53,6 +53,42 @@ module Tina4
     end
   end
 
+  # Queue — convenience wrapper for queue management operations.
+  # Provides dead letter inspection, purging, and retry capabilities.
+  class Queue
+    attr_reader :topic, :max_retries
+
+    def initialize(topic:, backend: nil, max_retries: 3)
+      @topic = topic
+      @backend = backend || Tina4::QueueBackends::LiteBackend.new
+      @max_retries = max_retries
+    end
+
+    # Get dead letter jobs — messages that exceeded max retries.
+    def dead_letters
+      return [] unless @backend.respond_to?(:dead_letters)
+      @backend.dead_letters(@topic, max_retries: @max_retries)
+    end
+
+    # Delete messages by status (completed, failed, dead).
+    def purge(status)
+      return 0 unless @backend.respond_to?(:purge)
+      @backend.purge(@topic, status)
+    end
+
+    # Re-queue failed messages (under max_retries) back to pending.
+    # Returns the number of jobs re-queued.
+    def retry_failed
+      return 0 unless @backend.respond_to?(:retry_failed)
+      @backend.retry_failed(@topic, max_retries: @max_retries)
+    end
+
+    # Get the number of pending messages.
+    def size
+      @backend.size(@topic)
+    end
+  end
+
   class Consumer
     def initialize(topic:, backend: nil, max_retries: 3)
       @topic = topic

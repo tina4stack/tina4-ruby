@@ -154,6 +154,46 @@ module Tina4
         results.map { |row| from_hash(row) }
       end
 
+      def create_table
+        return true if db.table_exists?(table_name)
+
+        type_map = {
+          integer: "INTEGER",
+          string: "VARCHAR(255)",
+          text: "TEXT",
+          float: "REAL",
+          decimal: "REAL",
+          boolean: "INTEGER",
+          date: "DATE",
+          datetime: "DATETIME",
+          timestamp: "TIMESTAMP",
+          blob: "BLOB",
+          json: "TEXT"
+        }
+
+        col_defs = []
+        field_definitions.each do |name, opts|
+          sql_type = type_map[opts[:type]] || "TEXT"
+          if opts[:type] == :string && opts[:length]
+            sql_type = "VARCHAR(#{opts[:length]})"
+          end
+
+          parts = ["#{name} #{sql_type}"]
+          parts << "PRIMARY KEY" if opts[:primary_key]
+          parts << "AUTOINCREMENT" if opts[:auto_increment]
+          parts << "NOT NULL" if !opts[:nullable] && !opts[:primary_key]
+          if opts[:default] && !opts[:auto_increment]
+            default_val = opts[:default].is_a?(String) ? "'#{opts[:default]}'" : opts[:default]
+            parts << "DEFAULT #{default_val}"
+          end
+          col_defs << parts.join(" ")
+        end
+
+        sql = "CREATE TABLE IF NOT EXISTS #{table_name} (#{col_defs.join(', ')})"
+        db.execute(sql)
+        true
+      end
+
       def scope(name, filter_sql, params = [])
         define_singleton_method(name) do |limit: 20, skip: 0|
           where(filter_sql, params)

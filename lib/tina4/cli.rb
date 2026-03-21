@@ -502,8 +502,8 @@ module Tina4
           </head>
           <body>
             {% block content %}{% endblock %}
-            <script src="/js/tina4.js"></script>
-            <script src="/js/tina4helper.js"></script>
+            <script src="/js/tina4.min.js"></script>
+            <script src="/js/frond.min.js"></script>
             {% block scripts %}{% endblock %}
           </body>
           </html>
