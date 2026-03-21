@@ -39,20 +39,28 @@ module Tina4
     def cmd_init(argv)
       options = { template: "default" }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: tina4ruby init [NAME] [options]"
+        opts.banner = "Usage: tina4ruby init [PATH] [options]"
         opts.on("--template TEMPLATE", "Project template (default: default)") { |v| options[:template] = v }
       end
       parser.parse!(argv)
 
       name = argv.shift || "."
-      dir = name == "." ? Dir.pwd : File.join(Dir.pwd, name)
+      dir = File.expand_path(name)
       FileUtils.mkdir_p(dir)
 
+      project_name = File.basename(dir)
       create_project_structure(dir)
-      create_sample_files(dir, name == "." ? File.basename(Dir.pwd) : name)
+      create_sample_files(dir, project_name)
 
-      puts "Tina4 project initialized in #{dir}"
-      puts "Run 'cd #{name} && bundle install && tina4ruby start' to get started" unless name == "."
+      puts "\nProject scaffolded at #{dir}"
+      if name == "."
+        puts "  bundle install"
+        puts "  ruby app.rb"
+      else
+        puts "  cd #{dir}"
+        puts "  bundle install"
+        puts "  ruby app.rb"
+      end
     end
 
     # ── start ─────────────────────────────────────────────────────────────
@@ -364,8 +372,9 @@ module Tina4
 
     def create_project_structure(dir)
       %w[
-        routes templates public public/css public/js public/images
-        migrations src logs
+        src/routes src/orm src/templates src/templates/errors
+        src/public src/public/css src/public/js src/public/images
+        migrations logs
       ].each do |subdir|
         FileUtils.mkdir_p(File.join(dir, subdir))
       end
@@ -376,14 +385,9 @@ module Tina4
       unless File.exist?(File.join(dir, "app.rb"))
         File.write(File.join(dir, "app.rb"), <<~RUBY)
           require "tina4"
-
-          Tina4.get "/" do |request, response|
-            response.html "<h1>Welcome to #{project_name}!</h1><p>Powered by Tina4 Ruby</p>"
-          end
-
-          Tina4.get "/api/hello" do |request, response|
-            response.json({ message: "Hello from Tina4!", timestamp: Time.now.iso8601 })
-          end
+          Tina4.initialize!(__dir__)
+          app = Tina4::RackApp.new
+          Tina4::WebServer.new(app, port: 7147).start
         RUBY
       end
 
@@ -391,8 +395,15 @@ module Tina4
       unless File.exist?(File.join(dir, "Gemfile"))
         File.write(File.join(dir, "Gemfile"), <<~RUBY)
           source "https://rubygems.org"
-          gem "tina4ruby"
+          gem "tina4-ruby", "~> 3.0"
         RUBY
+      end
+
+      # .env
+      unless File.exist?(File.join(dir, ".env"))
+        File.write(File.join(dir, ".env"), <<~TEXT)
+          TINA4_DEBUG_LEVEL=ALL
+        TEXT
       end
 
       # .gitignore
@@ -456,7 +467,6 @@ module Tina4
           # Start the server on all interfaces
           CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]
         DOCKERFILE
-        puts "  Created Dockerfile"
       end
 
       # .dockerignore
@@ -474,11 +484,10 @@ module Tina4
           spec/
           vendor/bundle
         TEXT
-        puts "  Created .dockerignore"
       end
 
       # Base template
-      templates_dir = File.join(dir, "templates")
+      templates_dir = File.join(dir, "src", "templates")
       unless File.exist?(File.join(templates_dir, "base.twig"))
         File.write(File.join(templates_dir, "base.twig"), <<~HTML)
           <!DOCTYPE html>
