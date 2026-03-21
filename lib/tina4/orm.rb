@@ -85,19 +85,103 @@ module Tina4
         end
       end
 
-      def find(id_or_filter = nil, filter = nil)
+      def find(id_or_filter = nil, filter = nil, include: nil)
         # find(id) — find by primary key
         # find(filter_hash) — find by criteria
-        if id_or_filter.is_a?(Hash)
+        result = if id_or_filter.is_a?(Hash)
           find_by_filter(id_or_filter)
         elsif filter.is_a?(Hash)
           find_by_filter(filter)
         else
           find_by_id(id_or_filter)
         end
+
+        if include && result
+          instances = result.is_a?(Array) ? result : [result]
+          eager_load(instances, include)
+        end
+        result
       end
 
-      def where(conditions, params = [])
+      # Eager load relationships for a collection of instances (prevents N+1).
+      # include is an array of relationship names, supporting dot notation for nesting.
+      def eager_load(instances, include_list)
+        return if instances.nil? || instances.empty?
+
+        # Group includes: top-level and nested
+        top_level = {}
+        include_list.each do |inc|
+          parts = inc.to_s.split(".", 2)
+          rel_name = parts[0].to_sym
+          top_level[rel_name] ||= []
+          top_level[rel_name] << parts[1] if parts.length > 1
+        end
+
+        top_level.each do |rel_name, nested|
+          rel = relationship_definitions[rel_name]
+          next unless rel
+
+          klass = Object.const_get(rel[:class_name])
+          pk = primary_key_field || :id
+
+          case rel[:type]
+          when :has_one, :has_many
+            fk = rel[:foreign_key] || "#{name.split('::').last.downcase}_id"
+            pk_values = instances.map { |inst| inst.__send__(pk) }.compact.uniq
+            next if pk_values.empty?
+
+            placeholders = pk_values.map { "?" }.join(",")
+            sql = "SELECT * FROM #{klass.table_name} WHERE #{fk} IN (#{placeholders})"
+            results = klass.db.fetch(sql, pk_values)
+            related_records = results.map { |row| klass.from_hash(row) }
+
+            # Eager load nested
+            klass.eager_load(related_records, nested) unless nested.empty?
+
+            # Group by FK
+            grouped = {}
+            related_records.each do |record|
+              fk_val = record.__send__(fk.to_sym) if record.respond_to?(fk.to_sym)
+              (grouped[fk_val] ||= []) << record
+            end
+
+            instances.each do |inst|
+              pk_val = inst.__send__(pk)
+              records = grouped[pk_val] || []
+              if rel[:type] == :has_one
+                inst.instance_variable_get(:@relationship_cache)[rel_name] = records.first
+              else
+                inst.instance_variable_get(:@relationship_cache)[rel_name] = records
+              end
+            end
+
+          when :belongs_to
+            fk = rel[:foreign_key] || "#{rel_name}_id"
+            fk_values = instances.map { |inst|
+              inst.respond_to?(fk.to_sym) ? inst.__send__(fk.to_sym) : nil
+            }.compact.uniq
+            next if fk_values.empty?
+
+            related_pk = klass.primary_key_field || :id
+            placeholders = fk_values.map { "?" }.join(",")
+            sql = "SELECT * FROM #{klass.table_name} WHERE #{related_pk} IN (#{placeholders})"
+            results = klass.db.fetch(sql, fk_values)
+            related_records = results.map { |row| klass.from_hash(row) }
+
+            klass.eager_load(related_records, nested) unless nested.empty?
+
+            lookup = {}
+            related_records.each { |r| lookup[r.__send__(related_pk)] = r }
+
+            instances.each do |inst|
+              fk_val = inst.respond_to?(fk.to_sym) ? inst.__send__(fk.to_sym) : nil
+              inst.instance_variable_get(:@relationship_cache)[rel_name] = lookup[fk_val]
+            end
+          end
+        end
+      end
+
+      def where(conditions, params = [], include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0) AND (#{conditions})"
@@ -105,10 +189,12 @@ module Tina4
           sql += " WHERE #{conditions}"
         end
         results = db.fetch(sql, params)
-        results.map { |row| from_hash(row) }
+        instances = results.map { |row| from_hash(row) }
+        eager_load(instances, include) if include
+        instances
       end
 
-      def all(limit: nil, offset: nil, skip: nil, order_by: nil)
+      def all(limit: nil, offset: nil, skip: nil, order_by: nil, include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE #{soft_delete_field} IS NULL OR #{soft_delete_field} = 0"
@@ -116,12 +202,16 @@ module Tina4
         sql += " ORDER BY #{order_by}" if order_by
         effective_offset = offset || skip
         results = db.fetch(sql, [], limit: limit, skip: effective_offset)
-        results.map { |row| from_hash(row) }
+        instances = results.map { |row| from_hash(row) }
+        eager_load(instances, include) if include
+        instances
       end
 
-      def select(sql, params = [], limit: nil, skip: nil)
+      def select(sql, params = [], limit: nil, skip: nil, include: nil)
         results = db.fetch(sql, params, limit: limit, skip: skip)
-        results.map { |row| from_hash(row) }
+        instances = results.map { |row| from_hash(row) }
+        eager_load(instances, include) if include
+        instances
       end
 
       def count(conditions = nil, params = [])
@@ -255,6 +345,7 @@ module Tina4
 
     def save
       @errors = []
+      @relationship_cache = {} # Clear relationship cache on save
       validate_fields
       return false unless @errors.empty?
 
@@ -342,6 +433,7 @@ module Tina4
       pk = self.class.primary_key_field || :id
       id ||= __send__(pk)
       return false unless id
+      @relationship_cache = {} # Clear relationship cache on reload
 
       result = self.class.db.fetch_one(
         "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?", [id]
@@ -366,12 +458,37 @@ module Tina4
       @errors
     end
 
-    # Convert to hash using Ruby attribute names
-    def to_h
+    # Convert to hash using Ruby attribute names.
+    # Optionally include relationships via the include keyword.
+    def to_h(include: nil)
       hash = {}
       self.class.field_definitions.each_key do |name|
         hash[name] = __send__(name)
       end
+
+      if include
+        # Group includes: top-level and nested
+        top_level = {}
+        include.each do |inc|
+          parts = inc.to_s.split(".", 2)
+          rel_name = parts[0].to_sym
+          top_level[rel_name] ||= []
+          top_level[rel_name] << parts[1] if parts.length > 1
+        end
+
+        top_level.each do |rel_name, nested|
+          next unless self.class.relationship_definitions.key?(rel_name)
+          related = __send__(rel_name)
+          if related.nil?
+            hash[rel_name] = nil
+          elsif related.is_a?(Array)
+            hash[rel_name] = related.map { |r| r.to_h(include: nested.empty? ? nil : nested) }
+          else
+            hash[rel_name] = related.to_h(include: nested.empty? ? nil : nested)
+          end
+        end
+      end
+
       hash
     end
 
@@ -385,8 +502,8 @@ module Tina4
 
     alias to_list to_array
 
-    def to_json(*_args)
-      JSON.generate(to_h)
+    def to_json(include: nil, **_args)
+      JSON.generate(to_h(include: include))
     end
 
     def to_s
