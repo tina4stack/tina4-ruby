@@ -11,7 +11,7 @@
 #     Tina4::ErrorOverlay.render(e, request: env)
 #   end
 #
-# Only activate when TINA4_DEBUG_LEVEL is ALL or DEBUG.
+# Only activate when TINA4_DEBUG is true.
 # In production, call Tina4::ErrorOverlay.render_production instead.
 
 module Tina4
@@ -72,7 +72,8 @@ module Tina4
           ["Version", defined?(Tina4::VERSION) ? Tina4::VERSION : "unknown"],
           ["Ruby", RUBY_VERSION],
           ["Platform", RUBY_PLATFORM],
-          ["Debug Level", ENV.fetch("TINA4_DEBUG_LEVEL", "not set")]
+          ["Debug", ENV.fetch("TINA4_DEBUG", "false")],
+          ["Log Level", ENV.fetch("TINA4_LOG_LEVEL", "ERROR")]
         ]
         env_section = collapsible("Environment", table(env_pairs))
         stack_section = collapsible("Stack Trace", frames_html, open_by_default: true)
@@ -103,7 +104,7 @@ module Tina4
             #{request_section}
             #{env_section}
             <div style="margin-top:32px;padding-top:16px;border-top:1px solid #{OVERLAY_COLOR};color:#{SUBTEXT};font-size:12px;">
-              Tina4 Debug Overlay &mdash; This page is only shown in debug mode. Set TINA4_DEBUG_LEVEL to WARNING or ERROR in production.
+              Tina4 Debug Overlay &mdash; This page is only shown in debug mode. Set TINA4_DEBUG=false in production.
             </div>
           </div>
           </body>
@@ -137,10 +138,9 @@ module Tina4
         HTML
       end
 
-      # Return true if the current TINA4_DEBUG_LEVEL enables the error overlay.
+      # Return true if TINA4_DEBUG is enabled.
       def debug_mode?
-        level = ENV.fetch("TINA4_DEBUG_LEVEL", "").upcase
-        %w[ALL DEBUG TINA4_LOG_ALL TINA4_LOG_DEBUG].include?(level)
+        ENV.fetch("TINA4_DEBUG", "").downcase == "true"
       end
 
       private

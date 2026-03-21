@@ -144,7 +144,7 @@ Runs test files from `tests/`, `test/`, `spec/`, or `src/tests/` directories.
 
 ```bash
 tina4ruby version
-# Tina4 Ruby v0.3.0
+# Tina4 Ruby v3.0.0
 ```
 
 ### help

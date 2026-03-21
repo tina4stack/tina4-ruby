@@ -2,7 +2,7 @@
 
 Tina4 Ruby provides a multi-driver database abstraction layer. It auto-detects the driver from the connection string and exposes a unified API for queries, inserts, updates, deletes, and transactions. Supported drivers: SQLite, PostgreSQL, MySQL, MSSQL, and Firebird.
 
-The database connects automatically when `DATABASE_URL` is set in `.env`.
+The database connects automatically when `DATABASE_URL` is set in `.env`. Credentials are provided via `DATABASE_USERNAME` and `DATABASE_PASSWORD` environment variables (not embedded in the URL).
 
 ## Configuration
 
@@ -10,19 +10,27 @@ In your `.env` file:
 
 ```
 # SQLite (default)
-DATABASE_URL="app.db"
+DATABASE_URL="sqlite://app.db"
 
 # PostgreSQL
-DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+DATABASE_URL="postgres://localhost:5432/mydb"
+DATABASE_USERNAME="user"
+DATABASE_PASSWORD="pass"
 
 # MySQL
-DATABASE_URL="mysql2://user:pass@localhost:3306/mydb"
+DATABASE_URL="mysql://localhost:3306/mydb"
+DATABASE_USERNAME="root"
+DATABASE_PASSWORD="secret"
 
 # MSSQL
-DATABASE_URL="mssql://user:pass@localhost:1433/mydb"
+DATABASE_URL="mssql://localhost:1433/mydb"
+DATABASE_USERNAME="sa"
+DATABASE_PASSWORD="pass"
 
 # Firebird
-DATABASE_URL="firebird://user:pass@localhost/path/to/db.fdb"
+DATABASE_URL="firebird://localhost:3050/path/to/db.fdb"
+DATABASE_USERNAME="sysdba"
+DATABASE_PASSWORD="masterkey"
 ```
 
 ## Manual Connection
@@ -31,10 +39,13 @@ DATABASE_URL="firebird://user:pass@localhost/path/to/db.fdb"
 require "tina4"
 
 # Auto-detect driver from connection string
-db = Tina4::Database.new("app.db")
+db = Tina4::Database.new("sqlite://app.db")
 
-# Explicit driver
-db = Tina4::Database.new("mydb", driver_name: "postgres")
+# PostgreSQL with credentials
+db = Tina4::Database.new("postgres://localhost:5432/mydb", username: "user", password: "pass")
+
+# From environment (reads DATABASE_URL, DATABASE_USERNAME, DATABASE_PASSWORD)
+db = Tina4::Database.new
 
 db.connected   # => true
 db.driver_name # => "sqlite"

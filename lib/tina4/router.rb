@@ -3,15 +3,16 @@
 module Tina4
   class Route
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta,
-                :path_regex, :param_names, :middleware
+                :path_regex, :param_names, :middleware, :template
 
-    def initialize(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [])
+    def initialize(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
       @method = method.to_s.upcase.freeze
       @path = normalize_path(path).freeze
       @handler = handler
       @auth_handler = auth_handler
       @swagger_meta = swagger_meta
       @middleware = middleware.freeze
+      @template = template&.freeze
       @param_names = []
       @path_regex = compile_pattern(@path)
       @param_names.freeze
@@ -115,11 +116,12 @@ module Tina4
         @method_index ||= Hash.new { |h, k| h[k] = [] }
       end
 
-      def add_route(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [])
+      def add_route(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
         route = Route.new(method, path, handler,
                           auth_handler: auth_handler,
                           swagger_meta: swagger_meta,
-                          middleware: middleware)
+                          middleware: middleware,
+                          template: template)
         routes << route
         method_index[route.method] << route
         Tina4::Log.debug("Route registered: #{method.upcase} #{path}")
@@ -127,28 +129,28 @@ module Tina4
       end
 
       # Convenience registration methods matching tina4-python pattern
-      def get(path, middleware: [], swagger_meta: {}, &block)
-        add_route("GET", path, block, middleware: middleware, swagger_meta: swagger_meta)
+      def get(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add_route("GET", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
-      def post(path, middleware: [], swagger_meta: {}, &block)
-        add_route("POST", path, block, middleware: middleware, swagger_meta: swagger_meta)
+      def post(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add_route("POST", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
-      def put(path, middleware: [], swagger_meta: {}, &block)
-        add_route("PUT", path, block, middleware: middleware, swagger_meta: swagger_meta)
+      def put(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add_route("PUT", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
-      def patch(path, middleware: [], swagger_meta: {}, &block)
-        add_route("PATCH", path, block, middleware: middleware, swagger_meta: swagger_meta)
+      def patch(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add_route("PATCH", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
-      def delete(path, middleware: [], swagger_meta: {}, &block)
-        add_route("DELETE", path, block, middleware: middleware, swagger_meta: swagger_meta)
+      def delete(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add_route("DELETE", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
-      def any(path, middleware: [], swagger_meta: {}, &block)
-        add_route("ANY", path, block, middleware: middleware, swagger_meta: swagger_meta)
+      def any(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add_route("ANY", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
       def find_route(path, method)
@@ -198,13 +200,14 @@ module Tina4
       end
 
       %w[get post put patch delete any].each do |m|
-        define_method(m) do |path, middleware: [], swagger_meta: {}, &handler|
+        define_method(m) do |path, middleware: [], swagger_meta: {}, template: nil, &handler|
           full_path = "#{@prefix}#{path}"
           combined_middleware = @middleware + middleware
           Tina4::Router.add_route(m, full_path, handler,
                                   auth_handler: @auth_handler,
                                   swagger_meta: swagger_meta,
-                                  middleware: combined_middleware)
+                                  middleware: combined_middleware,
+                                  template: template)
         end
       end
 

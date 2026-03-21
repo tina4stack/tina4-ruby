@@ -114,6 +114,14 @@ module Tina4
       # Execute handler
       result = route.handler.call(request, response)
 
+      # Template rendering: when a template is set and the handler returned a Hash,
+      # render the template with the hash as data and return the HTML response.
+      if route.template && result.is_a?(Hash)
+        html = Tina4::Template.render(route.template, result)
+        response.html(html)
+        return response.to_rack
+      end
+
       # Skip auto_detect if handler already returned the response object
       final_response = result.equal?(response) ? result : Tina4::Response.auto_detect(result, response)
       final_response.to_rack
@@ -339,11 +347,7 @@ module Tina4
     end
 
     def dev_mode?
-      debug_level = ENV["TINA4_DEBUG_LEVEL"]
-      return true if debug_level && %w[ALL DEBUG].include?(debug_level.upcase)
-      return true if ENV["TINA4_DEBUG"] == "true"
-
-      false
+      ENV["TINA4_DEBUG"] == "true"
     end
 
     def inject_dev_overlay(body, request_info)

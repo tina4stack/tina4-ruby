@@ -402,7 +402,8 @@ module Tina4
       # .env
       unless File.exist?(File.join(dir, ".env"))
         File.write(File.join(dir, ".env"), <<~TEXT)
-          TINA4_DEBUG_LEVEL=ALL
+          TINA4_DEBUG=true
+          TINA4_LOG_LEVEL=ALL
         TEXT
       end
 

@@ -54,7 +54,9 @@ TINA4_LANGUAGE="en"
 TINA4_DEBUG_LEVEL="[TINA4_LOG_INFO]"
 SECRET="change-me-in-production"
 API_KEY="your-api-key"
-DATABASE_URL="app.db"
+DATABASE_URL="sqlite://app.db"
+DATABASE_USERNAME=""
+DATABASE_PASSWORD=""
 
 # Environment-specific: .env.production, .env.staging
 # Set ENVIRONMENT=production to load .env.production
@@ -123,7 +125,7 @@ Development output:
 
 Production JSON output:
 ```json
-{"timestamp":"2026-03-20T14:30:00.000+00:00","level":"info","message":"Server started","framework":"tina4-ruby","version":"0.3.0"}
+{"timestamp":"2026-03-20T14:30:00.000+00:00","level":"info","message":"Server started","framework":"tina4-ruby","version":"3.0.0"}
 ```
 
 Log rotation: files rotate at 10MB, keeping 10 rotated files. Old files are gzip-compressed automatically.
@@ -193,7 +195,9 @@ services:
     ports:
       - "7147:7147"
     environment:
-      - DATABASE_URL=postgres://user:pass@db:5432/myapp
+      - DATABASE_URL=postgres://db:5432/myapp
+      - DATABASE_USERNAME=user
+      - DATABASE_PASSWORD=pass
       - TINA4_ENV=production
       - TINA4_DEBUG_LEVEL=[TINA4_LOG_INFO]
       - SECRET=your-production-secret

@@ -8,7 +8,7 @@ Lightweight Ruby web framework. See https://tina4.com for full documentation.
 - Install: `bundle install`
 - Run all tests: `bundle exec rspec`
 - Run single test: `bundle exec rspec spec/file_spec.rb:LINE`
-- Start server: `ruby app.rb` or `tina4ruby` CLI
+- Start server: `ruby app.rb` or `tina4ruby` CLI (default host: 0.0.0.0, default port: 7147)
 - CLI: `tina4ruby` (Thor-based, exe in `exe/tina4ruby`)
 
 ## Code Principles
@@ -36,7 +36,7 @@ Start with `--dev` flag to enable development features:
 tina4ruby serve --dev
 ```
 
-Or set `TINA4_DEBUG_LEVEL=ALL` / `DEBUG` in `.env`:
+Or set `TINA4_DEBUG=true` in `.env`:
 
 - **Auto-reload** — File watcher detects changes to `.rb`, `.twig`, `.html`, `.erb` files and reloads
 - **SCSS auto-compile** — `.scss` changes compiled automatically
@@ -61,8 +61,20 @@ lib/
     ai.rb,              # AI coding-tool detection & context scaffolding
     response_cache.rb,  # In-memory GET response cache with TTL
     container.rb,       # Lightweight DI container
+    constants.rb,       # HTTP status codes & content types
+    cors.rb,            # CORS middleware
+    dev_admin.rb,       # Dev toolbar dashboard (debug mode)
+    dev_mailbox.rb,     # Dev mailbox for email capture
     error_overlay.rb,   # Rich HTML error overlay (dev mode)
+    frond.rb,           # Frontend asset helper
+    health.rb,          # Health check endpoint
     html_element.rb,    # Programmatic HTML builder & helpers
+    messenger.rb,       # Messaging abstraction
+    rate_limiter.rb,    # Rate limiting middleware
+    request.rb,         # Request wrapper
+    response.rb,        # Response wrapper
+    service_runner.rb,  # Background service runner
+    shutdown.rb,        # Graceful shutdown handler
     testing.rb,         # Inline test framework (describe/it)
     sql_translation.rb  # Cross-engine SQL translator & query cache
     drivers/            # Database drivers (sqlite, postgres, mysql, mssql, firebird)
@@ -81,6 +93,7 @@ spec/                  # RSpec test files
 ### Router — Route registration
 
 ```ruby
+# Convenience methods (delegated to Tina4::Router)
 Tina4.get(path, swagger_meta: {}, &handler)
 Tina4.post(path, swagger_meta: {}, &handler)
 Tina4.put(path, swagger_meta: {}, &handler)
@@ -91,19 +104,56 @@ Tina4.secure_get(path, &handler)
 Tina4.secure_post(path, &handler)
 Tina4.group(prefix, auth_handler: nil, &block)
 
-Tina4::Router.add_route(method, path, handler, auth_handler: nil, swagger_meta: {})
+# Direct Router class methods (preferred in v3)
+Tina4::Router.get(path, middleware: [], swagger_meta: {}, template: nil, &block)
+Tina4::Router.post(path, middleware: [], swagger_meta: {}, template: nil, &block)
+Tina4::Router.put(path, middleware: [], swagger_meta: {}, template: nil, &block)
+Tina4::Router.patch(path, middleware: [], swagger_meta: {}, template: nil, &block)
+Tina4::Router.delete(path, middleware: [], swagger_meta: {}, template: nil, &block)
+Tina4::Router.any(path, middleware: [], swagger_meta: {}, template: nil, &block)
+Tina4::Router.add_route(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
 Tina4::Router.find_route(path, method)
+Tina4::Router.group(prefix, auth_handler: nil, middleware: [], &block)
 Tina4::Router.clear!
 Tina4::Router.routes
+
 # Route params use {id} syntax (NOT :id). Matches Python exactly.
 # Type hints: {id:int}, {amount:float}, {slug:path}
+# Catch-all splat: *path
 # Handler receives |request, response| block params
+# template: keyword renders a Twig template with the response data
+
+# Template rendering on a route:
+Tina4::Router.get "/dashboard", template: "dashboard.twig" do |request, response|
+  response.call({ title: "Dashboard", items: items }, Tina4::HTTP_OK)
+end
+```
+
+### WebServer — Starting the server
+
+```ruby
+# Default host: 0.0.0.0, default port: 7147
+app = Tina4::RackApp.new
+Tina4::WebServer.new(app, host: "0.0.0.0", port: 7147).start
 ```
 
 ### Database — Multi-driver abstraction
 
 ```ruby
-db = Tina4::Database.new(connection_string, driver_name: nil)
+# v3 connection string format: driver://host:port/database
+# Supported drivers: sqlite, postgres, mysql, mssql, firebird
+# Driver aliases: sqlite3 -> sqlite, postgresql -> postgres, sqlserver -> mssql
+db = Tina4::Database.new("sqlite://path/to/database.db")
+db = Tina4::Database.new("postgres://localhost:5432/mydb", username: "user", password: "pass")
+db = Tina4::Database.new("mysql://localhost:3306/mydb", username: "root", password: "secret")
+db = Tina4::Database.new("mssql://localhost:1433/mydb", username: "sa", password: "pass")
+db = Tina4::Database.new("firebird://localhost:3050/mydb", username: "sysdba", password: "pass")
+
+# Or via environment variables:
+# DATABASE_URL=postgres://localhost:5432/mydb
+# DATABASE_USERNAME=user
+# DATABASE_PASSWORD=pass
+db = Tina4::Database.new  # reads from ENV
 
 db.fetch(sql, params = [], limit: nil, skip: nil) -> DatabaseResult
 db.fetch_one(sql, params = []) -> Hash | nil
@@ -202,7 +252,7 @@ Tina4::Log.info(message, *args)
 Tina4::Log.debug(message, *args)
 Tina4::Log.warning(message, *args)
 Tina4::Log.error(message, *args)
-# Controlled by TINA4_DEBUG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], etc.
+# Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], etc.
 # Tina4::Debug is a backward-compat alias for Tina4::Log
 ```
 
@@ -293,7 +343,7 @@ html = Tina4::ErrorOverlay.render(exception, request: rack_env)
 # Render a safe, generic error page for production
 html = Tina4::ErrorOverlay.render_production(status_code: 500, message: "Internal Server Error")
 
-# Check if the overlay should be shown (TINA4_DEBUG_LEVEL = ALL or DEBUG)
+# Check if the overlay should be shown (TINA4_DEBUG = true)
 Tina4::ErrorOverlay.debug_mode?  # -> Boolean
 ```
 
@@ -379,6 +429,29 @@ cache.size
 cache.clear
 ```
 
+### DevAdmin — Dev toolbar & dashboard
+
+The dev toolbar is automatically available in debug mode (`TINA4_DEBUG=true`).
+
+```ruby
+Tina4::DevAdmin.enabled?             # -> Boolean (true in debug mode)
+Tina4::DevAdmin.message_log          # -> MessageLog instance
+Tina4::DevAdmin.request_inspector    # -> RequestInspector instance
+Tina4::DevAdmin.mailbox              # -> DevMailbox instance (email capture)
+
+# MessageLog — in-memory message log (last 500 entries)
+Tina4::DevAdmin.message_log.log(category, level, message)
+Tina4::DevAdmin.message_log.get(category: nil)
+Tina4::DevAdmin.message_log.clear(category: nil)
+Tina4::DevAdmin.message_log.count
+
+# RequestInspector — captured HTTP requests (last 200)
+Tina4::DevAdmin.request_inspector.capture(method:, path:, status:, duration:)
+Tina4::DevAdmin.request_inspector.get(limit: 50)
+Tina4::DevAdmin.request_inspector.stats  # -> { total:, avg_ms:, errors:, slowest_ms: }
+Tina4::DevAdmin.request_inspector.clear
+```
+
 ## Key Architecture
 
 - Rack 3-based web server with Puma (falls back to WEBrick)
@@ -399,18 +472,22 @@ cache.clear
 - Rich HTML error overlay in dev mode (Catppuccin Mocha theme, source context)
 - Programmatic HTML builder with tag helper methods (`_div`, `_p`, etc.)
 - Inline testing framework (`describe`/`it` with HTTP simulation and assertions)
-- Version: 0.3.0
+- Dev toolbar dashboard with request inspector, message log, and dev mailbox (debug mode)
+- Rate limiting middleware
+- CORS middleware
+- Graceful shutdown handling
+- Health check endpoint
+- HTTP status code constants (`Tina4::HTTP_OK`, `Tina4::HTTP_NOT_FOUND`, etc.)
+- Default host: 0.0.0.0, default port: 7147
+- Version: 3.0.0
 
 ## Links
 
 - Website: https://tina4.com
 - GitHub: https://github.com/tina4stack/tina4-ruby
 
-## Tina4 Maintainer Skill
-Always read and follow the instructions in .claude/skills/tina4-maintainer/SKILL.md when working on this codebase. Read its referenced files in .claude/skills/tina4-maintainer/references/ as needed for specific subsystems.
+## Skills
 
-## Tina4 Developer Skill
-Always read and follow the instructions in .claude/skills/tina4-developer/SKILL.md when building applications with this framework. Read its referenced files in .claude/skills/tina4-developer/references/ as needed.
-
-## Tina4-js Frontend Skill
-Always read and follow the instructions in .claude/skills/tina4-js/SKILL.md when working with tina4-js frontend code. Read its referenced files in .claude/skills/tina4-js/references/ as needed.
+- **tina4-maintainer** — Always read and follow `.claude/skills/tina4-maintainer/SKILL.md` when working on this codebase. Read its referenced files in `.claude/skills/tina4-maintainer/references/` as needed for specific subsystems.
+- **tina4-developer** — Always read and follow `.claude/skills/tina4-developer/SKILL.md` when building applications with this framework. Read its referenced files in `.claude/skills/tina4-developer/references/` as needed.
+- **tina4-js** — Always read and follow `.claude/skills/tina4-js/SKILL.md` when working with tina4-js frontend code. Read its referenced files in `.claude/skills/tina4-js/references/` as needed.

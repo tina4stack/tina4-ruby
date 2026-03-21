@@ -78,7 +78,7 @@ Install only what you need:
 
 ```bash
 gem install pg                   # PostgreSQL
-gem install mysql2               # MySQL / MariaDB
+gem install mysql2               # MySQL / MariaDB (driver name: mysql)
 gem install tiny_tds             # Microsoft SQL Server
 gem install fb                   # Firebird
 ```
@@ -135,6 +135,8 @@ Edit `.env`:
 
 ```bash
 DATABASE_URL=sqlite://data/app.db
+DATABASE_USERNAME=
+DATABASE_PASSWORD=
 ```
 
 Create and run a migration:
@@ -315,10 +317,10 @@ Unified interface across 5 engines:
 
 ```ruby
 db = Tina4::Database.new("sqlite://data/app.db")
-db = Tina4::Database.new("postgresql://localhost:5432/mydb", "user", "pass")
-db = Tina4::Database.new("mysql://localhost:3306/mydb", "user", "pass")
-db = Tina4::Database.new("mssql://localhost:1433/mydb", "sa", "pass")
-db = Tina4::Database.new("firebird://localhost:3050/path/to/db", "SYSDBA", "masterkey")
+db = Tina4::Database.new("postgres://localhost:5432/mydb", username: "user", password: "pass")
+db = Tina4::Database.new("mysql://localhost:3306/mydb", username: "user", password: "pass")
+db = Tina4::Database.new("mssql://localhost:1433/mydb", username: "sa", password: "pass")
+db = Tina4::Database.new("firebird://localhost:3050/path/to/db", username: "SYSDBA", password: "masterkey")
 
 result = db.fetch("SELECT * FROM users WHERE age > ?", [18], limit: 20, skip: 0)
 row = db.fetch_one("SELECT * FROM users WHERE id = ?", [1])
@@ -513,6 +515,8 @@ tina4ruby ai [--all]             # Detect AI tools and install context
 ```bash
 SECRET=your-jwt-secret
 DATABASE_URL=sqlite://data/app.db
+DATABASE_USERNAME=
+DATABASE_PASSWORD=
 TINA4_DEBUG_LEVEL=DEBUG              # DEBUG, INFO, WARNING, ERROR, ALL
 TINA4_LANGUAGE=en                    # en, fr, af, zh, ja, es
 TINA4_SESSION_HANDLER=SessionFileHandler
@@ -547,7 +551,7 @@ Full guides, API reference, and examples at **[tina4.com](https://tina4.com)**.
 
 ## License
 
-MIT (c) 2007-2025 Tina4 Stack
+MIT (c) 2007-2026 Tina4 Stack
 https://opensource.org/licenses/MIT
 
 ---

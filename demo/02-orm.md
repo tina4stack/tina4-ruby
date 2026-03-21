@@ -2,7 +2,7 @@
 
 Tina4 Ruby provides an Active Record-style ORM with a DSL for field definitions, relationships, soft delete, field mapping, and full CRUD. Models inherit from `Tina4::ORM` and use the `FieldTypes` module.
 
-The ORM connects to whatever database is set via `Tina4.database` (auto-configured from `DATABASE_URL` in `.env`).
+The ORM connects to whatever database is set via `Tina4.database` (auto-configured from `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` in `.env`).
 
 ## Defining a Model
 
@@ -194,7 +194,7 @@ Bind a model to a different database connection.
 
 ```ruby
 class AnalyticsEvent < Tina4::ORM
-  self.db = Tina4::Database.new("analytics.db")
+  self.db = Tina4::Database.new("sqlite://analytics.db")
 
   integer_field :id, primary_key: true, auto_increment: true
   string_field  :event_name

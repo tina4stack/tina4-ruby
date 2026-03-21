@@ -120,11 +120,7 @@ module Tina4
       end
 
       def enabled?
-        debug_level = ENV["TINA4_DEBUG_LEVEL"]
-        return true if debug_level && %w[ALL DEBUG].include?(debug_level.to_s.upcase)
-        return true if ENV["TINA4_DEBUG"] == "true"
-
-        false
+        ENV["TINA4_DEBUG"] == "true"
       end
 
       # Handle a /__dev request; returns [status, headers, body] or nil if not a dev path
@@ -294,7 +290,8 @@ module Tina4
           version: Tina4::VERSION,
           ruby_version: RUBY_VERSION,
           platform: RUBY_PLATFORM,
-          debug_level: ENV["TINA4_DEBUG_LEVEL"] || "N/A",
+          debug: ENV["TINA4_DEBUG"] || "false",
+          log_level: ENV["TINA4_LOG_LEVEL"] || "ERROR",
           uptime: (Time.now - (defined?(@boot_time) && @boot_time ? @boot_time : (@boot_time = Time.now))).round(1),
           route_count: Tina4::Router.routes.size,
           request_stats: request_inspector.stats,

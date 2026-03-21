@@ -104,7 +104,7 @@ module Tina4
       end
 
       def resolve_level
-        env_level = ENV["TINA4_DEBUG_LEVEL"] || "[TINA4_LOG_ALL]"
+        env_level = ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]"
         LEVELS[env_level] || Logger::DEBUG
       end
 

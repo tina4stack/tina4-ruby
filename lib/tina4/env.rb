@@ -7,7 +7,8 @@ module Tina4
       "PROJECT_NAME" => "Tina4 Ruby Project",
       "VERSION" => "1.0.0",
       "TINA4_LANGUAGE" => "en",
-      "TINA4_DEBUG_LEVEL" => "[TINA4_LOG_ALL]",
+      "TINA4_DEBUG" => "true",
+      "TINA4_LOG_LEVEL" => "[TINA4_LOG_ALL]",
       "SECRET" => "tina4-secret-change-me"
     }.freeze
 
