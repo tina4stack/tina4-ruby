@@ -7,12 +7,17 @@ module Tina4
 
     # CORS is now handled by Tina4::CorsMiddleware
 
+    # Framework's own public directory (bundled static assets like the logo)
+    FRAMEWORK_PUBLIC_DIR = File.expand_path("public", __dir__).freeze
+
     def initialize(root_dir: Dir.pwd)
       @root_dir = root_dir
       # Pre-compute static roots at boot (not per-request)
-      @static_roots = STATIC_DIRS.map { |d| File.join(root_dir, d) }
-                                  .select { |d| Dir.exist?(d) }
-                                  .freeze
+      # Project dirs are checked first; framework's bundled public dir is the fallback
+      project_roots = STATIC_DIRS.map { |d| File.join(root_dir, d) }
+                                 .select { |d| Dir.exist?(d) }
+      fallback = Dir.exist?(FRAMEWORK_PUBLIC_DIR) ? [FRAMEWORK_PUBLIC_DIR] : []
+      @static_roots = (project_roots + fallback).freeze
     end
 
     def call(env)
@@ -198,7 +203,7 @@ module Tina4
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Tina4</title>
+        <title>Tina4Ruby</title>
         <style>
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;position:relative}
@@ -234,7 +239,7 @@ module Tina4
         <img src="/images/tina4-logo-icon.webp" class="bg-watermark" alt="">
         <div class="hero">
             <img src="/images/tina4-logo-icon.webp" class="logo" alt="Tina4">
-            <h1>Tina4</h1>
+            <h1>Tina4Ruby</h1>
             <p class="tagline">This is not a framework</p>
             <div class="actions">
                 <a href="https://tina4.com/ruby" class="btn" target="_blank">Website</a>
