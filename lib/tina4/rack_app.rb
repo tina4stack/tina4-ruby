@@ -83,7 +83,6 @@ module Tina4
           }
           joined = body_parts.join
           overlay = inject_dev_overlay(joined, request_info)
-          overlay = inject_dev_button(overlay)
           rack_response = [status, headers, [overlay]]
         end
       end
@@ -376,15 +375,6 @@ module Tina4
       end
     end
 
-    def inject_dev_button(body)
-      script = Tina4::DevAdmin.render_overlay_script
-      return body if script.empty?
 
-      if body.include?("</body>")
-        body.sub("</body>", "#{script}\n</body>")
-      else
-        body + "\n" + script
-      end
-    end
   end
 end
