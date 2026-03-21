@@ -290,6 +290,12 @@ module Tina4
           when "cache"
             result, i = handle_cache(tokens, i, context)
             output << result
+          when "spaceless"
+            result, i = handle_spaceless(tokens, i, context)
+            output << result
+          when "autoescape"
+            result, i = handle_autoescape(tokens, i, context)
+            output << result
           when "block", "endblock", "extends"
             i += 1
           else
@@ -494,6 +500,13 @@ module Tina4
       if ternary
         cond = eval_expr(ternary[1], context)
         return truthy?(cond) ? eval_expr(ternary[2], context) : eval_expr(ternary[3], context)
+      end
+
+      # Jinja2-style inline if: value if condition else other_value
+      inline_if = expr.match(/\A(.+?)\s+if\s+(.+?)\s+else\s+(.+)\z/)
+      if inline_if
+        cond = eval_expr(inline_if[2], context)
+        return truthy?(cond) ? eval_expr(inline_if[1], context) : eval_expr(inline_if[3], context)
       end
 
       # Null coalescing: value ?? "default"
@@ -1118,6 +1131,81 @@ module Tina4
 
       rendered = render_tokens(body_tokens.dup, context)
       @fragment_cache[cache_key] = [rendered, Time.now.to_f + ttl]
+      [rendered, i]
+    end
+
+    def handle_spaceless(tokens, start, context)
+      body_tokens = []
+      i = start + 1
+      depth = 0
+      while i < tokens.length
+        if tokens[i][0] == BLOCK
+          tc, _, _ = strip_tag(tokens[i][1])
+          tag = tc.split[0] || ""
+          if tag == "spaceless"
+            depth += 1
+            body_tokens << tokens[i]
+          elsif tag == "endspaceless"
+            if depth == 0
+              i += 1
+              break
+            end
+            depth -= 1
+            body_tokens << tokens[i]
+          else
+            body_tokens << tokens[i]
+          end
+        else
+          body_tokens << tokens[i]
+        end
+        i += 1
+      end
+
+      rendered = render_tokens(body_tokens.dup, context)
+      rendered = rendered.gsub(/>\s+</, "><")
+      [rendered, i]
+    end
+
+    def handle_autoescape(tokens, start, context)
+      content, _, _ = strip_tag(tokens[start][1])
+      mode_match = content.match(/\Aautoescape\s+(false|true)/)
+      auto_escape_on = !(mode_match && mode_match[1] == "false")
+
+      body_tokens = []
+      i = start + 1
+      depth = 0
+      while i < tokens.length
+        if tokens[i][0] == BLOCK
+          tc, _, _ = strip_tag(tokens[i][1])
+          tag = tc.split[0] || ""
+          if tag == "autoescape"
+            depth += 1
+            body_tokens << tokens[i]
+          elsif tag == "endautoescape"
+            if depth == 0
+              i += 1
+              break
+            end
+            depth -= 1
+            body_tokens << tokens[i]
+          else
+            body_tokens << tokens[i]
+          end
+        else
+          body_tokens << tokens[i]
+        end
+        i += 1
+      end
+
+      if !auto_escape_on
+        old_auto_escape = @auto_escape
+        @auto_escape = false
+        rendered = render_tokens(body_tokens.dup, context)
+        @auto_escape = old_auto_escape
+      else
+        rendered = render_tokens(body_tokens.dup, context)
+      end
+
       [rendered, i]
     end
 

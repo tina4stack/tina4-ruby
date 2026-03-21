@@ -928,4 +928,94 @@ RSpec.describe Tina4::Frond do
       expect(result).to include("Name:name")
     end
   end
+
+  # ===========================================================================
+  # Spaceless
+  # ===========================================================================
+
+  describe "spaceless tag" do
+    it "removes whitespace between HTML tags" do
+      result = engine.render_string("{% spaceless %}<div>  <p>  Hello  </p>  </div>{% endspaceless %}", {})
+      expect(result).to eq("<div><p>  Hello  </p></div>")
+    end
+
+    it "preserves content whitespace" do
+      result = engine.render_string("{% spaceless %}<span>  text  </span>{% endspaceless %}", {})
+      expect(result).to eq("<span>  text  </span>")
+    end
+
+    it "handles multiline content" do
+      src = "{% spaceless %}\n<div>\n    <p>Hi</p>\n</div>\n{% endspaceless %}"
+      result = engine.render_string(src, {})
+      expect(result).to include("<div><p>")
+      expect(result).to include("</p></div>")
+    end
+
+    it "works with variables" do
+      result = engine.render_string("{% spaceless %}<div>  <span>{{ name }}</span>  </div>{% endspaceless %}", { "name" => "Alice" })
+      expect(result).to eq("<div><span>Alice</span></div>")
+    end
+  end
+
+  # ===========================================================================
+  # Autoescape
+  # ===========================================================================
+
+  describe "autoescape tag" do
+    it "disables escaping when false" do
+      result = engine.render_string('{% autoescape false %}{{ html }}{% endautoescape %}', { "html" => "<b>bold</b>" })
+      expect(result).to eq("<b>bold</b>")
+    end
+
+    it "keeps escaping when true" do
+      result = engine.render_string('{% autoescape true %}{{ html }}{% endautoescape %}', { "html" => "<b>bold</b>" })
+      expect(result).to include("&lt;b&gt;")
+    end
+
+    it "works with filters when false" do
+      result = engine.render_string('{% autoescape false %}{{ name | upper }}{% endautoescape %}', { "name" => "alice" })
+      expect(result).to eq("ALICE")
+    end
+
+    it "handles multiple variables when false" do
+      result = engine.render_string('{% autoescape false %}{{ a }} {{ b }}{% endautoescape %}', { "a" => "<i>x</i>", "b" => "<b>y</b>" })
+      expect(result).to eq("<i>x</i> <b>y</b>")
+    end
+  end
+
+  # ===========================================================================
+  # Inline If
+  # ===========================================================================
+
+  describe "inline if expression" do
+    it "evaluates true branch" do
+      result = engine.render_string("{{ 'yes' if active else 'no' }}", { "active" => true })
+      expect(result).to eq("yes")
+    end
+
+    it "evaluates false branch" do
+      result = engine.render_string("{{ 'yes' if active else 'no' }}", { "active" => false })
+      expect(result).to eq("no")
+    end
+
+    it "works with variable values" do
+      result = engine.render_string("{{ name if name else 'Anonymous' }}", { "name" => "Alice" })
+      expect(result).to eq("Alice")
+    end
+
+    it "falls back on missing variable" do
+      result = engine.render_string("{{ name if name else 'Anonymous' }}", {})
+      expect(result).to eq("Anonymous")
+    end
+
+    it "works with comparison condition" do
+      result = engine.render_string("{{ 'adult' if age >= 18 else 'minor' }}", { "age" => 21 })
+      expect(result).to eq("adult")
+    end
+
+    it "works with numeric values" do
+      result = engine.render_string("{{ count if count else 0 }}", { "count" => 5 })
+      expect(result).to eq("5")
+    end
+  end
 end
