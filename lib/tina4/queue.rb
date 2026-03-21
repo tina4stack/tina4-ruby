@@ -38,7 +38,7 @@ module Tina4
 
   class Producer
     def initialize(backend: nil)
-      @backend = backend || Tina4::QueueBackends::LiteBackend.new
+      @backend = backend || Tina4::Queue.resolve_backend
     end
 
     def publish(topic, payload)
@@ -51,17 +51,44 @@ module Tina4
     def publish_batch(topic, payloads)
       payloads.map { |p| publish(topic, p) }
     end
+
+    # Unified push method matching the cross-framework API.
+    def push(topic, payload)
+      publish(topic, payload)
+    end
   end
 
-  # Queue — convenience wrapper for queue management operations.
-  # Provides dead letter inspection, purging, and retry capabilities.
+  # Queue — unified wrapper for queue management operations.
+  # Auto-detects backend from TINA4_QUEUE_BACKEND env var.
+  #
+  # Usage:
+  #   # Auto-detect from env (default: lite/file backend)
+  #   queue = Queue.new(topic: "tasks")
+  #
+  #   # Explicit backend
+  #   queue = Queue.new(topic: "tasks", backend: :rabbitmq)
+  #
+  #   # Or pass a backend instance directly (legacy)
+  #   queue = Queue.new(topic: "tasks", backend: my_backend)
   class Queue
     attr_reader :topic, :max_retries
 
     def initialize(topic:, backend: nil, max_retries: 3)
       @topic = topic
-      @backend = backend || Tina4::QueueBackends::LiteBackend.new
       @max_retries = max_retries
+      @backend = resolve_backend_arg(backend)
+    end
+
+    # Push a job onto the queue. Returns the QueueMessage.
+    def push(payload)
+      message = QueueMessage.new(topic: @topic, payload: payload)
+      @backend.enqueue(message)
+      message
+    end
+
+    # Pop the next available job. Returns QueueMessage or nil.
+    def pop
+      @backend.dequeue(@topic)
     end
 
     # Get dead letter jobs — messages that exceeded max retries.
@@ -87,12 +114,105 @@ module Tina4
     def size
       @backend.size(@topic)
     end
+
+    # Get the underlying backend instance.
+    def backend
+      @backend
+    end
+
+    # Resolve the default backend from env vars.
+    # Class method so Producer can also use it.
+    def self.resolve_backend(name = nil)
+      chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "lite").downcase.strip
+
+      case chosen.to_s
+      when "lite", "file", "default"
+        Tina4::QueueBackends::LiteBackend.new
+      when "rabbitmq"
+        config = resolve_rabbitmq_config
+        Tina4::QueueBackends::RabbitmqBackend.new(config)
+      when "kafka"
+        config = resolve_kafka_config
+        Tina4::QueueBackends::KafkaBackend.new(config)
+      else
+        raise ArgumentError, "Unknown queue backend: #{chosen.inspect}. Use 'lite', 'rabbitmq', or 'kafka'."
+      end
+    end
+
+    private
+
+    def resolve_backend_arg(backend)
+      # If a backend instance is passed directly (legacy), use it
+      return backend if backend && !backend.is_a?(Symbol) && !backend.is_a?(String)
+      # If a symbol or string name is passed, resolve it
+      Queue.resolve_backend(backend)
+    end
+
+    def self.resolve_rabbitmq_config
+      config = {}
+      url = ENV["TINA4_QUEUE_URL"]
+      if url
+        config = parse_amqp_url(url)
+      end
+      config[:host] ||= ENV.fetch("TINA4_RABBITMQ_HOST", "localhost")
+      config[:port] ||= (ENV["TINA4_RABBITMQ_PORT"] || 5672).to_i
+      config[:username] ||= ENV.fetch("TINA4_RABBITMQ_USERNAME", "guest")
+      config[:password] ||= ENV.fetch("TINA4_RABBITMQ_PASSWORD", "guest")
+      config[:vhost] ||= ENV.fetch("TINA4_RABBITMQ_VHOST", "/")
+      config
+    end
+
+    def self.resolve_kafka_config
+      config = {}
+      url = ENV["TINA4_QUEUE_URL"]
+      if url
+        config[:brokers] = url.sub("kafka://", "")
+      end
+      brokers = ENV["TINA4_KAFKA_BROKERS"]
+      config[:brokers] = brokers if brokers
+      config[:brokers] ||= "localhost:9092"
+      config[:group_id] = ENV.fetch("TINA4_KAFKA_GROUP_ID", "tina4_consumer_group")
+      config
+    end
+
+    def self.parse_amqp_url(url)
+      config = {}
+      url = url.sub("amqp://", "").sub("amqps://", "")
+
+      if url.include?("@")
+        creds, rest = url.split("@", 2)
+        if creds.include?(":")
+          config[:username], config[:password] = creds.split(":", 2)
+        else
+          config[:username] = creds
+        end
+      else
+        rest = url
+      end
+
+      if rest.include?("/")
+        hostport, vhost = rest.split("/", 2)
+        config[:vhost] = vhost.start_with?("/") ? vhost : "/#{vhost}" if vhost && !vhost.empty?
+      else
+        hostport = rest
+      end
+
+      if hostport.include?(":")
+        host, port = hostport.split(":", 2)
+        config[:host] = host
+        config[:port] = port.to_i
+      elsif hostport && !hostport.empty?
+        config[:host] = hostport
+      end
+
+      config
+    end
   end
 
   class Consumer
     def initialize(topic:, backend: nil, max_retries: 3)
       @topic = topic
-      @backend = backend || Tina4::QueueBackends::LiteBackend.new
+      @backend = backend || Tina4::Queue.resolve_backend
       @max_retries = max_retries
       @handlers = []
       @running = false

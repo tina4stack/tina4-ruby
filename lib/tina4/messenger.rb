@@ -7,32 +7,66 @@ require "securerandom"
 require "time"
 
 module Tina4
+  # Tina4 Messenger — Email sending (SMTP) and reading (IMAP).
+  #
+  # Unified .env-driven configuration with constructor override.
+  # Priority: constructor params > .env (TINA4_MAIL_* with SMTP_* fallback) > sensible defaults
+  #
+  #   # .env
+  #   TINA4_MAIL_HOST=smtp.gmail.com
+  #   TINA4_MAIL_PORT=587
+  #   TINA4_MAIL_USERNAME=user@gmail.com
+  #   TINA4_MAIL_PASSWORD=app-password
+  #   TINA4_MAIL_FROM=noreply@myapp.com
+  #   TINA4_MAIL_ENCRYPTION=tls
+  #   TINA4_MAIL_IMAP_HOST=imap.gmail.com
+  #   TINA4_MAIL_IMAP_PORT=993
+  #
+  #   mail = Messenger.new                                        # reads from .env
+  #   mail = Messenger.new(host: "smtp.office365.com", port: 587) # override
+  #   mail.send(to: "user@test.com", subject: "Welcome", body: "<h1>Hello!</h1>", html: true, text: "Hello!")
+  #
   class Messenger
     attr_reader :host, :port, :username, :from_address, :from_name,
-                :imap_host, :imap_port, :use_tls
+                :imap_host, :imap_port, :use_tls, :encryption
 
-    # Initialize with SMTP config, falls back to ENV vars
+    # Initialize with SMTP config.
+    # Priority: constructor params > ENV (TINA4_MAIL_* with SMTP_* fallback) > sensible defaults
     def initialize(host: nil, port: nil, username: nil, password: nil,
-                   from_address: nil, from_name: nil, use_tls: true,
+                   from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
                    imap_host: nil, imap_port: nil)
-      @host         = host         || ENV["SMTP_HOST"] || "localhost"
-      @port         = (port        || ENV["SMTP_PORT"] || 587).to_i
-      @username     = username     || ENV["SMTP_USERNAME"]
-      @password     = password     || ENV["SMTP_PASSWORD"]
-      @from_address = from_address || ENV["SMTP_FROM"] || @username
-      @from_name    = from_name    || ENV["SMTP_FROM_NAME"] || ""
-      @use_tls      = use_tls
-      @imap_host    = imap_host    || ENV["IMAP_HOST"] || @host
-      @imap_port    = (imap_port   || ENV["IMAP_PORT"] || 993).to_i
+      @host         = host         || ENV["TINA4_MAIL_HOST"]     || ENV["SMTP_HOST"]     || "localhost"
+      @port         = (port        || ENV["TINA4_MAIL_PORT"]     || ENV["SMTP_PORT"]     || 587).to_i
+      @username     = username     || ENV["TINA4_MAIL_USERNAME"] || ENV["SMTP_USERNAME"]
+      @password     = password     || ENV["TINA4_MAIL_PASSWORD"] || ENV["SMTP_PASSWORD"]
+
+      resolved_from = from_address || ENV["TINA4_MAIL_FROM"]     || ENV["SMTP_FROM"]
+      @from_address = resolved_from || @username || "noreply@localhost"
+
+      @from_name    = from_name    || ENV["TINA4_MAIL_FROM_NAME"] || ENV["SMTP_FROM_NAME"] || ""
+
+      # Encryption: constructor > .env > backward-compat use_tls > default "tls"
+      env_encryption = encryption  || ENV["TINA4_MAIL_ENCRYPTION"]
+      if env_encryption
+        @encryption = env_encryption.downcase
+      elsif !use_tls.nil?
+        @encryption = use_tls ? "tls" : "none"
+      else
+        @encryption = "tls"
+      end
+      @use_tls = %w[tls starttls].include?(@encryption)
+
+      @imap_host    = imap_host    || ENV["TINA4_MAIL_IMAP_HOST"] || ENV["IMAP_HOST"] || @host
+      @imap_port    = (imap_port   || ENV["TINA4_MAIL_IMAP_PORT"] || ENV["IMAP_PORT"] || 993).to_i
     end
 
     # Send email using Ruby's Net::SMTP
     # Returns { success: true/false, message: "...", id: "..." }
-    def send(to:, subject:, body:, html: false, cc: [], bcc: [],
+    def send(to:, subject:, body:, html: false, text: nil, cc: [], bcc: [],
              reply_to: nil, attachments: [], headers: {})
       message_id = "<#{SecureRandom.uuid}@#{@host}>"
       raw = build_message(
-        to: to, subject: subject, body: body, html: html,
+        to: to, subject: subject, body: body, html: html, text: text,
         cc: cc, bcc: bcc, reply_to: reply_to,
         attachments: attachments, headers: headers,
         message_id: message_id
@@ -179,10 +213,12 @@ module Tina4
       end
     end
 
-    def build_message(to:, subject:, body:, html:, cc:, bcc:, reply_to:,
+    def build_message(to:, subject:, body:, html:, text: nil, cc:, bcc:, reply_to:,
                       attachments:, headers:, message_id:)
       boundary = "----=_Tina4_#{SecureRandom.hex(16)}"
+      alt_boundary = "----=_Tina4Alt_#{SecureRandom.hex(16)}"
       date = Time.now.strftime("%a, %d %b %Y %H:%M:%S %z")
+      has_text_alt = !text.nil? && html
 
       parts = []
       parts << "From: #{format_address(@from_address, @from_name)}"
@@ -196,28 +232,61 @@ module Tina4
 
       headers.each { |k, v| parts << "#{k}: #{v}" }
 
-      if attachments.empty?
-        content_type = html ? "text/html" : "text/plain"
-        parts << "Content-Type: #{content_type}; charset=UTF-8"
-        parts << "Content-Transfer-Encoding: base64"
-        parts << ""
-        parts << Base64.encode64(body)
-      else
+      if !attachments.empty?
         parts << "Content-Type: multipart/mixed; boundary=\"#{boundary}\""
         parts << ""
-        # Body part
-        content_type = html ? "text/html" : "text/plain"
         parts << "--#{boundary}"
-        parts << "Content-Type: #{content_type}; charset=UTF-8"
-        parts << "Content-Transfer-Encoding: base64"
-        parts << ""
-        parts << Base64.encode64(body)
+
+        # Body part (with optional text alternative)
+        if has_text_alt
+          parts << "Content-Type: multipart/alternative; boundary=\"#{alt_boundary}\""
+          parts << ""
+          parts << "--#{alt_boundary}"
+          parts << "Content-Type: text/plain; charset=UTF-8"
+          parts << "Content-Transfer-Encoding: base64"
+          parts << ""
+          parts << Base64.encode64(text)
+          parts << "--#{alt_boundary}"
+          parts << "Content-Type: text/html; charset=UTF-8"
+          parts << "Content-Transfer-Encoding: base64"
+          parts << ""
+          parts << Base64.encode64(body)
+          parts << "--#{alt_boundary}--"
+        else
+          content_type = html ? "text/html" : "text/plain"
+          parts << "Content-Type: #{content_type}; charset=UTF-8"
+          parts << "Content-Transfer-Encoding: base64"
+          parts << ""
+          parts << Base64.encode64(body)
+        end
+
         # Attachment parts
         attachments.each do |attachment|
           parts << "--#{boundary}"
           parts.concat(build_attachment_part(attachment))
         end
         parts << "--#{boundary}--"
+      elsif has_text_alt
+        # Text alternative without attachments
+        parts << "Content-Type: multipart/alternative; boundary=\"#{alt_boundary}\""
+        parts << ""
+        parts << "--#{alt_boundary}"
+        parts << "Content-Type: text/plain; charset=UTF-8"
+        parts << "Content-Transfer-Encoding: base64"
+        parts << ""
+        parts << Base64.encode64(text)
+        parts << "--#{alt_boundary}"
+        parts << "Content-Type: text/html; charset=UTF-8"
+        parts << "Content-Transfer-Encoding: base64"
+        parts << ""
+        parts << Base64.encode64(body)
+        parts << "--#{alt_boundary}--"
+      else
+        content_type = html ? "text/html" : "text/plain"
+        parts << "Content-Type: #{content_type}; charset=UTF-8"
+        parts << "Content-Transfer-Encoding: base64"
+        parts << ""
+        parts << Base64.encode64(body)
       end
 
       parts.join("\r\n")
@@ -440,7 +509,8 @@ module Tina4
   def self.create_messenger(**options)
     dev_mode = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
 
-    smtp_configured = ENV["SMTP_HOST"] && !ENV["SMTP_HOST"].empty?
+    smtp_configured = (ENV["TINA4_MAIL_HOST"] && !ENV["TINA4_MAIL_HOST"].empty?) ||
+                      (ENV["SMTP_HOST"] && !ENV["SMTP_HOST"].empty?)
 
     if dev_mode && !smtp_configured
       mailbox_dir = options.delete(:mailbox_dir) || ENV["TINA4_MAILBOX_DIR"]
@@ -457,8 +527,8 @@ module Tina4
 
     def initialize(mailbox, **options)
       @mailbox = mailbox
-      @from_address = options[:from_address] || ENV["SMTP_FROM"] || "dev@localhost"
-      @from_name    = options[:from_name]    || ENV["SMTP_FROM_NAME"] || "Dev Mailer"
+      @from_address = options[:from_address] || ENV["TINA4_MAIL_FROM"] || ENV["SMTP_FROM"] || "dev@localhost"
+      @from_name    = options[:from_name]    || ENV["TINA4_MAIL_FROM_NAME"] || ENV["SMTP_FROM_NAME"] || "Dev Mailer"
     end
 
     def send(to:, subject:, body:, html: false, cc: [], bcc: [],

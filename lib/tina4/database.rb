@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require "json"
 require "uri"
+require "digest"
 
 module Tina4
   class Database
@@ -24,6 +25,15 @@ module Tina4
       @driver_name = driver_name || detect_driver(@connection_string)
       @driver = create_driver
       @connected = false
+
+      # Query cache — off by default, opt-in via TINA4_DB_CACHE=true
+      @cache_enabled = truthy?(ENV["TINA4_DB_CACHE"])
+      @cache_ttl = (ENV["TINA4_DB_CACHE_TTL"] || "30").to_i
+      @query_cache = {}  # key => { expires_at:, value: }
+      @cache_hits = 0
+      @cache_misses = 0
+      @cache_mutex = Mutex.new
+
       connect
     end
 
@@ -41,21 +51,74 @@ module Tina4
       @connected = false
     end
 
+    # ── Query Cache ──────────────────────────────────────────────
+
+    def cache_stats
+      @cache_mutex.synchronize do
+        {
+          enabled: @cache_enabled,
+          hits: @cache_hits,
+          misses: @cache_misses,
+          size: @query_cache.size,
+          ttl: @cache_ttl
+        }
+      end
+    end
+
+    def cache_clear
+      @cache_mutex.synchronize do
+        @query_cache.clear
+        @cache_hits = 0
+        @cache_misses = 0
+      end
+    end
+
     def fetch(sql, params = [], limit: nil, skip: nil)
       effective_sql = sql
       if limit
         effective_sql = @driver.apply_limit(effective_sql, limit, skip || 0)
       end
+
+      if @cache_enabled
+        key = cache_key(effective_sql, params)
+        cached = cache_get(key)
+        if cached
+          @cache_mutex.synchronize { @cache_hits += 1 }
+          return cached
+        end
+        result = @driver.execute_query(effective_sql, params)
+        result = Tina4::DatabaseResult.new(result, sql: effective_sql)
+        cache_set(key, result)
+        @cache_mutex.synchronize { @cache_misses += 1 }
+        return result
+      end
+
       rows = @driver.execute_query(effective_sql, params)
       Tina4::DatabaseResult.new(rows, sql: effective_sql)
     end
 
     def fetch_one(sql, params = [])
+      if @cache_enabled
+        key = cache_key(sql + ":ONE", params)
+        cached = cache_get(key)
+        if cached
+          @cache_mutex.synchronize { @cache_hits += 1 }
+          return cached
+        end
+        result = fetch(sql, params, limit: 1)
+        value = result.first
+        cache_set(key, value)
+        @cache_mutex.synchronize { @cache_misses += 1 }
+        return value
+      end
+
       result = fetch(sql, params, limit: 1)
       result.first
     end
 
     def insert(table, data)
+      cache_invalidate if @cache_enabled
+
       # List of hashes — batch insert
       if data.is_a?(Array)
         return { success: true, affected_rows: 0 } if data.empty?
@@ -74,6 +137,8 @@ module Tina4
     end
 
     def update(table, data, filter = {})
+      cache_invalidate if @cache_enabled
+
       set_parts = data.keys.map { |k| "#{k} = #{@driver.placeholder}" }
       where_parts = filter.keys.map { |k| "#{k} = #{@driver.placeholder}" }
       sql = "UPDATE #{table} SET #{set_parts.join(', ')}"
@@ -84,6 +149,8 @@ module Tina4
     end
 
     def delete(table, filter = {})
+      cache_invalidate if @cache_enabled
+
       # List of hashes — delete each row
       if filter.is_a?(Array)
         filter.each { |row| delete(table, row) }
@@ -107,6 +174,7 @@ module Tina4
     end
 
     def execute(sql, params = [])
+      cache_invalidate if @cache_enabled
       @driver.execute(sql, params)
     end
 

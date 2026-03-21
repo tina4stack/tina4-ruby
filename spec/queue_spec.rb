@@ -193,6 +193,112 @@ RSpec.describe Tina4::Producer do
   end
 end
 
+RSpec.describe Tina4::Queue do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_queue_unified_test") }
+  let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir) }
+
+  after(:each) { FileUtils.rm_rf(tmp_dir) }
+
+  describe "#push and #pop" do
+    it "pushes and pops using the unified API" do
+      queue = Tina4::Queue.new(topic: "tasks", backend: backend)
+      queue.push({ action: "send_email" })
+      msg = queue.pop
+      expect(msg).not_to be_nil
+      expect(msg.payload["action"]).to eq("send_email")
+    end
+
+    it "returns nil when empty" do
+      queue = Tina4::Queue.new(topic: "empty", backend: backend)
+      expect(queue.pop).to be_nil
+    end
+
+    it "supports size" do
+      queue = Tina4::Queue.new(topic: "sized", backend: backend)
+      expect(queue.size).to eq(0)
+      queue.push({ a: 1 })
+      queue.push({ b: 2 })
+      expect(queue.size).to eq(2)
+    end
+  end
+
+  describe "backend auto-detection" do
+    it "defaults to lite backend when no env set" do
+      ENV.delete("TINA4_QUEUE_BACKEND")
+      queue = Tina4::Queue.new(topic: "auto")
+      expect(queue.backend).to be_a(Tina4::QueueBackends::LiteBackend)
+    end
+
+    it "uses lite for 'file' backend" do
+      queue = Tina4::Queue.new(topic: "auto", backend: :file)
+      expect(queue.backend).to be_a(Tina4::QueueBackends::LiteBackend)
+    end
+
+    it "uses lite for 'lite' backend" do
+      queue = Tina4::Queue.new(topic: "auto", backend: :lite)
+      expect(queue.backend).to be_a(Tina4::QueueBackends::LiteBackend)
+    end
+
+    it "raises for unknown backend" do
+      expect {
+        Tina4::Queue.new(topic: "bad", backend: :redis)
+      }.to raise_error(ArgumentError, /Unknown queue backend/)
+    end
+
+    it "accepts a backend instance directly (legacy)" do
+      queue = Tina4::Queue.new(topic: "legacy", backend: backend)
+      queue.push({ test: true })
+      expect(queue.size).to eq(1)
+    end
+  end
+
+  describe "#dead_letters" do
+    it "delegates to backend" do
+      queue = Tina4::Queue.new(topic: "dead", backend: backend, max_retries: 1)
+      # Push a message and move it to dead letter
+      msg = Tina4::QueueMessage.new(topic: "dead", payload: { x: 1 })
+      backend.dead_letter(msg)
+      dead = queue.dead_letters
+      expect(dead).to be_an(Array)
+    end
+  end
+
+  describe "#retry_failed" do
+    it "delegates to backend" do
+      queue = Tina4::Queue.new(topic: "retry", backend: backend, max_retries: 3)
+      count = queue.retry_failed
+      expect(count).to eq(0)
+    end
+  end
+
+  describe "#purge" do
+    it "delegates to backend" do
+      queue = Tina4::Queue.new(topic: "purge", backend: backend)
+      count = queue.purge("completed")
+      expect(count).to eq(0)
+    end
+  end
+
+  describe "resolve_backend class method" do
+    it "resolves lite by default" do
+      ENV.delete("TINA4_QUEUE_BACKEND")
+      b = Tina4::Queue.resolve_backend
+      expect(b).to be_a(Tina4::QueueBackends::LiteBackend)
+    end
+
+    it "resolves lite for 'file'" do
+      b = Tina4::Queue.resolve_backend("file")
+      expect(b).to be_a(Tina4::QueueBackends::LiteBackend)
+    end
+
+    it "raises for unknown" do
+      expect {
+        Tina4::Queue.resolve_backend("unknown")
+      }.to raise_error(ArgumentError)
+    end
+  end
+end
+
 RSpec.describe Tina4::Consumer do
   let(:tmp_dir) { Dir.mktmpdir("tina4_consumer_test") }
   let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir) }
