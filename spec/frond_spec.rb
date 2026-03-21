@@ -859,4 +859,73 @@ RSpec.describe Tina4::Frond do
       expect(payload["context"]).to eq("admin")
     end
   end
+
+  # ===========================================================================
+  # Raw Block
+  # ===========================================================================
+
+  describe "raw block" do
+    it "preserves var syntax" do
+      expect(engine.render_string('{% raw %}{{ name }}{% endraw %}', { "name" => "Alice" })).to eq("{{ name }}")
+    end
+
+    it "preserves block syntax" do
+      expect(engine.render_string('{% raw %}{% if true %}yes{% endif %}{% endraw %}', {})).to eq("{% if true %}yes{% endif %}")
+    end
+
+    it "mixes raw and normal" do
+      result = engine.render_string('Hello {{ name }}! {% raw %}{{ not_parsed }}{% endraw %} done', { "name" => "World" })
+      expect(result).to eq("Hello World! {{ not_parsed }} done")
+    end
+
+    it "handles multiple raw blocks" do
+      result = engine.render_string('{% raw %}{{ a }}{% endraw %} mid {% raw %}{{ b }}{% endraw %}', {})
+      expect(result).to eq("{{ a }} mid {{ b }}")
+    end
+
+    it "handles multiline raw block" do
+      src = "{% raw %}\n{{ var }}\n{% tag %}\n{% endraw %}"
+      expect(engine.render_string(src, {})).to eq("\n{{ var }}\n{% tag %}\n")
+    end
+  end
+
+  # ===========================================================================
+  # From Import
+  # ===========================================================================
+
+  describe "from import" do
+    let(:tpl_dir_import) { Dir.mktmpdir("frond_import_test") }
+    let(:import_engine) { Tina4::Frond.new(template_dir: tpl_dir_import) }
+
+    after do
+      FileUtils.rm_rf(tpl_dir_import)
+    end
+
+    it "imports a basic macro" do
+      File.write(File.join(tpl_dir_import, "macros.twig"), '{% macro greeting(name) %}Hello {{ name }}!{% endmacro %}')
+      result = import_engine.render_string('{% from "macros.twig" import greeting %}{{ greeting("World") }}', {})
+      expect(result).to eq("Hello World!")
+    end
+
+    it "imports multiple macros" do
+      File.write(File.join(tpl_dir_import, "helpers.twig"), '{% macro bold(t) %}B{{ t }}B{% endmacro %}{% macro italic(t) %}I{{ t }}I{% endmacro %}')
+      result = import_engine.render_string('{% from "helpers.twig" import bold, italic %}{{ bold("hi") }} {{ italic("there") }}', {})
+      expect(result).to include("BhiB")
+      expect(result).to include("IthereI")
+    end
+
+    it "imports selectively" do
+      File.write(File.join(tpl_dir_import, "mix.twig"), '{% macro used(x) %}[{{ x }}]{% endmacro %}{% macro unused(x) %}{{{ x }}}{% endmacro %}')
+      result = import_engine.render_string('{% from "mix.twig" import used %}{{ used("ok") }}', {})
+      expect(result).to include("[ok]")
+    end
+
+    it "imports from subdirectory" do
+      subdir = File.join(tpl_dir_import, "macros")
+      FileUtils.mkdir_p(subdir)
+      File.write(File.join(subdir, "forms.twig"), '{% macro field(label, name) %}{{ label }}:{{ name }}{% endmacro %}')
+      result = import_engine.render_string('{% from "macros/forms.twig" import field %}{{ field("Name", "name") }}', {})
+      expect(result).to include("Name:name")
+    end
+  end
 end
