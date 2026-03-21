@@ -68,6 +68,11 @@ tina4 migrate       # Run pending database migrations
 tina4 seed          # Run data seeders
 tina4 test          # Run test suite
 tina4 build         # Build Docker image
+tina4 serve --production  # Auto-install best production server
+tina4 generate model User  # Generate ORM model scaffold
+tina4 generate route users # Generate route scaffold
+tina4 generate migration "desc"  # Generate migration file
+tina4 generate middleware Auth   # Generate middleware
 tina4 stage         # Build + push + deploy (~30s)
 ```
 

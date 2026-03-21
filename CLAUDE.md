@@ -479,6 +479,17 @@ Tina4::DevAdmin.request_inspector.clear
 - Health check endpoint
 - HTTP status code constants (`Tina4::HTTP_OK`, `Tina4::HTTP_NOT_FOUND`, etc.)
 - Default host: 0.0.0.0, default port: 7147
+- Messenger (.env driven SMTP/IMAP)
+- CLI scaffolding: `tina4ruby generate model/route/migration/middleware`
+- Production server auto-detect: `tina4ruby serve --production` (auto-installs Puma, 2.8x improvement)
+- Frond pre-compilation for 2.8x template render improvement
+- DB query caching: `TINA4_DB_CACHE=true` env var, `cache_stats`, `cache_clear`
+- ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
+- Queue backends: SQLite (default), RabbitMQ, Kafka
+- Cache backends: memory (default), Redis, file
+- Session handlers: file, Redis, MongoDB
+- Gallery: 7 interactive examples with Try It deploy at `/__dev/`
+- Tests: 1,577 passing (38 features)
 - Version: 3.0.0
 
 ## Links
