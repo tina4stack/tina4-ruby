@@ -205,6 +205,40 @@ module Tina4
     def render_landing_page
       port = ENV["PORT"] || "7145"
 
+      # Check deployed state for each gallery item
+      project_src = File.join(@root_dir, "src")
+      gallery_items = [
+        { id: "rest-api", name: "REST API", desc: "A simple JSON API with GET and POST endpoints", icon: "&#128640;", accent: "red", try_url: "/api/gallery/hello", file_check: "routes/api/gallery_hello.rb" },
+        { id: "orm", name: "ORM", desc: "Product model with CRUD endpoints", icon: "&#128451;", accent: "green", try_url: "/api/gallery/products", file_check: "routes/api/gallery_products.rb" },
+        { id: "auth", name: "Auth", desc: "JWT login form with token display", icon: "&#128274;", accent: "purple", try_url: "/gallery/auth", file_check: "routes/api/gallery_auth.rb" },
+        { id: "queue", name: "Queue", desc: "Background job producer and consumer", icon: "&#9889;", accent: "red", try_url: "/api/gallery/queue/produce", file_check: "routes/api/gallery_queue.rb" },
+        { id: "templates", name: "Templates", desc: "Twig template with dynamic data", icon: "&#128196;", accent: "green", try_url: "/gallery/page", file_check: "routes/gallery_page.rb" },
+        { id: "database", name: "Database", desc: "Raw SQL queries with the Database class", icon: "&#128225;", accent: "purple", try_url: "/api/gallery/db/tables", file_check: "routes/api/gallery_db.rb" },
+        { id: "error-overlay", name: "Error Overlay", desc: "See the rich debug error page with stack trace", icon: "&#128165;", accent: "red", try_url: "/api/gallery/crash", file_check: "routes/api/gallery_crash.rb" }
+      ]
+
+      gallery_cards = gallery_items.map do |item|
+        deployed = File.file?(File.join(project_src, item[:file_check]))
+        deployed_badge = deployed ? '<span style="position:absolute;top:0.75rem;right:0.75rem;background:#22c55e;color:#fff;font-size:0.65rem;padding:0.15rem 0.5rem;border-radius:0.25rem;font-weight:600;">DEPLOYED</span>' : ''
+        try_btn = if deployed
+                    %(<a href="#{item[:try_url]}" class="gbtn gbtn-try" target="_blank">Try It</a>)
+                  else
+                    %(<button class="gbtn gbtn-deploy" onclick="deployGallery('#{item[:id]}','#{item[:try_url]}')">Deploy &amp; Try</button>)
+                  end
+        view_btn = %(<button class="gbtn gbtn-view" onclick="viewGallery('#{item[:id]}')">View</button>)
+
+        <<~CARD
+          <div class="gallery-card">
+              <div class="accent accent-#{item[:accent]}"></div>
+              #{deployed_badge}
+              <div class="icon">#{item[:icon]}</div>
+              <h3>#{item[:name]}</h3>
+              <p>#{item[:desc]}</p>
+              <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">#{try_btn}#{view_btn}</div>
+          </div>
+        CARD
+      end.join
+
       html = <<~HTML
         <!DOCTYPE html>
         <html lang="en">
@@ -230,10 +264,9 @@ module Tina4
         .card{background:#1e293b;border-radius:0.75rem;padding:2rem;border:1px solid #334155}
         .card h2{font-size:1.4rem;font-weight:600;margin-bottom:1.25rem;color:#e2e8f0}
         .code-block{background:#0f172a;border-radius:0.5rem;padding:1.25rem;overflow-x:auto;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:0.85rem;line-height:1.6;color:#4ade80;border:1px solid #1e293b}
-        .gallery{z-index:1;width:100%;max-width:800px;padding:0 2rem;margin-bottom:3rem}
+        .gallery{z-index:1;width:100%;max-width:900px;padding:0 2rem;margin-bottom:3rem}
         .gallery h2{font-size:1.4rem;font-weight:600;margin-bottom:1.25rem;color:#e2e8f0;text-align:center}
-        .gallery-grid{display:flex;gap:1rem;flex-wrap:wrap}
-        .gallery-card{flex:1 1 220px;background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:1.5rem;position:relative;overflow:hidden}
+        .gallery-card{background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:1.5rem;position:relative;overflow:hidden}
         .gallery-card .accent{position:absolute;top:0;left:0;right:0;height:3px}
         .gallery-card .accent-red{background:#CC342D}
         .gallery-card .accent-green{background:#22c55e}
@@ -241,6 +274,18 @@ module Tina4
         .gallery-card .icon{font-size:1.5rem;margin-bottom:0.75rem}
         .gallery-card h3{font-size:1rem;font-weight:600;margin-bottom:0.5rem;color:#e2e8f0}
         .gallery-card p{font-size:0.85rem;color:#94a3b8;line-height:1.5}
+        .gbtn{padding:0.35rem 0.75rem;border-radius:0.375rem;font-size:0.75rem;font-weight:600;cursor:pointer;text-decoration:none;border:none;transition:all 0.15s}
+        .gbtn-try{background:#22c55e;color:#fff}
+        .gbtn-try:hover{background:#16a34a}
+        .gbtn-deploy{background:#CC342D;color:#fff}
+        .gbtn-deploy:hover{background:#a12a24}
+        .gbtn-view{background:transparent;color:#94a3b8;border:1px solid #334155}
+        .gbtn-view:hover{border-color:#64748b;color:#e2e8f0}
+        .view-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center}
+        .view-modal.active{display:flex}
+        .view-modal-content{background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:2rem;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;position:relative}
+        .view-modal-close{position:absolute;top:0.75rem;right:1rem;color:#94a3b8;cursor:pointer;font-size:1.25rem;background:none;border:none}
+        .view-modal-close:hover{color:#e2e8f0}
         </style>
         </head>
         <body>
@@ -277,62 +322,65 @@ module Tina4
             </div>
         </div>
         <div class="gallery">
-            <h2 id="gallery">What You Can Build</h2>
+            <h2 id="gallery">Gallery</h2>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;">
-                <div class="gallery-card">
-                    <div class="accent accent-red"></div>
-                    <div class="icon">&#128640;</div>
-                    <h3>REST API</h3>
-                    <p>Define routes with one block</p>
-                    <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Tina4::Router.get("/api/users") do |req, res|
-          res.json({ users: [] })
-        end</pre>
-                </div>
-                <div class="gallery-card">
-                    <div class="accent accent-green"></div>
-                    <div class="icon">&#128451;</div>
-                    <h3>ORM</h3>
-                    <p>Active record models, zero config</p>
-                    <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">class User < Tina4::ORM
-          integer_field :id, primary_key: true
-          string_field :name
-        end</pre>
-                </div>
-                <div class="gallery-card">
-                    <div class="accent accent-purple"></div>
-                    <div class="icon">&#128274;</div>
-                    <h3>Auth</h3>
-                    <p>JWT tokens built-in</p>
-                    <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">token = Tina4::Auth.create_token(user_id: 1)
-        valid = Tina4::Auth.validate_token(token)</pre>
-                </div>
-                <div class="gallery-card">
-                    <div class="accent accent-red"></div>
-                    <div class="icon">&#9889;</div>
-                    <h3>Queue</h3>
-                    <p>Background jobs, no Redis needed</p>
-                    <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">producer = Tina4::Producer.new(Tina4::Queue.new("emails"))
-        producer.produce(to: "a@b.com")</pre>
-                </div>
-                <div class="gallery-card">
-                    <div class="accent accent-green"></div>
-                    <div class="icon">&#128196;</div>
-                    <h3>Templates</h3>
-                    <p>Twig templates with auto-reload</p>
-                    <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Tina4::Router.get("/dashboard") do |req, res|
-          res.render("dashboard.twig", data)
-        end</pre>
-                </div>
-                <div class="gallery-card">
-                    <div class="accent accent-purple"></div>
-                    <div class="icon">&#128225;</div>
-                    <h3>Database</h3>
-                    <p>Multi-engine, one API</p>
-                    <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">db = Tina4::Database.new("sqlite:///app.db")
-        result = db.fetch("SELECT * FROM users")</pre>
-                </div>
+                #{gallery_cards}
             </div>
         </div>
+        <div class="view-modal" id="viewModal">
+            <div class="view-modal-content">
+                <button class="view-modal-close" onclick="document.getElementById('viewModal').classList.remove('active')">&times;</button>
+                <h3 id="viewModalTitle" style="margin-bottom:1rem;color:#e2e8f0;"></h3>
+                <div id="viewModalBody"></div>
+            </div>
+        </div>
+        <script>
+        function deployGallery(name, tryUrl) {
+            if (!confirm('Deploy the "' + name + '" gallery example into your project?')) return;
+            var btn = event.target;
+            btn.disabled = true;
+            btn.textContent = 'Deploying...';
+            fetch('/__dev/api/gallery/deploy', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: name })
+            }).then(function(r) { return r.json(); }).then(function(d) {
+                if (d.error) {
+                    alert('Deploy failed: ' + d.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Deploy & Try';
+                } else {
+                    window.location.href = tryUrl;
+                }
+            }).catch(function(e) {
+                alert('Deploy error: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = 'Deploy & Try';
+            });
+        }
+        function viewGallery(name) {
+            fetch('/__dev/api/gallery').then(function(r) { return r.json(); }).then(function(d) {
+                var item = (d.gallery || []).find(function(g) { return g.id === name; });
+                if (!item) { alert('Gallery item not found'); return; }
+                var title = document.getElementById('viewModalTitle');
+                var body = document.getElementById('viewModalBody');
+                title.textContent = item.name + ' — ' + item.description;
+                var html = '<p style="color:#94a3b8;margin-bottom:1rem;">Files that will be deployed:</p><ul style="list-style:none;padding:0;">';
+                (item.files || []).forEach(function(f) {
+                    html += '<li style="padding:0.25rem 0;color:#4ade80;font-family:monospace;font-size:0.85rem;">src/' + f + '</li>';
+                });
+                html += '</ul>';
+                if (item.try_url) {
+                    html += '<p style="color:#94a3b8;margin-top:1rem;">Try URL: <code style="color:#38bdf8;">' + item.try_url + '</code></p>';
+                }
+                body.innerHTML = html;
+                document.getElementById('viewModal').classList.add('active');
+            });
+        }
+        document.getElementById('viewModal').addEventListener('click', function(e) {
+            if (e.target === this) this.classList.remove('active');
+        });
+        </script>
         </body>
         </html>
       HTML

@@ -243,6 +243,12 @@ module Tina4
           json_response(run_query(sql))
         when ["GET", "/__dev/api/tables"]
           json_response(tables_payload)
+        when ["GET", "/__dev/api/gallery"]
+          json_response(gallery_list)
+        when ["POST", "/__dev/api/gallery/deploy"]
+          body = read_json_body(env)
+          name = (body && body["name"]) || ""
+          json_response(gallery_deploy(name))
         else
           nil
         end
@@ -551,6 +557,59 @@ module Tina4
         rescue => e
           json_response({ success: false, error: e.message })
         end
+      end
+
+      def gallery_list
+        gallery_dir = File.join(File.dirname(__FILE__), "gallery")
+        items = []
+        if Dir.exist?(gallery_dir)
+          Dir.children(gallery_dir).sort.each do |entry|
+            entry_path = File.join(gallery_dir, entry)
+            meta_file = File.join(entry_path, "meta.json")
+            next unless File.directory?(entry_path) && File.file?(meta_file)
+
+            meta = JSON.parse(File.read(meta_file)) rescue next
+            meta["id"] = entry
+            src_dir = File.join(entry_path, "src")
+            if Dir.exist?(src_dir)
+              meta["files"] = Dir.glob(File.join(src_dir, "**", "*"))
+                                 .select { |f| File.file?(f) }
+                                 .map { |f| f.sub("#{src_dir}/", "") }
+            end
+            items << meta
+          end
+        end
+        { gallery: items, count: items.size }
+      end
+
+      def gallery_deploy(name)
+        return { error: "No gallery item specified" } if name.to_s.empty?
+
+        gallery_src = File.join(File.dirname(__FILE__), "gallery", name, "src")
+        return { error: "Gallery item '#{name}' not found" } unless Dir.exist?(gallery_src)
+
+        require "fileutils"
+        project_src = File.join(Tina4.root_dir || Dir.pwd, "src")
+        copied = []
+        Dir.glob(File.join(gallery_src, "**", "*")).each do |src_file|
+          next unless File.file?(src_file)
+
+          rel = src_file.sub("#{gallery_src}/", "")
+          dest = File.join(project_src, rel)
+          FileUtils.mkdir_p(File.dirname(dest))
+          FileUtils.cp(src_file, dest)
+          copied << rel
+        end
+
+        # Re-discover routes so new files are immediately available
+        begin
+          routes_dir = File.join(Tina4.root_dir || Dir.pwd, "src", "routes")
+          Tina4::Router.load_routes(routes_dir) if Dir.exist?(routes_dir)
+        rescue => e
+          Tina4::Log.warning("Gallery route reload: #{e.message}")
+        end
+
+        { deployed: name, files: copied }
       end
 
       def render_dashboard
