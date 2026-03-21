@@ -1037,24 +1037,25 @@ module Tina4
                 i += 1
               end
 
-              engine = self
-              captured_body = body_tokens.dup
-              captured_ctx = context.dup
-              captured_params = param_names.dup
-
-              context[macro_name] = lambda { |*args|
-                macro_ctx = captured_ctx.dup
-                captured_params.each_with_index do |pname, pi|
-                  macro_ctx[pname] = pi < args.length ? args[pi] : nil
-                end
-                engine.send(:render_tokens, captured_body.dup, macro_ctx)
-              }
+              context[macro_name] = _make_macro_fn(body_tokens.dup, param_names.dup, context.dup)
               next
             end
           end
         end
         i += 1
       end
+    end
+
+    # Build an isolated lambda for a macro — avoids closure-in-loop variable sharing.
+    def _make_macro_fn(body_tokens, param_names, ctx)
+      engine = self
+      lambda { |*args|
+        macro_ctx = ctx.dup
+        param_names.each_with_index do |pname, pi|
+          macro_ctx[pname] = pi < args.length ? args[pi] : nil
+        end
+        engine.send(:render_tokens, body_tokens.dup, macro_ctx)
+      }
     end
 
     # {% cache "key" ttl %}...{% endcache %}
