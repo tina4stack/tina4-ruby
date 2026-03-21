@@ -33,16 +33,18 @@ module Tina4
         end
       end
 
-      def render_error(code)
+      def render_error(code, data = {})
         error_dirs = TEMPLATE_DIRS.map { |d| File.join(Dir.pwd, d, "errors") }
         error_dirs << File.join(File.dirname(__FILE__), "templates", "errors")
+
+        context = { "code" => code }.merge(data.transform_keys(&:to_s))
 
         error_dirs.each do |dir|
           %w[.twig .html .erb].each do |ext|
             path = File.join(dir, "#{code}#{ext}")
             if File.exist?(path)
               content = File.read(path)
-              return TwigEngine.new({ "code" => code }, dir).render(content)
+              return TwigEngine.new(context, dir).render(content)
             end
           end
         end
@@ -66,10 +68,38 @@ module Tina4
       def default_error_html(code)
         messages = { 403 => "Forbidden", 404 => "Not Found", 500 => "Internal Server Error" }
         msg = messages[code] || "Error"
-        "<!DOCTYPE html><html><head><title>#{code} #{msg}</title></head>" \
-        "<body style='font-family:sans-serif;text-align:center;padding:50px;'>" \
-        "<h1>#{code}</h1><p>#{msg}</p><hr>" \
-        "<p style='color:#999;'>Tina4 Ruby v#{Tina4::VERSION}</p></body></html>"
+        colors = { 403 => "#f59e0b", 404 => "#3b82f6", 500 => "#ef4444" }
+        color = colors[code] || "#ef4444"
+        <<~HTML
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>#{code} — #{msg}</title>
+          <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+          .error-card { background: #1e293b; border: 1px solid #334155; border-radius: 1rem; padding: 3rem; text-align: center; max-width: 520px; width: 90%; }
+          .error-code { font-size: 8rem; font-weight: 900; color: #{color}; opacity: 0.6; line-height: 1; margin-bottom: 0.5rem; }
+          .error-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
+          .error-msg { color: #94a3b8; font-size: 1rem; margin-bottom: 1.5rem; line-height: 1.5; }
+          .error-home { display: inline-block; padding: 0.6rem 2rem; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 0.5rem; font-size: 0.9rem; font-weight: 600; }
+          .error-home:hover { opacity: 0.9; }
+          .logo { font-size: 1.5rem; margin-bottom: 1rem; opacity: 0.5; }
+          </style>
+          </head>
+          <body>
+          <div class="error-card">
+              <div class="logo">T4</div>
+              <div class="error-code">#{code}</div>
+              <div class="error-title">#{msg}</div>
+              <div class="error-msg">Something went wrong while processing your request.</div>
+              <a href="/" class="error-home">Go Home</a>
+          </div>
+          </body>
+          </html>
+        HTML
       end
     end
 

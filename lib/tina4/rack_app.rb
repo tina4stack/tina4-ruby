@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 require "json"
+require "securerandom"
 
 module Tina4
   class RackApp
@@ -98,7 +99,7 @@ module Tina4
       # Auth check
       if route.auth_handler
         auth_result = route.auth_handler.call(env)
-        return handle_403 unless auth_result
+        return handle_403(env["PATH_INFO"] || "/") unless auth_result
       end
 
       request = Tina4::Request.new(env, path_params)
@@ -179,8 +180,8 @@ module Tina4
       [200, { "content-type" => "application/json; charset=utf-8" }, [@openapi_json]]
     end
 
-    def handle_403
-      body = Tina4::Template.render_error(403) rescue "403 Forbidden"
+    def handle_403(path = "")
+      body = Tina4::Template.render_error(403, { "path" => path }) rescue "403 Forbidden"
       [403, { "content-type" => "text/html" }, [body]]
     end
 
@@ -191,7 +192,7 @@ module Tina4
       end
 
       Tina4::Log.warning("404 Not Found: #{path}")
-      body = Tina4::Template.render_error(404) rescue "404 Not Found"
+      body = Tina4::Template.render_error(404, { "path" => path }) rescue "404 Not Found"
       [404, { "content-type" => "text/html" }, [body]]
     end
 
@@ -346,7 +347,10 @@ module Tina4
         # Rich error overlay with stack trace, source context, and line numbers
         body = Tina4::ErrorOverlay.render(error)
       else
-        body = Tina4::Template.render_error(500) rescue "500 Internal Server Error: #{error.message}"
+        body = Tina4::Template.render_error(500, {
+          "error_message" => "#{error.message}\n#{error.backtrace&.first(10)&.join("\n")}",
+          "request_id" => SecureRandom.hex(6)
+        }) rescue "500 Internal Server Error: #{error.message}"
       end
       [500, { "content-type" => "text/html" }, [body]]
     end
