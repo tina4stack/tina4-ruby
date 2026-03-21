@@ -210,6 +210,39 @@ module Tina4
 
     private
 
+    def truthy?(val)
+      %w[true 1 yes on].include?((val || "").to_s.strip.downcase)
+    end
+
+    def cache_key(sql, params)
+      Digest::SHA256.hexdigest(sql + params.to_s)
+    end
+
+    def cache_get(key)
+      @cache_mutex.synchronize do
+        entry = @query_cache[key]
+        return nil unless entry
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > entry[:expires_at]
+          @query_cache.delete(key)
+          return nil
+        end
+        entry[:value]
+      end
+    end
+
+    def cache_set(key, value)
+      @cache_mutex.synchronize do
+        @query_cache[key] = {
+          expires_at: Process.clock_gettime(Process::CLOCK_MONOTONIC) + @cache_ttl,
+          value: value
+        }
+      end
+    end
+
+    def cache_invalidate
+      @cache_mutex.synchronize { @query_cache.clear }
+    end
+
     def detect_driver(conn)
       case conn.to_s.downcase
       when /\.db$/, /\.sqlite/, /sqlite/
