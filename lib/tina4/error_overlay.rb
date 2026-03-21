@@ -143,7 +143,6 @@ module Tina4
           </head>
           <body>
           <div class="error-card">
-              <div class="logo">T4</div>
               <div class="error-code">#{status_code}</div>
               <div class="error-title">#{esc(message)}</div>
               <div class="error-msg">Something went wrong while processing your request.</div>
