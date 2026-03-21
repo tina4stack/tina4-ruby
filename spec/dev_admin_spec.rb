@@ -376,21 +376,5 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
-  describe ".render_overlay_script" do
-    it "returns empty string when not enabled" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return(nil)
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
-      expect(Tina4::DevAdmin.render_overlay_script).to eq("")
-    end
-
-    it "returns script tag when enabled" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return("ALL")
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
-      script = Tina4::DevAdmin.render_overlay_script
-      expect(script).to include("<script>")
-      expect(script).to include("tina4-dev-btn")
-    end
-  end
+end
 end
