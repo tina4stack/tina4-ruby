@@ -243,7 +243,7 @@ module Tina4
             <p class="tagline">This is not a framework</p>
             <div class="actions">
                 <a href="https://tina4.com/ruby" class="btn" target="_blank">Website</a>
-                <a href="/__dev/" class="btn">Dev Admin</a>
+                <a href="/__dev" class="btn">Dev Admin</a>
                 <a href="#gallery" class="btn">Gallery</a>
                 <a href="https://github.com/tina4stack/tina4-ruby" class="btn" target="_blank">GitHub</a>
                 <a href="https://github.com/tina4stack/tina4-ruby/stargazers" class="btn" target="_blank">&#11088; Star</a>
@@ -364,7 +364,7 @@ module Tina4
             <span style="color:#ffeb3b;">req:#{request_id}</span>
             <span style="color:#90caf9;">#{route_count} routes</span>
             <span style="color:#888;">Ruby #{RUBY_VERSION}</span>
-            <a href="/__dev" style="color:#ef9a9a;margin-left:auto;text-decoration:none;" target="_blank">Dashboard &#8599;</a>
+            <a href="#" onclick="(function(e){e.preventDefault();var p=document.getElementById('tina4-dev-panel');if(p){p.style.display=p.style.display==='none'?'block':'none';return;}var c=document.createElement('div');c.id='tina4-dev-panel';c.style.cssText='position:fixed;bottom:2rem;right:1rem;width:min(90vw,1200px);height:min(80vh,700px);z-index:99998;transition:all 0.2s';var f=document.createElement('iframe');f.src='/__dev';f.style.cssText='width:100%;height:100%;border:1px solid #CC342D;border-radius:0.5rem;box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#0f172a';c.appendChild(f);document.body.appendChild(c);})(event)" style="color:#ef9a9a;margin-left:auto;text-decoration:none;cursor:pointer;">Dashboard &#8599;</a>
             <span onclick="this.parentElement.style.display='none'" style="cursor:pointer;color:#888;margin-left:8px;">&#10005;</span>
         </div>
       HTML
