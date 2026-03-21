@@ -1019,4 +1019,93 @@ RSpec.describe Tina4::Frond do
       expect(result).to eq("5")
     end
   end
+
+  # ===========================================================================
+  # Token Pre-Compilation (Cache)
+  # ===========================================================================
+
+  describe "token cache" do
+    it "render_string produces same output on second call (cached)" do
+      src = "Hello {{ name }}!"
+      first = engine.render_string(src, { "name" => "World" })
+      second = engine.render_string(src, { "name" => "World" })
+      expect(first).to eq("Hello World!")
+      expect(second).to eq(first)
+    end
+
+    it "cached tokens work with different data" do
+      src = "{{ greeting }}, {{ name }}!"
+      r1 = engine.render_string(src, { "greeting" => "Hi", "name" => "Alice" })
+      r2 = engine.render_string(src, { "greeting" => "Bye", "name" => "Bob" })
+      expect(r1).to eq("Hi, Alice!")
+      expect(r2).to eq("Bye, Bob!")
+    end
+
+    it "file render produces same output on second call (cached)" do
+      Dir.mktmpdir do |dir|
+        e = Tina4::Frond.new(template_dir: dir)
+        File.write(File.join(dir, "cached.html"), "<p>{{ msg }}</p>")
+        first = e.render("cached.html", { "msg" => "hello" })
+        second = e.render("cached.html", { "msg" => "hello" })
+        expect(first).to eq("<p>hello</p>")
+        expect(second).to eq(first)
+      end
+    end
+
+    it "cached file tokens work with different data" do
+      Dir.mktmpdir do |dir|
+        e = Tina4::Frond.new(template_dir: dir)
+        File.write(File.join(dir, "cached2.html"), "{{ x }} + {{ y }}")
+        r1 = e.render("cached2.html", { "x" => 1, "y" => 2 })
+        r2 = e.render("cached2.html", { "x" => 10, "y" => 20 })
+        expect(r1).to eq("1 + 2")
+        expect(r2).to eq("10 + 20")
+      end
+    end
+
+    it "cache invalidates on file change in dev mode" do
+      Dir.mktmpdir do |dir|
+        ENV["TINA4_DEBUG"] = "true"
+        begin
+          e = Tina4::Frond.new(template_dir: dir)
+          path = File.join(dir, "changing.html")
+          File.write(path, "Version 1: {{ v }}")
+          r1 = e.render("changing.html", { "v" => "a" })
+          expect(r1).to eq("Version 1: a")
+
+          sleep 0.05
+          File.write(path, "Version 2: {{ v }}")
+          r2 = e.render("changing.html", { "v" => "b" })
+          expect(r2).to eq("Version 2: b")
+        ensure
+          ENV.delete("TINA4_DEBUG")
+        end
+      end
+    end
+
+    it "clear_cache empties both caches" do
+      engine.render_string("{{ x }}", { "x" => 1 })
+      engine.clear_cache
+      # After clearing, rendering still works (re-tokenizes)
+      result = engine.render_string("{{ x }}", { "x" => 2 })
+      expect(result).to eq("2")
+    end
+
+    it "for loop works correctly from cache" do
+      src = "{% for i in items %}{{ i }},{% endfor %}"
+      data = { "items" => [1, 2, 3] }
+      first = engine.render_string(src, data)
+      second = engine.render_string(src, data)
+      expect(first).to eq("1,2,3,")
+      expect(second).to eq(first)
+    end
+
+    it "conditionals work correctly from cache" do
+      src = "{% if show %}visible{% else %}hidden{% endif %}"
+      r1 = engine.render_string(src, { "show" => true })
+      r2 = engine.render_string(src, { "show" => false })
+      expect(r1).to eq("visible")
+      expect(r2).to eq("hidden")
+    end
+  end
 end

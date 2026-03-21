@@ -56,21 +56,65 @@ module Tina4
       # Fragment cache: key => [html, expires_at]
       @fragment_cache  = {}
 
+      # Token pre-compilation cache
+      @compiled         = {}  # {template_name => [tokens, mtime]}
+      @compiled_strings = {}  # {md5_hash => tokens}
+
       # Built-in global functions
       register_builtin_globals
     end
 
-    # Render a template file with data.
+    # Render a template file with data. Uses token caching for performance.
     def render(template, data = {})
       context = @globals.merge(stringify_keys(data))
-      source  = load_template(template)
-      execute(source, context)
+
+      path = File.join(@template_dir, template)
+      raise "Template not found: #{path}" unless File.exist?(path)
+
+      debug_mode = ENV.fetch("TINA4_DEBUG", "").downcase == "true"
+      cached = @compiled[template]
+
+      if cached
+        if debug_mode
+          # Dev mode: check if file changed
+          mtime = File.mtime(path)
+          if cached[1] == mtime
+            return execute_cached(cached[0], context)
+          end
+        else
+          # Production: skip mtime check, cache is permanent
+          return execute_cached(cached[0], context)
+        end
+      end
+
+      # Cache miss — load, tokenize, cache
+      source = File.read(path, encoding: "utf-8")
+      mtime = File.mtime(path)
+      tokens = tokenize(source)
+      @compiled[template] = [tokens, mtime]
+      execute_with_tokens(source, tokens, context)
     end
 
-    # Render a template string directly.
+    # Render a template string directly. Uses token caching for performance.
     def render_string(source, data = {})
       context = @globals.merge(stringify_keys(data))
-      execute(source, context)
+
+      key = Digest::MD5.hexdigest(source)
+      cached_tokens = @compiled_strings[key]
+
+      if cached_tokens
+        return execute_cached(cached_tokens, context)
+      end
+
+      tokens = tokenize(source)
+      @compiled_strings[key] = tokens
+      execute_cached(tokens, context)
+    end
+
+    # Clear all compiled template caches.
+    def clear_cache
+      @compiled.clear
+      @compiled_strings.clear
     end
 
     # Register a custom filter.
@@ -197,6 +241,35 @@ module Tina4
     # -----------------------------------------------------------------------
     # Execution
     # -----------------------------------------------------------------------
+
+    def execute_cached(tokens, context)
+      # Check if first non-text token is an extends block
+      tokens.each do |ttype, raw|
+        next if ttype == TEXT && raw.strip.empty?
+        if ttype == BLOCK
+          content, _, _ = strip_tag(raw)
+          if content.start_with?("extends ")
+            # Extends requires source-based execution for block extraction
+            source = tokens.map { |_, v| v }.join
+            return execute(source, context)
+          end
+        end
+        break
+      end
+      render_tokens(tokens, context)
+    end
+
+    def execute_with_tokens(source, tokens, context)
+      # Handle extends first
+      if source =~ /\{%-?\s*extends\s+["'](.+?)["']\s*-?%\}/
+        parent_name = Regexp.last_match(1)
+        parent_source = load_template(parent_name)
+        child_blocks = extract_blocks(source)
+        return render_with_blocks(parent_source, context, child_blocks)
+      end
+
+      render_tokens(tokens, context)
+    end
 
     def execute(source, context)
       # Handle extends first
