@@ -342,7 +342,12 @@ module Tina4
     def handle_500(error)
       Tina4::Log.error("500 Internal Server Error: #{error.message}")
       Tina4::Log.error(error.backtrace&.first(10)&.join("\n"))
-      body = Tina4::Template.render_error(500) rescue "500 Internal Server Error: #{error.message}"
+      if dev_mode?
+        # Rich error overlay with stack trace, source context, and line numbers
+        body = Tina4::ErrorOverlay.render(error)
+      else
+        body = Tina4::Template.render_error(500) rescue "500 Internal Server Error: #{error.message}"
+      end
       [500, { "content-type" => "text/html" }, [body]]
     end
 

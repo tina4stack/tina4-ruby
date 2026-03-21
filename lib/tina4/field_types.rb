@@ -46,6 +46,10 @@ module Tina4
                        nullable: nullable, default: default)
       end
 
+      def numeric_field(name, nullable: true, default: nil)
+        register_field(name, :float, nullable: nullable, default: default)
+      end
+
       def boolean_field(name, nullable: true, default: nil)
         register_field(name, :boolean, nullable: nullable, default: default)
       end
