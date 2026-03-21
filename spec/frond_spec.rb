@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "../lib/tina4/frond"
+require "tmpdir"
+require "fileutils"
 
 RSpec.describe Tina4::Frond do
   let(:engine) { Tina4::Frond.new }
@@ -548,6 +550,59 @@ RSpec.describe Tina4::Frond do
     it "sets a computed variable" do
       template = '{% set name = first ~ " " ~ last %}{{ name }}'
       expect(engine.render_string(template, { "first" => "John", "last" => "Doe" })).to eq("John Doe")
+    end
+  end
+
+  # ===========================================================================
+  # Template Inheritance (extends/block)
+  # ===========================================================================
+
+  describe "template inheritance" do
+    let(:tpl_dir) { Dir.mktmpdir("frond_test") }
+    let(:file_engine) { Tina4::Frond.new(template_dir: tpl_dir) }
+
+    after do
+      FileUtils.rm_rf(tpl_dir)
+    end
+
+    it "renders extends and blocks" do
+      File.write(File.join(tpl_dir, "base.html"), '<h1>{% block title %}Default{% endblock %}</h1><div>{% block content %}{% endblock %}</div>')
+      File.write(File.join(tpl_dir, "page.html"), '{% extends "base.html" %}{% block title %}My Page{% endblock %}{% block content %}Hello{% endblock %}')
+      result = file_engine.render("page.html", {})
+      expect(result).to include("<h1>My Page</h1>")
+      expect(result).to include("<div>Hello</div>")
+    end
+
+    it "uses default block content when child does not override" do
+      File.write(File.join(tpl_dir, "base.html"), "{% block title %}Default Title{% endblock %}")
+      File.write(File.join(tpl_dir, "page.html"), '{% extends "base.html" %}')
+      result = file_engine.render("page.html", {})
+      expect(result).to eq("Default Title")
+    end
+
+    it "handles extends with leading whitespace" do
+      File.write(File.join(tpl_dir, "base.html"), '<html><body>{% block content %}default{% endblock %}</body></html>')
+      File.write(File.join(tpl_dir, "page.html"), "  {% extends \"base.html\" %}\n{% block content %}<h1>Hello</h1>{% endblock %}")
+      result = file_engine.render("page.html", {})
+      expect(result).to include("<html><body>")
+      expect(result).to include("<h1>Hello</h1>")
+    end
+
+    it "handles extends with leading newlines" do
+      File.write(File.join(tpl_dir, "base.html"), '<html><body>{% block content %}default{% endblock %}</body></html>')
+      File.write(File.join(tpl_dir, "page.html"), "\n\n{% extends \"base.html\" %}\n{% block content %}<h1>Hello</h1>{% endblock %}")
+      result = file_engine.render("page.html", {})
+      expect(result).to include("<html><body>")
+      expect(result).to include("<h1>Hello</h1>")
+    end
+
+    it "renders variables inside blocks with extends" do
+      File.write(File.join(tpl_dir, "base.html"), "<head><title>{% block title %}Default{% endblock %}</title></head>\n<body>{% block content %}{% endblock %}</body>")
+      File.write(File.join(tpl_dir, "error.html"), "\n{% extends \"base.html\" %}\n{% block title %}Error {{ code }}{% endblock %}\n{% block content %}<div class=\"card\"><h1>{{ code }}</h1><p>{{ msg }}</p></div>{% endblock %}")
+      result = file_engine.render("error.html", { "code" => 500, "msg" => "Internal Server Error" })
+      expect(result).to include("<title>Error 500</title>")
+      expect(result).to include("<h1>500</h1>")
+      expect(result).to include("Internal Server Error")
     end
   end
 

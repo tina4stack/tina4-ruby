@@ -117,7 +117,19 @@ module Tina4
     # Tokenizer
     # -----------------------------------------------------------------------
 
+    # Regex to extract {% raw %}...{% endraw %} blocks before tokenizing
+    RAW_BLOCK_RE = /\{%-?\s*raw\s*-?%\}(.*?)\{%-?\s*endraw\s*-?%\}/m
+
     def tokenize(source)
+      # 1. Extract raw blocks and replace with placeholders
+      raw_blocks = []
+      source = source.gsub(RAW_BLOCK_RE) do
+        idx = raw_blocks.length
+        raw_blocks << Regexp.last_match(1)
+        "\x00RAW_#{idx}\x00"
+      end
+
+      # 2. Normal tokenization
       tokens = []
       pos = 0
       source.scan(TOKEN_RE) do
@@ -136,6 +148,19 @@ module Tina4
         pos = m.end(0)
       end
       tokens << [TEXT, source[pos..]] if pos < source.length
+
+      # 3. Restore raw block placeholders as literal TEXT
+      unless raw_blocks.empty?
+        tokens = tokens.map do |ttype, value|
+          if ttype == TEXT && value.include?("\x00RAW_")
+            raw_blocks.each_with_index do |content, idx|
+              value = value.gsub("\x00RAW_#{idx}\x00", content)
+            end
+          end
+          [ttype, value]
+        end
+      end
+
       tokens
     end
 
@@ -259,6 +284,9 @@ module Tina4
             end
           when "macro"
             i = handle_macro(tokens, i, context)
+          when "from"
+            handle_from_import(content, context)
+            i += 1
           when "cache"
             result, i = handle_cache(tokens, i, context)
             output << result
@@ -973,6 +1001,60 @@ module Tina4
       }
 
       i
+    end
+
+    # {% from "file" import macro1, macro2 %}
+    def handle_from_import(content, context)
+      m = content.match(/\Afrom\s+["'](.+?)["']\s+import\s+(.+)/)
+      return unless m
+
+      filename = m[1]
+      names = m[2].split(",").map(&:strip).reject(&:empty?)
+
+      source = load_template(filename)
+      tokens = tokenize(source)
+
+      i = 0
+      while i < tokens.length
+        ttype, raw = tokens[i]
+        if ttype == BLOCK
+          tag_content, _, _ = strip_tag(raw)
+          tag = (tag_content.split[0] || "")
+          if tag == "macro"
+            macro_m = tag_content.match(/\Amacro\s+(\w+)\s*\(([^)]*)\)/)
+            if macro_m && names.include?(macro_m[1])
+              macro_name = macro_m[1]
+              param_names = macro_m[2].split(",").map(&:strip).reject(&:empty?)
+
+              body_tokens = []
+              i += 1
+              while i < tokens.length
+                if tokens[i][0] == BLOCK && tokens[i][1].include?("endmacro")
+                  i += 1
+                  break
+                end
+                body_tokens << tokens[i]
+                i += 1
+              end
+
+              engine = self
+              captured_body = body_tokens.dup
+              captured_ctx = context.dup
+              captured_params = param_names.dup
+
+              context[macro_name] = lambda { |*args|
+                macro_ctx = captured_ctx.dup
+                captured_params.each_with_index do |pname, pi|
+                  macro_ctx[pname] = pi < args.length ? args[pi] : nil
+                end
+                engine.send(:render_tokens, captured_body.dup, macro_ctx)
+              }
+              next
+            end
+          end
+        end
+        i += 1
+      end
     end
 
     # {% cache "key" ttl %}...{% endcache %}

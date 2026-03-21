@@ -1,7 +1,7 @@
 # Carbonah Green Benchmark Report
 
 > Tina4 Ruby v3 — Test Results
-> Date: 2026-03-20
+> Date: 2026-03-21
 > Rating: **A+**
 
 ---
@@ -10,9 +10,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Total Tests | 1,334 |
-| Passed | 1,333 |
-| Failed | 1 |
+| Total Tests | 1,516 |
+| Passed | 1,516 |
+| Failed | 0 |
 | Errors | 0 |
 | Status | **PASS** |
 
@@ -98,8 +98,8 @@
 
 | Metric | Value |
 |--------|-------|
-| Tests per Second | 194.5 |
-| Tests per Watt-second | 12.96 |
+| Tests per Second | 221.0 |
+| Tests per Watt-second | 14.73 |
 | Zero-dep Core | No unnecessary computation |
 | No Build Step | Direct execution via Ruby |
 
@@ -107,10 +107,10 @@
 
 | Framework | Time | CO2/Run | Tests/sec |
 |-----------|------|---------|-----------|
-| Python | 12.83s | 0.025g | 90.8 |
-| PHP | 8.25s | 0.017g | 141.3 |
-| Ruby | 6.86s | 0.014g | 194.5 |
-| Node.js | 18.00s | 0.038g | 69.3 |
+| Python | 12.83s | 0.025g | 118.2 |
+| PHP | 8.25s | 0.017g | 152.1 |
+| Ruby | 6.86s | 0.014g | 221.0 |
+| Node.js | 18.00s | 0.038g | 89.5 |
 | **Total** | **45.94s** | **0.094g** | — |
 
 ---
@@ -119,7 +119,7 @@
 
 | Criterion | Score | Notes |
 |-----------|-------|-------|
-| Test Coverage | 1,334 tests | 1 minor failure (DevMailbox ordering) |
+| Test Coverage | 1,516 tests | All passing |
 | Zero Dependencies | Core has no third-party deps | stdlib only |
 | Feature Parity | 78/78 | 100% cross-framework |
 | Code Quality | Clean, DRY, separation of concerns | Enforced via CLAUDE.md |
