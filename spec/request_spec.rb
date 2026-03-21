@@ -12,7 +12,7 @@ RSpec.describe Tina4::Request do
       "rack.input" => StringIO.new(body),
       "rack.errors" => StringIO.new,
       "SERVER_NAME" => "localhost",
-      "SERVER_PORT" => "7145",
+      "SERVER_PORT" => "7147",
       "SCRIPT_NAME" => "",
       "rack.url_scheme" => "http"
     }

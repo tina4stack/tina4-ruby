@@ -184,7 +184,7 @@ module Tina4
 
           ```bash
           tina4ruby init .          # Scaffold project
-          tina4ruby start           # Start dev server on port 7145
+          tina4ruby start           # Start dev server on port 7147
           tina4ruby migrate         # Run database migrations
           tina4ruby test            # Run test suite
           tina4ruby routes          # List all registered routes

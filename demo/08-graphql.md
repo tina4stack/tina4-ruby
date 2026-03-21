@@ -161,7 +161,7 @@ fragment UserFields on User {
 
 When you register a route with `gql.register_route("/graphql")`, a GET request without a `query` parameter serves the GraphiQL IDE, letting you explore and test your schema in the browser.
 
-Visit `http://localhost:7145/graphql` in your browser to use it.
+Visit `http://localhost:7147/graphql` in your browser to use it.
 
 ## Type System
 

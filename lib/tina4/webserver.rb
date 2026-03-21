@@ -2,7 +2,7 @@
 
 module Tina4
   class WebServer
-    def initialize(app, host: "0.0.0.0", port: 7145)
+    def initialize(app, host: "0.0.0.0", port: 7147)
       @app = app
       @host = host
       @port = port

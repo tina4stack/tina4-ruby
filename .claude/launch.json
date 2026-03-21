@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "ruby-demo",
-      "runtimeExecutable": "/opt/homebrew/opt/ruby/bin/ruby",
-      "runtimeArgs": ["-I", "/Users/andrevanzuydam/IdeaProjects/tina4-ruby/lib", "-e", "require 'tina4'; Tina4.get('/') { |req, res| res.html('<h1>Tina4 Ruby</h1><p><a href=\"/__dev\">Dev Dashboard</a></p>') }; app = Tina4::RackApp.new(root_dir: '/Users/andrevanzuydam/IdeaProjects/tina4-ruby'); server = Tina4::WebServer.new(app, host: '0.0.0.0', port: 7145); server.start"],
-      "port": 7145
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "echo PORT=$PORT >> /tmp/tina4-debug.log && cd /Users/andrevanzuydam/IdeaProjects/tina4-ruby/example && exec /opt/homebrew/opt/ruby/bin/ruby -I/Users/andrevanzuydam/IdeaProjects/tina4-ruby/lib app.rb"],
+      "port": 7147
     }
   ]
 }

@@ -33,7 +33,7 @@ COPY --from=builder /usr/local/bundle /usr/local/bundle
 # Copy application code
 COPY --from=builder /app /app
 
-EXPOSE 7145
+EXPOSE 7147
 
 # Swagger defaults (override with env vars in docker-compose/k8s if needed)
 ENV SWAGGER_TITLE="Tina4 API"
@@ -41,4 +41,4 @@ ENV SWAGGER_VERSION="0.1.0"
 ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
 
 # Start the server on all interfaces
-CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7145", "-h", "0.0.0.0"]
+CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]

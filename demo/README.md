@@ -10,9 +10,9 @@ bundle install          # from the tina4-ruby root if not already done
 ruby app.rb
 ```
 
-Then visit **http://localhost:7145** in your browser.
+Then visit **http://localhost:7147** in your browser.
 
-The demo app starts a WEBrick server on port 7145 and provides an HTML landing page
+The demo app starts a WEBrick server on port 7147 and provides an HTML landing page
 with links to every feature demo. Each demo route returns JSON with the feature name,
 status (working/partial/missing), output data, and notes.
 

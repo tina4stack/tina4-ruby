@@ -58,14 +58,18 @@ module Tina4
     # ── start ─────────────────────────────────────────────────────────────
 
     def cmd_start(argv)
-      options = { port: 7145, host: "0.0.0.0", dev: false }
+      options = { port: nil, host: nil, dev: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: tina4ruby start [options]"
-        opts.on("-p", "--port PORT", Integer, "Port (default: 7145)") { |v| options[:port] = v }
+        opts.on("-p", "--port PORT", Integer, "Port (default: 7147)") { |v| options[:port] = v }
         opts.on("-h", "--host HOST", "Host (default: 0.0.0.0)") { |v| options[:host] = v }
         opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
       end
       parser.parse!(argv)
+
+      # Priority: CLI flag > ENV var > default
+      options[:port] = resolve_config(:port, options[:port])
+      options[:host] = resolve_config(:host, options[:host])
 
       require_relative "../tina4"
 
@@ -321,6 +325,25 @@ module Tina4
       HELP
     end
 
+    # ── config resolution ──────────────────────────────────────────────────
+
+    DEFAULT_PORT = 7147
+    DEFAULT_HOST = "0.0.0.0"
+
+    # Priority: CLI flag > ENV var > default
+    def resolve_config(key, cli_value)
+      case key
+      when :port
+        return cli_value if cli_value
+        return ENV["PORT"].to_i if ENV["PORT"] && !ENV["PORT"].empty?
+        DEFAULT_PORT
+      when :host
+        return cli_value if cli_value
+        return ENV["HOST"] if ENV["HOST"] && !ENV["HOST"].empty?
+        DEFAULT_HOST
+      end
+    end
+
     # ── shared helpers ────────────────────────────────────────────────────
 
     def load_routes(root_dir)
@@ -423,7 +446,7 @@ module Tina4
           # Copy application code
           COPY --from=builder /app /app
 
-          EXPOSE 7145
+          EXPOSE 7147
 
           # Swagger defaults (override with env vars in docker-compose/k8s if needed)
           ENV SWAGGER_TITLE="Tina4 API"
@@ -431,7 +454,7 @@ module Tina4
           ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
 
           # Start the server on all interfaces
-          CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7145", "-h", "0.0.0.0"]
+          CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]
         DOCKERFILE
         puts "  Created Dockerfile"
       end

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+               background: #0d1117; color: #c9d1d9; line-height: 1.6; display: flex;
+               justify-content: center; align-items: center; min-height: 100vh; }
+        .container { max-width: 600px; text-align: center; padding: 2rem; }
+        h1 { color: #c084fc; font-size: 2rem; margin-bottom: 0.5rem; }
+        p { color: #8b949e; margin-bottom: 1.5rem; }
+        .links { display: flex; flex-direction: column; gap: 0.5rem; }
+        a { color: #58a6ff; text-decoration: none; font-size: 1.1rem; }
+        a:hover { text-decoration: underline; }
+        .version { margin-top: 2rem; color: #484f58; font-size: 0.85rem; }
+        .version a { color: #58a6ff; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{{ message }}</h1>
+        <p>A lightweight Ruby web framework</p>
+
+        <div class="links">
+            <a href="/api/hello">GET /api/hello</a>
+            <a href="/api/users">GET /api/users</a>
+        </div>
+
+        <div class="version">
+            Tina4 Ruby v{{ version }} &mdash; <a href="https://tina4.com">tina4.com</a>
+        </div>
+    </div>
+</body>
+</html>

@@ -30,16 +30,16 @@ WORKDIR /app
 COPY --from=builder /usr/local/bundle /usr/local/bundle
 COPY --from=builder /app /app
 
-EXPOSE 7145
+EXPOSE 7147
 
-CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7145", "-h", "0.0.0.0"]
+CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]
 ```
 
 Build and run:
 
 ```bash
 docker build -t myapp .
-docker run -p 7145:7145 --env-file .env myapp
+docker run -p 7147:7147 --env-file .env myapp
 ```
 
 ## Environment Configuration (.env)
@@ -171,7 +171,7 @@ Tina4 uses Puma as the production server (falls back to WEBrick if Puma is not a
 
 ```ruby
 # Puma settings (configured automatically)
-# Bind: tcp://0.0.0.0:7145
+# Bind: tcp://0.0.0.0:7147
 # Threads: 0-16
 # Workers: 0 (single process)
 ```
@@ -191,7 +191,7 @@ services:
   app:
     build: .
     ports:
-      - "7145:7145"
+      - "7147:7147"
     environment:
       - DATABASE_URL=postgres://user:pass@db:5432/myapp
       - TINA4_ENV=production

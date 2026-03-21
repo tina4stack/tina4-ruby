@@ -41,7 +41,7 @@ end
 # Serve the WSDL definition
 Tina4.get "/soap/calculator", auth: false do |request, response|
   if request.query["wsdl"] || request.query["WSDL"]
-    wsdl_xml = service.generate_wsdl("http://localhost:7145/soap/calculator")
+    wsdl_xml = service.generate_wsdl("http://localhost:7147/soap/calculator")
     response.xml(wsdl_xml)
   else
     response.text("SOAP endpoint. Append ?wsdl for the WSDL definition.")

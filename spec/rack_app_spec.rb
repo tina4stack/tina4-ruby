@@ -17,7 +17,7 @@ RSpec.describe Tina4::RackApp do
       "QUERY_STRING" => "",
       "HTTP_HOST" => "localhost",
       "SERVER_NAME" => "localhost",
-      "SERVER_PORT" => "7145",
+      "SERVER_PORT" => "7147",
       "rack.input" => StringIO.new(body)
     }
     headers.each { |k, v| env["HTTP_#{k.upcase.tr('-', '_')}"] = v }

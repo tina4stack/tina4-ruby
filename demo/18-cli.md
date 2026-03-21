@@ -47,7 +47,7 @@ tina4ruby init .
 ### start -- Run the Web Server
 
 ```bash
-# Default: port 7145, all interfaces
+# Default: port 7147, all interfaces
 tina4ruby start
 
 # Custom port

@@ -34,7 +34,7 @@ gem install tina4ruby
 tina4ruby init my-app
 cd my-app
 tina4ruby serve
-# -> http://localhost:7145
+# -> http://localhost:7147
 ```
 
 That's it. Zero configuration, zero classes, zero boilerplate.
@@ -127,7 +127,7 @@ Tina4.get "/api/hello/{name}" do |request, response|
 end
 ```
 
-Visit `http://localhost:7145/api/hello` -- routes are auto-discovered, no requires needed.
+Visit `http://localhost:7147/api/hello` -- routes are auto-discovered, no requires needed.
 
 ### 3. Add a database
 
@@ -497,7 +497,7 @@ Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
 
 ```bash
 tina4ruby init [dir]             # Scaffold a new project
-tina4ruby serve [port]           # Start dev server (default: 7145)
+tina4ruby serve [port]           # Start dev server (default: 7147)
 tina4ruby migrate                # Run pending migrations
 tina4ruby migrate --create <desc># Create a migration file
 tina4ruby migrate --rollback     # Rollback last batch

@@ -2,7 +2,7 @@
 
 # Tina4 Ruby Demo Application
 # Run: cd tina4-ruby/demo && ruby app.rb
-# Visit: http://localhost:7145
+# Visit: http://localhost:7147
 
 $LOAD_PATH.unshift(File.join(__dir__, "..", "lib"))
 require "tina4"
@@ -557,14 +557,14 @@ end
 # ---------------------------------------------------------------------------
 Tina4.get "/demo/api-client" do |request, response|
   begin
-    client = Tina4::API.new("http://localhost:7145")
+    client = Tina4::API.new("http://localhost:7147")
     api_response = client.get("/demo/routing")
 
     response.json(demo_response(
       feature: "API Client",
       status: api_response.success? ? "working" : "partial",
       output: {
-        base_url: "http://localhost:7145",
+        base_url: "http://localhost:7147",
         request_path: "/demo/routing",
         response_status: api_response.status,
         response_success: api_response.success?,
@@ -588,7 +588,7 @@ end
 # ---------------------------------------------------------------------------
 Tina4.get "/demo/wsdl" do |request, response|
   begin
-    wsdl_xml = DEMO_WSDL_SERVICE.generate_wsdl("http://localhost:7145/soap")
+    wsdl_xml = DEMO_WSDL_SERVICE.generate_wsdl("http://localhost:7147/soap")
 
     # Invoke the operation directly
     soap_result = DEMO_WSDL_SERVICE.handle_soap_request(
@@ -992,7 +992,7 @@ Tina4.get "/demo/shortcomings" do |request, response|
 
   # 9. API Client
   begin
-    Tina4::API.new("http://localhost:7145")
+    Tina4::API.new("http://localhost:7147")
     results << { feature: "API Client", status: "working", detail: "HTTP client class instantiates. Self-call may hang on single-threaded server." }
   rescue => e
     results << { feature: "API Client", status: "partial", detail: e.message }
@@ -1000,7 +1000,7 @@ Tina4.get "/demo/shortcomings" do |request, response|
 
   # 10. WSDL
   begin
-    xml = DEMO_WSDL_SERVICE.generate_wsdl("http://localhost:7145/soap")
+    xml = DEMO_WSDL_SERVICE.generate_wsdl("http://localhost:7147/soap")
     results << { feature: "WSDL", status: "working", detail: "WSDL XML generation and SOAP request handling" }
   rescue => e
     results << { feature: "WSDL", status: "partial", detail: e.message }
@@ -1103,5 +1103,5 @@ end
 # Start the server
 # ---------------------------------------------------------------------------
 app = Tina4::RackApp.new(root_dir: __dir__)
-server = Tina4::WebServer.new(app, port: 7145)
+server = Tina4::WebServer.new(app, port: 7147)
 server.start
