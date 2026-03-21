@@ -35,20 +35,40 @@ my-app/
 └── tests/            # Test files
 ```
 
-Start a project:
+### Bootstrapping with the `tina4` Binary
+
+All frameworks are bootstrapped using the unified `tina4` CLI binary. It auto-detects the
+language from context or you can use the language-specific aliases:
+
 ```bash
+# Unified binary (auto-detects or prompts for language)
+tina4 init
+tina4 serve
+
+# Language-specific aliases (same binary, explicit language)
 tina4py init    # Python
 tina4php init   # PHP
 tina4rb init    # Ruby
 tina4js init    # Node.js
 ```
 
-Run the dev server:
+The `tina4` binary is the single entry point for all CLI operations — init, serve, migrate,
+seed, test, build, deploy. Always use it.
+
+**NEVER hand-create project files on initial setup.** Always run `tina4 init` (or the
+language-specific alias) to bootstrap a project. The binary creates the correct directory
+structure, starter files, .env template, and bin/ scripts. If you manually create
+`src/routes/`, `src/orm/`, `.env` etc. by hand, you'll miss framework files and get
+broken behavior. The init command exists for a reason — use it.
+
 ```bash
-tina4py serve   # Python  (or: uv run tina4 serve)
-tina4php serve  # PHP
-tina4rb serve   # Ruby
-tina4js serve   # Node.js
+tina4 init          # Scaffolds the full project structure
+tina4 serve         # Dev server with hot reload + debug overlay + Swagger at /swagger
+tina4 migrate       # Run pending database migrations
+tina4 seed          # Run data seeders
+tina4 test          # Run test suite
+tina4 build         # Build Docker image
+tina4 stage         # Build + push + deploy (~30s)
 ```
 
 That's it. You get hot reload, debug overlay, and Swagger docs at `/swagger` automatically.

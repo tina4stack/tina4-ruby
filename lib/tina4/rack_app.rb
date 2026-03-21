@@ -191,88 +191,126 @@ module Tina4
 
     def render_landing_page
       version = Tina4::VERSION
-      env_name = ENV["TINA4_ENV"] || ENV["RACK_ENV"] || ENV["RUBY_ENV"] || "development"
-      mode = env_name.capitalize
-
-      routes = Tina4::Router.routes
-      routes_rows = routes.map do |route|
-        method_color = case route.method
-                       when "GET" then "#4caf50"
-                       when "POST" then "#2196f3"
-                       when "PUT" then "#ff9800"
-                       when "PATCH" then "#9c27b0"
-                       when "DELETE" then "#f44336"
-                       else "#757575"
-                       end
-        "<tr><td><span style=\"color:#{method_color};font-weight:bold;\">#{route.method}</span></td>" \
-        "<td><code>#{route.path}</code></td></tr>"
-      end.join("\n")
-
-      routes_table = if routes.empty?
-                       "<p style=\"color:#999;font-style:italic;\">No routes registered yet.</p>"
-                     else
-                       <<~TABLE
-                         <table>
-                           <tr><th>Method</th><th>Path</th></tr>
-                           #{routes_rows}
-                         </table>
-                       TABLE
-                     end
+      port = ENV["PORT"] || "7145"
 
       html = <<~HTML
         <!DOCTYPE html>
         <html lang="en">
         <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>Tina4 Ruby v#{version}</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
-                .hero { background: linear-gradient(135deg, #c62828, #d32f2f); color: white; padding: 60px 20px; text-align: center; }
-                .hero h1 { font-size: 2.5em; margin-bottom: 10px; }
-                .hero p { font-size: 1.2em; opacity: 0.9; }
-                .container { max-width: 800px; margin: 0 auto; padding: 30px 20px; }
-                .card { background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 24px; margin-bottom: 20px; }
-                .card h2 { color: #c62828; margin-bottom: 12px; font-size: 1.3em; }
-                table { width: 100%; border-collapse: collapse; }
-                th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eee; }
-                th { color: #666; font-size: 0.85em; text-transform: uppercase; }
-                code { background: #fce4ec; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; color: #c62828; }
-                a { color: #c62828; text-decoration: none; }
-                a:hover { text-decoration: underline; }
-                .get-started { background: #fce4ec; border-left: 4px solid #c62828; padding: 16px; border-radius: 0 8px 8px 0; }
-                .get-started code { display: block; margin-top: 8px; background: #333; color: #4caf50; padding: 8px 12px; border-radius: 4px; }
-            </style>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Tina4</title>
+        <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;overflow-x:hidden;position:relative}
+        .bg-watermark{position:fixed;bottom:-5%;right:-5%;width:45%;opacity:0.04;pointer-events:none;z-index:0}
+        .content{text-align:center;z-index:1;padding:2rem;max-width:900px;width:100%}
+        .logo{width:120px;height:120px;margin-bottom:1.5rem}
+        h1{font-size:3rem;font-weight:700;margin-bottom:0.25rem;letter-spacing:-1px}
+        .tagline{color:#64748b;font-size:1.1rem;margin-bottom:2rem}
+        .actions{display:flex;gap:0.75rem;justify-content:center;flex-wrap:wrap;margin-bottom:2.5rem}
+        .btn{padding:0.6rem 1.5rem;border-radius:0.5rem;font-size:0.9rem;font-weight:600;cursor:pointer;text-decoration:none;transition:all 0.15s;border:1px solid #334155;color:#94a3b8;background:transparent}
+        .btn:hover{border-color:#64748b;color:#e2e8f0}
+        .btn-primary{background:#CC342D;color:#fff;border-color:#CC342D}
+        .btn-primary:hover{opacity:0.9;transform:translateY(-1px)}
+        .status{display:flex;gap:2rem;justify-content:center;align-items:center;color:#64748b;font-size:0.85rem;margin-bottom:1.5rem}
+        .status .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:0.4rem}
+        .footer{color:#334155;font-size:0.8rem;letter-spacing:0.5px}
+        .section-title{font-size:1.5rem;font-weight:700;margin-bottom:1rem;letter-spacing:-0.5px}
+        .card{background:#1e293b;border-radius:0.75rem;padding:1.5rem;text-align:left}
+        .code-block{background:#0f172a;border-radius:0.5rem;padding:1rem;margin-top:1rem;overflow-x:auto}
+        .code-block pre{color:#4ade80;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:0.85rem;line-height:1.6;margin:0;white-space:pre}
+        .gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-top:1rem}
+        .gallery-card{background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:1.25rem;text-align:left;position:relative;overflow:hidden}
+        .gallery-card::before{display:none}
+        .gallery-card h3{font-size:1rem;font-weight:600;margin-bottom:0.5rem}
+        .gallery-card p{color:#94a3b8;font-size:0.85rem;line-height:1.5}
+        @media(max-width:640px){.gallery{grid-template-columns:1fr}}
+        </style>
         </head>
         <body>
-            <div class="hero">
-                <h1>Tina4 Ruby</h1>
-                <p>This is not a 4ramework &mdash; v#{version} &mdash; #{mode}</p>
-            </div>
-            <div class="container">
-                <div class="card">
-                    <h2>Registered Routes</h2>
-                    #{routes_table}
+        <img src="/images/logo.png" class="bg-watermark" alt="">
+        <div class="content">
+            <div style="padding-top:3rem">
+                <img src="/images/logo.png" class="logo" alt="Tina4">
+                <h1>Tina4</h1>
+                <p class="tagline">This is not a framework</p>
+                <div class="actions">
+                    <a href="/__dev/" class="btn btn-primary">Dev Admin</a>
+                    <a href="#gallery" class="btn">Gallery</a>
                 </div>
+                <div class="status">
+                    <span><span class="dot"></span>Server running</span>
+                    <span>Port #{port}</span>
+                    <span>v#{version}</span>
+                </div>
+                <p class="footer">Zero dependencies &middot; Convention over configuration</p>
+            </div>
+            <div style="margin-top:3rem">
+                <h2 class="section-title">Getting Started</h2>
                 <div class="card">
-                    <h2>Get Started</h2>
-                    <div class="get-started">
-                        <p>Create <code style="background:#fce4ec;color:#c62828;">src/routes/hello.rb</code> and add your first route:</p>
-                        <code>Tina4.get("/hello") do |request, response|
-          response.json({ hello: "world" })
-        end</code>
+                    <div class="code-block"><pre># app.rb
+require "tina4"
+
+Tina4::Router.get("/hello") do |req, res|
+  res.json({ message: "Hello World!" })
+end
+
+Tina4::WebServer.new(nil, port: 7147).start</pre></div>
+                </div>
+            </div>
+            <div style="margin-top:3rem;margin-bottom:3rem">
+                <h2 id="gallery" class="section-title">What You Can Build</h2>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;">
+                    <div class="gallery-card" style="border-top:3px solid #3b82f6;">
+                        <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128640;</div>
+                        <h3>REST API</h3>
+                        <p>Define routes with one decorator</p>
+                        <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Tina4::Router.get("/api/users") do |req, res|
+  res.json({ users: [] })
+end</pre>
+                    </div>
+                    <div class="gallery-card" style="border-top:3px solid #22c55e;">
+                        <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128451;</div>
+                        <h3>ORM</h3>
+                        <p>Active record models, zero config</p>
+                        <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">class User < Tina4::ORM
+  integer_field :id, primary_key: true
+  string_field :name
+end</pre>
+                    </div>
+                    <div class="gallery-card" style="border-top:3px solid #a78bfa;">
+                        <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128274;</div>
+                        <h3>Auth</h3>
+                        <p>JWT tokens built-in</p>
+                        <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">token = Tina4::Auth.create_token(user_id: 1)
+valid = Tina4::Auth.validate_token(token)</pre>
+                    </div>
+                    <div class="gallery-card" style="border-top:3px solid #3b82f6;">
+                        <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#9889;</div>
+                        <h3>Queue</h3>
+                        <p>Background jobs, no Redis needed</p>
+                        <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">producer = Tina4::Producer.new(Tina4::Queue.new("emails"))
+producer.produce(to: "a@b.com")</pre>
+                    </div>
+                    <div class="gallery-card" style="border-top:3px solid #22c55e;">
+                        <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128196;</div>
+                        <h3>Templates</h3>
+                        <p>Twig templates with auto-reload</p>
+                        <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">Tina4::Router.get("/dashboard") do |req, res|
+  res.render("dashboard.twig", data)
+end</pre>
+                    </div>
+                    <div class="gallery-card" style="border-top:3px solid #a78bfa;">
+                        <div style="font-size:1.5rem;margin-bottom:0.75rem;">&#128225;</div>
+                        <h3>Database</h3>
+                        <p>Multi-engine, one API</p>
+                        <pre style="background:#0f172a;color:#4ade80;padding:0.75rem;border-radius:0.375rem;font-size:0.75rem;overflow-x:auto;margin-top:0.5rem;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;">db = Tina4::Database.new("sqlite:///app.db")
+result = db.fetch("SELECT * FROM users")</pre>
                     </div>
                 </div>
-                <div class="card">
-                    <h2>Quick Links</h2>
-                    <table>
-                        <tr><td><a href="/health">Health Check</a></td><td>Built-in health endpoint</td></tr>
-                        <tr><td><a href="/swagger">API Documentation</a></td><td>Swagger UI</td></tr>
-                        <tr><td><a href="https://tina4.com" target="_blank">tina4.com</a></td><td>Official documentation</td></tr>
-                    </table>
-                </div>
             </div>
+        </div>
         </body>
         </html>
       HTML

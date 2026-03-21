@@ -44,6 +44,16 @@ The pattern:
 
 **If your UI isn't updating, you probably used a static value where you needed a signal or function.**
 
+**WARNING about false/null/undefined:**
+```ts
+${false}      // Renders the TEXT "false" — NOT empty!
+${null}       // Renders empty
+${undefined}  // Renders empty
+${0}          // Renders "0"
+```
+Never use `${condition && html`...`}` — if condition is `false`, you get the text "false" in your DOM.
+Always use the ternary: `${() => condition ? html`...` : null}`
+
 ### Rule 2: New References for Objects/Arrays
 
 ```ts
@@ -150,6 +160,20 @@ html`<ul>${() => items.value.map(item => html`<li>${item}</li>`)}</ul>`
 // Static list (non-reactive, rendered once)
 html`<ul>${['a', 'b', 'c'].map(i => html`<li>${i}</li>`)}</ul>`
 ```
+
+## Things That Don't Exist — Don't Invent Them
+
+AI agents commonly hallucinate these APIs. **None of these exist in tina4-js:**
+- `unsafeHTML()` — does NOT exist. Use `.innerHTML=${rawHtml}` property binding
+- `t-model`, `t-for`, `t-bind`, `t-text` — these are Vue directives, NOT tina4-js
+- `tina4.createApp()` — does NOT exist. There's no app instance
+- `ref()` — does NOT exist (that's Vue). Use `signal()`
+- `useState()` — does NOT exist (that's React). Use `signal()`
+- `observedAttributes` / `attributeChangedCallback` — don't write these manually.
+  `Tina4Element` handles them automatically via `static props`. Use `this.prop('name')`
+
+If you find yourself writing something that isn't in this skill, stop and check. The API
+is small by design — if it's not here, it probably doesn't exist.
 
 ## Common Patterns
 
