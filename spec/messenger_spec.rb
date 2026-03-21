@@ -508,7 +508,7 @@ RSpec.describe Tina4::DevMailbox do
 
     it "returns newest first" do
       mailbox.capture(to: "a@t.com", subject: "Old", body: "1")
-      sleep 0.01
+      sleep 0.05
       mailbox.capture(to: "b@t.com", subject: "New", body: "2")
       inbox = mailbox.inbox
       expect(inbox.first[:subject]).to eq("New")

@@ -49,9 +49,9 @@ RSpec.describe Tina4::CLI do
           cli.run(["init", "testproject"])
         end
 
-        expect(Dir.exist?(File.join(project_dir, "routes"))).to be true
-        expect(Dir.exist?(File.join(project_dir, "templates"))).to be true
-        expect(Dir.exist?(File.join(project_dir, "public"))).to be true
+        expect(Dir.exist?(File.join(project_dir, "src", "routes"))).to be true
+        expect(Dir.exist?(File.join(project_dir, "src", "templates"))).to be true
+        expect(Dir.exist?(File.join(project_dir, "src", "public"))).to be true
         expect(Dir.exist?(File.join(project_dir, "migrations"))).to be true
         expect(File.exist?(File.join(project_dir, "app.rb"))).to be true
         expect(File.exist?(File.join(project_dir, "Gemfile"))).to be true

@@ -207,30 +207,26 @@ RSpec.describe Tina4::DevAdmin do
   end
 
   describe ".enabled?" do
-    it "returns true when TINA4_DEBUG_LEVEL is ALL" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return("ALL")
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
-      expect(Tina4::DevAdmin.enabled?).to be true
-    end
-
-    it "returns true when TINA4_DEBUG_LEVEL is DEBUG" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return("DEBUG")
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
-      expect(Tina4::DevAdmin.enabled?).to be true
-    end
-
     it "returns true when TINA4_DEBUG is true" do
       allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return(nil)
       allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
       expect(Tina4::DevAdmin.enabled?).to be true
     end
 
-    it "returns false when no debug env vars set" do
+    it "returns true when TINA4_DEBUG is 1" do
       allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return(nil)
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("1")
+      expect(Tina4::DevAdmin.enabled?).to be true
+    end
+
+    it "returns false when TINA4_DEBUG is false" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("false")
+      expect(Tina4::DevAdmin.enabled?).to be false
+    end
+
+    it "returns false when TINA4_DEBUG is not set" do
+      allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
       expect(Tina4::DevAdmin.enabled?).to be false
     end
@@ -259,12 +255,10 @@ RSpec.describe Tina4::DevAdmin do
   describe ".handle_request" do
     before do
       allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return("ALL")
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
     end
 
     it "returns nil when not enabled" do
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG_LEVEL").and_return(nil)
       allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
       env = { "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
       expect(Tina4::DevAdmin.handle_request(env)).to be_nil
@@ -376,5 +370,4 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
-end
 end

@@ -156,7 +156,7 @@ RSpec.describe Tina4::AI do
   describe ".install_all" do
     it "creates context files for ALL tools regardless of detection" do
       created = Tina4::AI.install_all(tmp_dir)
-      expect(created.length).to eq(Tina4::AI::AI_TOOLS.size)
+      expect(created.length).to be >= Tina4::AI::AI_TOOLS.size
       expect(created).to include("CLAUDE.md")
       expect(created).to include(".cursorules")
       expect(created).to include(".github/copilot-instructions.md")

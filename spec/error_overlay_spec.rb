@@ -114,25 +114,25 @@ RSpec.describe Tina4::ErrorOverlay do
   end
 
   describe ".debug_mode?" do
-    after { ENV.delete("TINA4_DEBUG_LEVEL") }
+    after { ENV.delete("TINA4_DEBUG") }
 
     it "returns true for ALL" do
-      ENV["TINA4_DEBUG_LEVEL"] = "ALL"
+      ENV["TINA4_DEBUG"] = "true"
       expect(described_class.debug_mode?).to be true
     end
 
     it "returns true for DEBUG" do
-      ENV["TINA4_DEBUG_LEVEL"] = "DEBUG"
+      ENV["TINA4_DEBUG"] = "1"
       expect(described_class.debug_mode?).to be true
     end
 
     it "returns false for WARNING" do
-      ENV["TINA4_DEBUG_LEVEL"] = "WARNING"
+      ENV["TINA4_DEBUG"] = "false"
       expect(described_class.debug_mode?).to be false
     end
 
     it "returns false when not set" do
-      ENV.delete("TINA4_DEBUG_LEVEL")
+      ENV.delete("TINA4_DEBUG")
       expect(described_class.debug_mode?).to be false
     end
   end
