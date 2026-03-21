@@ -303,7 +303,10 @@ module Tina4
       end
 
       def routes_payload
-        routes = Tina4::Router.routes.map do |route|
+        internal_prefixes = ["/__dev", "/health", "/swagger"]
+        routes = Tina4::Router.routes
+          .reject { |route| internal_prefixes.any? { |prefix| route.path.start_with?(prefix) } }
+          .map do |route|
           {
             method: route.method,
             pattern: route.path,
