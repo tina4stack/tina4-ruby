@@ -85,20 +85,25 @@ module Tina4
         end
       end
 
-      def find(id_or_filter = nil, filter = nil, include: nil)
+      def find(id_or_filter = nil, filter = nil, **kwargs)
+        include_list = kwargs.delete(:include)
+
         # find(id) — find by primary key
         # find(filter_hash) — find by criteria
+        # find(name: "Alice") — keyword args as filter hash
         result = if id_or_filter.is_a?(Hash)
           find_by_filter(id_or_filter)
         elsif filter.is_a?(Hash)
           find_by_filter(filter)
+        elsif !kwargs.empty?
+          find_by_filter(kwargs)
         else
           find_by_id(id_or_filter)
         end
 
-        if include && result
+        if include_list && result
           instances = result.is_a?(Array) ? result : [result]
-          eager_load(instances, include)
+          eager_load(instances, include_list)
         end
         result
       end
