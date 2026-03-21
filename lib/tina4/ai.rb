@@ -168,6 +168,52 @@ module Tina4
           created << rel_path
         end
 
+        # Install Claude Code skills if it's Claude
+        if name == "claude-code"
+          skills = install_claude_skills(root, force)
+          created.concat(skills)
+        end
+
+        created
+      end
+
+      def install_claude_skills(root, force)
+        created = []
+
+        # Determine the framework root (where lib/tina4/ lives)
+        framework_root = File.expand_path("../../..", __FILE__)
+
+        # Copy .skill files from the framework's skills/ directory to project root
+        skills_source = File.join(framework_root, "skills")
+        if Dir.exist?(skills_source)
+          Dir.glob(File.join(skills_source, "*.skill")).each do |skill_file|
+            target = File.join(root, File.basename(skill_file))
+            if !File.exist?(target) || force
+              FileUtils.cp(skill_file, target)
+              created << File.basename(skill_file)
+            end
+          end
+        end
+
+        # Copy skill directories from .claude/skills/ in the framework to the project
+        framework_skills_dir = File.join(framework_root, ".claude", "skills")
+        if Dir.exist?(framework_skills_dir)
+          target_skills_dir = File.join(root, ".claude", "skills")
+          FileUtils.mkdir_p(target_skills_dir)
+          Dir.children(framework_skills_dir).each do |entry|
+            skill_dir = File.join(framework_skills_dir, entry)
+            next unless File.directory?(skill_dir)
+
+            target_dir = File.join(target_skills_dir, entry)
+            if !Dir.exist?(target_dir) || force
+              FileUtils.rm_rf(target_dir) if Dir.exist?(target_dir)
+              FileUtils.cp_r(skill_dir, target_dir)
+              rel_path = target_dir.sub("#{root}/", "")
+              created << rel_path
+            end
+          end
+        end
+
         created
       end
 

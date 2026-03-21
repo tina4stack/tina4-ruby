@@ -5,14 +5,14 @@ module Tina4
     class MysqlDriver
       attr_reader :connection
 
-      def connect(connection_string)
+      def connect(connection_string, username: nil, password: nil)
         require "mysql2"
-        uri = URI.parse(connection_string.sub(/^mysql:\/\//, "mysql2://"))
+        uri = URI.parse(connection_string)
         @connection = Mysql2::Client.new(
           host: uri.host || "localhost",
           port: uri.port || 3306,
-          username: uri.user,
-          password: uri.password,
+          username: username || uri.user,
+          password: password || uri.password,
           database: uri.path&.sub("/", "")
         )
       end

@@ -5,10 +5,26 @@ module Tina4
     class FirebirdDriver
       attr_reader :connection
 
-      def connect(connection_string)
+      def connect(connection_string, username: nil, password: nil)
         require "fb"
-        db_path = connection_string.sub(/^firebird:\/\//, "")
-        @connection = Fb::Database.new(database: db_path).connect
+        require "uri"
+        uri = URI.parse(connection_string)
+        host = uri.host
+        port = uri.port || 3050
+        db_path = uri.path&.sub(/^\//, "")
+        db_user = username || uri.user
+        db_pass = password || uri.password
+
+        database = if host
+                     "#{host}/#{port}:#{db_path}"
+                   else
+                     db_path || connection_string.sub(/^firebird:\/\//, "")
+                   end
+
+        opts = { database: database }
+        opts[:username] = db_user if db_user
+        opts[:password] = db_pass if db_pass
+        @connection = Fb::Database.new(**opts).connect
       rescue LoadError
         raise "Firebird driver requires the 'fb' gem. Install it with: gem install fb"
       end

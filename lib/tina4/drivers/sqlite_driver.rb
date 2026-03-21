@@ -5,7 +5,7 @@ module Tina4
     class SqliteDriver
       attr_reader :connection
 
-      def connect(connection_string)
+      def connect(connection_string, username: nil, password: nil)
         require "sqlite3"
         db_path = connection_string.sub(/^sqlite:\/\//, "").sub(/^sqlite:/, "")
         @connection = SQLite3::Database.new(db_path)

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 require "json"
+require "uri"
 
 module Tina4
   class Database
@@ -11,22 +12,23 @@ module Tina4
       "postgres" => "Tina4::Drivers::PostgresDriver",
       "postgresql" => "Tina4::Drivers::PostgresDriver",
       "mysql" => "Tina4::Drivers::MysqlDriver",
-      "mysql2" => "Tina4::Drivers::MysqlDriver",
       "mssql" => "Tina4::Drivers::MssqlDriver",
       "sqlserver" => "Tina4::Drivers::MssqlDriver",
       "firebird" => "Tina4::Drivers::FirebirdDriver"
     }.freeze
 
-    def initialize(connection_string, driver_name: nil)
-      @connection_string = connection_string
-      @driver_name = driver_name || detect_driver(connection_string)
+    def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil)
+      @connection_string = connection_string || ENV["DATABASE_URL"]
+      @username = username || ENV["DATABASE_USERNAME"]
+      @password = password || ENV["DATABASE_PASSWORD"]
+      @driver_name = driver_name || detect_driver(@connection_string)
       @driver = create_driver
       @connected = false
       connect
     end
 
     def connect
-      @driver.connect(@connection_string)
+      @driver.connect(@connection_string, username: @username, password: @password)
       @connected = true
       Tina4::Log.info("Database connected: #{@driver_name}")
     rescue => e

@@ -5,14 +5,14 @@ module Tina4
     class MssqlDriver
       attr_reader :connection
 
-      def connect(connection_string)
+      def connect(connection_string, username: nil, password: nil)
         require "tiny_tds"
         uri = parse_connection(connection_string)
         @connection = TinyTds::Client.new(
           host: uri[:host],
           port: uri[:port] || 1433,
-          username: uri[:username],
-          password: uri[:password],
+          username: username || uri[:username],
+          password: password || uri[:password],
           database: uri[:database]
         )
       end

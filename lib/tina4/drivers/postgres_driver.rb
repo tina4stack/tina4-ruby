@@ -5,9 +5,16 @@ module Tina4
     class PostgresDriver
       attr_reader :connection
 
-      def connect(connection_string)
+      def connect(connection_string, username: nil, password: nil)
         require "pg"
-        @connection = PG.connect(connection_string)
+        url = connection_string
+        if username || password
+          uri = URI.parse(url)
+          uri.user = username if username
+          uri.password = password if password
+          url = uri.to_s
+        end
+        @connection = PG.connect(url)
       end
 
       def close
