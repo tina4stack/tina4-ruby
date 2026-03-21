@@ -5,7 +5,7 @@ require "fileutils"
 
 module Tina4
   class CLI
-    COMMANDS = %w[init start migrate seed seed:create test version routes console ai help].freeze
+    COMMANDS = %w[init start migrate seed seed:create test version routes console generate ai help].freeze
 
     def self.start(argv)
       new.run(argv)
@@ -23,6 +23,7 @@ module Tina4
       when "version"    then cmd_version
       when "routes"     then cmd_routes
       when "console"    then cmd_console
+      when "generate"   then cmd_generate(argv)
       when "ai"         then cmd_ai(argv)
       when "help", "-h", "--help" then cmd_help
       else
@@ -318,6 +319,123 @@ module Tina4
 
     # ── help ──────────────────────────────────────────────────────────────
 
+    # ── generate ────────────────────────────────────────────────────────
+
+    def cmd_generate(argv)
+      what = argv.shift
+      name = argv.shift
+      unless what && name
+        puts "Usage: tina4ruby generate <what> <name>"
+        puts "  Generators: model, route, migration, middleware"
+        exit 1
+      end
+
+      case what
+      when "model"    then generate_model(name)
+      when "route"    then generate_route(name)
+      when "migration" then generate_migration(name)
+      when "middleware" then generate_middleware(name)
+      else
+        puts "Unknown generator: #{what}"
+        puts "  Available: model, route, migration, middleware"
+        exit 1
+      end
+    end
+
+    def generate_model(name)
+      dir = "src/orm"
+      FileUtils.mkdir_p(dir)
+      snake = name.gsub(/([A-Z])/) { |m| ($~.begin(0) > 0 ? "_" : "") + m.downcase }
+      path = File.join(dir, "#{snake}.rb")
+      abort "  File already exists: #{path}" if File.exist?(path)
+      File.write(path, <<~RUBY)
+        class #{name} < Tina4::ORM
+          integer_field :id, primary_key: true, auto_increment: true
+          string_field :name
+          string_field :email
+        end
+      RUBY
+      puts "  Created #{path}"
+    end
+
+    def generate_route(name)
+      route_path = name.sub(%r{^/}, "")
+      dir = "src/routes/#{route_path}"
+      FileUtils.mkdir_p(dir)
+      path = dir.chomp("/") + ".rb"
+      abort "  File already exists: #{path}" if File.exist?(path)
+      File.write(path, <<~RUBY)
+        Tina4.get "/#{route_path}" do |request, response|
+          response.json(data: [])
+        end
+
+        Tina4.get "/#{route_path}/:id" do |request, response|
+          response.json(data: {})
+        end
+
+        Tina4.post "/#{route_path}" do |request, response|
+          response.json({ message: "created" }, 201)
+        end
+
+        Tina4.put "/#{route_path}/:id" do |request, response|
+          response.json(message: "updated")
+        end
+
+        Tina4.delete "/#{route_path}/:id" do |request, response|
+          response.json(message: "deleted")
+        end
+      RUBY
+      puts "  Created #{path}"
+    end
+
+    def generate_migration(name)
+      dir = "migrations"
+      FileUtils.mkdir_p(dir)
+      timestamp = Time.now.strftime("%Y%m%d%H%M%S")
+      table = name.sub(/^create_/, "")
+      table = if table.end_with?("s")
+                table
+              elsif table.end_with?("y")
+                table[0..-2] + "ies"
+              else
+                table + "s"
+              end
+      filename = "#{timestamp}_#{name}.sql"
+      path = File.join(dir, filename)
+      now = Time.now.strftime("%Y-%m-%d %H:%M:%S")
+      File.write(path, <<~SQL)
+        -- Migration: #{name}
+        -- Created: #{now}
+
+        CREATE TABLE #{table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      SQL
+      puts "  Created #{path}"
+    end
+
+    def generate_middleware(name)
+      dir = "src/middleware"
+      FileUtils.mkdir_p(dir)
+      snake = name.gsub(/([A-Z])/) { |m| ($~.begin(0) > 0 ? "_" : "") + m.downcase }
+      path = File.join(dir, "#{snake}.rb")
+      abort "  File already exists: #{path}" if File.exist?(path)
+      File.write(path, <<~RUBY)
+        class #{name} < Tina4::Middleware
+          def process(request, response)
+            auth = request.headers["Authorization"]
+            return response.json({ error: "Unauthorized" }, 401) unless auth
+
+            nil
+          end
+        end
+      RUBY
+      puts "  Created #{path}"
+    end
+
     def cmd_help
       puts <<~HELP
         Tina4 Ruby CLI
@@ -334,6 +452,7 @@ module Tina4
           version            Show Tina4 version
           routes             List all registered routes
           console            Start an interactive console
+          generate <what> <name>  Generate scaffolding (model, route, migration, middleware)
           ai                 Detect AI tools and install context files
           help               Show this help message
 

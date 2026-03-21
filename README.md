@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1334%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1577%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/carbonah-A%2B%20rated-00cc44" alt="Carbonah A+">
   <img src="https://img.shields.io/badge/zero--dep-core-blue" alt="Zero Dependencies">
   <img src="https://img.shields.io/badge/ruby-3.1%2B-blue" alt="Ruby 3.1+">
@@ -50,7 +50,7 @@ Every feature is built from scratch -- no gem install, no node_modules, no third
 | **HTTP** | Rack 3 server, block routing, path params (`{id:int}`, `{p:path}`), middleware pipeline, CORS, rate limiting, graceful shutdown |
 | **Templates** | Frond engine (Twig-compatible), inheritance, partials, 35+ filters, macros, fragment caching, sandboxing |
 | **ORM** | Active Record, typed fields with validation, soft delete, relationships (`has_one`/`has_many`/`belongs_to`), scopes, result caching, multi-database |
-| **Database** | SQLite, PostgreSQL, MySQL, MSSQL, Firebird -- unified adapter interface |
+| **Database** | SQLite, PostgreSQL, MySQL, MSSQL, Firebird -- unified adapter interface, query caching (TINA4_DB_CACHE=true for 4x speedup) |
 | **Auth** | Zero-dep JWT (RS256), sessions (file, Redis, MongoDB), password hashing, form tokens |
 | **API** | Swagger/OpenAPI auto-generation, GraphQL with ORM auto-schema and GraphiQL IDE |
 | **Background** | DB-backed queue with priority, delayed jobs, retry, batch processing, multi-queue |
@@ -58,9 +58,9 @@ Every feature is built from scratch -- no gem install, no node_modules, no third
 | **Frontend** | tina4-css (~24 KB), frond.js helper, SCSS compiler, live reload, CSS hot-reload |
 | **DX** | Dev admin dashboard, error overlay, request inspector, AI tool integration, Carbonah green benchmarks |
 | **Data** | Migrations with rollback, 50+ fake data generators, ORM and table seeders |
-| **Other** | REST client, localization (6 languages), in-memory cache (TTL/tags/LRU), event system, inline testing, configurable error pages |
+| **Other** | REST client, localization (6 languages), cache (memory/Redis/file), event system, inline testing, messenger (.env driven), configurable error pages |
 
-**676 tests across 28 modules. All Carbonah benchmarks rated A+.**
+**1,577 tests across 38 built-in features. Zero dependencies. All Carbonah benchmarks rated A+.**
 
 For full documentation visit **[tina4.com](https://tina4.com)**.
 
@@ -500,15 +500,67 @@ Set `TINA4_DEBUG_LEVEL=DEBUG` in `.env` to enable:
 ```bash
 tina4ruby init [dir]             # Scaffold a new project
 tina4ruby serve [port]           # Start dev server (default: 7147)
+tina4ruby serve --production     # Auto-install and use Puma production server
 tina4ruby migrate                # Run pending migrations
 tina4ruby migrate --create <desc># Create a migration file
 tina4ruby migrate --rollback     # Rollback last batch
+tina4ruby generate model <name>  # Generate ORM model scaffold
+tina4ruby generate route <name>  # Generate route scaffold
+tina4ruby generate migration <d> # Generate migration file
+tina4ruby generate middleware <n># Generate middleware scaffold
 tina4ruby seed                   # Run seeders from src/seeds/
 tina4ruby routes                 # List all registered routes
 tina4ruby test                   # Run test suite
 tina4ruby build                  # Build distributable gem
 tina4ruby ai [--all]             # Detect AI tools and install context
 ```
+
+### Production Server Auto-Detection
+
+`tina4 serve` automatically detects and uses the best available production server:
+
+- **Ruby**: Puma (if installed), otherwise WEBrick -- Puma gives 2.8x improvement
+- Use `tina4ruby serve --production` to auto-install Puma
+
+### Scaffolding with `tina4 generate`
+
+Quickly scaffold new components:
+
+```bash
+tina4ruby generate model User          # Creates src/orm/user.rb with field stubs
+tina4ruby generate route users         # Creates src/routes/users.rb with CRUD stubs
+tina4ruby generate migration "add age" # Creates migration SQL file
+tina4ruby generate middleware AuthLog   # Creates middleware class
+```
+
+### ORM Relationships & Eager Loading
+
+```ruby
+# Relationships
+orders = user.has_many("Order", "user_id")
+profile = user.has_one("Profile", "user_id")
+customer = order.belongs_to("Customer", "customer_id")
+
+# Eager loading with include:
+users = User.all(include: ["orders", "profile"])
+```
+
+### DB Query Caching
+
+Enable query caching for up to 4x speedup on read-heavy workloads:
+
+```bash
+# .env
+TINA4_DB_CACHE=true
+```
+
+### Frond Pre-Compilation
+
+Templates are pre-compiled for 2.8x faster rendering.
+
+### Gallery
+
+7 interactive examples with **Try It** deploy.
 
 ## Environment
 
