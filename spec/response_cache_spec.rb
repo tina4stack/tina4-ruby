@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "tmpdir"
+require "fileutils"
 
 RSpec.describe Tina4::ResponseCache do
   describe "with caching enabled" do
@@ -40,14 +42,10 @@ RSpec.describe Tina4::ResponseCache do
     end
 
     it "expires entries after TTL" do
-      short_cache = Tina4::ResponseCache.new(ttl: 0, max_entries: 10)
-      # TTL of 0 means disabled, so use a very short explicit TTL
-      # Actually ttl:0 means disabled. Let's use a positive TTL cache.
       ttl_cache = Tina4::ResponseCache.new(ttl: 1, max_entries: 10)
       ttl_cache.cache_response("GET", "/test", 200, "text/plain", "hello", ttl: 0)
       sleep(0.01)
       entry = ttl_cache.get("GET", "/test")
-      # TTL override of 0 means it already expired
       expect(entry).to be_nil
     end
 
@@ -80,6 +78,11 @@ RSpec.describe Tina4::ResponseCache do
         expect(stats[:size]).to eq(2)
         expect(stats[:keys]).to include("GET:/a")
         expect(stats[:keys]).to include("GET:/b")
+      end
+
+      it "includes backend field" do
+        stats = cache.cache_stats
+        expect(stats[:backend]).to eq("memory")
       end
     end
 
@@ -154,6 +157,125 @@ RSpec.describe Tina4::ResponseCache do
 
     it "combines method and url" do
       expect(cache.cache_key("GET", "/test")).to eq("GET:/test")
+    end
+  end
+
+  # ── Backend selection ───────────────────────────────────────────
+
+  describe "backend selection" do
+    it "defaults to memory backend" do
+      cache = Tina4::ResponseCache.new(ttl: 60)
+      expect(cache.backend_name).to eq("memory")
+    end
+
+    it "selects memory via explicit param" do
+      cache = Tina4::ResponseCache.new(ttl: 60, backend: "memory")
+      expect(cache.backend_name).to eq("memory")
+    end
+
+    it "selects file via explicit param" do
+      dir = Dir.mktmpdir("tina4_cache_test")
+      begin
+        cache = Tina4::ResponseCache.new(ttl: 60, backend: "file", cache_dir: dir)
+        expect(cache.backend_name).to eq("file")
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
+    it "selects backend from TINA4_CACHE_BACKEND env var" do
+      original = ENV["TINA4_CACHE_BACKEND"]
+      begin
+        ENV["TINA4_CACHE_BACKEND"] = "memory"
+        cache = Tina4::ResponseCache.new(ttl: 60)
+        expect(cache.backend_name).to eq("memory")
+      ensure
+        if original
+          ENV["TINA4_CACHE_BACKEND"] = original
+        else
+          ENV.delete("TINA4_CACHE_BACKEND")
+        end
+      end
+    end
+
+    it "explicit param overrides env var" do
+      original = ENV["TINA4_CACHE_BACKEND"]
+      begin
+        ENV["TINA4_CACHE_BACKEND"] = "file"
+        cache = Tina4::ResponseCache.new(ttl: 60, backend: "memory")
+        expect(cache.backend_name).to eq("memory")
+      ensure
+        if original
+          ENV["TINA4_CACHE_BACKEND"] = original
+        else
+          ENV.delete("TINA4_CACHE_BACKEND")
+        end
+      end
+    end
+  end
+
+  # ── Direct cache API ────────────────────────────────────────────
+
+  describe "direct cache API" do
+    let(:cache) { Tina4::ResponseCache.new(ttl: 60) }
+
+    it "cache_set and cache_get work" do
+      cache.cache_set("test_key", { "hello" => "world" }, ttl: 60)
+      result = cache.cache_get("test_key")
+      expect(result).to eq({ "hello" => "world" })
+    end
+
+    it "cache_get returns nil for missing key" do
+      expect(cache.cache_get("nonexistent_key_12345")).to be_nil
+    end
+
+    it "cache_delete removes a key" do
+      cache.cache_set("del_key", "value", ttl: 60)
+      expect(cache.cache_delete("del_key")).to be true
+      expect(cache.cache_get("del_key")).to be_nil
+      expect(cache.cache_delete("del_key")).to be false
+    end
+
+    it "cache_stats includes backend field" do
+      stats = cache.cache_stats
+      expect(stats[:backend]).to eq("memory")
+    end
+  end
+
+  # ── File backend ────────────────────────────────────────────────
+
+  describe "file backend" do
+    it "stores and retrieves via file backend" do
+      dir = Dir.mktmpdir("tina4_cache_file_test")
+      begin
+        cache = Tina4::ResponseCache.new(ttl: 60, backend: "file", cache_dir: dir)
+
+        cache.cache_response("GET", "/file-test", 200, "text/plain", "file-data")
+        entry = cache.get("GET", "/file-test")
+        expect(entry).not_to be_nil
+        expect(entry.body).to eq("file-data")
+
+        cache.clear_cache
+        expect(cache.get("GET", "/file-test")).to be_nil
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
+    it "direct API works with file backend" do
+      dir = Dir.mktmpdir("tina4_cache_file_direct_test")
+      begin
+        cache = Tina4::ResponseCache.new(ttl: 60, backend: "file", cache_dir: dir)
+
+        cache.cache_set("file_key", { "data" => true }, ttl: 60)
+        result = cache.cache_get("file_key")
+        expect(result).to eq({ "data" => true })
+
+        cache.cache_delete("file_key")
+        expect(cache.cache_get("file_key")).to be_nil
+      ensure
+        FileUtils.rm_rf(dir)
+      end
     end
   end
 end
