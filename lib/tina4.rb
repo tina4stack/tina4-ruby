@@ -106,7 +106,7 @@ module Tina4
   class << self
     attr_accessor :root_dir, :database
 
-    def print_banner(host: "0.0.0.0", port: 7147)
+    def print_banner(host: "0.0.0.0", port: 7147, server_name: nil)
       is_tty = $stdout.respond_to?(:isatty) && $stdout.isatty
       color = is_tty ? "\e[31m" : ""
       reset = is_tty ? "\e[0m" : ""
@@ -115,10 +115,24 @@ module Tina4
       log_level = (ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]").upcase
       display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
 
+      # Auto-detect server name if not provided
+      if server_name.nil?
+        if is_debug
+          server_name = "WEBrick"
+        else
+          begin
+            require "puma"
+            server_name = "puma"
+          rescue LoadError
+            server_name = "WEBrick"
+          end
+        end
+      end
+
       puts "#{color}#{BANNER}#{reset}"
       puts "  Tina4 Ruby v#{VERSION} — This is not a framework"
       puts ""
-      puts "  Server:    http://#{display}:#{port}"
+      puts "  Server:    http://#{display}:#{port} (#{server_name})"
       puts "  Swagger:   http://localhost:#{port}/swagger"
       puts "  Dashboard: http://localhost:#{port}/__dev"
       puts "  Debug:     #{is_debug ? 'ON' : 'OFF'} (Log level: #{log_level})"

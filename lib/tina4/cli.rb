@@ -97,37 +97,45 @@ module Tina4
 
       app = Tina4::RackApp.new(root_dir: root_dir)
 
+      is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+
       # Try Puma first (production-grade), fall back to WEBrick
-      begin
-        require "puma"
-        require "puma/configuration"
-        require "puma/launcher"
+      # In debug mode, always use WEBrick for dev toolbar/reload support
+      if !is_debug
+        begin
+          require "puma"
+          require "puma/configuration"
+          require "puma/launcher"
 
-        puma_host = options[:host]
-        puma_port = options[:port]
+          puma_host = options[:host]
+          puma_port = options[:port]
 
-        config = Puma::Configuration.new do |user_config|
-          user_config.bind "tcp://#{puma_host}:#{puma_port}"
-          user_config.app app
-          user_config.threads 0, 16
-          user_config.workers 0
-          user_config.environment "development"
-          user_config.log_requests false
-          user_config.quiet
+          config = Puma::Configuration.new do |user_config|
+            user_config.bind "tcp://#{puma_host}:#{puma_port}"
+            user_config.app app
+            user_config.threads 0, 16
+            user_config.workers 0
+            user_config.environment "production"
+            user_config.log_requests false
+            user_config.quiet
+          end
+
+          Tina4::Log.info("Production server: puma")
+
+          # Setup graceful shutdown (Puma manages its own signals, but we handle DB cleanup)
+          Tina4::Shutdown.setup
+
+          launcher = Puma::Launcher.new(config)
+          launcher.run
+          return
+        rescue LoadError
+          # Puma not installed, fall through to WEBrick
         end
-
-        Tina4::Log.info("Starting Puma server on http://#{puma_host}:#{puma_port}")
-
-        # Setup graceful shutdown (Puma manages its own signals, but we handle DB cleanup)
-        Tina4::Shutdown.setup
-
-        launcher = Puma::Launcher.new(config)
-        launcher.run
-      rescue LoadError
-        Tina4::Log.info("Puma not found, falling back to WEBrick")
-        server = Tina4::WebServer.new(app, host: options[:host], port: options[:port])
-        server.start
       end
+
+      Tina4::Log.info("Development server: WEBrick")
+      server = Tina4::WebServer.new(app, host: options[:host], port: options[:port])
+      server.start
     end
 
     # ── migrate ───────────────────────────────────────────────────────────
