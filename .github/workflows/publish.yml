@@ -1,0 +1,24 @@
+name: Publish to RubyGems
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+
+      - name: Build gem
+        run: gem build tina4ruby.gemspec
+
+      - name: Publish to RubyGems
+        run: gem push tina4ruby-*.gem
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
