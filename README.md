@@ -42,7 +42,38 @@ cd my-app && tina4 serve
 
 Open http://localhost:7147 — your app is running.
 
-> **Alternative** (without Rust CLI): `gem install tina4-ruby` then create `app.rb`
+<details>
+<summary><strong>Without the Tina4 CLI</strong></summary>
+
+```bash
+# 1. Create project
+mkdir my-app && cd my-app
+echo 'source "https://rubygems.org"' > Gemfile
+echo 'gem "tina4-ruby", "~> 3.0"' >> Gemfile
+bundle install
+
+# 2. Create entry point
+cat > app.rb << 'EOF'
+require "tina4"
+Tina4.initialize!(__dir__)
+app = Tina4::RackApp.new
+Tina4::WebServer.new(app, host: "0.0.0.0", port: 7147).start
+EOF
+
+# 3. Create .env
+echo 'TINA4_DEBUG=true' > .env
+echo 'TINA4_LOG_LEVEL=ALL' >> .env
+
+# 4. Create route directory
+mkdir -p src/routes
+
+# 5. Run
+bundle exec ruby app.rb
+```
+
+Open http://localhost:7147
+
+</details>
 
 ---
 
