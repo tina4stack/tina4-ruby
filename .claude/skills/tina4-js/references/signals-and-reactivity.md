@@ -86,6 +86,18 @@ batch(() => {
 - **Without batch:** D's effect may fire 2-3 times (B updates, D runs, C updates, D runs again)
 - **Recommendation:** Always use `batch()` when updating multiple signals that feed into the same computed/effect
 
+## isSignal(value: unknown): boolean
+
+Checks if a value is a tina4-js signal. Useful for building generic utilities:
+```ts
+import { isSignal, signal } from 'tina4js';
+
+const count = signal(0);
+isSignal(count);    // true
+isSignal(42);       // false
+isSignal(null);     // false
+```
+
 ## Global State (The "Store")
 
 There is no store module. Signals ARE the store:

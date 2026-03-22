@@ -93,7 +93,11 @@ The `?` prefix adds the attribute when truthy, removes it when falsy. Without `?
 Read `references/signals-and-reactivity.md` for the full API. Quick reference:
 
 ```ts
-import { signal, computed, effect, batch } from 'tina4js';
+import { signal, computed, effect, batch, isSignal } from 'tina4js';
+
+// Check if a value is a signal
+isSignal(count);       // true
+isSignal(42);          // false — use this to build generic helpers
 
 // Create
 const count = signal(0);
@@ -134,9 +138,19 @@ import { html } from 'tina4js';
 const fragment = html`<h1>Hello ${name}</h1>`;
 
 // Event binding — @event prefix
+// All @event handlers are automatically wrapped in batch() — multiple signal
+// writes inside one handler produce exactly ONE re-render after the handler returns.
 html`<button @click=${() => count.value++}>Add</button>`
 html`<input @input=${(e) => { name.value = e.target.value; }}>`
 html`<form @submit=${(e) => { e.preventDefault(); save(); }}>`
+
+// Multiple signal writes in one handler — safe, only one re-render fires
+html`<button @click=${() => {
+    items.value = [...items.value, newItem];
+    selected.value = null;
+    loading.value = false;
+    // ↑ three writes, one DOM update — no mid-event re-renders
+}}>Save</button>`
 
 // Property binding — .prop prefix (sets DOM property, not attribute)
 html`<input .value=${name}>`          // reactive: updates input when signal changes
@@ -160,6 +174,25 @@ html`<ul>${() => items.value.map(item => html`<li>${item}</li>`)}</ul>`
 // Static list (non-reactive, rendered once)
 html`<ul>${['a', 'b', 'c'].map(i => html`<li>${i}</li>`)}</ul>`
 ```
+
+## Event Handler Batching (v1.0.9+)
+
+All `@event` handlers are **automatically batched**. You do NOT need to:
+- Wrap signal writes in `batch()` inside event handlers
+- Use `setTimeout(() => signal.value = x, 0)` to defer updates
+- Call `e.stopPropagation()` to prevent mid-render bubble issues
+
+These were workarounds for a bug that is now fixed at the framework level.
+
+```ts
+// OLD workaround — no longer needed
+@click=${() => setTimeout(() => { items.value = [...items.value, item]; }, 0)}
+
+// CORRECT — just write to signals directly
+@click=${() => { items.value = [...items.value, item]; }}
+```
+
+`batch()` is still useful outside of event handlers (e.g. in `effect()`, `setTimeout`, WebSocket handlers).
 
 ## Things That Don't Exist — Don't Invent Them
 
@@ -284,7 +317,33 @@ html`
 
 ## Reference Files
 
-- **`references/signals-and-reactivity.md`** — Full signal, computed, effect, batch API with
+## Quick Reference — Commonly Missed APIs
+
+```ts
+// isSignal — check if a value is a tina4 signal
+import { isSignal } from 'tina4js';
+isSignal(myVar);  // true if signal, false otherwise
+
+// router.on — listen for route changes
+import { router } from 'tina4js/router';
+router.on('change', ({ path, params, pattern }) => { /* ... */ });
+
+// PWA cache strategies — exact enum values
+import { pwa } from 'tina4js/pwa';
+pwa.register({
+    cacheStrategy: 'cache-first',             // serve from cache, fallback to network
+    // cacheStrategy: 'network-first',         // try network, fallback to cache
+    // cacheStrategy: 'stale-while-revalidate' // serve cache, refresh in background
+});
+
+// API interceptor signatures
+api.intercept('request', (config) => { /* config: RequestInit & { headers: Record<string, string> } */ });
+api.intercept('response', (resp) => { /* resp: { status, data, ok, headers } */ });
+```
+
+## Reference Files
+
+- **`references/signals-and-reactivity.md`** — Full signal, computed, effect, batch, isSignal API with
   edge cases and gotchas. Read for any reactive state work.
 - **`references/html-and-components.md`** — html template bindings, Tina4Element Web Components,
   lifecycle, routing, API client, WebSocket. Read for any UI/component work.

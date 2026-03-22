@@ -222,7 +222,10 @@ try {
     console.log(err.status, err.data);
 }
 
-// Interceptors
+// Interceptors — type signatures:
+// RequestInterceptor:  (config: RequestInit & { headers: Record<string, string> }) => config | void
+// ResponseInterceptor: (response: ApiResponse) => response | void
+
 api.intercept('request', (config) => {
     config.headers['X-Request-ID'] = crypto.randomUUID();
     return config;

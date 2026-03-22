@@ -34,7 +34,7 @@ module Tina4
         attachments: store_attachments(msg_id, attachments),
         read: false,
         folder: "outbox",
-        created_at: timestamp.iso8601,
+        created_at: timestamp.strftime("%Y-%m-%dT%H:%M:%S.%6N%:z"),
         updated_at: timestamp.iso8601
       }
 
