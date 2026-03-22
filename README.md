@@ -27,17 +27,24 @@
 
 ---
 
-## Quickstart
+## Quick Start
 
 ```bash
-gem install tina4ruby
-tina4ruby init my-app
-cd my-app
-tina4ruby serve
-# -> http://localhost:7147
+# Install the Tina4 CLI
+# Download from https://github.com/tina4stack/tina4/releases
+# Download from https://github.com/tina4stack/tina4/releases
+cargo install tina4  # or download binary from GitHub releases  # or download binary from GitHub releases
+
+# Create a project
+tina4 init ruby ./my-app
+
+# Run it
+cd my-app && tina4 serve
 ```
 
-That's it. Zero configuration, zero classes, zero boilerplate.
+Open http://localhost:7147 — your app is running.
+
+> **Alternative** (without Rust CLI): `gem install tina4-ruby` then create `app.rb`
 
 ---
 
@@ -345,9 +352,9 @@ end
 ### JWT Authentication
 
 ```ruby
-auth = Tina4::Auth.new
-token = auth.get_token({ user_id: 42 })
-payload = auth.get_payload(token)
+token = Tina4::Auth.create_token({ user_id: 42 })
+result = Tina4::Auth.validate_token(token)
+payload = Tina4::Auth.get_payload(token)
 ```
 
 POST/PUT/PATCH/DELETE routes require `Authorization: Bearer <token>` by default. Use `auth: false` to make public, `secure_get` to protect GET routes.
