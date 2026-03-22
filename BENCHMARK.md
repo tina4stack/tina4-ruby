@@ -12,8 +12,8 @@ Real HTTP benchmarks — identical JSON endpoint, development servers.
 |-----------|:---------:|:-------------------:|--------|:----:|
 | Roda | 20,964 | — | Puma | 1 |
 | Sinatra | 9,364 | 7,192 | Puma | 5 |
-| **Tina4 Ruby 3.0** | **9,102** | **7,586** | **WEBrick** | **0** |
-| Rails 7 | 5,060 | 4,358 | Puma | 40 |
+| **Tina4 Ruby 3.1** | **8,365** | **7,586** | **WEBrick** | **0** |
+| Rails 8 | 4,992 | 4,358 | Puma | 40 |
 
 **Key takeaway:** Tina4 on WEBrick matches Sinatra on Puma while shipping 38 features with 0 dependencies. On Puma, Tina4 reaches ~22K req/s (2.8x improvement).
 
@@ -23,7 +23,7 @@ Real HTTP benchmarks — identical JSON endpoint, development servers.
 |-----------|-----------|:---------:|-------------|:---------:|:------:|
 | **Tina4 Ruby** | WEBrick | 9,102 | Puma | **22,784** | **2.5x** |
 | Sinatra | Puma | 9,364 | Puma (tuned) | ~12,000 | +28% |
-| Rails | Puma | 5,060 | Puma (tuned) | ~6,500 | +28% |
+| Rails 8 | 4,992 | Puma (tuned) | ~6,500 | +28% |
 
 ### Warmup Time
 
@@ -92,7 +92,7 @@ Ships with core install, no extra packages needed.
 | Framework | Features | Deps | JSON req/s |
 |-----------|:-------:|:----:|:---------:|
 | **Tina4** | **38/38** | **0** | **9,102** |
-| Rails | 20/38 | 40 | 5,060 |
+| Rails 8 | 4,992 |
 | Sinatra | 4/38 | 5 | 9,364 |
 | Roda | 3/38 | 1 | 20,964 |
 
