@@ -134,8 +134,11 @@ module Tina4
       when "kafka"
         config = resolve_kafka_config
         Tina4::QueueBackends::KafkaBackend.new(config)
+      when "mongodb", "mongo"
+        config = resolve_mongo_config
+        Tina4::QueueBackends::MongoBackend.new(config)
       else
-        raise ArgumentError, "Unknown queue backend: #{chosen.inspect}. Use 'lite', 'rabbitmq', or 'kafka'."
+        raise ArgumentError, "Unknown queue backend: #{chosen.inspect}. Use 'lite', 'rabbitmq', 'kafka', or 'mongodb'."
       end
     end
 
@@ -172,6 +175,21 @@ module Tina4
       config[:brokers] = brokers if brokers
       config[:brokers] ||= "localhost:9092"
       config[:group_id] = ENV.fetch("TINA4_KAFKA_GROUP_ID", "tina4_consumer_group")
+      config
+    end
+
+    def self.resolve_mongo_config
+      config = {}
+      uri = ENV["TINA4_MONGO_URI"]
+      config[:uri] = uri if uri
+      config[:host] = ENV.fetch("TINA4_MONGO_HOST", "localhost") unless uri
+      config[:port] = (ENV["TINA4_MONGO_PORT"] || 27017).to_i unless uri
+      username = ENV["TINA4_MONGO_USERNAME"]
+      password = ENV["TINA4_MONGO_PASSWORD"]
+      config[:username] = username if username
+      config[:password] = password if password
+      config[:db] = ENV.fetch("TINA4_MONGO_DB", "tina4")
+      config[:collection] = ENV.fetch("TINA4_MONGO_COLLECTION", "tina4_queue")
       config
     end
 
