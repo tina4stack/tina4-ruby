@@ -485,7 +485,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Frond pre-compilation for 2.8x template render improvement
 - DB query caching: `TINA4_DB_CACHE=true` env var, `cache_stats`, `cache_clear`
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
-- Queue backends: SQLite (default), RabbitMQ, Kafka
+- Queue backends: SQLite (default), RabbitMQ, Kafka, MongoDB
 - Cache backends: memory (default), Redis, file
 - Session handlers: file, Redis, MongoDB
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
