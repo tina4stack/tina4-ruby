@@ -1,7 +1,15 @@
 # frozen_string_literal: true
 
-require "net/smtp"
-require "net/imap"
+begin
+  require "net/smtp"
+rescue LoadError
+  # net-smtp gem needed on Ruby >= 4.0: gem install net-smtp
+end
+begin
+  require "net/imap"
+rescue LoadError
+  # net-imap gem needed on Ruby >= 4.0: gem install net-imap
+end
 require "base64"
 require "securerandom"
 require "time"

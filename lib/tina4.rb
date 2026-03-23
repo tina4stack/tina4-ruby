@@ -169,6 +169,53 @@ module Tina4
       Tina4::Log.info("Tina4 initialized successfully")
     end
 
+    # Initialize and start the web server.
+    # This is the primary entry point for app.rb files:
+    #   Tina4.initialize!(__dir__)
+    #   Tina4.run!
+    # Or combined: Tina4.run!(__dir__)
+    def run!(root_dir = Dir.pwd)
+      initialize!(root_dir) unless @root_dir
+
+      host = ENV.fetch("HOST", ENV.fetch("TINA4_HOST", "0.0.0.0"))
+      port = ENV.fetch("PORT", ENV.fetch("TINA4_PORT", "7147")).to_i
+
+      app = Tina4::RackApp.new(root_dir: root_dir)
+      is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+
+      # Try Puma first (production-grade), fall back to WEBrick
+      if !is_debug
+        begin
+          require "puma"
+          require "puma/configuration"
+          require "puma/launcher"
+
+          config = Puma::Configuration.new do |user_config|
+            user_config.bind "tcp://#{host}:#{port}"
+            user_config.app app
+            user_config.threads 0, 16
+            user_config.workers 0
+            user_config.environment "production"
+            user_config.log_requests false
+            user_config.quiet
+          end
+
+          Tina4::Log.info("Production server: puma")
+          Tina4::Shutdown.setup
+
+          launcher = Puma::Launcher.new(config)
+          launcher.run
+          return
+        rescue LoadError
+          # Puma not installed, fall through to WEBrick
+        end
+      end
+
+      Tina4::Log.info("Development server: WEBrick")
+      server = Tina4::WebServer.new(app, host: host, port: port)
+      server.start
+    end
+
     # DSL methods for route registration
     # GET is public by default (matching tina4_python behavior)
     # POST/PUT/PATCH/DELETE are secured by default — use auth: false to make public
