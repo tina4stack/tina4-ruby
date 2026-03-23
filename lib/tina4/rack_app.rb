@@ -112,8 +112,11 @@ module Tina4
         end
       end
 
-      # Execute handler — support both (request, response) and (response) signatures
-      result = if route.handler.arity == 1
+      # Execute handler — support (request, response), (response), or () signatures
+      result = case route.handler.arity
+      when 0
+        route.handler.call
+      when 1
         route.handler.call(response)
       else
         route.handler.call(request, response)
