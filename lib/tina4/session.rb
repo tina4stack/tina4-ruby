@@ -137,6 +137,8 @@ module Tina4
         Tina4::SessionHandlers::MongoHandler.new(@options[:handler_options])
       when :valkey
         Tina4::SessionHandlers::ValkeyHandler.new(@options[:handler_options])
+      when :database, :db
+        Tina4::SessionHandlers::DatabaseHandler.new(@options[:handler_options])
       else
         Tina4::SessionHandlers::FileHandler.new(@options[:handler_options])
       end
