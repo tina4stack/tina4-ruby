@@ -63,7 +63,8 @@ module Tina4
     autoload :FileHandler,  File.expand_path("tina4/session_handlers/file_handler", __dir__)
     autoload :RedisHandler, File.expand_path("tina4/session_handlers/redis_handler", __dir__)
     autoload :MongoHandler,  File.expand_path("tina4/session_handlers/mongo_handler", __dir__)
-    autoload :ValkeyHandler, File.expand_path("tina4/session_handlers/valkey_handler", __dir__)
+    autoload :ValkeyHandler,   File.expand_path("tina4/session_handlers/valkey_handler", __dir__)
+    autoload :DatabaseHandler, File.expand_path("tina4/session_handlers/database_handler", __dir__)
   end
 
   # ── Lazy-loaded: queue backends ───────────────────────────────────────
@@ -71,6 +72,7 @@ module Tina4
     autoload :LiteBackend,     File.expand_path("tina4/queue_backends/lite_backend", __dir__)
     autoload :RabbitmqBackend, File.expand_path("tina4/queue_backends/rabbitmq_backend", __dir__)
     autoload :KafkaBackend,    File.expand_path("tina4/queue_backends/kafka_backend", __dir__)
+    autoload :MongoBackend,    File.expand_path("tina4/queue_backends/mongo_backend", __dir__)
   end
 
   # ── Lazy-loaded: web server ───────────────────────────────────────────

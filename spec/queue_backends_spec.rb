@@ -145,6 +145,22 @@ RSpec.describe "Queue Backends" do
     end
   end
 
+  describe Tina4::QueueBackends::MongoBackend do
+    it "is defined in the QueueBackends module" do
+      expect(defined?(Tina4::QueueBackends::MongoBackend)).to eq("constant")
+    end
+
+    it "responds to the queue backend interface methods" do
+      instance_methods = Tina4::QueueBackends::MongoBackend.instance_methods(false)
+      expect(instance_methods).to include(:enqueue)
+      expect(instance_methods).to include(:dequeue)
+      expect(instance_methods).to include(:acknowledge)
+      expect(instance_methods).to include(:requeue)
+      expect(instance_methods).to include(:dead_letter)
+      expect(instance_methods).to include(:size)
+    end
+  end
+
   describe Tina4::QueueMessage do
     it "generates a UUID id by default" do
       msg = Tina4::QueueMessage.new(topic: "test", payload: "data")

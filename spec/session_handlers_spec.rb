@@ -155,13 +155,36 @@ RSpec.describe "Session Handlers" do
     end
   end
 
+  describe Tina4::SessionHandlers::DatabaseHandler do
+    it "is defined in the SessionHandlers module" do
+      expect(defined?(Tina4::SessionHandlers::DatabaseHandler)).to eq("constant")
+    end
+
+    it "responds to the session handler interface methods" do
+      instance_methods = Tina4::SessionHandlers::DatabaseHandler.instance_methods(false)
+      expect(instance_methods).to include(:read)
+      expect(instance_methods).to include(:write)
+      expect(instance_methods).to include(:destroy)
+      expect(instance_methods).to include(:cleanup)
+    end
+  end
+
+  describe "Session create_handler supports :database and :db symbols" do
+    it "maps :database to DatabaseHandler in the create_handler switch" do
+      session_source = File.read(File.expand_path("../lib/tina4/session.rb", __dir__))
+      expect(session_source).to include("when :database, :db")
+      expect(session_source).to include("SessionHandlers::DatabaseHandler")
+    end
+  end
+
   describe "Session handler interface consistency" do
     let(:handlers) do
       [
         Tina4::SessionHandlers::FileHandler,
         Tina4::SessionHandlers::RedisHandler,
         Tina4::SessionHandlers::MongoHandler,
-        Tina4::SessionHandlers::ValkeyHandler
+        Tina4::SessionHandlers::ValkeyHandler,
+        Tina4::SessionHandlers::DatabaseHandler
       ]
     end
 
