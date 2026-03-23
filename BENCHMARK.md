@@ -1,37 +1,21 @@
 # Tina4 Ruby — Benchmark Report
 
-**Date:** 2026-03-22 | **Machine:** Apple Silicon (ARM64) | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, median)
+**Date:** 2026-03-23 | **Machine:** Apple Silicon (ARM64), 8 cores | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, median)
 
 ---
 
 ## 1. Performance
 
-Real HTTP benchmarks — identical JSON endpoint, development servers.
+Real HTTP benchmarks — identical JSON and 100-item list endpoints, WEBrick server.
 
-| Framework | JSON req/s | 100-item list req/s | Server | Deps |
-|-----------|:---------:|:-------------------:|--------|:----:|
-| Roda | 20,964 | — | Puma | 1 |
-| Sinatra | 9,364 | 7,192 | Puma | 5 |
-| **Tina4 Ruby 3.1** | **8,365** | **7,586** | **WEBrick** | **0** |
-| Rails 8 | 4,992 | 4,358 | Puma | 40 |
+| Rank | Framework | JSON req/s | List req/s | Server | Deps |
+|:----:|-----------|:---------:|:----------:|--------|:----:|
+| 1 | Roda | 4,094 | 4,544 | WEBrick | 1 |
+| 2 | Sinatra | 2,905 | 2,184 | WEBrick | 2 |
+| — | **Tina4 Ruby** | **—** | **—** | **—** | **0** |
+| — | Rails 8 | — | — | — | 40+ |
 
-**Key takeaway:** Tina4 on WEBrick matches Sinatra on Puma while shipping 38 features with 0 dependencies. On Puma, Tina4 reaches ~22K req/s (2.8x improvement).
-
-### Production Server Results
-
-| Framework | Dev Server | Dev JSON/s | Prod Server | Prod JSON/s | Change |
-|-----------|-----------|:---------:|-------------|:---------:|:------:|
-| **Tina4 Ruby** | WEBrick | 9,102 | Puma | **22,784** | **2.5x** |
-| Sinatra | Puma | 9,364 | Puma (tuned) | ~12,000 | +28% |
-| Rails 8 | 4,992 | Puma (tuned) | ~6,500 | +28% |
-
-### Warmup Time
-
-| Framework | Warmup (ms) |
-|-----------|:-----------:|
-| Sinatra | 85 |
-| **Tina4** | **102** |
-| Rails | 222 |
+> **Note:** Tina4 Ruby and Rails were not benchmarked in this round due to setup issues. The published gem (v3.0.0) has server startup issues on Ruby 4.0. The local v3.2.0 contains these fixes but has not been published to RubyGems yet. Tina4 Ruby is expected to perform similarly to Roda based on shared architectural patterns (lightweight routing, WEBrick).
 
 ---
 
@@ -91,10 +75,10 @@ Ships with core install, no extra packages needed.
 
 | Framework | Features | Deps | JSON req/s |
 |-----------|:-------:|:----:|:---------:|
-| **Tina4** | **38/38** | **0** | **9,102** |
-| Rails 8 | 4,992 |
-| Sinatra | 4/38 | 5 | 9,364 |
-| Roda | 3/38 | 1 | 20,964 |
+| **Tina4** | **38/38** | **0** | *not yet benchmarked* |
+| Rails 8 | 20/38 | 40+ | *not yet benchmarked* |
+| Sinatra | 4/38 | 2 | 2,905 |
+| Roda | 3/38 | 1 | 4,094 |
 
 ---
 
@@ -102,10 +86,10 @@ Ships with core install, no extra packages needed.
 
 | Framework | Install Size | Dependencies |
 |-----------|:----------:|:------------:|
-| **Tina4 Ruby** | **892 KB** | **0** |
-| Sinatra | 5 MB | 5 |
-| Roda | 1 MB | 1 |
-| Rails | 40+ MB | 40 |
+| **Tina4 Ruby** | **~900 KB** | **0** |
+| Roda | ~1 MB | 1 |
+| Sinatra | ~5 MB | 2 |
+| Rails | 40+ MB | 40+ |
 
 Zero dependencies means core size **is** deployment size. No gem bloat.
 
@@ -115,32 +99,43 @@ Zero dependencies means core size **is** deployment size. No gem bloat.
 
 Estimated emissions per HTTP benchmark run (5000 requests on Apple Silicon, 15W TDP).
 
-| Framework | JSON req/s | Est. Energy (kWh) | Est. CO2 (g) |
-|-----------|:---------:|:-----------------:|:------------:|
-| **Tina4** | 9,102 | 0.0000229 | 0.0109 |
-| Roda | 20,964 | 0.0000099 | 0.0047 |
-| Sinatra | 9,364 | 0.0000222 | 0.0106 |
-| Rails | 5,060 | 0.0000411 | 0.0195 |
+Only Roda and Sinatra were benchmarked; Tina4 and Rails are excluded from this calculation.
 
-*CO2 calculated at world average 475g CO2/kWh. Lower req/s = longer to serve 5000 requests = more energy.*
+| Framework | JSON req/s | Duration (s) | Est. Energy (kWh) | Est. CO2 (g) |
+|-----------|:---------:|:------------:|:-----------------:|:------------:|
+| Roda | 4,094 | 1.221 | 0.0000051 | 0.0024 |
+| Sinatra | 2,905 | 1.721 | 0.0000072 | 0.0034 |
 
-### Tina4 Test Suite Emissions
+*Calculation: duration = 5000 / req_s; energy = duration x 15W / 3,600,000; CO2 = energy x 475 g/kWh (world average).*
 
-| Metric | Value |
-|--------|-------|
-| Test Execution Time | 6.86s |
-| Tests | 1,577 |
-| CO2 per Run | 0.014g |
-| Tests per Second | 221.0 |
-| Annual CI (10 runs/day) | 0.051g CO2/year |
-
-**Carbonah Rating: A+**
+**Roda uses ~30% less energy than Sinatra** to serve the same 5000 requests thanks to higher throughput.
 
 ---
 
 ## 5. How to Run
 
-Benchmarks are maintained in the `tina4-python` repository's `benchmarks/` folder.
+Install `hey`:
+
+```bash
+brew install hey
+```
+
+Run benchmarks manually:
+
+```bash
+# Start the framework server (e.g., Roda on port 9292)
+cd benchmarks/roda && ruby app.rb &
+
+# JSON endpoint
+hey -n 5000 -c 50 http://localhost:9292/json
+
+# List endpoint
+hey -n 5000 -c 50 http://localhost:9292/list
+
+# Take median of 3 runs
+```
+
+Automated benchmarks are maintained in the `tina4-python` repository:
 
 ```bash
 cd ../tina4-python/benchmarks
@@ -148,6 +143,7 @@ python benchmark.py --ruby
 ```
 
 Full cross-language suite:
+
 ```bash
 python benchmark.py --all
 ```
