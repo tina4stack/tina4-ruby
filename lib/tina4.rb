@@ -176,11 +176,47 @@ module Tina4
     #   Tina4.initialize!(__dir__)
     #   Tina4.run!
     # Or combined: Tina4.run!(__dir__)
+    def find_available_port(start, max_tries = 10)
+      require "socket"
+      max_tries.times do |offset|
+        port = start + offset
+        begin
+          server = TCPServer.new("127.0.0.1", port)
+          server.close
+          return port
+        rescue Errno::EADDRINUSE, Errno::EACCES
+          next
+        end
+      end
+      start
+    end
+
+    def open_browser(url)
+      require "rbconfig"
+      Thread.new do
+        sleep 2
+        case RbConfig::CONFIG["host_os"]
+        when /darwin/i then system("open", url)
+        when /mswin|mingw/i then system("start", url)
+        else system("xdg-open", url)
+        end
+      end
+    end
+
     def run!(root_dir = Dir.pwd)
       initialize!(root_dir) unless @root_dir
 
       host = ENV.fetch("HOST", ENV.fetch("TINA4_HOST", "0.0.0.0"))
       port = ENV.fetch("PORT", ENV.fetch("TINA4_PORT", "7147")).to_i
+
+      actual_port = find_available_port(port)
+      if actual_port != port
+        Tina4::Log.info("Port #{port} in use, using #{actual_port}")
+        port = actual_port
+      end
+
+      display_host = (host == "0.0.0.0" || host == "::") ? "localhost" : host
+      url = "http://#{display_host}:#{port}"
 
       app = Tina4::RackApp.new(root_dir: root_dir)
       is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
@@ -205,6 +241,7 @@ module Tina4
           Tina4::Log.info("Production server: puma")
           Tina4::Shutdown.setup
 
+          open_browser(url)
           launcher = Puma::Launcher.new(config)
           launcher.run
           return
@@ -214,6 +251,7 @@ module Tina4
       end
 
       Tina4::Log.info("Development server: WEBrick")
+      open_browser(url)
       server = Tina4::WebServer.new(app, host: host, port: port)
       server.start
     end
