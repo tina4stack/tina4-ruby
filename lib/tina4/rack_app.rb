@@ -112,12 +112,18 @@ module Tina4
         end
       end
 
-      # Execute handler — support (request, response), (response), or () signatures
+      # Execute handler — support (), (response), (request), or (request, response) signatures
+      # When 1 param: if named :request or :req, pass request; otherwise pass response
       result = case route.handler.arity
       when 0
         route.handler.call
       when 1
-        route.handler.call(response)
+        param_name = route.handler.parameters.first&.last
+        if param_name == :request || param_name == :req
+          route.handler.call(request)
+        else
+          route.handler.call(response)
+        end
       else
         route.handler.call(request, response)
       end
