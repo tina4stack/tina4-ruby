@@ -6,15 +6,16 @@
 
 ## 1. Performance
 
-Real HTTP benchmarks — identical JSON and 100-item list endpoints.
+Real HTTP benchmarks — identical JSON and 100-item list endpoints. All frameworks tested on Puma for a fair comparison.
 
 | Framework | JSON req/s | 100-item list req/s | Server | Deps |
 |-----------|:---------:|:-------------------:|--------|:----:|
+| Roda | 19,530 | 10,746 | Puma | 1 |
 | **Tina4 Ruby 3.2** | **18,064** | **9,902** | **Puma** | **0** |
-| Roda | 4,094 | 4,544 | WEBrick | 1 |
-| Sinatra | 2,905 | 2,184 | WEBrick | 2 |
+| Sinatra | 6,016 | 4,139 | Puma | 2 |
+| Rails 8.1 | 4,918 | 4,007 | Puma | 40+ |
 
-**Key takeaway:** Tina4 Ruby dominates at 18,064 req/s — 4.4x faster than Roda and 6.2x faster than Sinatra, while shipping 38 features with 0 core dependencies. Puma (auto-detected in production mode) gives Tina4 a major edge over WEBrick-based frameworks.
+**Key takeaway:** Tina4 Ruby matches Roda's throughput (18,064 vs 19,530 — within 8%) while shipping 38 features with 0 core dependencies. Tina4 is 3x faster than Sinatra and 3.7x faster than Rails. Roda is a micro-router with 3 features; Tina4 ships 38.
 
 ---
 
@@ -74,10 +75,10 @@ Ships with core install, no extra packages needed.
 
 | Framework | Features | Deps | JSON req/s |
 |-----------|:-------:|:----:|:---------:|
-| **Tina4** | **38/38** | **0** | *not yet benchmarked* |
-| Rails 8 | 20/38 | 40+ | *not yet benchmarked* |
-| Sinatra | 4/38 | 2 | 2,905 |
-| Roda | 3/38 | 1 | 4,094 |
+| **Tina4** | **38/38** | **0** | **18,064** |
+| Rails 8 | 20/38 | 40+ | 4,918 |
+| Sinatra | 4/38 | 2 | 6,016 |
+| Roda | 3/38 | 1 | 19,530 |
 
 ---
 
@@ -98,16 +99,18 @@ Zero dependencies means core size **is** deployment size. No gem bloat.
 
 Estimated emissions per HTTP benchmark run (5000 requests on Apple Silicon, 15W TDP).
 
-Only Roda and Sinatra were benchmarked; Tina4 and Rails are excluded from this calculation.
+All frameworks on Puma.
 
 | Framework | JSON req/s | Duration (s) | Est. Energy (kWh) | Est. CO2 (g) |
 |-----------|:---------:|:------------:|:-----------------:|:------------:|
-| Roda | 4,094 | 1.221 | 0.0000051 | 0.0024 |
-| Sinatra | 2,905 | 1.721 | 0.0000072 | 0.0034 |
+| Roda | 19,530 | 0.256 | 0.0000011 | 0.0005 |
+| **Tina4** | 18,064 | 0.277 | 0.0000012 | 0.0005 |
+| Sinatra | 6,016 | 0.831 | 0.0000035 | 0.0016 |
+| Rails | 4,918 | 1.017 | 0.0000042 | 0.0020 |
 
-*Calculation: duration = 5000 / req_s; energy = duration x 15W / 3,600,000; CO2 = energy x 475 g/kWh (world average).*
+*Calculation: duration = 5000 / req_s; energy = duration × 15W / 3,600,000; CO2 = energy × 475 g/kWh (world average).*
 
-**Roda uses ~30% less energy than Sinatra** to serve the same 5000 requests thanks to higher throughput.
+**Rails emits 4x more CO2** per benchmark run than Tina4. Tina4 matches Roda's efficiency while shipping 35 more features.
 
 ---
 
