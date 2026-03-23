@@ -112,8 +112,12 @@ module Tina4
         end
       end
 
-      # Execute handler
-      result = route.handler.call(request, response)
+      # Execute handler — support both (request, response) and (response) signatures
+      result = if route.handler.arity == 1
+        route.handler.call(response)
+      else
+        route.handler.call(request, response)
+      end
 
       # Template rendering: when a template is set and the handler returned a Hash,
       # render the template with the hash as data and return the HTML response.
