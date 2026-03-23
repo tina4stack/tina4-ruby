@@ -90,7 +90,7 @@ module Tina4
 
       rack_response
     rescue => e
-      handle_500(e)
+      handle_500(e, env)
     end
 
     private
@@ -388,12 +388,12 @@ module Tina4
       [200, { "content-type" => "text/html; charset=utf-8" }, [html]]
     end
 
-    def handle_500(error)
+    def handle_500(error, env = nil)
       Tina4::Log.error("500 Internal Server Error: #{error.message}")
       Tina4::Log.error(error.backtrace&.first(10)&.join("\n"))
       if dev_mode?
         # Rich error overlay with stack trace, source context, and line numbers
-        body = Tina4::ErrorOverlay.render(error)
+        body = Tina4::ErrorOverlay.render(error, request: env)
       else
         body = Tina4::Template.render_error(500, {
           "error_message" => "#{error.message}\n#{error.backtrace&.first(10)&.join("\n")}",
