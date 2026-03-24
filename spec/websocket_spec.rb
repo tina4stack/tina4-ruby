@@ -644,7 +644,7 @@ RSpec.describe Tina4::WebSocketConnection do
 
   describe "build_frame (private)" do
     it "builds small frame correctly" do
-      frame = conn.send(:build_frame, 0x1, "Hello")
+      frame = conn.__send__(:build_frame, 0x1, "Hello")
       expect(frame.bytes[0]).to eq(0x81)
       expect(frame.bytes[1]).to eq(5)
       expect(frame[2..]).to eq("Hello")
@@ -652,7 +652,7 @@ RSpec.describe Tina4::WebSocketConnection do
 
     it "builds medium frame with 16-bit length" do
       data = "X" * 200
-      frame = conn.send(:build_frame, 0x1, data)
+      frame = conn.__send__(:build_frame, 0x1, data)
       expect(frame.bytes[1]).to eq(126)
       length = (frame.bytes[2] << 8) | frame.bytes[3]
       expect(length).to eq(200)
@@ -660,33 +660,33 @@ RSpec.describe Tina4::WebSocketConnection do
 
     it "builds frame with different opcodes" do
       # Text
-      frame = conn.send(:build_frame, 0x1, "test")
+      frame = conn.__send__(:build_frame, 0x1, "test")
       expect(frame.bytes[0] & 0x0F).to eq(0x1)
 
       # Binary
-      frame = conn.send(:build_frame, 0x2, "test")
+      frame = conn.__send__(:build_frame, 0x2, "test")
       expect(frame.bytes[0] & 0x0F).to eq(0x2)
 
       # Close
-      frame = conn.send(:build_frame, 0x8, "test")
+      frame = conn.__send__(:build_frame, 0x8, "test")
       expect(frame.bytes[0] & 0x0F).to eq(0x8)
 
       # Ping
-      frame = conn.send(:build_frame, 0x9, "test")
+      frame = conn.__send__(:build_frame, 0x9, "test")
       expect(frame.bytes[0] & 0x0F).to eq(0x9)
 
       # Pong
-      frame = conn.send(:build_frame, 0xA, "test")
+      frame = conn.__send__(:build_frame, 0xA, "test")
       expect(frame.bytes[0] & 0x0F).to eq(0xA)
     end
 
     it "always sets FIN bit" do
-      frame = conn.send(:build_frame, 0x1, "test")
+      frame = conn.__send__(:build_frame, 0x1, "test")
       expect(frame.bytes[0] & 0x80).to eq(0x80)
     end
 
     it "builds frame with empty payload" do
-      frame = conn.send(:build_frame, 0x1, "")
+      frame = conn.__send__(:build_frame, 0x1, "")
       expect(frame.bytes[0]).to eq(0x81)
       expect(frame.bytes[1]).to eq(0)
       expect(frame.length).to eq(2)
