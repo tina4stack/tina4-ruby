@@ -21,10 +21,36 @@ module Tina4
         end
       end
 
+      # Build a sample request body from ORM field definitions.
+      def build_example(model_class)
+        example = {}
+        return example unless model_class.respond_to?(:field_definitions)
+
+        model_class.field_definitions.each do |name, opts|
+          next if opts[:primary_key] && opts[:auto_increment]
+
+          case opts[:type]
+          when :integer
+            example[name.to_s] = 0
+          when :numeric, :float, :decimal
+            example[name.to_s] = 0.0
+          when :boolean
+            example[name.to_s] = true
+          when :datetime
+            example[name.to_s] = "2024-01-01T00:00:00"
+          else
+            example[name.to_s] = "string"
+          end
+        end
+        example
+      end
+
       # Generate REST endpoints for a single model class
       def generate_routes_for(model_class, prefix: "/api")
         table = model_class.table_name
         pk = model_class.primary_key_field || :id
+        pretty_name = table.to_s.split("_").map(&:capitalize).join(" ")
+        example_body = build_example(model_class)
 
         # GET /api/{table} -- list all with pagination, filtering, sorting
         Tina4::Router.add_route("GET", "#{prefix}/#{table}", proc { |req, res|
@@ -63,7 +89,7 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
-        })
+        }, swagger_meta: { summary: "List all #{pretty_name}", tags: [table.to_s] })
 
         # GET /api/{table}/{id} -- get single record
         Tina4::Router.add_route("GET", "#{prefix}/#{table}/{id}", proc { |req, res|
@@ -78,7 +104,7 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
-        })
+        }, swagger_meta: { summary: "Get #{pretty_name} by ID", tags: [table.to_s] })
 
         # POST /api/{table} -- create record
         Tina4::Router.add_route("POST", "#{prefix}/#{table}", proc { |req, res|
@@ -93,6 +119,19 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
+        }, swagger_meta: {
+          summary: "Create #{pretty_name}",
+          tags: [table.to_s],
+          request_body: {
+            "description" => "#{pretty_name} data",
+            "required" => true,
+            "content" => {
+              "application/json" => {
+                "schema" => { "type" => "object" },
+                "example" => example_body
+              }
+            }
+          }
         })
 
         # PUT /api/{table}/{id} -- update record
@@ -118,6 +157,19 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
+        }, swagger_meta: {
+          summary: "Update #{pretty_name}",
+          tags: [table.to_s],
+          request_body: {
+            "description" => "#{pretty_name} data",
+            "required" => true,
+            "content" => {
+              "application/json" => {
+                "schema" => { "type" => "object" },
+                "example" => example_body
+              }
+            }
+          }
         })
 
         # DELETE /api/{table}/{id} -- delete record
@@ -137,7 +189,7 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
-        })
+        }, swagger_meta: { summary: "Delete #{pretty_name}", tags: [table.to_s] })
       end
 
       def clear!
