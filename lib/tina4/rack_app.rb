@@ -117,6 +117,12 @@ module Tina4
       request = Tina4::Request.new(env, path_params)
       response = Tina4::Response.new
 
+      # Run global middleware (block-based + class-based before_* methods)
+      unless Tina4::Middleware.run_before(request, response)
+        # Middleware halted the request -- return whatever response was set
+        return response.to_rack
+      end
+
       # Run per-route middleware
       if route.respond_to?(:run_middleware)
         unless route.run_middleware(request, response)
@@ -150,6 +156,10 @@ module Tina4
 
       # Skip auto_detect if handler already returned the response object
       final_response = result.equal?(response) ? result : Tina4::Response.auto_detect(result, response)
+
+      # Run global after middleware (block-based + class-based after_* methods)
+      Tina4::Middleware.run_after(request, final_response)
+
       final_response.to_rack
     end
 

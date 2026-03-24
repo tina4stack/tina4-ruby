@@ -272,6 +272,22 @@ module Tina4
         nil
       end
 
+      # Register a class-based middleware globally.
+      # The class should define static before_* and/or after_* methods.
+      # Example:
+      #   class AuthMiddleware
+      #     def self.before_auth(request, response)
+      #       unless request.headers["authorization"]
+      #         return [request, response.json({ error: "Unauthorized" }, 401)]
+      #       end
+      #       [request, response]
+      #     end
+      #   end
+      #   Tina4::Router.use(AuthMiddleware)
+      def use(klass)
+        Tina4::Middleware.use(klass)
+      end
+
       def clear!
         @routes = []
         @method_index = Hash.new { |h, k| h[k] = [] }
