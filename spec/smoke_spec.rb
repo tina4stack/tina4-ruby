@@ -276,16 +276,14 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "pushes and pops a job with correct payload" do
       backend = Tina4::QueueBackends::LiteBackend.new(dir: tmpdir)
-      producer = Tina4::Producer.new(backend: backend)
-      consumer = Tina4::Consumer.new(topic: "smoke.jobs", backend: backend)
+      queue = Tina4::Queue.new(topic: "smoke.jobs", backend: backend)
 
-      msg = producer.publish("smoke.jobs", { action: "test", value: 42 })
+      msg = queue.produce("smoke.jobs", { action: "test", value: 42 })
       expect(msg).to be_a(Tina4::QueueMessage)
       expect(msg.payload[:action]).to eq("test")
 
       received = nil
-      consumer.on_message { |m| received = m }
-      consumer.process_one
+      queue.consume("smoke.jobs") { |job| received = job; job.complete }
 
       expect(received).not_to be_nil
       expect(received.payload["action"]).to eq("test")

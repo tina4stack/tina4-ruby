@@ -624,17 +624,15 @@ end
 Tina4.get "/demo/queue" do |request, response|
   begin
     backend = Tina4::QueueBackends::LiteBackend.new(dir: "/tmp/tina4-demo-queue")
-    producer = Tina4::Producer.new(backend: backend)
-    consumer = Tina4::Consumer.new(topic: "demo-topic", backend: backend)
+    queue = Tina4::Queue.new(topic: "demo-topic", backend: backend)
 
     # Publish messages
-    msg1 = producer.publish("demo-topic", { action: "greet", data: "Hello from queue!" })
-    msg2 = producer.publish("demo-topic", { action: "process", data: "Task ##{rand(1000)}" })
+    msg1 = queue.produce("demo-topic", { action: "greet", data: "Hello from queue!" })
+    msg2 = queue.produce("demo-topic", { action: "process", data: "Task ##{rand(1000)}" })
 
     # Consume one
     consumed = nil
-    consumer.on_message { |msg| consumed = msg.to_hash }
-    consumer.process_one
+    queue.consume("demo-topic") { |msg| consumed = msg.to_hash; msg.complete }
 
     response.json(demo_response(
       feature: "Queue",
@@ -646,7 +644,7 @@ Tina4.get "/demo/queue" do |request, response|
         remaining_size: backend.size("demo-topic"),
         backend: "LiteBackend (file-based)"
       },
-      notes: "Producer/Consumer pattern with LiteBackend (file-based). Also supports RabbitMQ and Kafka backends."
+      notes: "Queue produce/consume pattern with LiteBackend (file-based). Also supports RabbitMQ and Kafka backends."
     ))
   rescue => e
     response.json(demo_response(
@@ -1009,10 +1007,9 @@ Tina4.get "/demo/shortcomings" do |request, response|
   # 11. Queue
   begin
     be = Tina4::QueueBackends::LiteBackend.new(dir: "/tmp/tina4-demo-queue-test")
-    p = Tina4::Producer.new(backend: be)
-    p.publish("test", { hello: "world" })
-    c = Tina4::Consumer.new(topic: "test", backend: be)
-    c.process_one
+    q = Tina4::Queue.new(topic: "test", backend: be)
+    q.produce("test", { hello: "world" })
+    q.consume("test") { |job| job.complete }
     results << { feature: "Queue", status: "working", detail: "LiteBackend publish/consume works" }
   rescue => e
     results << { feature: "Queue", status: "partial", detail: e.message }
