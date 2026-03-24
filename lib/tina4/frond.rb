@@ -391,6 +391,66 @@ module Tina4
     # -----------------------------------------------------------------------
 
     def eval_var(expr, context)
+      # Check for top-level ternary BEFORE splitting filters so that
+      # expressions like ``products|length != 1 ? "s" : ""`` work correctly.
+      ternary_pos = find_ternary(expr)
+      if ternary_pos != -1
+        cond_part = expr[0...ternary_pos].strip
+        rest = expr[(ternary_pos + 1)..]
+        colon_pos = find_colon(rest)
+        if colon_pos != -1
+          true_part = rest[0...colon_pos].strip
+          false_part = rest[(colon_pos + 1)..].strip
+          cond = eval_var_raw(cond_part, context)
+          return truthy?(cond) ? eval_var(true_part, context) : eval_var(false_part, context)
+        end
+      end
+
+      eval_var_inner(expr, context)
+    end
+
+    def eval_var_raw(expr, context)
+      var_name, filters = parse_filter_chain(expr)
+      value = eval_expr(var_name, context)
+      filters.each do |fname, args|
+        next if fname == "raw" || fname == "safe"
+        fn = @filters[fname]
+        if fn
+          evaluated_args = args.map { |a| eval_filter_arg(a, context) }
+          value = fn.call(value, *evaluated_args)
+        else
+          # The filter name may include a trailing comparison operator,
+          # e.g. "length != 1".  Extract the real filter name and the
+          # comparison suffix, apply the filter, then evaluate the comparison.
+          m = fname.match(/\A(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)\z/)
+          if m
+            real_filter = m[1]
+            op = m[2]
+            right_expr = m[3].strip
+            fn2 = @filters[real_filter]
+            if fn2
+              evaluated_args = args.map { |a| eval_filter_arg(a, context) }
+              value = fn2.call(value, *evaluated_args)
+            end
+            right = eval_expr(right_expr, context)
+            value = case op
+                    when "!=" then value != right
+                    when "==" then value == right
+                    when ">=" then value >= right
+                    when "<=" then value <= right
+                    when ">"  then value > right
+                    when "<"  then value < right
+                    else false
+                    end rescue false
+          else
+            value = eval_expr(fname, context)
+          end
+        end
+      end
+      value
+    end
+
+    def eval_var_inner(expr, context)
       var_name, filters = parse_filter_chain(expr)
 
       # Sandbox: check variable access
@@ -433,6 +493,68 @@ module Tina4
       return arg.to_i if arg =~ /\A-?\d+\z/
       return arg.to_f if arg =~ /\A-?\d+\.\d+\z/
       eval_expr(arg, context)
+    end
+
+    # Find the index of a top-level ``?`` that is part of a ternary operator.
+    # Respects quoted strings, parentheses, and skips ``??`` (null coalesce).
+    # Returns -1 if not found.
+    def find_ternary(expr)
+      depth = 0
+      in_quote = nil
+      i = 0
+      len = expr.length
+      while i < len
+        ch = expr[i]
+        if in_quote
+          in_quote = nil if ch == in_quote
+          i += 1
+          next
+        end
+        if ch == '"' || ch == "'"
+          in_quote = ch
+          i += 1
+          next
+        end
+        if ch == "("
+          depth += 1
+        elsif ch == ")"
+          depth -= 1
+        elsif ch == "?" && depth == 0
+          # Skip ``??`` (null coalesce)
+          if i + 1 < len && expr[i + 1] == "?"
+            i += 2
+            next
+          end
+          return i
+        end
+        i += 1
+      end
+      -1
+    end
+
+    # Find the index of the top-level ``:`` that separates the true/false
+    # branches of a ternary.  Respects quotes and parentheses.
+    def find_colon(expr)
+      depth = 0
+      in_quote = nil
+      expr.each_char.with_index do |ch, i|
+        if in_quote
+          in_quote = nil if ch == in_quote
+          next
+        end
+        if ch == '"' || ch == "'"
+          in_quote = ch
+          next
+        end
+        if ch == "("
+          depth += 1
+        elsif ch == ")"
+          depth -= 1
+        elsif ch == ":" && depth == 0
+          return i
+        end
+      end
+      -1
     end
 
     # -----------------------------------------------------------------------
