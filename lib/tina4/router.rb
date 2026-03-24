@@ -4,6 +4,7 @@ module Tina4
   class Route
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta,
                 :path_regex, :param_names, :middleware, :template
+    attr_accessor :auth_required, :cached
 
     def initialize(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
       @method = method.to_s.upcase.freeze
@@ -13,9 +14,25 @@ module Tina4
       @swagger_meta = swagger_meta
       @middleware = middleware.freeze
       @template = template&.freeze
+      @auth_required = false
+      @cached = false
       @param_names = []
       @path_regex = compile_pattern(@path)
       @param_names.freeze
+    end
+
+    # Mark this route as requiring bearer-token authentication.
+    # Returns self for chaining: Router.get("/path") { ... }.secure
+    def secure
+      @auth_required = true
+      self
+    end
+
+    # Mark this route as cacheable.
+    # Returns self for chaining: Router.get("/path") { ... }.cache
+    def cache
+      @cached = true
+      self
     end
 
     # Returns params hash if matched, false otherwise
