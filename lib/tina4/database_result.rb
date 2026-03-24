@@ -5,12 +5,20 @@ module Tina4
   class DatabaseResult
     include Enumerable
 
-    attr_reader :records, :sql, :count
+    attr_reader :records, :columns, :count, :limit, :offset, :sql,
+                :affected_rows, :last_id, :error
 
-    def initialize(records = [], sql: "")
+    def initialize(records = [], sql: "", columns: [], count: nil, limit: 10, offset: 0,
+                   affected_rows: 0, last_id: nil, error: nil)
       @records = records || []
       @sql = sql
-      @count = @records.length
+      @columns = columns.empty? && !@records.empty? ? @records.first.keys : columns
+      @count = count || @records.length
+      @limit = limit
+      @offset = offset
+      @affected_rows = affected_rows
+      @last_id = last_id
+      @error = error
     end
 
     def each(&block)
@@ -33,11 +41,25 @@ module Tina4
       @records[index]
     end
 
+    def length
+      @count
+    end
+
+    def size
+      @count
+    end
+
+    def success?
+      @error.nil?
+    end
+
     def to_array
       @records.map do |record|
         record.is_a?(Hash) ? record : record.to_h
       end
     end
+
+    alias to_a to_array
 
     def to_json(*_args)
       JSON.generate(to_array)
@@ -54,11 +76,13 @@ module Tina4
       lines.join("\n")
     end
 
-    def to_paginate(page: 1, per_page: 10)
-      total = @records.length
-      total_pages = (total.to_f / per_page).ceil
-      offset = (page - 1) * per_page
-      page_records = @records[offset, per_page] || []
+    def to_paginate(page: nil, per_page: nil)
+      per_page ||= @limit > 0 ? @limit : 10
+      page ||= @offset > 0 ? (@offset / per_page) + 1 : 1
+      total = @count
+      total_pages = [1, (total.to_f / per_page).ceil].max
+      slice_offset = (page - 1) * per_page
+      page_records = @records[slice_offset, per_page] || []
       {
         data: page_records,
         page: page,
