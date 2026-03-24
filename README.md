@@ -358,7 +358,7 @@ db = Tina4::Database.new("mysql://localhost:3306/mydb", username: "user", passwo
 db = Tina4::Database.new("mssql://localhost:1433/mydb", username: "sa", password: "pass")
 db = Tina4::Database.new("firebird://localhost:3050/path/to/db", username: "SYSDBA", password: "masterkey")
 
-result = db.fetch("SELECT * FROM users WHERE age > ?", [18], limit: 20, skip: 0)
+result = db.fetch("SELECT * FROM users WHERE age > ?", [18], limit: 20, offset: 0)
 row = db.fetch_one("SELECT * FROM users WHERE id = ?", [1])
 db.insert("users", { name: "Alice", email: "alice@test.com" })
 db.commit
@@ -381,8 +381,8 @@ end
 ### JWT Authentication
 
 ```ruby
-token = Tina4::Auth.create_token({ user_id: 42 })
-result = Tina4::Auth.validate_token(token)
+token = Tina4::Auth.get_token({ user_id: 42 })
+result = Tina4::Auth.valid_token(token)
 payload = Tina4::Auth.get_payload(token)
 ```
 
@@ -606,7 +606,7 @@ DATABASE_USERNAME=
 DATABASE_PASSWORD=
 TINA4_DEBUG=true                     # Enable dev toolbar, error overlay
 TINA4_LOG_LEVEL=ALL                  # ALL, DEBUG, INFO, WARNING, ERROR
-TINA4_LANGUAGE=en                    # en, fr, af, zh, ja, es
+TINA4_LOCALE=en                    # en, fr, af, zh, ja, es
 TINA4_SESSION_HANDLER=SessionFileHandler
 SWAGGER_TITLE=My API
 ```

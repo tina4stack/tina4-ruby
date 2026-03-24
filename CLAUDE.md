@@ -155,7 +155,7 @@ db = Tina4::Database.new("firebird://localhost:3050/mydb", username: "sysdba", p
 # DATABASE_PASSWORD=pass
 db = Tina4::Database.new  # reads from ENV
 
-db.fetch(sql, params = [], limit: nil, skip: nil) -> DatabaseResult
+db.fetch(sql, params = [], limit: nil, offset: nil) -> DatabaseResult
 db.fetch_one(sql, params = []) -> Hash | nil
 db.execute(sql, params = []) -> DatabaseResult
 db.insert(table, data) -> DatabaseResult
@@ -186,7 +186,7 @@ model.to_json -> String
 
 MyModel.find(id) -> MyModel | nil
 MyModel.where(conditions, params = []) -> Array
-MyModel.all(limit: nil, skip: nil, order_by: nil) -> Array
+MyModel.all(limit: nil, offset: nil, order_by: nil) -> Array
 MyModel.count(conditions = nil, params = []) -> Integer
 MyModel.create(attributes = {}) -> MyModel
 ```
@@ -232,11 +232,11 @@ migration.create(name) -> String
 
 ```ruby
 Tina4::Auth.setup(root_dir = Dir.pwd)
-Tina4::Auth.create_token(payload, expires_in: 3600) -> String
-Tina4::Auth.validate_token(token) -> { valid: Boolean, payload: Hash | error: String }
+Tina4::Auth.get_token(payload, expires_in: 60) -> String
+Tina4::Auth.valid_token(token) -> Hash | nil
 Tina4::Auth.get_payload(token) -> Hash | nil
-Tina4::Auth.refresh_token(token, expires_in: 3600) -> String | nil
-Tina4::Auth.authenticate_request(headers) -> { valid: Boolean, payload: Hash | error: String }
+Tina4::Auth.refresh_token(token, expires_in: 60) -> String | nil
+Tina4::Auth.authenticate_request(headers) -> Hash | nil
 Tina4::Auth.hash_password(password) -> String
 Tina4::Auth.check_password(password, hash) -> Boolean
 Tina4::Auth.validate_api_key(provided, expected: nil) -> Boolean
