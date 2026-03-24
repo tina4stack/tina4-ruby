@@ -199,21 +199,20 @@ module Tina4
         instances
       end
 
-      def all(limit: nil, offset: nil, skip: nil, order_by: nil, include: nil)
+      def all(limit: nil, offset: nil, order_by: nil, include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE #{soft_delete_field} IS NULL OR #{soft_delete_field} = 0"
         end
         sql += " ORDER BY #{order_by}" if order_by
-        effective_offset = offset || skip
-        results = db.fetch(sql, [], limit: limit, skip: effective_offset)
+        results = db.fetch(sql, [], limit: limit, offset: offset)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
       end
 
-      def select(sql, params = [], limit: nil, skip: nil, include: nil)
-        results = db.fetch(sql, params, limit: limit, skip: skip)
+      def select(sql, params = [], limit: nil, offset: nil, include: nil)
+        results = db.fetch(sql, params, limit: limit, offset: offset)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
@@ -243,9 +242,9 @@ module Tina4
         result
       end
 
-      def with_trashed(conditions = "1=1", params = [], limit: 20, skip: 0)
+      def with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0)
         sql = "SELECT * FROM #{table_name} WHERE #{conditions}"
-        results = db.fetch(sql, params, limit: limit, skip: skip)
+        results = db.fetch(sql, params, limit: limit, offset: offset)
         results.map { |row| from_hash(row) }
       end
 
@@ -290,7 +289,7 @@ module Tina4
       end
 
       def scope(name, filter_sql, params = [])
-        define_singleton_method(name) do |limit: 20, skip: 0|
+        define_singleton_method(name) do |limit: 20, offset: 0|
           where(filter_sql, params)
         end
       end

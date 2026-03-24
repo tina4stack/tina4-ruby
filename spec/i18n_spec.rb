@@ -11,16 +11,16 @@ RSpec.describe Tina4::Localization do
 
   describe ".current_locale" do
     it "defaults to 'en'" do
-      ENV.delete("TINA4_LANGUAGE")
+      ENV.delete("TINA4_LOCALE")
       expect(Tina4::Localization.current_locale).to eq("en")
     end
 
-    it "reads from TINA4_LANGUAGE env var" do
-      original = ENV["TINA4_LANGUAGE"]
-      ENV["TINA4_LANGUAGE"] = "fr"
+    it "reads from TINA4_LOCALE env var" do
+      original = ENV["TINA4_LOCALE"]
+      ENV["TINA4_LOCALE"] = "fr"
       Tina4::Localization.instance_variable_set(:@current_locale, nil)
       expect(Tina4::Localization.current_locale).to eq("fr")
-      ENV["TINA4_LANGUAGE"] = original
+      ENV["TINA4_LOCALE"] = original
     end
 
     it "can be set explicitly" do
