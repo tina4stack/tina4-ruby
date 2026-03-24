@@ -34,6 +34,25 @@ module Tina4
     def increment_attempts!
       @attempts += 1
     end
+
+    # Mark this job as completed.
+    def complete
+      @status = :completed
+    end
+
+    # Mark this job as failed with a reason.
+    def fail(reason = "")
+      @status = :failed
+      @error = reason
+      @attempts += 1
+    end
+
+    # Reject this job with a reason. Alias for fail().
+    def reject(reason = "")
+      fail(reason)
+    end
+
+    attr_reader :error
   end
 
   class Producer
@@ -108,6 +127,61 @@ module Tina4
     def retry_failed
       return 0 unless @backend.respond_to?(:retry_failed)
       @backend.retry_failed(@topic, max_retries: @max_retries)
+    end
+
+    # Produce a message onto a topic. Convenience wrapper around push().
+    def produce(topic, payload)
+      message = QueueMessage.new(topic: topic, payload: payload)
+      @backend.enqueue(message)
+      message
+    end
+
+    # Consume jobs from a topic using an Enumerator (yield pattern).
+    #
+    # Usage:
+    #   queue.consume("emails") do |job|
+    #     process(job)
+    #   end
+    #
+    #   # Consume a specific job by ID:
+    #   queue.consume("emails", id: "abc-123") do |job|
+    #     process(job)
+    #   end
+    #
+    #   # Or as an enumerator:
+    #   queue.consume("emails").each { |job| process(job) }
+    #
+    def consume(topic = nil, id: nil, &block)
+      topic ||= @topic
+
+      if block_given?
+        if id
+          job = pop_by_id(topic, id)
+          yield job if job
+        else
+          while (job = @backend.dequeue(topic))
+            yield job
+          end
+        end
+      else
+        # Return an Enumerator when no block given
+        Enumerator.new do |yielder|
+          if id
+            job = pop_by_id(topic, id)
+            yielder << job if job
+          else
+            while (job = @backend.dequeue(topic))
+              yielder << job
+            end
+          end
+        end
+      end
+    end
+
+    # Pop a specific job by ID from the queue.
+    def pop_by_id(topic, id)
+      return nil unless @backend.respond_to?(:find_by_id)
+      @backend.find_by_id(topic, id)
     end
 
     # Get the number of pending messages.
