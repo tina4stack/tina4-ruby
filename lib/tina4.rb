@@ -326,6 +326,11 @@ module Tina4
       Tina4::Router.group(prefix, auth_handler: auth, &block)
     end
 
+    # WebSocket route registration
+    def websocket(path, &block)
+      Tina4::Router.websocket(path, &block)
+    end
+
     # Middleware hooks
     def before(pattern = nil, &block)
       Tina4::Middleware.before(pattern, &block)

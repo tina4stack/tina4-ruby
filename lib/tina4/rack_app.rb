@@ -19,6 +19,9 @@ module Tina4
                                  .select { |d| Dir.exist?(d) }
       fallback = Dir.exist?(FRAMEWORK_PUBLIC_DIR) ? [FRAMEWORK_PUBLIC_DIR] : []
       @static_roots = (project_roots + fallback).freeze
+
+      # Shared WebSocket engine for route-based WS handling
+      @websocket_engine = Tina4::WebSocket.new
     end
 
     def call(env)
@@ -28,6 +31,15 @@ module Tina4
 
       # Fast-path: OPTIONS preflight
       return Tina4::CorsMiddleware.preflight_response(env) if method == "OPTIONS"
+
+      # WebSocket upgrade — match against registered ws_routes
+      if websocket_upgrade?(env)
+        ws_result = Tina4::Router.find_ws_route(path)
+        if ws_result
+          ws_route, ws_params = ws_result
+          return handle_websocket_upgrade(env, ws_route, ws_params)
+        end
+      end
 
       # Dev dashboard routes (handled before anything else)
       if path.start_with?("/__dev")
@@ -433,6 +445,50 @@ module Tina4
 
     def dev_mode?
       Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+    end
+
+    def websocket_upgrade?(env)
+      upgrade = env["HTTP_UPGRADE"] || ""
+      upgrade.downcase == "websocket"
+    end
+
+    def handle_websocket_upgrade(env, ws_route, ws_params)
+      # Rack hijack is required for WebSocket upgrades
+      unless env["rack.hijack"]
+        Tina4::Log.warning("WebSocket upgrade requested but rack.hijack not available")
+        return [426, { "content-type" => "text/plain" }, ["WebSocket upgrade requires rack.hijack support"]]
+      end
+
+      env["rack.hijack"].call
+      socket = env["rack.hijack_io"]
+
+      # Wire the route handler into the WebSocket engine events
+      handler = ws_route.handler
+
+      # Create a dedicated WebSocket engine for this route so handlers stay isolated
+      ws = Tina4::WebSocket.new
+
+      ws.on(:open) do |connection|
+        connection.params = ws_params
+        handler.call(connection, :open, nil)
+      end
+
+      ws.on(:message) do |connection, data|
+        handler.call(connection, :message, data)
+      end
+
+      ws.on(:close) do |connection|
+        handler.call(connection, :close, nil)
+      end
+
+      ws.on(:error) do |connection, error|
+        Tina4::Log.error("WebSocket error on #{ws_route.path}: #{error.message}")
+      end
+
+      ws.handle_upgrade(env, socket)
+
+      # Return async response (-1 signals Rack the response is handled via hijack)
+      [-1, {}, []]
     end
 
     def inject_dev_overlay(body, request_info)

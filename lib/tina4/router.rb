@@ -122,10 +122,96 @@ module Tina4
     end
   end
 
+  # A registered WebSocket route with path pattern matching (reuses Route's compile logic)
+  class WebSocketRoute
+    attr_reader :path, :handler, :path_regex, :param_names
+
+    def initialize(path, handler)
+      @path = normalize_path(path).freeze
+      @handler = handler
+      @param_names = []
+      @path_regex = compile_pattern(@path)
+      @param_names.freeze
+    end
+
+    # Returns params hash if matched, false otherwise
+    def match?(request_path)
+      match = @path_regex.match(request_path)
+      return false unless match
+
+      if @param_names.empty?
+        {}
+      else
+        params = {}
+        @param_names.each_with_index do |param_def, i|
+          raw_value = match[i + 1]
+          params[param_def[:name]] = raw_value
+        end
+        params
+      end
+    end
+
+    private
+
+    def normalize_path(path)
+      p = path.to_s.gsub("\\", "/")
+      p = "/#{p}" unless p.start_with?("/")
+      p = p.chomp("/") unless p == "/"
+      p
+    end
+
+    def compile_pattern(path)
+      return Regexp.new("\\A/\\z") if path == "/"
+
+      parts = path.split("/").reject(&:empty?)
+      regex_parts = parts.map do |part|
+        if part =~ /\A\{(\w+)\}\z/
+          name = Regexp.last_match(1)
+          @param_names << { name: name.to_sym }
+          '([^/]+)'
+        else
+          Regexp.escape(part)
+        end
+      end
+      Regexp.new("\\A/#{regex_parts.join("/")}\\z")
+    end
+  end
+
   module Router
     class << self
       def routes
         @routes ||= []
+      end
+
+      # Registered WebSocket routes
+      def ws_routes
+        @ws_routes ||= []
+      end
+
+      # Register a WebSocket route.
+      # The handler block receives (connection, event, data) where:
+      #   connection — WebSocketConnection with #send, #broadcast, #close, #params
+      #   event      — :open, :message, or :close
+      #   data       — String payload for :message, nil for :open/:close
+      def websocket(path, &block)
+        ws_route = WebSocketRoute.new(path, block)
+        ws_routes << ws_route
+        Tina4::Log.debug("WebSocket route registered: #{path}")
+        ws_route
+      end
+
+      # Find a matching WebSocket route for a given path.
+      # Returns [ws_route, params] or nil.
+      def find_ws_route(path)
+        normalized = path.gsub("\\", "/")
+        normalized = "/#{normalized}" unless normalized.start_with?("/")
+        normalized = normalized.chomp("/") unless normalized == "/"
+
+        ws_routes.each do |ws_route|
+          params = ws_route.match?(normalized)
+          return [ws_route, params] if params
+        end
+        nil
       end
 
       # Routes indexed by HTTP method for O(1) method lookup
@@ -189,6 +275,7 @@ module Tina4
       def clear!
         @routes = []
         @method_index = Hash.new { |h, k| h[k] = [] }
+        @ws_routes = []
       end
 
       def group(prefix, auth_handler: nil, middleware: [], &block)

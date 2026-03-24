@@ -44,7 +44,7 @@ module Tina4
       socket.write(response)
 
       conn_id = SecureRandom.hex(16)
-      connection = WebSocketConnection.new(conn_id, socket)
+      connection = WebSocketConnection.new(conn_id, socket, ws_server: self)
       @connections[conn_id] = connection
 
       emit(:open, connection)
@@ -90,10 +90,23 @@ module Tina4
 
   class WebSocketConnection
     attr_reader :id
+    attr_accessor :params
 
-    def initialize(id, socket)
+    def initialize(id, socket, ws_server: nil)
       @id = id
       @socket = socket
+      @params = {}
+      @ws_server = ws_server
+    end
+
+    # Broadcast a message to all other connections on the same WebSocket server
+    def broadcast(message, include_self: false)
+      return unless @ws_server
+
+      @ws_server.connections.each do |cid, conn|
+        next if !include_self && cid == @id
+        conn.send_text(message)
+      end
     end
 
     def send(message)
