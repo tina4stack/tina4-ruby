@@ -96,13 +96,15 @@ module Tina4
       @socket = socket
     end
 
-    def send_text(message)
+    def send(message)
       data = message.encode("UTF-8")
       frame = build_frame(0x1, data)
       @socket.write(frame)
     rescue IOError
       # Connection closed
     end
+
+    alias_method :send_text, :send
 
     def send_pong(data)
       frame = build_frame(0xA, data || "")
