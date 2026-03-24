@@ -9,7 +9,7 @@ module Tina4
                 :affected_rows, :last_id, :error
 
     def initialize(records = [], sql: "", columns: [], count: nil, limit: 10, offset: 0,
-                   affected_rows: 0, last_id: nil, error: nil)
+                   affected_rows: 0, last_id: nil, error: nil, db: nil)
       @records = records || []
       @sql = sql
       @columns = columns.empty? && !@records.empty? ? @records.first.keys : columns
@@ -19,6 +19,8 @@ module Tina4
       @affected_rows = affected_rows
       @last_id = last_id
       @error = error
+      @db = db
+      @column_info_cache = nil
     end
 
     def each(&block)
@@ -99,7 +101,95 @@ module Tina4
                                   primary_key: primary_key, editable: editable)
     end
 
+    # Return column metadata for the query's table.
+    #
+    # Lazy — only queries the database when explicitly called. Caches the
+    # result so subsequent calls return immediately without re-querying.
+    #
+    # Returns an array of hashes with keys:
+    #   name, type, size, decimals, nullable, primary_key
+    def column_info
+      return @column_info_cache if @column_info_cache
+
+      table = extract_table_from_sql
+
+      if @db && table
+        begin
+          @column_info_cache = query_column_metadata(table)
+          return @column_info_cache
+        rescue StandardError
+          # Fall through to fallback
+        end
+      end
+
+      @column_info_cache = fallback_column_info
+      @column_info_cache
+    end
+
     private
+
+    def extract_table_from_sql
+      return nil if @sql.nil? || @sql.empty?
+
+      if (m = @sql.match(/\bFROM\s+["']?(\w+)["']?/i))
+        return m[1]
+      end
+      if (m = @sql.match(/\bINSERT\s+INTO\s+["']?(\w+)["']?/i))
+        return m[1]
+      end
+      if (m = @sql.match(/\bUPDATE\s+["']?(\w+)["']?/i))
+        return m[1]
+      end
+      nil
+    end
+
+    def query_column_metadata(table)
+      # Use the database's columns method which delegates to the driver
+      raw_cols = @db.columns(table)
+      normalize_columns(raw_cols)
+    rescue StandardError
+      fallback_column_info
+    end
+
+    def normalize_columns(raw_cols)
+      raw_cols.map do |col|
+        col_type = (col[:type] || col["type"] || "UNKNOWN").to_s.upcase
+        size, decimals = parse_type_size(col_type)
+        {
+          name: (col[:name] || col["name"]).to_s,
+          type: col_type.sub(/\(.*\)/, ""),
+          size: size,
+          decimals: decimals,
+          nullable: col.key?(:nullable) ? col[:nullable] : (col.key?("nullable") ? col["nullable"] : true),
+          primary_key: col[:primary_key] || col["primary_key"] || col[:primary] || col["primary"] || false
+        }
+      end
+    end
+
+    def parse_type_size(type_str)
+      if (m = type_str.match(/\((\d+)(?:\s*,\s*(\d+))?\)/))
+        size = m[1].to_i
+        decimals = m[2] ? m[2].to_i : nil
+        [size, decimals]
+      else
+        [nil, nil]
+      end
+    end
+
+    def fallback_column_info
+      return [] if @records.empty?
+      keys = @records.first.is_a?(Hash) ? @records.first.keys : []
+      keys.map do |k|
+        {
+          name: k.to_s,
+          type: "UNKNOWN",
+          size: nil,
+          decimals: nil,
+          nullable: true,
+          primary_key: false
+        }
+      end
+    end
 
     def escape_csv(value, separator)
       str = value.to_s

@@ -88,14 +88,14 @@ module Tina4
           return cached
         end
         result = @driver.execute_query(effective_sql, params)
-        result = Tina4::DatabaseResult.new(result, sql: effective_sql)
+        result = Tina4::DatabaseResult.new(result, sql: effective_sql, db: self)
         cache_set(key, result)
         @cache_mutex.synchronize { @cache_misses += 1 }
         return result
       end
 
       rows = @driver.execute_query(effective_sql, params)
-      Tina4::DatabaseResult.new(rows, sql: effective_sql)
+      Tina4::DatabaseResult.new(rows, sql: effective_sql, db: self)
     end
 
     def fetch_one(sql, params = [])
