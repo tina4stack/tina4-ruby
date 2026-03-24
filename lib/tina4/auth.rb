@@ -15,7 +15,7 @@ module Tina4
         ensure_keys
       end
 
-      def create_token(payload, expires_in: 3600)
+      def get_token(payload, expires_in: 3600)
         ensure_keys
         now = Time.now.to_i
         claims = payload.merge(
@@ -28,7 +28,18 @@ module Tina4
       end
 
 
-      def validate_token(token)
+      def valid_token(token)
+        ensure_keys
+        require "jwt"
+        decoded = JWT.decode(token, public_key, true, algorithm: "RS256")
+        decoded[0]
+      rescue JWT::ExpiredSignature
+        nil
+      rescue JWT::DecodeError
+        nil
+      end
+
+      def valid_token_detail(token)
         ensure_keys
         require "jwt"
         decoded = JWT.decode(token, public_key, true, algorithm: "RS256")
@@ -61,26 +72,26 @@ module Tina4
       end
 
       def refresh_token(token, expires_in: 3600)
-        result = validate_token(token)
-        return nil unless result[:valid]
+        payload = valid_token(token)
+        return nil unless payload
 
-        payload = result[:payload].reject { |k, _| %w[iat exp nbf].include?(k) }
-        create_token(payload, expires_in: expires_in)
+        payload = payload.reject { |k, _| %w[iat exp nbf].include?(k) }
+        get_token(payload, expires_in: expires_in)
       end
 
       def authenticate_request(headers)
         auth_header = headers["HTTP_AUTHORIZATION"] || headers["Authorization"] || ""
-        return { valid: false, error: "No authorization header" } unless auth_header =~ /\ABearer\s+(.+)\z/i
+        return nil unless auth_header =~ /\ABearer\s+(.+)\z/i
 
         token = Regexp.last_match(1)
 
         # API_KEY bypass — matches tina4_python behavior
         api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
         if api_key && !api_key.empty? && token == api_key
-          return { valid: true, payload: { "api_key" => true } }
+          return { "api_key" => true }
         end
 
-        validate_token(token)
+        valid_token(token)
       end
 
       def validate_api_key(provided, expected: nil)
@@ -113,9 +124,9 @@ module Tina4
             return true
           end
 
-          result = validate_token(token)
-          if result[:valid]
-            env["tina4.auth"] = result[:payload]
+          payload = valid_token(token)
+          if payload
+            env["tina4.auth"] = payload
             true
           else
             false
@@ -128,6 +139,10 @@ module Tina4
       def default_secure_auth
         @default_secure_auth ||= bearer_auth
       end
+
+      # Legacy aliases
+      alias_method :create_token, :get_token
+      alias_method :validate_token, :valid_token
 
       def private_key
         @private_key ||= OpenSSL::PKey::RSA.new(File.read(private_key_path))
@@ -169,8 +184,7 @@ module Tina4
         return true if auth_header.empty?
 
         if auth_header =~ /\ABearer\s+(.+)\z/i
-          result = validate_token(Regexp.last_match(1))
-          result[:valid]
+          !valid_token(Regexp.last_match(1)).nil?
         else
           false
         end
