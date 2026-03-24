@@ -1443,8 +1443,18 @@ module Tina4
         "safe"          => ->(v, *_a) { v },
         "json_encode"   => ->(v, *_a) { JSON.generate(v) rescue v.to_s },
         "json_decode"   => ->(v, *_a) { v.is_a?(String) ? (JSON.parse(v) rescue v) : v },
-        "base64_encode" => ->(v, *_a) { Base64.strict_encode64(v.to_s) },
+        "base64_encode" => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
         "base64_decode" => ->(v, *_a) { Base64.decode64(v.to_s) },
+        "data_uri" => ->(v, *_a) {
+          if v.is_a?(Hash)
+            ct = v[:type] || v["type"] || "application/octet-stream"
+            raw = v[:content] || v["content"] || ""
+            raw = raw.respond_to?(:read) ? raw.read : raw
+            "data:#{ct};base64,#{Base64.strict_encode64(raw.to_s)}"
+          else
+            v.to_s
+          end
+        },
         "url_encode"    => ->(v, *_a) { CGI.escape(v.to_s) },
 
         # -- Hashing --
