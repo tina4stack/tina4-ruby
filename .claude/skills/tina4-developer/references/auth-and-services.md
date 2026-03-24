@@ -86,7 +86,7 @@ For background jobs like sending emails, processing uploads, etc.
 
 ### Producing Messages
 ```python
-from tina4 import Queue, Producer
+from tina4 import Queue
 
 @post("/orders")
 async def create_order(request, response):
@@ -94,7 +94,8 @@ async def create_order(request, response):
     order.save()
 
     # Queue email notification for background processing
-    Producer(Queue(topic="order-emails")).produce({
+    queue = Queue(topic="order-emails")
+    queue.produce("order-emails", {
         "order_id": order.id,
         "email": request.body["email"],
         "type": "confirmation"
@@ -105,22 +106,14 @@ async def create_order(request, response):
 
 ### Consuming Messages
 ```python
-from tina4 import Queue, Consumer
+from tina4 import Queue
 
 # Run as a background worker
-for message in Consumer(Queue(topic="order-emails")).messages():
-    send_order_email(message.data)
+queue = Queue(topic="order-emails")
+queue.consume("order-emails", lambda message: (
+    send_order_email(message.data),
     message.ack()
-```
-
-### Priority and Delayed Jobs
-```python
-# High priority
-Producer(queue).produce(data, priority=10)
-
-# Delayed (process after 5 minutes)
-from datetime import datetime, timedelta
-Producer(queue).produce(data, delay_until=datetime.now() + timedelta(minutes=5))
+))
 ```
 
 ## Email

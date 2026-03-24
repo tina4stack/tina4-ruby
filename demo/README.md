@@ -43,7 +43,7 @@ tina4ruby start --dev
 | 10 | [Swagger](10-swagger.md) | OpenAPI 3.0 auto-generation from routes |
 | 11 | [API Client](11-api-client.md) | HTTP client for consuming external APIs |
 | 12 | [WSDL / SOAP](12-wsdl.md) | WSDL generation, SOAP request handling |
-| 13 | [Queue](13-queue.md) | Producer/consumer with Lite, RabbitMQ, and Kafka backends |
+| 13 | [Queue](13-queue.md) | Queue with produce/consume, Lite, RabbitMQ, Kafka, and MongoDB backends |
 | 14 | [Seeder](14-seeder.md) | FakeData generator, ORM seeding, seed files |
 | 15 | [Localization](15-localization.md) | i18n with JSON/YAML, interpolation, fallback |
 | 16 | [Migrations](16-migrations.md) | Schema migrations with Ruby and SQL files |

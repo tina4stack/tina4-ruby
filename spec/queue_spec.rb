@@ -163,36 +163,6 @@ RSpec.describe Tina4::QueueBackends::LiteBackend do
   end
 end
 
-RSpec.describe Tina4::Producer do
-  let(:tmp_dir) { Dir.mktmpdir("tina4_producer_test") }
-  let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir) }
-  subject(:producer) { Tina4::Producer.new(backend: backend) }
-
-  after(:each) { FileUtils.rm_rf(tmp_dir) }
-
-  describe "#publish" do
-    it "returns a QueueMessage" do
-      msg = producer.publish("emails", { to: "alice@test.com" })
-      expect(msg).to be_a(Tina4::QueueMessage)
-      expect(msg.topic).to eq("emails")
-    end
-
-    it "enqueues the message in the backend" do
-      producer.publish("tasks", { action: "process" })
-      expect(backend.size("tasks")).to eq(1)
-    end
-  end
-
-  describe "#publish_batch" do
-    it "publishes multiple messages" do
-      payloads = [{ a: 1 }, { a: 2 }, { a: 3 }]
-      messages = producer.publish_batch("batch", payloads)
-      expect(messages.size).to eq(3)
-      expect(backend.size("batch")).to eq(3)
-    end
-  end
-end
-
 RSpec.describe Tina4::Queue do
   let(:tmp_dir) { Dir.mktmpdir("tina4_queue_unified_test") }
   let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir) }
@@ -299,71 +269,3 @@ RSpec.describe Tina4::Queue do
   end
 end
 
-RSpec.describe Tina4::Consumer do
-  let(:tmp_dir) { Dir.mktmpdir("tina4_consumer_test") }
-  let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir) }
-
-  after(:each) { FileUtils.rm_rf(tmp_dir) }
-
-  describe "#process_one" do
-    it "processes a single message" do
-      msg = Tina4::QueueMessage.new(topic: "work", payload: { item: 1 })
-      backend.enqueue(msg)
-
-      processed = []
-      consumer = Tina4::Consumer.new(topic: "work", backend: backend)
-      consumer.on_message { |m| processed << m.payload }
-      consumer.process_one
-
-      expect(processed.size).to eq(1)
-      expect(processed.first["item"]).to eq(1)
-    end
-
-    it "does nothing when queue is empty" do
-      consumer = Tina4::Consumer.new(topic: "empty", backend: backend)
-      processed = []
-      consumer.on_message { |m| processed << m }
-      consumer.process_one
-      expect(processed).to be_empty
-    end
-  end
-
-  describe "error handling with retries" do
-    it "requeues failed messages up to max_retries" do
-      msg = Tina4::QueueMessage.new(topic: "fail", payload: { data: "x" })
-      backend.enqueue(msg)
-
-      consumer = Tina4::Consumer.new(topic: "fail", backend: backend, max_retries: 2)
-      consumer.on_message { |_m| raise "intentional failure" }
-
-      # First attempt: fails, requeued (attempts=1 < max_retries=2)
-      consumer.process_one
-      expect(backend.size("fail")).to eq(1) # requeued
-
-      # Second attempt: fails, requeued (attempts=2 still < 3 because we check < not <=... let's just verify behavior)
-      consumer.process_one
-    end
-
-    it "sends to dead letter after max retries exceeded" do
-      msg = Tina4::QueueMessage.new(topic: "die", payload: {})
-      backend.enqueue(msg)
-
-      consumer = Tina4::Consumer.new(topic: "die", backend: backend, max_retries: 1)
-      consumer.on_message { |_m| raise "fatal" }
-
-      # First failure: attempts becomes 1, which is >= max_retries(1), so dead-lettered
-      consumer.process_one
-
-      dead_files = Dir.glob(File.join(tmp_dir, "dead_letter", "*.json"))
-      expect(dead_files).not_to be_empty
-    end
-  end
-
-  describe "#stop" do
-    it "sets running to false" do
-      consumer = Tina4::Consumer.new(topic: "test", backend: backend)
-      consumer.stop
-      # No error; consumer stopped before starting (safe to call)
-    end
-  end
-end

@@ -740,9 +740,9 @@ class Queue:
 
 ---
 
-### 4.2 Producer / Consumer Pattern
+### 4.2 Produce / Consume Pattern
 
-**What it does:** Decorator/callback-based worker registration for queue consumers. Workers auto-complete on success and auto-fail with retry on exception.
+**What it does:** Queue-based message production and consumption via `queue.produce()` and `queue.consume()`. Workers auto-complete on success and auto-fail with retry on exception.
 
 **Environment variables:**
 | Variable | Default | Description |
@@ -753,20 +753,24 @@ class Queue:
 
 ```
 # Python
-@queue.worker(concurrency=1, poll_interval=1)
-def process(message):
-    # process message
-    # return without error = auto-complete
-    # raise exception = auto-fail with retry
+queue = Queue(topic="tasks")
+queue.produce("tasks", {"key": "value"})
+queue.consume("tasks", handler)
 
 # PHP
-$queue->worker(function($message) { ... }, concurrency: 1, pollInterval: 1);
+$queue = new Queue(topic: "tasks");
+$queue->produce("tasks", ["key" => "value"]);
+$queue->consume("tasks", function($message) { ... });
 
 # Ruby
-queue.worker(concurrency: 1, poll_interval: 1) { |message| ... }
+queue = Queue.new(topic: "tasks")
+queue.produce("tasks", { key: "value" })
+queue.consume("tasks") { |message| ... }
 
 # Node.js
-queue.worker(async (message) => { ... }, { concurrency: 1, pollInterval: 1 });
+const queue = new Queue({ topic: "tasks" });
+queue.produce("tasks", { key: "value" });
+queue.consume("tasks", async (message) => { ... });
 ```
 
 **Priority chain:** N/A (code-configured).

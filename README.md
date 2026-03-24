@@ -400,11 +400,10 @@ Backends: file (default), Redis, MongoDB. Set via `TINA4_SESSION_HANDLER` in `.e
 ### Queues
 
 ```ruby
-producer = Tina4::Producer.new(Tina4::Queue.new(topic: "emails"))
-producer.produce({ to: "alice@example.com" })
+queue = Tina4::Queue.new(topic: "emails")
+queue.produce("emails", { to: "alice@example.com" })
 
-consumer = Tina4::Consumer.new(Tina4::Queue.new(topic: "emails"))
-consumer.each { |msg| send_email(msg.data) }
+queue.consume("emails") { |msg| send_email(msg.payload) }
 ```
 
 ### GraphQL

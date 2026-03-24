@@ -1,6 +1,6 @@
 # Queue
 
-Tina4 Ruby includes a message queue system with Producer/Consumer pattern and pluggable backends: Lite (file-based, zero dependencies), RabbitMQ, and Kafka. Messages support topics, retry with max attempts, and dead letter queuing.
+Tina4 Ruby includes a message queue system with pluggable backends: Lite (file-based, zero dependencies), RabbitMQ, Kafka, and MongoDB. Messages support topics, retry with max attempts, and dead letter queuing.
 
 ## Quick Start with Lite Backend
 
@@ -9,24 +9,24 @@ The Lite backend stores messages as JSON files in `.queue/`. No external service
 ```ruby
 require "tina4"
 
-# Producer: publish messages
-producer = Tina4::Producer.new
-producer.publish("orders", { order_id: 123, total: 49.99 })
-producer.publish("orders", { order_id: 124, total: 12.50 })
+# Create a queue for a topic
+queue = Tina4::Queue.new(topic: "orders")
 
-# Batch publish
-producer.publish_batch("emails", [
-  { to: "alice@example.com", subject: "Welcome" },
-  { to: "bob@example.com", subject: "Reminder" }
-])
+# Produce messages
+queue.produce("orders", { order_id: 123, total: 49.99 })
+queue.produce("orders", { order_id: 124, total: 12.50 })
+
+# Or use push for the default topic
+queue.push({ order_id: 125, total: 30.00 })
 ```
 
-## Consumer
+## Consuming Messages
 
 ```ruby
-consumer = Tina4::Consumer.new(topic: "orders", max_retries: 3)
+queue = Tina4::Queue.new(topic: "orders", max_retries: 3)
 
-consumer.on_message do |message|
+# Block-based consumption (processes all pending messages)
+queue.consume("orders") do |message|
   puts "Processing order: #{message.payload}"
   puts "Message ID: #{message.id}"
   puts "Topic: #{message.topic}"
@@ -34,11 +34,17 @@ consumer.on_message do |message|
   # Process the message...
 end
 
-# Start consuming (blocking -- runs in a loop)
-consumer.start(poll_interval: 1)
+# Consume a specific message by ID
+queue.consume("orders", id: "abc-123") do |message|
+  puts "Processing specific order: #{message.payload}"
+end
 
-# Or process a single message (non-blocking)
-consumer.process_one
+# Or as an enumerator
+queue.consume("orders").each { |job| process(job) }
+
+# Or pop one at a time
+msg = queue.pop
+process(msg) if msg
 ```
 
 ## QueueMessage
@@ -56,59 +62,62 @@ message.to_json     # => JSON string
 
 ## Retry and Dead Letter
 
-When a message handler raises an error:
-1. The message is retried up to `max_retries` (default: 3)
-2. After exhausting retries, the message moves to the dead letter queue
+When a message fails processing:
+1. Use `queue.retry_failed` to re-queue messages under `max_retries`
+2. Messages that exceed retries go to the dead letter queue
 
 ```ruby
-consumer = Tina4::Consumer.new(topic: "risky", max_retries: 5)
+queue = Tina4::Queue.new(topic: "risky", max_retries: 5)
 
-consumer.on_message do |message|
-  result = process_payment(message.payload)
-  raise "Payment gateway timeout" unless result
-end
+# Check dead letter queue
+dead = queue.dead_letters
 
-consumer.start
-# Failed messages after 5 attempts go to .queue/dead_letter/
+# Retry failed messages
+queue.retry_failed
+
+# Purge completed messages
+queue.purge("completed")
 ```
 
 ## RabbitMQ Backend
 
 ```ruby
-backend = Tina4::QueueBackends::RabbitmqBackend.new(
-  url: "amqp://guest:guest@localhost:5672"
-)
+queue = Tina4::Queue.new(topic: "notifications", backend: :rabbitmq)
 
-producer = Tina4::Producer.new(backend: backend)
-producer.publish("notifications", { user_id: 1, type: "alert" })
+queue.produce("notifications", { user_id: 1, type: "alert" })
 
-consumer = Tina4::Consumer.new(topic: "notifications", backend: backend)
-consumer.on_message do |message|
+queue.consume("notifications") do |message|
   send_notification(message.payload)
 end
-consumer.start
 ```
+
+Configure via environment variables:
+- `TINA4_QUEUE_BACKEND=rabbitmq`
+- `TINA4_QUEUE_URL=amqp://guest:guest@localhost:5672`
 
 ## Kafka Backend
 
 ```ruby
-backend = Tina4::QueueBackends::KafkaBackend.new(
-  brokers: ["localhost:9092"]
-)
-
-producer = Tina4::Producer.new(backend: backend)
-producer.publish("events", { event: "user_signup", user_id: 42 })
+queue = Tina4::Queue.new(topic: "events", backend: :kafka)
+queue.produce("events", { event: "user_signup", user_id: 42 })
 ```
 
-## Shared Backend
+Configure via environment variables:
+- `TINA4_QUEUE_BACKEND=kafka`
+- `TINA4_KAFKA_BROKERS=localhost:9092`
 
-Use the same backend instance across producers and consumers to share the queue.
+## Explicit Backend Instance
+
+Pass a backend instance directly for full control:
 
 ```ruby
 backend = Tina4::QueueBackends::LiteBackend.new(dir: ".queue")
+queue = Tina4::Queue.new(topic: "tasks", backend: backend)
 
-producer = Tina4::Producer.new(backend: backend)
-consumer = Tina4::Consumer.new(topic: "tasks", backend: backend)
+queue.produce("tasks", { action: "send_email" })
+queue.consume("tasks") do |msg|
+  process(msg)
+end
 ```
 
 ## Lite Backend API
@@ -120,33 +129,22 @@ backend.size("orders")   # => number of pending messages in topic
 backend.topics           # => ["orders", "emails", ...]
 ```
 
-## Background Consumer in Routes
+## Background Queue in Routes
 
 ```ruby
 # Start consumer in a background thread
 Thread.new do
-  consumer = Tina4::Consumer.new(topic: "background_jobs")
-  consumer.on_message do |msg|
+  queue = Tina4::Queue.new(topic: "background_jobs")
+  queue.consume("background_jobs") do |msg|
     Tina4::Log.info("Processing background job: #{msg.id}")
     # do work...
   end
-  consumer.start
 end
 
 # Publish from route handlers
 Tina4.post "/api/jobs", auth: false do |request, response|
-  producer = Tina4::Producer.new
-  msg = producer.publish("background_jobs", request.body_parsed)
+  queue = Tina4::Queue.new(topic: "background_jobs")
+  msg = queue.produce("background_jobs", request.body_parsed)
   response.json({ job_id: msg.id, status: "queued" }, status: 202)
 end
-```
-
-## Stopping a Consumer
-
-```ruby
-consumer = Tina4::Consumer.new(topic: "orders")
-consumer.on_message { |m| process(m) }
-
-# In another thread or signal handler
-consumer.stop
 ```

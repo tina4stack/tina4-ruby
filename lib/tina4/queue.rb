@@ -55,28 +55,6 @@ module Tina4
     attr_reader :error
   end
 
-  class Producer
-    def initialize(backend: nil)
-      @backend = backend || Tina4::Queue.resolve_backend
-    end
-
-    def publish(topic, payload)
-      message = QueueMessage.new(topic: topic, payload: payload)
-      @backend.enqueue(message)
-      Tina4::Log.debug("Message published to #{topic}: #{message.id}")
-      message
-    end
-
-    def publish_batch(topic, payloads)
-      payloads.map { |p| publish(topic, p) }
-    end
-
-    # Unified push method matching the cross-framework API.
-    def push(topic, payload)
-      publish(topic, payload)
-    end
-  end
-
   # Queue — unified wrapper for queue management operations.
   # Auto-detects backend from TINA4_QUEUE_BACKEND env var.
   #
@@ -195,7 +173,6 @@ module Tina4
     end
 
     # Resolve the default backend from env vars.
-    # Class method so Producer can also use it.
     def self.resolve_backend(name = nil)
       chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "lite").downcase.strip
 
@@ -298,68 +275,6 @@ module Tina4
       end
 
       config
-    end
-  end
-
-  class Consumer
-    def initialize(topic:, backend: nil, max_retries: 3)
-      @topic = topic
-      @backend = backend || Tina4::Queue.resolve_backend
-      @max_retries = max_retries
-      @handlers = []
-      @running = false
-    end
-
-    def on_message(&block)
-      @handlers << block
-    end
-
-    def start(poll_interval: 1)
-      @running = true
-      Tina4::Log.info("Consumer started for topic: #{@topic}")
-
-      while @running
-        message = @backend.dequeue(@topic)
-        if message
-          process_message(message)
-        else
-          sleep(poll_interval)
-        end
-      end
-    end
-
-    def stop
-      @running = false
-      Tina4::Log.info("Consumer stopped for topic: #{@topic}")
-    end
-
-    def process_one
-      message = @backend.dequeue(@topic)
-      process_message(message) if message
-    end
-
-    private
-
-    def process_message(message)
-      message.increment_attempts!
-      message.status = :processing
-
-      @handlers.each do |handler|
-        handler.call(message)
-      end
-
-      message.status = :completed
-      @backend.acknowledge(message)
-    rescue => e
-      Tina4::Log.error("Queue message failed: #{message.id} - #{e.message}")
-      message.status = :failed
-
-      if message.attempts < @max_retries
-        message.status = :pending
-        @backend.requeue(message)
-      else
-        @backend.dead_letter(message)
-      end
     end
   end
 end
