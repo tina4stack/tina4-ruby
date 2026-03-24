@@ -612,7 +612,7 @@ RSpec.describe "Tina4 Smoke Test" do
     it "builds a valid WebSocket frame" do
       conn = Tina4::WebSocketConnection.new("test-id", StringIO.new)
       # Use send to access private build_frame
-      frame = conn.send(:build_frame, 0x1, "hi")
+      frame = conn.__send__(:build_frame, 0x1, "hi")
       expect(frame.bytesize).to be >= 4
       # First byte: FIN + opcode 1 (text)
       expect(frame.bytes[0]).to eq(0x81)

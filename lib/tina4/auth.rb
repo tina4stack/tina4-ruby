@@ -40,7 +40,8 @@ module Tina4
       # Base64url-decode (handles missing padding)
       def base64url_decode(str)
         # Add back padding
-        str += "=" * (4 - str.length % 4) % 4
+        remainder = str.length % 4
+        str += "=" * ((4 - remainder) % 4) if remainder != 0
         Base64.urlsafe_decode64(str)
       end
 
@@ -235,7 +236,7 @@ module Tina4
 
       # Legacy aliases
       alias_method :create_token, :get_token
-      alias_method :validate_token, :valid_token
+      alias_method :validate_token, :valid_token_detail
 
       def private_key
         @private_key ||= OpenSSL::PKey::RSA.new(File.read(private_key_path))

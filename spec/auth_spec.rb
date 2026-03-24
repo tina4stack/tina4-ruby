@@ -38,29 +38,30 @@ RSpec.describe Tina4::Auth do
 
     it "validates a valid token" do
       token = Tina4::Auth.create_token({ "user_id" => 42 })
-      payload = Tina4::Auth.validate_token(token)
-      expect(payload).not_to be_nil
-      expect(payload["user_id"]).to eq(42)
+      result = Tina4::Auth.validate_token(token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]["user_id"]).to eq(42)
     end
 
     it "includes iat, exp, nbf claims" do
       token = Tina4::Auth.create_token({ "role" => "admin" })
-      payload = Tina4::Auth.validate_token(token)
-      expect(payload).to have_key("iat")
-      expect(payload).to have_key("exp")
-      expect(payload).to have_key("nbf")
+      result = Tina4::Auth.validate_token(token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]).to have_key("iat")
+      expect(result[:payload]).to have_key("exp")
+      expect(result[:payload]).to have_key("nbf")
     end
 
     it "rejects an invalid token" do
       result = Tina4::Auth.validate_token("invalid.token.here")
-      expect(result).to be_nil
+      expect(result[:valid]).to be false
     end
 
     it "respects custom expiry" do
       token = Tina4::Auth.create_token({ "user_id" => 1 }, expires_in: 60)
-      payload = Tina4::Auth.validate_token(token)
-      expect(payload).not_to be_nil
-      expect(payload["exp"] - payload["iat"]).to eq(60)
+      result = Tina4::Auth.validate_token(token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]["exp"] - result[:payload]["iat"]).to eq(60)
     end
   end
 
@@ -104,10 +105,10 @@ RSpec.describe Tina4::Auth do
       new_token = Tina4::Auth.refresh_token(token, expires_in: 7200)
       expect(new_token).to be_a(String)
       expect(new_token).not_to eq(token)
-      payload = Tina4::Auth.validate_token(new_token)
-      expect(payload).not_to be_nil
-      expect(payload["user_id"]).to eq(1)
-      expect(payload["exp"] - payload["iat"]).to eq(7200)
+      result = Tina4::Auth.validate_token(new_token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]["user_id"]).to eq(1)
+      expect(result[:payload]["exp"] - result[:payload]["iat"]).to eq(7200)
     end
 
     it "returns nil for invalid token" do
