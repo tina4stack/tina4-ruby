@@ -363,7 +363,22 @@ module Tina4
                     btn.disabled = false;
                     btn.textContent = 'Deploy & Try';
                 } else {
-                    window.location.href = tryUrl;
+                    // Wait for the newly deployed route to become reachable before navigating
+                    var attempts = 0;
+                    var maxAttempts = 5;
+                    function pollRoute() {
+                        fetch(tryUrl, {method: 'HEAD'}).then(function() {
+                            window.location.href = tryUrl;
+                        }).catch(function() {
+                            attempts++;
+                            if (attempts < maxAttempts) {
+                                setTimeout(pollRoute, 500);
+                            } else {
+                                window.location.href = tryUrl;
+                            }
+                        });
+                    }
+                    setTimeout(pollRoute, 500);
                 }
             }).catch(function(e) {
                 alert('Deploy error: ' + e.message);
