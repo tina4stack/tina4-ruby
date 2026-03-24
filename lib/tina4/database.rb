@@ -18,11 +18,12 @@ module Tina4
       "firebird" => "Tina4::Drivers::FirebirdDriver"
     }.freeze
 
-    def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil)
+    def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: 0)
       @connection_string = connection_string || ENV["DATABASE_URL"]
       @username = username || ENV["DATABASE_USERNAME"]
       @password = password || ENV["DATABASE_PASSWORD"]
       @driver_name = driver_name || detect_driver(@connection_string)
+      @pool_size = pool  # Reserved for future connection pooling (0 = single connection)
       @driver = create_driver
       @connected = false
 
