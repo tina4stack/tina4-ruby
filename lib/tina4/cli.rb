@@ -5,7 +5,7 @@ require "fileutils"
 
 module Tina4
   class CLI
-    COMMANDS = %w[init start migrate seed seed:create test version routes console generate ai help].freeze
+    COMMANDS = %w[init start migrate migrate:status migrate:rollback seed seed:create test version routes console generate ai help].freeze
 
     def self.start(argv)
       new.run(argv)
@@ -17,6 +17,8 @@ module Tina4
       when "init"       then cmd_init(argv)
       when "start"      then cmd_start(argv)
       when "migrate"    then cmd_migrate(argv)
+      when "migrate:status" then cmd_migrate_status(argv)
+      when "migrate:rollback" then cmd_migrate_rollback(argv)
       when "seed"       then cmd_seed(argv)
       when "seed:create" then cmd_seed_create(argv)
       when "test"       then cmd_test(argv)
@@ -177,6 +179,75 @@ module Tina4
             puts "  [#{status_icon}] #{r[:name]}"
           end
         end
+      end
+    end
+
+    # ── migrate:status ─────────────────────────────────────────────────────
+
+    def cmd_migrate_status(_argv)
+      require_relative "../tina4"
+      Tina4.initialize!(Dir.pwd)
+
+      db = Tina4.database
+      unless db
+        puts "No database configured. Set DATABASE_URL in your .env file."
+        return
+      end
+
+      migration = Tina4::Migration.new(db)
+      info = migration.status
+
+      puts "\nMigration Status"
+      puts "-" * 60
+
+      if info[:completed].any?
+        puts "\nCompleted:"
+        info[:completed].each { |name| puts "  [OK] #{name}" }
+      end
+
+      if info[:pending].any?
+        puts "\nPending:"
+        info[:pending].each { |name| puts "  [  ] #{name}" }
+      end
+
+      if info[:completed].empty? && info[:pending].empty?
+        puts "  No migrations found."
+      end
+
+      puts "-" * 60
+      puts "  Completed: #{info[:completed].length}  Pending: #{info[:pending].length}\n"
+    end
+
+    # ── migrate:rollback ───────────────────────────────────────────────────
+
+    def cmd_migrate_rollback(argv)
+      options = { steps: 1 }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: tina4ruby migrate:rollback [options]"
+        opts.on("-n", "--steps N", Integer, "Number of batches to rollback (default: 1)") { |v| options[:steps] = v }
+      end
+      parser.parse!(argv)
+
+      require_relative "../tina4"
+      Tina4.initialize!(Dir.pwd)
+
+      db = Tina4.database
+      unless db
+        puts "No database configured. Set DATABASE_URL in your .env file."
+        return
+      end
+
+      migration = Tina4::Migration.new(db)
+      results = migration.rollback(options[:steps])
+
+      if results.empty?
+        puts "Nothing to rollback."
+      else
+        results.each do |r|
+          status_icon = r[:status] == "rolled_back" ? "OK" : "FAIL"
+          puts "  [#{status_icon}] #{r[:name]}"
+        end
+        puts "Rolled back #{results.length} migration(s)."
       end
     end
 
@@ -446,6 +517,8 @@ module Tina4
           init [NAME]        Initialize a new Tina4 project
           start              Start the Tina4 web server
           migrate            Run database migrations
+          migrate:status     Show migration status (completed and pending)
+          migrate:rollback   Rollback the last batch of migrations
           seed               Run all seed files in seeds/
           seed:create NAME   Create a new seed file
           test               Run inline tests

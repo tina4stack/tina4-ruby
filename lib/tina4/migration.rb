@@ -95,8 +95,10 @@ module Tina4
           CREATE TABLE #{TRACKING_TABLE} (
             id INTEGER PRIMARY KEY,
             migration_name VARCHAR(255) NOT NULL,
+            description VARCHAR(255) DEFAULT '',
             batch INTEGER NOT NULL DEFAULT 1,
-            executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            passed INTEGER NOT NULL DEFAULT 1
           )
         SQL
         Tina4::Log.info("Created migrations tracking table")
@@ -104,17 +106,17 @@ module Tina4
     end
 
     def completed_migrations
-      result = @db.fetch("SELECT migration_name FROM #{TRACKING_TABLE} ORDER BY id")
+      result = @db.fetch("SELECT migration_name FROM #{TRACKING_TABLE} WHERE passed = 1 ORDER BY id")
       result.map { |r| r[:migration_name] }
     end
 
     def completed_migrations_with_batch
-      result = @db.fetch("SELECT id, migration_name, batch FROM #{TRACKING_TABLE} ORDER BY id")
+      result = @db.fetch("SELECT id, migration_name, batch FROM #{TRACKING_TABLE} WHERE passed = 1 ORDER BY id")
       result.map { |r| { id: r[:id], migration_name: r[:migration_name], batch: r[:batch] } }
     end
 
     def next_batch_number
-      result = @db.fetch_one("SELECT MAX(batch) as max_batch FROM #{TRACKING_TABLE}")
+      result = @db.fetch_one("SELECT MAX(batch) as max_batch FROM #{TRACKING_TABLE} WHERE passed = 1")
       (result && result[:max_batch] ? result[:max_batch].to_i : 0) + 1
     end
 
@@ -123,10 +125,22 @@ module Tina4
 
       completed = completed_migrations
       # Support both .rb and .sql migration files
+      # Accept both 000001_name.sql (sequential) and YYYYMMDDHHMMSS_name.sql (timestamp) patterns
       Dir.glob(File.join(@migrations_dir, "*.{rb,sql}"))
          .reject { |f| f.end_with?(".down.sql") }
-         .sort
+         .sort_by { |f| migration_sort_key(File.basename(f)) }
          .reject { |f| completed.include?(File.basename(f)) }
+    end
+
+    # Sort key that handles both 000001_name.sql and 20240315120000_name.sql patterns.
+    # Both are zero-padded numeric prefixes so alphabetical sorting works, but we
+    # extract the prefix explicitly to guarantee correct ordering when mixed.
+    def migration_sort_key(filename)
+      if filename =~ /\A(\d+)/
+        [$1.to_i, filename]
+      else
+        [0, filename]
+      end
     end
 
     def run_migration(file, batch)
@@ -138,10 +152,11 @@ module Tina4
         else
           execute_sql_file(file)
         end
-        record_migration(name, batch)
+        record_migration(name, batch, passed: 1)
         { name: name, status: "success" }
       rescue => e
         Tina4::Log.error("Migration failed: #{name} - #{e.message}")
+        record_migration(name, batch, passed: 0)
         { name: name, status: "failed", error: e.message }
       end
     end
@@ -181,17 +196,70 @@ module Tina4
       migration.__send__(direction, @db)
     end
 
+    # Split SQL into individual statements, handling:
+    # - $$ delimited stored procedure blocks
+    # - // delimited blocks
+    # - Block comments /* ... */
+    # - Line comments -- ...
+    # Matches the Python/Node.js approach: extract blocks first, split on ;, restore blocks.
+    def split_sql_statements(sql, delimiter = ";")
+      blocks = []
+
+      # Extract $$ ... $$ blocks (stored procedures, triggers, etc.)
+      processed = sql.gsub(/\$\$(.*?)\$\$/m) do
+        blocks << $~.to_s
+        "__BLOCK_#{blocks.length - 1}__"
+      end
+
+      # Extract // ... // blocks
+      processed = processed.gsub(/\/\/(.*?)\/\//m) do
+        blocks << $~.to_s
+        "__BLOCK_#{blocks.length - 1}__"
+      end
+
+      # Remove block comments (/* ... */) but not inside stored proc blocks (already extracted)
+      clean = processed.gsub(/\/\*.*?\*\//m, "")
+
+      statements = []
+      clean.split(delimiter).each do |stmt|
+        lines = []
+        stmt.split("\n").each do |line|
+          stripped = line.strip
+          next if stripped.empty? || stripped.start_with?("--")
+          # Remove inline comments (-- after SQL)
+          comment_pos = line.index("--")
+          line = line[0...comment_pos] if comment_pos && comment_pos >= 0
+          lines << line
+        end
+        cleaned = lines.join("\n").strip
+
+        # Restore block placeholders
+        blocks.each_with_index do |block, i|
+          cleaned = cleaned.gsub("__BLOCK_#{i}__", block)
+        end
+
+        statements << cleaned unless cleaned.empty?
+      end
+
+      statements
+    end
+
     def execute_sql_file(file)
       sql = File.read(file)
-      statements = sql.split(";").map(&:strip).reject(&:empty?)
+      statements = split_sql_statements(sql)
       statements.each do |stmt|
-        next if stmt.start_with?("--")
         @db.execute(stmt)
       end
     end
 
-    def record_migration(name, batch)
-      @db.insert(TRACKING_TABLE, { migration_name: name, batch: batch })
+    def record_migration(name, batch, passed: 1)
+      # Extract description from filename (strip numeric prefix and extension)
+      stem = File.basename(name, File.extname(name))
+      desc = stem.sub(/\A\d+_/, "").tr("_", " ")
+      @db.execute(
+        "INSERT INTO #{TRACKING_TABLE} (migration_name, description, batch, passed) VALUES (?, ?, ?, ?)",
+        [name, desc, batch, passed]
+      )
     end
 
     def remove_migration_record(name)
