@@ -11,7 +11,7 @@ module Tina4
       end
 
       def current_locale
-        @current_locale || ENV["TINA4_LANGUAGE"] || "en"
+        @current_locale || ENV["TINA4_LOCALE"] || "en"
       end
 
       def current_locale=(locale)

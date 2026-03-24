@@ -9,7 +9,7 @@ module Tina4
 
     def initialize(db, migrations_dir: nil)
       @db = db
-      @migrations_dir = migrations_dir || File.join(Dir.pwd, "src", "migrations")
+      @migrations_dir = migrations_dir || resolve_migrations_dir
       ensure_tracking_table
     end
 
@@ -88,6 +88,18 @@ module Tina4
     end
 
     private
+
+    # Resolve migrations directory: prefer src/migrations, fall back to migrations/
+    def resolve_migrations_dir
+      src_dir = File.join(Dir.pwd, "src", "migrations")
+      return src_dir if Dir.exist?(src_dir)
+
+      root_dir = File.join(Dir.pwd, "migrations")
+      return root_dir if Dir.exist?(root_dir)
+
+      # Default to src/migrations (will be created when needed)
+      src_dir
+    end
 
     def ensure_tracking_table
       unless @db.table_exists?(TRACKING_TABLE)

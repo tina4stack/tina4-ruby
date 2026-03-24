@@ -555,7 +555,7 @@ module Tina4
     # ── shared helpers ────────────────────────────────────────────────────
 
     def load_routes(root_dir)
-      route_dirs = %w[routes src/routes src/api api]
+      route_dirs = %w[src/routes routes src/api api src/orm orm]
       route_dirs.each do |dir|
         route_dir = File.join(root_dir, dir)
         next unless Dir.exist?(route_dir)

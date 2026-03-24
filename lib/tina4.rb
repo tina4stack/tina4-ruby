@@ -400,8 +400,9 @@ module Tina4
     end
 
     def auto_discover(root_dir)
-      route_dirs = %w[routes src/routes src/api api]
-      route_dirs.each do |dir|
+      # src/ prefixed directories take priority over root-level ones
+      discover_dirs = %w[src/routes routes src/api api src/orm orm]
+      discover_dirs.each do |dir|
         full_dir = File.join(root_dir, dir)
         next unless Dir.exist?(full_dir)
 
