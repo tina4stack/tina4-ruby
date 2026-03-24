@@ -74,10 +74,12 @@ module Tina4
       end
     end
 
-    def fetch(sql, params = [], limit: nil, skip: nil)
+    def fetch(sql, params = [], limit: nil, offset: nil)
+      offset ||= 0
+
       effective_sql = sql
       if limit
-        effective_sql = @driver.apply_limit(effective_sql, limit, skip || 0)
+        effective_sql = @driver.apply_limit(effective_sql, limit, offset)
       end
 
       if @cache_enabled
