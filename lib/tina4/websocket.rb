@@ -44,7 +44,8 @@ module Tina4
       socket.write(response)
 
       conn_id = SecureRandom.hex(16)
-      connection = WebSocketConnection.new(conn_id, socket, ws_server: self)
+      ws_path = env["REQUEST_PATH"] || env["PATH_INFO"] || "/"
+      connection = WebSocketConnection.new(conn_id, socket, ws_server: self, path: ws_path)
       @connections[conn_id] = connection
 
       emit(:open, connection)
@@ -74,9 +75,10 @@ module Tina4
       end
     end
 
-    def broadcast(message, exclude: nil)
+    def broadcast(message, exclude: nil, path: nil)
       @connections.each do |id, conn|
         next if exclude && id == exclude
+        next if path && conn.path != path
         conn.send_text(message)
       end
     end
@@ -90,21 +92,23 @@ module Tina4
 
   class WebSocketConnection
     attr_reader :id
-    attr_accessor :params
+    attr_accessor :params, :path
 
-    def initialize(id, socket, ws_server: nil)
+    def initialize(id, socket, ws_server: nil, path: "/")
       @id = id
       @socket = socket
       @params = {}
       @ws_server = ws_server
+      @path = path
     end
 
-    # Broadcast a message to all other connections on the same WebSocket server
+    # Broadcast a message to all other connections on the same path
     def broadcast(message, include_self: false)
       return unless @ws_server
 
       @ws_server.connections.each do |cid, conn|
         next if !include_self && cid == @id
+        next if conn.path != @path
         conn.send_text(message)
       end
     end
