@@ -10,9 +10,9 @@ Real HTTP benchmarks — identical JSON and 100-item list endpoints. All framewo
 
 | Framework | JSON req/s | 100-item list req/s | Server | Deps |
 |-----------|:---------:|:-------------------:|--------|:----:|
-| Roda | 19,530 | 10,746 | Puma | 1 |
+| Roda | 8,159 | 6,232 | Puma | 1 |
 | **Tina4 Ruby 3.2** | **17,637** | **11,303** | **Puma** | **0** |
-| Sinatra | 6,016 | 4,139 | Puma | 2 |
+| Sinatra | 7,348 | 5,796 | Puma | 2 |
 | Rails 8.1 | 4,918 | 4,007 | Puma | 40+ |
 
 **Key takeaway:** Tina4 Ruby delivers 17,637 req/s — competitive with Roda (19,530), 2.9x faster than Sinatra, and 3.6x faster than Rails, while shipping 38 features with 0 core dependencies. Roda is a micro-router with 3 features; Tina4 ships 38.
