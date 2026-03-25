@@ -240,18 +240,47 @@ module Tina4
     end
 
     def try_serve_template(path)
+      tpl_file = resolve_template(path)
+      return nil unless tpl_file
+
       templates_dir = File.join(@root_dir, "src", "templates")
+      body = Tina4::Template.render(tpl_file, {}) rescue File.read(File.join(templates_dir, tpl_file))
+      [200, { "content-type" => "text/html" }, [body]]
+    end
+
+    # Resolve a URL path to a template file.
+    # Dev mode: checks filesystem every time for live changes.
+    # Production: uses a cached lookup built once at startup.
+    def resolve_template(path)
       clean_path = path.sub(%r{^/}, "")
       clean_path = "index" if clean_path.empty?
-      %w[.twig .html].each do |ext|
-        tpl_file = clean_path + ext
-        full_path = File.join(templates_dir, tpl_file)
-        if File.file?(full_path)
-          body = Tina4::Template.render(tpl_file, {}) rescue File.read(full_path)
-          return [200, { "content-type" => "text/html" }, [body]]
+      is_dev = %w[true 1 yes].include?(ENV.fetch("TINA4_DEBUG", "false").downcase)
+
+      if is_dev
+        templates_dir = File.join(@root_dir, "src", "templates")
+        %w[.twig .html].each do |ext|
+          candidate = clean_path + ext
+          return candidate if File.file?(File.join(templates_dir, candidate))
         end
+        return nil
       end
-      nil
+
+      # Production: cached lookup
+      @template_cache ||= build_template_cache
+      @template_cache[clean_path]
+    end
+
+    def build_template_cache
+      cache = {}
+      templates_dir = File.join(@root_dir, "src", "templates")
+      return cache unless File.directory?(templates_dir)
+
+      Dir.glob(File.join(templates_dir, "**", "*.{twig,html}")).each do |f|
+        rel = f.sub(templates_dir + File::SEPARATOR, "").tr("\\", "/")
+        url_path = rel.sub(/\.(twig|html)$/, "")
+        cache[url_path] ||= rel
+      end
+      cache
     end
 
     def try_serve_index_template
