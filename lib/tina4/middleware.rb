@@ -264,4 +264,32 @@ module Tina4
       end
     end
   end
+
+  # SecurityHeadersMiddleware -- injects security headers on every response.
+  # Config via env:
+  #   TINA4_FRAME_OPTIONS       — X-Frame-Options (default: SAMEORIGIN)
+  #   TINA4_HSTS                — Strict-Transport-Security max-age (default: "" = off)
+  #   TINA4_CSP                 — Content-Security-Policy (default: "default-src 'self'")
+  #   TINA4_REFERRER_POLICY     — Referrer-Policy (default: strict-origin-when-cross-origin)
+  #   TINA4_PERMISSIONS_POLICY  — Permissions-Policy (default: camera=(), microphone=(), geolocation=())
+  class SecurityHeadersMiddleware
+    class << self
+      def before_security(request, response)
+        response.headers["X-Frame-Options"] = ENV["TINA4_FRAME_OPTIONS"] || "SAMEORIGIN"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        hsts = ENV["TINA4_HSTS"] || ""
+        unless hsts.empty?
+          response.headers["Strict-Transport-Security"] = "max-age=#{hsts}; includeSubDomains"
+        end
+
+        response.headers["Content-Security-Policy"] = ENV["TINA4_CSP"] || "default-src 'self'"
+        response.headers["Referrer-Policy"] = ENV["TINA4_REFERRER_POLICY"] || "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "0"
+        response.headers["Permissions-Policy"] = ENV["TINA4_PERMISSIONS_POLICY"] || "camera=(), microphone=(), geolocation=()"
+
+        [request, response]
+      end
+    end
+  end
 end
