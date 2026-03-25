@@ -1,6 +1,6 @@
 # Tina4 Ruby — Benchmark Report
 
-**Date:** 2026-03-25 | **Machine:** Apple Silicon (ARM64), 8 cores | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, median)
+**Date:** 2026-03-25 | **Machine:** Apple Silicon (ARM64), 8 cores | **Tool:** `hey` (5000 requests, 50 concurrent, 3 runs, averaged)
 
 ---
 
@@ -10,12 +10,12 @@ Real HTTP benchmarks — identical JSON and 100-item list endpoints. All framewo
 
 | Framework | JSON req/s | 100-item list req/s | Server | Deps |
 |-----------|:---------:|:-------------------:|--------|:----:|
-| **Tina4 Ruby 3.2** | **45,783** | **41,532** | **Puma** | **0** |
 | Roda | 19,530 | 10,746 | Puma | 1 |
+| **Tina4 Ruby 3.2** | **17,637** | **11,303** | **Puma** | **0** |
 | Sinatra | 6,016 | 4,139 | Puma | 2 |
 | Rails 8.1 | 4,918 | 4,007 | Puma | 40+ |
 
-**Key takeaway:** Tina4 Ruby is the fastest Ruby framework tested — 2.3x faster than Roda (45,783 vs 19,530), 7.6x faster than Sinatra, and 9.3x faster than Rails, while shipping 38 features with 0 core dependencies. Roda is a micro-router with 3 features; Tina4 ships 38.
+**Key takeaway:** Tina4 Ruby delivers 17,637 req/s — competitive with Roda (19,530), 2.9x faster than Sinatra, and 3.6x faster than Rails, while shipping 38 features with 0 core dependencies. Roda is a micro-router with 3 features; Tina4 ships 38.
 
 ---
 
@@ -75,7 +75,7 @@ Ships with core install, no extra packages needed.
 
 | Framework | Features | Deps | JSON req/s |
 |-----------|:-------:|:----:|:---------:|
-| **Tina4** | **38/38** | **0** | **45,783** |
+| **Tina4** | **38/38** | **0** | **17,637** |
 | Rails 8 | 20/38 | 40+ | 4,918 |
 | Sinatra | 4/38 | 2 | 6,016 |
 | Roda | 3/38 | 1 | 19,530 |
@@ -103,14 +103,14 @@ All frameworks on Puma.
 
 | Framework | JSON req/s | Duration (s) | Est. Energy (kWh) | Est. CO2 (g) |
 |-----------|:---------:|:------------:|:-----------------:|:------------:|
-| **Tina4** | 45,783 | 0.109 | 0.00000046 | 0.0002 |
 | Roda | 19,530 | 0.256 | 0.0000011 | 0.0005 |
+| **Tina4** | **17,637** | **0.2835** | **0.0000012** | **0.0006** |
 | Sinatra | 6,016 | 0.831 | 0.0000035 | 0.0016 |
 | Rails | 4,918 | 1.017 | 0.0000042 | 0.0020 |
 
 *Calculation: duration = 5000 / req_s; energy = duration × 15W / 3,600,000; CO2 = energy × 475 g/kWh (world average).*
 
-**Rails emits 10x more CO2** per benchmark run than Tina4. Tina4 is the most efficient Ruby framework tested — faster than Roda while shipping 35 more features.
+**Rails emits 3.3x more CO2** per benchmark run than Tina4. Tina4 is competitive with Roda in efficiency while shipping 35 more features.
 
 ---
 
