@@ -1444,7 +1444,9 @@ module Tina4
         "json_encode"   => ->(v, *_a) { JSON.generate(v) rescue v.to_s },
         "json_decode"   => ->(v, *_a) { v.is_a?(String) ? (JSON.parse(v) rescue v) : v },
         "base64_encode" => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
+        "base64encode"  => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
         "base64_decode" => ->(v, *_a) { Base64.decode64(v.to_s) },
+        "base64decode"  => ->(v, *_a) { Base64.decode64(v.to_s) },
         "data_uri" => ->(v, *_a) {
           if v.is_a?(Hash)
             ct = v[:type] || v["type"] || "application/octet-stream"
