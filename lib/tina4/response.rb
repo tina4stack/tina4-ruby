@@ -110,6 +110,32 @@ module Tina4
       self
     end
 
+    # Standard error response envelope.
+    #
+    # Usage:
+    #   response.error("VALIDATION_FAILED", "Email is required", 400)
+    #
+    def error(code, message, status_code = 400)
+      @status_code = status_code
+      @headers["content-type"] = JSON_CONTENT_TYPE
+      @body = JSON.generate({
+        error: true,
+        code: code,
+        message: message,
+        status: status_code
+      })
+      self
+    end
+
+    # Build a standard error envelope hash (class method).
+    #
+    # Usage:
+    #   response.json(Tina4::Response.error_envelope("NOT_FOUND", "Resource not found", 404), status: 404)
+    #
+    def self.error_envelope(code, message, status = 400)
+      { error: true, code: code, message: message, status: status }
+    end
+
     # Chainable header setter
     def header(name, value = nil)
       if value.nil?
