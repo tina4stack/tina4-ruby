@@ -25,14 +25,6 @@
   <a href="https://tina4.com">tina4.com</a>
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/tests-1577%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/carbonah-A%2B%20rated-00cc44" alt="Carbonah A+">
-  <img src="https://img.shields.io/badge/zero--dep-core-blue" alt="Zero Dependencies">
-  <img src="https://img.shields.io/badge/ruby-3.1%2B-blue" alt="Ruby 3.1+">
-  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT License">
-</p>
-
 ---
 
 ## Quick Start
@@ -104,7 +96,7 @@ Every feature is built from scratch -- no gem install, no node_modules, no third
 | **Data** | Migrations with rollback, 50+ fake data generators, ORM and table seeders |
 | **Other** | REST client, localization (6 languages), cache (memory/Redis/file), event system, inline testing, messenger (.env driven), configurable error pages |
 
-**1,577 tests across 38 built-in features. Zero dependencies. All Carbonah benchmarks rated A+.**
+**1,578 tests across 38 built-in features. Zero dependencies. All Carbonah benchmarks rated A+.**
 
 For full documentation visit **[tina4.com](https://tina4.com)**.
 
