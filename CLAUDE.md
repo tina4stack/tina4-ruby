@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.8.0 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -489,8 +489,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Cache backends: memory (default), Redis, file
 - Session handlers: file, Redis, MongoDB
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
-- Tests: 1,577 passing (38 features)
-- Version: 3.0.0
+- Tests: 1,578 passing (38 features)
+- Version: 3.8.0
 
 ## Links
 
