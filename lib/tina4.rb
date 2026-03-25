@@ -203,7 +203,20 @@ module Tina4
       end
     end
 
-    def run!(root_dir = Dir.pwd)
+    def run!(root_dir = nil, port: nil, host: nil, debug: nil)
+      # Handle legacy call: run!(port: 7147) where root_dir receives the hash
+      if root_dir.is_a?(Hash)
+        port ||= root_dir[:port]
+        host ||= root_dir[:host]
+        debug = root_dir[:debug] if debug.nil? && root_dir.key?(:debug)
+        root_dir = nil
+      end
+      root_dir ||= Dir.pwd
+
+      ENV["PORT"] = port.to_s if port
+      ENV["HOST"] = host.to_s if host
+      ENV["TINA4_DEBUG"] = debug.to_s unless debug.nil?
+
       initialize!(root_dir) unless @root_dir
 
       host = ENV.fetch("HOST", ENV.fetch("TINA4_HOST", "0.0.0.0"))
