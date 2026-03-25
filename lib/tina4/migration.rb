@@ -260,7 +260,48 @@ module Tina4
       sql = File.read(file)
       statements = split_sql_statements(sql)
       statements.each do |stmt|
+        # Firebird lacks IF NOT EXISTS for ALTER TABLE ADD.
+        # Pre-check the system catalogue so duplicate columns are
+        # silently skipped instead of raising an error.
+        skip_reason = should_skip_for_firebird(stmt)
+        if skip_reason
+          Tina4::Log.info("Migration #{File.basename(file)}: #{skip_reason}")
+          next
+        end
         @db.execute(stmt)
+      end
+    end
+
+    # Regex to match ALTER TABLE <table> ADD <column> ...
+    ALTER_ADD_RE = /\A\s*ALTER\s+TABLE\s+(?:"([^"]+)"|(\S+))\s+ADD\s+(?:"([^"]+)"|(\S+))/i
+
+    def firebird?
+      @db.driver_name == "firebird"
+    end
+
+    # Check if a column already exists in a Firebird table via RDB$RELATION_FIELDS.
+    # Firebird stores unquoted identifiers in upper-case.
+    def firebird_column_exists?(table, column)
+      row = @db.fetch_one(
+        "SELECT 1 FROM RDB\$RELATION_FIELDS WHERE RDB\$RELATION_NAME = ? AND TRIM(RDB\$FIELD_NAME) = ?",
+        [table.upcase, column.upcase]
+      )
+      !row.nil?
+    end
+
+    # If stmt is an ALTER TABLE ... ADD on Firebird and the column already exists,
+    # returns a skip reason. Returns nil if the statement should execute normally.
+    def should_skip_for_firebird(stmt)
+      return nil unless firebird?
+
+      m = stmt.match(ALTER_ADD_RE)
+      return nil unless m
+
+      table = m[1] || m[2]
+      column = m[3] || m[4]
+
+      if firebird_column_exists?(table, column)
+        "Column #{column} already exists in #{table}, skipping"
       end
     end
 
