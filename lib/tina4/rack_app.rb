@@ -221,8 +221,10 @@ module Tina4
     end
 
     def handle_404(path)
-      # Show landing page for GET "/" when no user route or template index exists
-      if path == "/" && should_show_landing_page?
+      # Show index template or landing page for GET "/"
+      if path == "/"
+        index_response = try_serve_index_template
+        return index_response if index_response
         return render_landing_page
       end
 
@@ -235,6 +237,18 @@ module Tina4
       # Check if any index template exists in src/templates/
       templates_dir = File.join(@root_dir, "src", "templates")
       %w[index.html index.twig index.erb].none? { |f| File.file?(File.join(templates_dir, f)) }
+    end
+
+    def try_serve_index_template
+      templates_dir = File.join(@root_dir, "src", "templates")
+      %w[index.html index.twig index.erb].each do |f|
+        path = File.join(templates_dir, f)
+        if File.file?(path)
+          body = Tina4::Template.render(f, {}) rescue File.read(path)
+          return [200, { "content-type" => "text/html" }, [body]]
+        end
+      end
+      nil
     end
 
     def render_landing_page
