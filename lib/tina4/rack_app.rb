@@ -221,12 +221,12 @@ module Tina4
     end
 
     def handle_404(path)
-      # Show index template or landing page for GET "/"
-      if path == "/"
-        index_response = try_serve_index_template
-        return index_response if index_response
-        return render_landing_page
-      end
+      # Try serving a template file (e.g. /hello -> src/templates/hello.twig or hello.html)
+      template_response = try_serve_template(path)
+      return template_response if template_response
+
+      # Show landing page for GET "/"
+      return render_landing_page if path == "/"
 
       Tina4::Log.warning("404 Not Found: #{path}")
       body = Tina4::Template.render_error(404, { "path" => path }) rescue "404 Not Found"
@@ -237,6 +237,21 @@ module Tina4
       # Check if any index template exists in src/templates/
       templates_dir = File.join(@root_dir, "src", "templates")
       %w[index.html index.twig index.erb].none? { |f| File.file?(File.join(templates_dir, f)) }
+    end
+
+    def try_serve_template(path)
+      templates_dir = File.join(@root_dir, "src", "templates")
+      clean_path = path.sub(%r{^/}, "")
+      clean_path = "index" if clean_path.empty?
+      %w[.twig .html].each do |ext|
+        tpl_file = clean_path + ext
+        full_path = File.join(templates_dir, tpl_file)
+        if File.file?(full_path)
+          body = Tina4::Template.render(tpl_file, {}) rescue File.read(full_path)
+          return [200, { "content-type" => "text/html" }, [body]]
+        end
+      end
+      nil
     end
 
     def try_serve_index_template
