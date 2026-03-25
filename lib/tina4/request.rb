@@ -7,6 +7,11 @@ module Tina4
     attr_reader :env, :method, :path, :query_string, :content_type,
                 :path_params, :ip
 
+    # Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var.
+    TINA4_MAX_UPLOAD_SIZE = Integer(ENV.fetch("TINA4_MAX_UPLOAD_SIZE", 10_485_760))
+
+    class PayloadTooLarge < StandardError; end
+
     def initialize(env, path_params = {})
       @env = env
       @method = env["REQUEST_METHOD"]
@@ -14,6 +19,13 @@ module Tina4
       @query_string = env["QUERY_STRING"] || ""
       @content_type = env["CONTENT_TYPE"] || ""
       @path_params = path_params
+
+      # Check upload size limit
+      content_length = (env["CONTENT_LENGTH"] || 0).to_i
+      if content_length > TINA4_MAX_UPLOAD_SIZE
+        raise PayloadTooLarge,
+          "Request body (#{content_length} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{TINA4_MAX_UPLOAD_SIZE} bytes)"
+      end
 
       # Client IP with X-Forwarded-For support
       @ip = extract_client_ip
