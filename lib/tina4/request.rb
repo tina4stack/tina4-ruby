@@ -64,7 +64,7 @@ module Tina4
     end
 
     def session
-      @session ||= @env["tina4.session"] || {}
+      @session ||= Tina4::Session.new(@env)
     end
 
     # Raw body string

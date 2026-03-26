@@ -100,6 +100,23 @@ module Tina4
         end
       end
 
+      # Save session and set cookie if session was used
+      if result && defined?(rack_response)
+        status, headers, body_parts = rack_response
+        request_obj = env["tina4.request"]
+        if request_obj&.instance_variable_get(:@session)
+          sess = request_obj.session
+          sess.save
+          sid = sess.id
+          cookie_val = (env["HTTP_COOKIE"] || "")[/tina4_session=([^;]+)/, 1]
+          if sid && sid != cookie_val
+            ttl = Integer(ENV.fetch("TINA4_SESSION_TTL", 86400))
+            headers["set-cookie"] = "tina4_session=#{sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=#{ttl}"
+          end
+          rack_response = [status, headers, body_parts]
+        end
+      end
+
       rack_response
     rescue => e
       handle_500(e, env)
@@ -115,6 +132,7 @@ module Tina4
       end
 
       request = Tina4::Request.new(env, path_params)
+      env["tina4.request"] = request  # Store for session save after response
       response = Tina4::Response.new
 
       # Run global middleware (block-based + class-based before_* methods)
