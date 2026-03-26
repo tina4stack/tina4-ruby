@@ -148,21 +148,19 @@ module Tina4
         end
       end
 
-      # Execute handler — support (), (response), (request), or (request, response) signatures
-      # When 1 param: if named :request or :req, pass request; otherwise pass response
-      result = case route.handler.arity
-      when 0
-        route.handler.call
-      when 1
-        param_name = route.handler.parameters.first&.last
-        if param_name == :request || param_name == :req
-          route.handler.call(request)
+      # Execute handler — inject path params by name, then request/response
+      handler_params = route.handler.parameters.map(&:last)
+      route_params = path_params || {}
+      args = handler_params.map do |name|
+        if route_params.key?(name)
+          route_params[name]
+        elsif name == :request || name == :req
+          request
         else
-          route.handler.call(response)
+          response
         end
-      else
-        route.handler.call(request, response)
       end
+      result = args.empty? ? route.handler.call : route.handler.call(*args)
 
       # Template rendering: when a template is set and the handler returned a Hash,
       # render the template with the hash as data and return the HTML response.
