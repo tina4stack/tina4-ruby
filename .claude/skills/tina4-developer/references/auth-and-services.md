@@ -8,6 +8,9 @@ Set your secret in `.env`:
 SECRET=a-long-random-string-here
 ```
 
+Auth auto-selects the signing algorithm: **HS256** if a `SECRET` env var is set, or **RS256** if
+RSA key files exist. No manual algorithm configuration needed.
+
 ### Generating Tokens (Python)
 ```python
 from tina4 import tina4_auth
@@ -22,7 +25,7 @@ async def login(request, response):
     if not user or not tina4_auth.check_password(user.password_hash, password):
         return response.json({"error": "Invalid credentials"}, 401)
 
-    token = tina4_auth.get_token({"user_id": user.id, "email": user.email})
+    token = tina4_auth.get_token({"user_id": user.id, "email": user.email}, expires_in=3600)
     return response.json({"token": token})
 ```
 
@@ -32,7 +35,7 @@ class AuthRequired:
     @staticmethod
     async def before(request, response):
         token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        if not tina4_auth.valid(token):
+        if not tina4_auth.valid_token(token):
             return request, response.json({"error": "Unauthorized"}, 401)
         request.user = tina4_auth.get_payload(token)
         return request, response
@@ -83,6 +86,7 @@ async def logout(request, response):
 ## Queue System
 
 For background jobs like sending emails, processing uploads, etc.
+Queue files use the `.queue-data` extension on disk.
 
 ### Producing Messages
 ```python

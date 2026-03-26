@@ -32,12 +32,13 @@ queue.consume("emails", lambda message: (
 - Retry with exponential backoff (configurable max retries)
 - Dead letter queue for permanently failed messages
 - Stale job recovery (60-second sweep)
-- Retrieve by ID, search/filter messages
+- Retrieve by ID (`pop_by_id`), search/filter messages
 - Requeue to different queues (preserves `original_queue`)
 - Failover chains between backends
 - Circuit breaker for external backends
 - Batch processing
 - Auto-cleanup (completed messages purged after 7 days)
+- Queue file extension: `.queue-data` (changed from `.json` in v3.7.1)
 
 ### Atomic Pop Operations
 - SQLite/PostgreSQL/Firebird: `UPDATE ... RETURNING`
@@ -79,18 +80,23 @@ changes via event system, re-renders Frond blocks server-side, pushes HTML fragm
 
 ## Authentication / JWT
 
+**BREAKING (v3.7.1):** `token_expiry` renamed to `expires_in`. `validate_token` renamed to `valid_token`.
+
 ### Python
 ```python
 from tina4 import tina4_auth
 
-token = tina4_auth.get_token({"user_id": 42})          # HS256 signed with SECRET env var
-is_valid = tina4_auth.valid(token)
+token = tina4_auth.get_token({"user_id": 42}, expires_in=3600)  # seconds
+is_valid = tina4_auth.valid_token(token)
 payload = tina4_auth.get_payload(token)
 hashed = tina4_auth.hash_password("mypassword")
 matches = tina4_auth.check_password(hashed, "mypassword")
 ```
 
-Supports both HS256 and RS256 algorithms.
+### Algorithm Auto-Selection
+- If `SECRET` env var is set → **HS256** (symmetric, simpler)
+- If `secrets/private.pem` + `secrets/public.pem` exist → **RS256** (asymmetric, production)
+- Both HS256 and RS256 are fully supported across all four languages
 
 ---
 

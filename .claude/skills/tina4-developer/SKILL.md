@@ -126,6 +126,8 @@ Browser ←→ Reactive Frontend ←→ Tina4 API Routes ←→ Database
 - Routes return objects/dicts (auto-converted to JSON)
 - Swagger auto-generated at `/swagger` — the frontend team's contract
 - **tina4-js** is the preferred frontend — sub-3KB, signals-based, Web Components, no build step
+- A bundled `tina4js.min.js` (13.6KB) is available in all backend repos — include it with
+  `<script src="/js/tina4js.min.js"></script>` for reactive frontends without a build step
 - But React, Preact, Vue, Svelte, or any other frontend framework works too
 - Static frontend files go in `src/public/` or are served from a separate build
 
@@ -224,6 +226,8 @@ When helping a developer build with Tina4, always follow these:
    - Return a string → HTML response
    - Return a number → Status code
    - Receive JSON POST body → Automatically parsed into request body
+   - Typed route parameters (`{id:int}`, `{price:float}`, `{slug:path}`) auto-convert values
+   - Template fallback: `/hello` auto-serves `src/templates/hello.twig` if no route matches
    - No manual `json.dumps()`, `json_encode()`, or `JSON.stringify()` needed
 
 4. **Same patterns across languages** — Show examples in whichever language the developer is
@@ -247,17 +251,22 @@ Never write code that targets older versions. Use modern language features.
 
 Read these when you need detailed patterns for a specific area:
 
-- **`references/routes-and-api.md`** — Routing, middleware, request/response, API design,
-  Swagger docs. Read this for any HTTP/API work.
+- **`references/routes-and-api.md`** — Routing (incl. typed parameters, template fallback),
+  built-in middleware (CorsMiddleware, RateLimiter, RequestLogger), request/response, API
+  design, Swagger docs. Read this for any HTTP/API work.
 
-- **`references/data-and-orm.md`** — ORM models, database connections, migrations, seeding,
-  queries, relationships, pagination. Read this for any data work.
+- **`references/data-and-orm.md`** — ORM models, Database class, DatabaseResult, migrations,
+  seeding, queries, relationships, pagination (use `offset`, not `skip`). Read this for any
+  data work.
 
-- **`references/templates-and-frontend.md`** — Frond templates, live blocks, frond.js helper,
-  forms, CRUD tables, WebSocket. Read this for any UI/frontend work.
+- **`references/templates-and-frontend.md`** — Frond templates (with caching), live blocks,
+  frond.js helper, tina4js.min.js reactive bundle, base64 filters, forms, CRUD tables,
+  WebSocket. Read this for any UI/frontend work.
 
-- **`references/auth-and-services.md`** — JWT authentication, sessions, queue system, email,
-  GraphQL, WSDL, events, caching, i18n. Read this for auth or background services.
+- **`references/auth-and-services.md`** — JWT authentication (HS256/RS256 auto-select,
+  `expires_in`, `valid_token`), sessions (incl. Redis handler, `session.clear()`), queue
+  system (`.queue-data` files), email, GraphQL, WSDL, events, caching, i18n. Read this for
+  auth or background services.
 
 ## Environment Configuration
 
@@ -269,7 +278,7 @@ DATABASE_NAME=sqlite3:data/app.db
 TINA4_DEBUG=true
 TINA4_DEBUG_LEVEL=DEBUG
 TINA4_LANGUAGE=en
-TINA4_SESSION_HANDLER=file
+TINA4_SESSION_HANDLER=file        # file, redis, valkey, mongodb, database
 SWAGGER_TITLE=My API
 ```
 

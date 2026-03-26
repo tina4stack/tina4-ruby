@@ -97,6 +97,14 @@ The framework infers what you want:
 - Call `response.redirect("/path")` → HTTP redirect
 - Call `response.file("path/to/file")` → File download
 
+## Template Fallback Routing
+
+If no explicit route matches, Tina4 automatically looks for a matching template in
+`src/templates/`. For example, a request to `/hello` will serve `src/templates/hello.twig`
+or `src/templates/hello.html` if either exists. No route handler required.
+
+This is useful for simple static or semi-static pages where a full route handler is overkill.
+
 ## Path Parameters
 
 Use `{name}` syntax in route paths:
@@ -106,6 +114,27 @@ async def user_post(request, response):
     user_id = request.params["id"]
     post_id = request.params["postId"]
 ```
+
+### Typed Route Parameters
+
+Add a type suffix to auto-convert parameters to the correct type in the handler:
+
+```python
+@get("/users/{id:int}")
+async def get_user(request, response):
+    user_id = request.params["id"]   # Already an int, no manual casting
+
+@get("/products/{price:float}")
+async def by_price(request, response):
+    price = request.params["price"]  # Already a float
+
+@get("/docs/{path:path}")
+async def serve_doc(request, response):
+    file_path = request.params["path"]  # Matches multi-segment paths like "a/b/c"
+```
+
+Supported types: `{name:int}`, `{name:float}`, `{name:path}`. Without a type suffix,
+parameters remain strings (existing behavior).
 
 ## Query Parameters
 
@@ -120,7 +149,18 @@ async def search(request, response):
 
 ## Middleware
 
-Apply authentication, logging, or other cross-cutting concerns:
+Apply authentication, logging, or other cross-cutting concerns. Middleware classes use the
+naming convention `before_*` / `after_*` for their hook methods.
+
+### Built-in Middleware
+
+Tina4 ships 3 middleware classes ready to use:
+
+| Class | Purpose |
+|-------|---------|
+| `CorsMiddleware` | Handles CORS headers and preflight requests |
+| `RateLimiter` | Rate-limits requests (configurable via `.env`) |
+| `RequestLogger` | Logs request method, path, status, and duration |
 
 ### Python
 ```python
