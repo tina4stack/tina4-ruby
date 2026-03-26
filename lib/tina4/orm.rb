@@ -85,6 +85,16 @@ module Tina4
         end
       end
 
+      # Create a fluent QueryBuilder pre-configured for this model's table and database.
+      #
+      # Usage:
+      #   results = User.query.where("active = ?", [1]).order_by("name").get
+      #
+      # @return [Tina4::QueryBuilder]
+      def query
+        QueryBuilder.from(table_name, db: db)
+      end
+
       def find(id_or_filter = nil, filter = nil, **kwargs)
         include_list = kwargs.delete(:include)
 
