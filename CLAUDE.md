@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.9.1 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.9.2 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -53,7 +53,7 @@ lib/
     router.rb, orm.rb, database.rb, seeder.rb,
     migration.rb, template.rb, swagger.rb, webserver.rb,
     queue.rb, session.rb, graphql.rb, wsdl.rb, crud.rb,
-    websocket.rb, localization.rb, middleware.rb, cli.rb,
+    websocket.rb,        # WebSocket with backplane support localization.rb, middleware.rb, cli.rb,
     auth.rb, field_types.rb, rack_app.rb, scss_compiler.rb,
     dev_reload.rb, log.rb, debug.rb (compat alias), env.rb,
     api.rb, version.rb,
@@ -190,6 +190,8 @@ MyModel.all(limit: nil, offset: nil, order_by: nil) -> Array
 MyModel.count(conditions = nil, params = []) -> Integer
 MyModel.create(attributes = {}) -> MyModel
 ```
+
+NoSQL support: `to_mongo()` generates MongoDB query documents from the same fluent API.
 
 ### Template — ERB/Twig engine
 
@@ -487,10 +489,14 @@ Tina4::DevAdmin.request_inspector.clear
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
 - Queue backends: file (default), RabbitMQ, Kafka, MongoDB
 - Cache backends: memory (default), Redis, file
-- Session handlers: file, Redis, MongoDB
+- Session handlers: file, Redis, MongoDB. `TINA4_SESSION_SAMESITE` env var (default: Lax)
+- QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
+- WebSocket backplane (Redis pub/sub) for horizontal scaling. Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL` env vars
+- SameSite=Lax default on session cookies (`TINA4_SESSION_SAMESITE`)
+- `tina4 init` generates Dockerfile and .dockerignore
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
 - Tests: 1,578 passing (38 features)
-- Version: 3.9.1
+- Version: 3.9.2
 
 ## Links
 
