@@ -218,4 +218,70 @@ RSpec.describe "POST route protection" do
       end
     end
   end
+
+  # ── Secure-by-default: POST without Bearer returns 401 ────────
+
+  describe "POST secure-by-default (no auth_handler)" do
+    it "returns 401 when no Bearer token is provided" do
+      Tina4::Router.add_route("POST", "/api/data",
+        ->(req, res) { res.json({ saved: true }, 201) })
+
+      app = Tina4::RackApp.new(root_dir: tmp_dir)
+      status, _headers, body = app.call(rack_env("POST", "/api/data"))
+      expect(status).to eq(401)
+      data = JSON.parse(body.first)
+      expect(data["error"]).to eq("Unauthorized")
+    end
+
+    it "returns 200 with a valid Bearer token" do
+      Tina4::Router.add_route("POST", "/api/data",
+        ->(req, res) { res.json({ saved: true }) })
+
+      token = Tina4::Auth.create_token({ "user_id" => 1 })
+      app = Tina4::RackApp.new(root_dir: tmp_dir)
+      status, _headers, _body = app.call(rack_env("POST", "/api/data", auth_header: "Bearer #{token}"))
+      expect(status).to eq(200)
+    end
+  end
+
+  # ── POST with .no_auth returns 200 without token ───────────────
+
+  describe "POST with .no_auth" do
+    it "returns 200 without any token" do
+      Tina4::Router.add_route("POST", "/api/public-hook",
+        ->(req, res) { res.json({ received: true }) }).no_auth
+
+      app = Tina4::RackApp.new(root_dir: tmp_dir)
+      status, _headers, _body = app.call(rack_env("POST", "/api/public-hook"))
+      expect(status).to eq(200)
+    end
+  end
+
+  # ── GET with .secure returns 401 without token ─────────────────
+
+  describe "GET with .secure" do
+    it "returns 401 without a token" do
+      Tina4::Router.add_route("GET", "/api/protected",
+        ->(req, res) { res.json({ secret: true }) }).secure
+
+      app = Tina4::RackApp.new(root_dir: tmp_dir)
+      status, _headers, body = app.call(rack_env("GET", "/api/protected"))
+      expect(status).to eq(401)
+      data = JSON.parse(body.first)
+      expect(data["error"]).to eq("Unauthorized")
+    end
+  end
+
+  # ── GET without .secure returns 200 ────────────────────────────
+
+  describe "GET without .secure" do
+    it "returns 200 without a token" do
+      Tina4::Router.add_route("GET", "/api/public",
+        ->(req, res) { res.json({ open: true }) })
+
+      app = Tina4::RackApp.new(root_dir: tmp_dir)
+      status, _headers, _body = app.call(rack_env("GET", "/api/public"))
+      expect(status).to eq(200)
+    end
+  end
 end
