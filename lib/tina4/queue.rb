@@ -174,7 +174,7 @@ module Tina4
 
     # Resolve the default backend from env vars.
     def self.resolve_backend(name = nil)
-      chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "sqlite").downcase.strip
+      chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "file").downcase.strip
 
       case chosen.to_s
       when "lite", "file", "default"
