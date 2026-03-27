@@ -4,27 +4,42 @@ require "securerandom"
 
 module Tina4
   class QueueMessage
-    attr_reader :id, :topic, :payload, :created_at, :attempts
+    attr_reader :id, :topic, :payload, :created_at, :attempts, :priority, :available_at
     attr_accessor :status
 
-    def initialize(topic:, payload:, id: nil)
+    def initialize(topic:, payload:, id: nil, priority: 0, available_at: nil, attempts: 0)
       @id = id || SecureRandom.uuid
       @topic = topic
       @payload = payload
       @created_at = Time.now
-      @attempts = 0
+      @attempts = attempts
+      @priority = priority
+      @available_at = available_at
       @status = :pending
     end
 
+    # Re-queue this message with incremented attempts.
+    # Delegates to the queue's backend via the queue reference.
+    def retry(queue:, delay_seconds: 0)
+      @attempts += 1
+      @status = :pending
+      @available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
+      queue.backend.enqueue(self)
+      self
+    end
+
     def to_hash
-      {
+      h = {
         id: @id,
         topic: @topic,
         payload: @payload,
         created_at: @created_at.iso8601,
         attempts: @attempts,
-        status: @status
+        status: @status,
+        priority: @priority
       }
+      h[:available_at] = @available_at.iso8601 if @available_at
+      h
     end
 
     def to_json(*_args)
@@ -77,8 +92,11 @@ module Tina4
     end
 
     # Push a job onto the queue. Returns the QueueMessage.
-    def push(payload)
-      message = QueueMessage.new(topic: @topic, payload: payload)
+    # priority: higher-priority messages are dequeued first (default 0).
+    # delay_seconds: delay before the message becomes available (default 0).
+    def push(payload, priority: 0, delay_seconds: 0)
+      available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
+      message = QueueMessage.new(topic: @topic, payload: payload, priority: priority, available_at: available_at)
       @backend.enqueue(message)
       message
     end
@@ -162,9 +180,22 @@ module Tina4
       @backend.find_by_id(topic, id)
     end
 
-    # Get the number of pending messages.
-    def size
-      @backend.size(@topic)
+    # Get the number of messages by status.
+    # status: "pending" (default) counts pending messages in the topic queue.
+    # status: "failed" or "dead" counts messages in the dead_letter directory.
+    def size(status: "pending")
+      case status.to_s
+      when "pending"
+        @backend.size(@topic)
+      when "failed", "dead"
+        if @backend.respond_to?(:dead_letter_count)
+          @backend.dead_letter_count(@topic)
+        else
+          0
+        end
+      else
+        @backend.size(@topic)
+      end
     end
 
     # Get the underlying backend instance.

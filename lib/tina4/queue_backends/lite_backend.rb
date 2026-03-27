@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require "json"
 require "fileutils"
+require "time"
 
 module Tina4
   module QueueBackends
@@ -27,17 +28,37 @@ module Tina4
           dir = topic_path(topic)
           return nil unless Dir.exist?(dir)
 
-          files = Dir.glob(File.join(dir, "*.json")).sort_by { |f| File.mtime(f) }
-          return nil if files.empty?
+          now = Time.now
+          candidates = []
 
-          file = files.first
-          data = JSON.parse(File.read(file))
-          File.delete(file)
+          Dir.glob(File.join(dir, "*.json")).each do |f|
+            data = JSON.parse(File.read(f))
+            # Skip messages that are not yet available (delayed)
+            if data["available_at"]
+              available_at = Time.parse(data["available_at"])
+              next if available_at > now
+            end
+            candidates << { file: f, data: data, priority: data["priority"] || 0, mtime: File.mtime(f) }
+          rescue JSON::ParserError
+            next
+          end
+
+          return nil if candidates.empty?
+
+          # Sort by priority descending (higher first), then by mtime ascending (oldest first)
+          candidates.sort_by! { |c| [-c[:priority], c[:mtime]] }
+
+          chosen = candidates.first
+          File.delete(chosen[:file])
+          data = chosen[:data]
 
           Tina4::QueueMessage.new(
-            topic: data["topic"],
+            topic: data["topic"] || topic.to_s,
             payload: data["payload"],
-            id: data["id"]
+            id: data["id"],
+            priority: data["priority"] || 0,
+            available_at: data["available_at"] ? Time.parse(data["available_at"]) : nil,
+            attempts: data["attempts"] || 0
           )
         end
       end
@@ -59,6 +80,20 @@ module Tina4
         dir = topic_path(topic)
         return 0 unless Dir.exist?(dir)
         Dir.glob(File.join(dir, "*.json")).length
+      end
+
+      # Count dead-letter / failed messages for a topic.
+      def dead_letter_count(topic)
+        return 0 unless Dir.exist?(@dead_letter_dir)
+
+        count = 0
+        Dir.glob(File.join(@dead_letter_dir, "*.json")).each do |file|
+          data = JSON.parse(File.read(file))
+          count += 1 if data["topic"] == topic.to_s
+        rescue JSON::ParserError
+          next
+        end
+        count
       end
 
       def topics
