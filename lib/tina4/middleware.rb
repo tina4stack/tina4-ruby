@@ -265,6 +265,114 @@ module Tina4
     end
   end
 
+  # CsrfMiddleware -- validates form tokens on state-changing requests.
+  #
+  # Off by default -- only active when TINA4_CSRF=true in .env or when
+  # registered explicitly via Router.use(CsrfMiddleware).
+  #
+  # Behaviour:
+  #   - Skips GET, HEAD, OPTIONS requests.
+  #   - Skips routes marked .no_auth.
+  #   - Skips requests with a valid Authorization: Bearer header (API clients).
+  #   - Checks request.body["formToken"] then request.headers["X-Form-Token"].
+  #   - Rejects if token found in request.query["formToken"] (log warning, 403).
+  #   - Validates token with Auth.valid_token using SECRET env var.
+  #   - If token payload has session_id, verifies it matches request.session.session_id.
+  #   - Returns 403 with response.json({error: "CSRF_INVALID", message: ...}, 403) on failure.
+  class CsrfMiddleware
+    class << self
+      def before_csrf(request, response)
+        # Skip safe HTTP methods
+        method = (request.method || "GET").upcase
+        return [request, response] if %w[GET HEAD OPTIONS].include?(method)
+
+        # Skip routes marked no_auth
+        handler = request.respond_to?(:handler) ? request.handler : nil
+        if handler
+          no_auth = if handler.is_a?(Hash)
+                      handler[:no_auth] || handler[:noAuth]
+                    elsif handler.respond_to?(:no_auth)
+                      handler.no_auth
+                    end
+          return [request, response] if no_auth
+        end
+
+        # Skip requests with valid Bearer token (API clients)
+        headers = request.respond_to?(:headers) ? request.headers : {}
+        auth_header = headers["authorization"] || headers["Authorization"] || ""
+        if auth_header.start_with?("Bearer ")
+          bearer_token = auth_header[7..].strip
+          unless bearer_token.empty?
+            payload = Tina4::Auth.valid_token(bearer_token)
+            return [request, response] if payload
+          end
+        end
+
+        # Reject if token is in query string (security risk)
+        query = if request.respond_to?(:params)
+                  request.params
+                elsif request.respond_to?(:query)
+                  request.query
+                else
+                  {}
+                end
+        query ||= {}
+
+        if query.is_a?(Hash) && query["formToken"] && !query["formToken"].to_s.empty?
+          Tina4::Log.warning("[CSRF] Token found in query string — rejected for security")
+          response.json({ error: "CSRF_INVALID", message: "Form token must not be sent in the URL query string" }, 403)
+          return [request, response]
+        end
+
+        # Extract token: body first, then header
+        token = nil
+        body = request.respond_to?(:body) ? request.body : nil
+        body ||= {}
+        token = body["formToken"] if body.is_a?(Hash)
+
+        if token.nil? || token.to_s.empty?
+          token = headers["X-Form-Token"] || headers["x-form-token"] || ""
+        end
+
+        if token.nil? || token.to_s.empty?
+          response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
+          return [request, response]
+        end
+
+        # Validate the token
+        payload = Tina4::Auth.valid_token(token.to_s)
+
+        if payload.nil?
+          response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
+          return [request, response]
+        end
+
+        # Session binding — if token has session_id, verify it matches
+        token_session_id = payload["session_id"]
+        if token_session_id
+          current_session_id = nil
+          session = request.respond_to?(:session) ? request.session : nil
+          if session
+            current_session_id = if session.respond_to?(:session_id)
+                                   session.session_id
+                                 elsif session.is_a?(Hash)
+                                   session["session_id"]
+                                 elsif session.respond_to?(:get)
+                                   session.get("session_id")
+                                 end
+          end
+
+          if current_session_id && token_session_id != current_session_id
+            response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
+            return [request, response]
+          end
+        end
+
+        [request, response]
+      end
+    end
+  end
+
   # SecurityHeadersMiddleware -- injects security headers on every response.
   # Config via env:
   #   TINA4_FRAME_OPTIONS       — X-Frame-Options (default: SAMEORIGIN)

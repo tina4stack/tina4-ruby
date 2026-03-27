@@ -1607,6 +1607,14 @@ module Tina4
     #   - "checkout|order_123": payload is {"type" => "form", "context" => "checkout", "ref" => "order_123"}
     #
     # @return [String] <input type="hidden" name="formToken" value="TOKEN">
+    # Session ID used by generate_form_token for CSRF session binding.
+    # Set this before rendering templates to bind tokens to the current session.
+    @form_token_session_id = ""
+
+    class << self
+      attr_accessor :form_token_session_id
+    end
+
     def self.generate_form_token(descriptor = "")
       require_relative "log"
       require_relative "auth"
@@ -1621,6 +1629,10 @@ module Tina4
           payload["context"] = descriptor
         end
       end
+
+      # Include session_id for CSRF session binding
+      sid = form_token_session_id.to_s
+      payload["session_id"] = sid unless sid.empty?
 
       ttl_minutes = (ENV["TINA4_TOKEN_LIMIT"] || "30").to_i
       expires_in = ttl_minutes * 60
