@@ -1634,7 +1634,7 @@ module Tina4
       sid = form_token_session_id.to_s
       payload["session_id"] = sid unless sid.empty?
 
-      ttl_minutes = (ENV["TINA4_TOKEN_LIMIT"] || "30").to_i
+      ttl_minutes = (ENV["TINA4_TOKEN_LIMIT"] || "60").to_i
       expires_in = ttl_minutes * 60
       token = Tina4::Auth.create_token(payload, expires_in: expires_in)
       Tina4::SafeString.new(%(<input type="hidden" name="formToken" value="#{CGI.escapeHTML(token)}">))

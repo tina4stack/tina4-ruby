@@ -52,7 +52,7 @@ module Tina4
         {
           origins: ENV["TINA4_CORS_ORIGINS"] || "*",
           methods: ENV["TINA4_CORS_METHODS"] || "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-          headers: ENV["TINA4_CORS_HEADERS"] || "Content-Type, Authorization, Accept",
+          headers: ENV["TINA4_CORS_HEADERS"] || "Content-Type,Authorization,X-Request-ID",
           max_age: ENV["TINA4_CORS_MAX_AGE"] || "86400",
           credentials: ENV["TINA4_CORS_CREDENTIALS"] || "false"
         }.freeze

@@ -117,6 +117,12 @@ module Tina4
     def connect
       @driver.connect(@connection_string, username: @username, password: @password)
       @connected = true
+
+      # Enable autocommit if TINA4_AUTOCOMMIT env var is set
+      if truthy?(ENV["TINA4_AUTOCOMMIT"]) && @driver.respond_to?(:autocommit=)
+        @driver.autocommit = true
+      end
+
       Tina4::Log.info("Database connected: #{@driver_name}")
     rescue => e
       Tina4::Log.error("Database connection failed: #{e.message}")

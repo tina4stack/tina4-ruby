@@ -110,7 +110,7 @@ module Tina4
           sid = sess.id
           cookie_val = (env["HTTP_COOKIE"] || "")[/tina4_session=([^;]+)/, 1]
           if sid && sid != cookie_val
-            ttl = Integer(ENV.fetch("TINA4_SESSION_TTL", 86400))
+            ttl = Integer(ENV.fetch("TINA4_SESSION_TTL", 3600))
             headers["set-cookie"] = "tina4_session=#{sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=#{ttl}"
           end
           rack_response = [status, headers, body_parts]

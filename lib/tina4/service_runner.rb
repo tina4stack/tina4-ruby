@@ -171,7 +171,7 @@ module Tina4
 
       def run_loop(name, handler, options, ctx)
         max_retries = options.fetch(:max_retries, 3)
-        sleep_interval = (ENV["TINA4_SERVICE_SLEEP"] || 1).to_f
+        sleep_interval = (ENV["TINA4_SERVICE_SLEEP"] || 5).to_i.to_f
 
         if options[:daemon]
           run_daemon(name, handler, options, ctx, max_retries)

@@ -212,7 +212,7 @@ module Tina4
           token = Regexp.last_match(1)
 
           # API_KEY bypass — matches tina4_python behavior
-          api_key = ENV["API_KEY"]
+          api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
           if api_key && !api_key.empty? && token == api_key
             env["tina4.auth"] = { "api_key" => true }
             return true

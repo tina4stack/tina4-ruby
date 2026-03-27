@@ -138,7 +138,7 @@ module Tina4
         {
           origins:     ENV["TINA4_CORS_ORIGINS"]     || "*",
           methods:     ENV["TINA4_CORS_METHODS"]     || "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-          headers:     ENV["TINA4_CORS_HEADERS"]     || "Content-Type, Authorization, Accept",
+          headers:     ENV["TINA4_CORS_HEADERS"]     || "Content-Type,Authorization,X-Request-ID",
           max_age:     ENV["TINA4_CORS_MAX_AGE"]     || "86400",
           credentials: ENV["TINA4_CORS_CREDENTIALS"] || "false"
         }
@@ -282,6 +282,10 @@ module Tina4
   class CsrfMiddleware
     class << self
       def before_csrf(request, response)
+        # Allow disabling CSRF via env var
+        csrf_env = ENV["TINA4_CSRF"].to_s.downcase
+        return [request, response] if %w[false 0 no].include?(csrf_env)
+
         # Skip safe HTTP methods
         method = (request.method || "GET").upcase
         return [request, response] if %w[GET HEAD OPTIONS].include?(method)

@@ -18,7 +18,7 @@ module Tina4
         {
           "openapi" => "3.0.3",
           "info" => {
-            "title" => ENV["PROJECT_NAME"] || "Tina4 Ruby API",
+            "title" => ENV["SWAGGER_TITLE"] || ENV["PROJECT_NAME"] || "Tina4 API",
             "version" => ENV["VERSION"] || Tina4::VERSION,
             "description" => "Auto-generated API documentation"
           },
