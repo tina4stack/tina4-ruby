@@ -123,6 +123,11 @@ All queries return a standardized paginated result:
 ```python
 result = User().select("*").page(1).per_page(20).fetch()
 ```
+
+Use `offset` (not `skip`) to set the starting row in all database/ORM operations:
+```python
+result = User().select("*").offset(40).per_page(20).fetch()
+```
 ```json
 {
     "data": [...],
@@ -142,8 +147,18 @@ For complex queries, use SQL directly:
 from tina4 import Database
 
 db = Database("sqlite3:data/app.db")
-results = db.fetch("SELECT u.*, COUNT(p.id) as post_count FROM users u LEFT JOIN posts p ON p.user_id = u.id GROUP BY u.id HAVING post_count > ?", [5])
+result = db.fetch("SELECT u.*, COUNT(p.id) as post_count FROM users u LEFT JOIN posts p ON p.user_id = u.id GROUP BY u.id HAVING post_count > ?", [5])
 ```
+
+The `fetch()` method returns a `DatabaseResult` object with lazy column metadata:
+```python
+result = db.fetch("SELECT * FROM users WHERE is_active = ?", [True])
+result.data          # The rows
+result.total         # Total count
+result.columnInfo()  # Column metadata (lazy-loaded on first call)
+```
+
+**Note:** The class is `Database`, not `DatabaseFactory`. All raw SQL goes through `Database`.
 
 ## Database Connection Strings
 

@@ -14,7 +14,7 @@ module Tina4
       @swagger_meta = swagger_meta
       @middleware = middleware.freeze
       @template = template&.freeze
-      @auth_required = false
+      @auth_required = %w[POST PUT PATCH DELETE].include?(@method)
       @cached = false
       @param_names = []
       @path_regex = compile_pattern(@path)
@@ -25,6 +25,13 @@ module Tina4
     # Returns self for chaining: Router.get("/path") { ... }.secure
     def secure
       @auth_required = true
+      self
+    end
+
+    # Opt out of the secure-by-default auth on write routes.
+    # Returns self for chaining: Router.post("/login") { ... }.no_auth
+    def no_auth
+      @auth_required = false
       self
     end
 

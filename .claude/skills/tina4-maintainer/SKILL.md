@@ -116,7 +116,7 @@ must achieve identical behavior. When implementing or fixing anything:
    equivalent tests covering the same cases
 4. **Run the parity check** — After implementing a feature, verify the output matches Python's
 
-Current version: **v3.8.0** on the `v3` branch (all four repos).
+Current version: **v3.7.1** on the `v3` branch (all four repos).
 Current status: Python 100% | PHP ~44% | Ruby ~46% | Node.js ~25%
 
 When porting a feature from Python to another language:
@@ -237,7 +237,7 @@ secure by default. This is non-negotiable.
   file operations. Use `realpath()` / `os.path.realpath()` and verify the result is inside the
   expected directory.
 - **JWT security** — Always verify signatures. Never decode without validation. Use the `SECRET`
-  env var, never hardcode keys. Prefer RS256 for production.
+  env var for HS256 or key files for RS256 (auto-selected), never hardcode keys.
 - **Header injection** — Sanitize any user input that ends up in HTTP headers or redirect URLs.
 - **Dependency security** — Zero third-party deps means a smaller attack surface. Keep it that way.
   If a stdlib function has a known vulnerability in an older version, the minimum version targets

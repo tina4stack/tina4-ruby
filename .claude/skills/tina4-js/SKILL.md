@@ -108,6 +108,18 @@ const isEmpty = computed(() => items.value.length === 0);
 html`<p ?hidden=${isEmpty}>Items found</p>`
 ```
 
+**Common pattern — opposing show/hide pair:**
+```ts
+const connected = signal(false);
+html`
+  <div ?hidden=${() => connected.value}>Connecting...</div>
+  <div ?hidden=${() => !connected.value}>
+    <p>Connected! Send messages below.</p>
+  </div>
+`;
+// Both divs toggle correctly when connected changes
+```
+
 **Multi-signal conditions:**
 ```ts
 html`<button ?disabled=${() => loading.value || !isValid.value}>Submit</button>`

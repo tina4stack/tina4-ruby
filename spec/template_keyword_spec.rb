@@ -113,7 +113,7 @@ RSpec.describe "Router template: keyword" do
 
       Tina4::Router.post("/items", template: tpl) do |_req, _res|
         { name: "Widget" }
-      end
+      end.no_auth
 
       status, _headers, body = app.call(rack_env("POST", "/items"))
       html = body.join

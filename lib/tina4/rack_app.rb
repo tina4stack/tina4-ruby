@@ -125,13 +125,34 @@ module Tina4
     private
 
     def handle_route(env, route, path_params)
-      # Auth check
+      # Auth check (legacy per-route auth_handler)
       if route.auth_handler
         auth_result = route.auth_handler.call(env)
         return handle_403(env["PATH_INFO"] || "/") unless auth_result
       end
 
+      # Secure-by-default: enforce bearer-token auth on write routes
+      if route.auth_required
+        auth_header = env["HTTP_AUTHORIZATION"] || ""
+        token = auth_header =~ /\ABearer\s+(.+)\z/i ? Regexp.last_match(1) : nil
+
+        # API_KEY bypass — matches tina4_python behavior
+        api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+        if api_key && !api_key.empty? && token == api_key
+          env["tina4.auth_payload"] = { "api_key" => true }
+        elsif token
+          payload = Tina4::Auth.valid_token(token)
+          unless payload
+            return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
+          end
+          env["tina4.auth_payload"] = payload
+        else
+          return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
+        end
+      end
+
       request = Tina4::Request.new(env, path_params)
+      request.user = env["tina4.auth_payload"] if env["tina4.auth_payload"]
       env["tina4.request"] = request  # Store for session save after response
       response = Tina4::Response.new
 

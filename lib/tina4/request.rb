@@ -6,6 +6,7 @@ module Tina4
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
                 :path_params, :ip
+    attr_accessor :user
 
     # Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var.
     TINA4_MAX_UPLOAD_SIZE = Integer(ENV.fetch("TINA4_MAX_UPLOAD_SIZE", 10_485_760))

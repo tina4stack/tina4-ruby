@@ -162,13 +162,23 @@ Tina4 ships 3 middleware classes ready to use:
 | `RateLimiter` | Rate-limits requests (configurable via `.env`) |
 | `RequestLogger` | Logs request method, path, status, and duration |
 
-### Python
+```python
+from tina4 import middleware, CorsMiddleware, RateLimiter, RequestLogger
+
+@middleware(CorsMiddleware, RateLimiter, RequestLogger)
+@get("/api/data")
+async def get_data(request, response):
+    return response({"items": [...]})
+```
+
+### Custom Middleware
+
 ```python
 from tina4 import middleware
 
 class AuthCheck:
     @staticmethod
-    async def before(request, response):
+    async def before_request(request, response):
         token = request.headers.get("Authorization")
         if not token:
             return request, response.json({"error": "Unauthorized"}, 401)
@@ -221,8 +231,8 @@ Frond.config({ csrfToken: document.querySelector('meta[name="csrf-token"]').cont
 
 ## CORS
 
-Built-in. Configure in `.env` or it defaults to allowing all origins in development.
+Built-in via `CorsMiddleware`. Configure in `.env` or it defaults to allowing all origins in development.
 
 ## Rate Limiting
 
-Built-in. No configuration needed for sensible defaults. Override in `.env` if needed.
+Built-in via `RateLimiter`. No configuration needed for sensible defaults. Override in `.env` if needed.

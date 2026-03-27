@@ -5,6 +5,9 @@
 Frond is Tina4's native, zero-dependency, Twig-compatible template engine. Implemented from scratch
 in each language with identical syntax. Architecture: Lexer → Parser → Compiler → Runtime → Cache.
 
+**Caching:** Templates are cached (compiled) in production mode. In dev mode (`TINA4_DEBUG=true`),
+live filesystem lookups ensure edits are reflected immediately without restart.
+
 ## Syntax
 
 ### Output and Logic
@@ -165,7 +168,7 @@ ALL filter names use **snake_case** inside templates, regardless of host languag
 
 ### Encoding/Security
 `escape` (strategies: html, js, css, url), `raw`, `url_encode`, `url_decode`, `json_encode`,
-`json_decode`, `base64_encode`, `base64_decode`
+`json_decode`, `base64_encode`, `base64_decode`, `base64encode` (alias), `base64decode` (alias)
 
 ### Utility
 `default`, `type`, `dump`
@@ -208,6 +211,10 @@ frond.addFilter("my_filter", (value, arg) => ...);
 
 Lightweight (<10KB minified), zero-dependency, framework-agnostic JavaScript library.
 The unified frontend for all Tina4 backends. Supports ES Module + IIFE.
+
+### tina4js.min.js (13.6KB)
+All four backend repos now bundle `tina4js.min.js` — a reactive frontend library that ships
+alongside frond.js. Auto-served from `bin/` and auto-updated on framework startup.
 
 ### HTTP Client
 ```javascript

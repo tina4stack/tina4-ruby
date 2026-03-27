@@ -60,6 +60,9 @@ Configure in `.env`:
 TINA4_SESSION_HANDLER=file    # file, redis, valkey, mongodb, database
 ```
 
+A **Redis session handler** is available out of the box — set `TINA4_SESSION_HANDLER=redis`
+and point to your Redis instance. No extra dependencies required.
+
 ### Usage
 ```python
 @post("/login")
@@ -79,9 +82,13 @@ async def dashboard(request, response):
 
 @get("/logout")
 async def logout(request, response):
-    request.session.clear()
+    request.session.clear()   # Wipes session data without destroying the session
     return response.redirect("/")
 ```
+
+`session.clear()` wipes all session data but keeps the session itself alive (the session ID
+and cookie persist). Use this for logout flows where you want to reset state without
+forcing a new session.
 
 ## Queue System
 
@@ -90,7 +97,7 @@ Queue files use the `.queue-data` extension on disk.
 
 ### Producing Messages
 ```python
-from tina4 import Queue
+from tina4 import Queue, Producer
 
 @post("/orders")
 async def create_order(request, response):
@@ -98,8 +105,7 @@ async def create_order(request, response):
     order.save()
 
     # Queue email notification for background processing
-    queue = Queue(topic="order-emails")
-    queue.produce("order-emails", {
+    Producer(Queue(topic="order-emails")).produce({
         "order_id": order.id,
         "email": request.body["email"],
         "type": "confirmation"
@@ -110,14 +116,22 @@ async def create_order(request, response):
 
 ### Consuming Messages
 ```python
-from tina4 import Queue
+from tina4 import Queue, Consumer
 
 # Run as a background worker
-queue = Queue(topic="order-emails")
-queue.consume("order-emails", lambda message: (
-    send_order_email(message.data),
+for message in Consumer(Queue(topic="order-emails")).messages():
+    send_order_email(message.data)
     message.ack()
-))
+```
+
+### Priority and Delayed Jobs
+```python
+# High priority
+Producer(queue).produce(data, priority=10)
+
+# Delayed (process after 5 minutes)
+from datetime import datetime, timedelta
+Producer(queue).produce(data, delay_until=datetime.now() + timedelta(minutes=5))
 ```
 
 ## Email

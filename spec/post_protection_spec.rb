@@ -167,10 +167,10 @@ RSpec.describe "POST route protection" do
 
   # ── POST without auth_handler works without token ───────────────
 
-  describe "POST without auth_handler (public)" do
-    it "works without a token" do
+  describe "POST without auth_handler (public via no_auth)" do
+    it "works without a token when opted out with no_auth" do
       Tina4::Router.add_route("POST", "/api/webhook",
-        ->(req, res) { res.json({ ok: true }) })
+        ->(req, res) { res.json({ ok: true }) }).no_auth
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
       status, _headers, _body = app.call(rack_env("POST", "/api/webhook"))
