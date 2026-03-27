@@ -108,7 +108,8 @@ module Tina4
     end
 
     def cookie_header
-      "#{@options[:cookie_name]}=#{@id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=#{@options[:max_age]}"
+      samesite = ENV["TINA4_SESSION_SAMESITE"] || "Lax"
+      "#{@options[:cookie_name]}=#{@id}; Path=/; HttpOnly; SameSite=#{samesite}; Max-Age=#{@options[:max_age]}"
     end
 
     private
