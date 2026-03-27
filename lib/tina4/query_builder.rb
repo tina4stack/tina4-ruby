@@ -208,7 +208,147 @@ module Tina4
       count > 0
     end
 
+    # Convert the fluent builder state into a MongoDB-compatible query hash.
+    #
+    # @return [Hash] with keys :filter, :projection, :sort, :limit, :skip (only non-empty).
+    def to_mongo
+      result = {}
+
+      # -- projection --
+      if @columns != ["*"]
+        result[:projection] = @columns.each_with_object({}) { |col, h| h[col.strip] = 1 }
+      end
+
+      # -- filter --
+      unless @wheres.empty?
+        param_index = 0
+        and_conditions = []
+        or_conditions = []
+
+        @wheres.each_with_index do |(connector, condition), i|
+          mongo_cond, param_index = parse_condition_to_mongo(condition, param_index)
+          if i == 0 || connector == "AND"
+            and_conditions << mongo_cond
+          else
+            or_conditions << mongo_cond
+          end
+        end
+
+        if or_conditions.any?
+          and_merged = merge_mongo_conditions(and_conditions)
+          all_branches = [and_merged] + or_conditions
+          result[:filter] = { "$or" => all_branches }
+        else
+          result[:filter] = merge_mongo_conditions(and_conditions)
+        end
+      end
+
+      # -- sort --
+      unless @order_by_cols.empty?
+        sort = {}
+        @order_by_cols.each do |expr|
+          parts = expr.strip.split(/\s+/)
+          field = parts[0]
+          direction = (parts[1] && parts[1].upcase == "DESC") ? -1 : 1
+          sort[field] = direction
+        end
+        result[:sort] = sort
+      end
+
+      # -- limit / skip --
+      result[:limit] = @limit_val unless @limit_val.nil?
+      result[:skip] = @offset_val unless @offset_val.nil?
+
+      result
+    end
+
     private
+
+    # Parse a single SQL condition into a MongoDB filter hash.
+    #
+    # @return [Array(Hash, Integer)] [mongo_condition, updated_param_index]
+    def parse_condition_to_mongo(condition, param_index)
+      cond = condition.strip
+
+      # IS NOT NULL
+      if cond.match?(/\A(\w+)\s+IS\s+NOT\s+NULL\z/i)
+        field = cond.match(/\A(\w+)/)[1]
+        return [{ field => { "$exists" => true, "$ne" => nil } }, param_index]
+      end
+
+      # IS NULL
+      if cond.match?(/\A(\w+)\s+IS\s+NULL\z/i)
+        field = cond.match(/\A(\w+)/)[1]
+        return [{ field => { "$exists" => false } }, param_index]
+      end
+
+      # NOT IN
+      if (m = cond.match(/\A(\w+)\s+NOT\s+IN\s*\(\s*\?\s*\)\z/i))
+        val = @params[param_index]
+        values = val.is_a?(Array) ? val : [val]
+        return [{ m[1] => { "$nin" => values } }, param_index + 1]
+      end
+
+      # IN
+      if (m = cond.match(/\A(\w+)\s+IN\s*\(\s*\?\s*\)\z/i))
+        val = @params[param_index]
+        values = val.is_a?(Array) ? val : [val]
+        return [{ m[1] => { "$in" => values } }, param_index + 1]
+      end
+
+      # LIKE
+      if (m = cond.match(/\A(\w+)\s+LIKE\s+\?\z/i))
+        val = (@params[param_index] || "").to_s
+        pattern = val.gsub("%", ".*").gsub("_", ".")
+        return [{ m[1] => { "$regex" => pattern, "$options" => "i" } }, param_index + 1]
+      end
+
+      # Comparison operators: >=, <=, <>, !=, >, <, =
+      if (m = cond.match(/\A(\w+)\s*(>=|<=|<>|!=|>|<|=)\s*\?\z/))
+        field = m[1]
+        op = m[2]
+        val = @params[param_index]
+
+        op_map = {
+          "=" => nil, "!=" => "$ne", "<>" => "$ne",
+          ">" => "$gt", ">=" => "$gte",
+          "<" => "$lt", "<=" => "$lte"
+        }
+
+        mongo_op = op_map[op]
+        if mongo_op.nil?
+          return [{ field => val }, param_index + 1]
+        end
+        return [{ field => { mongo_op => val } }, param_index + 1]
+      end
+
+      # Fallback
+      [{ "$where" => cond }, param_index]
+    end
+
+    # Merge multiple single-field mongo condition hashes into one.
+    # Uses $and if field keys conflict.
+    def merge_mongo_conditions(conditions)
+      return conditions[0] if conditions.size == 1
+
+      merged = {}
+      has_conflict = false
+
+      conditions.each do |cond|
+        cond.each do |key, val|
+          if merged.key?(key)
+            has_conflict = true
+            break
+          end
+          merged[key] = val
+        end
+        break if has_conflict
+      end
+
+      return { "$and" => conditions } if has_conflict
+
+      merged
+    end
 
     # Build the WHERE clause from accumulated conditions.
     def build_where
