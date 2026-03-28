@@ -2,6 +2,17 @@
 require "json"
 
 module Tina4
+  # Convert a snake_case name to camelCase.
+  def self.snake_to_camel(name)
+    parts = name.to_s.split("_")
+    parts[0] + parts[1..].map(&:capitalize).join
+  end
+
+  # Convert a camelCase name to snake_case.
+  def self.camel_to_snake(name)
+    name.to_s.gsub(/([A-Z])/) { "_#{$1.downcase}" }.sub(/^_/, "")
+  end
+
   class ORM
     include Tina4::FieldTypes
 
@@ -39,6 +50,15 @@ module Tina4
 
       def field_mapping=(map)
         @field_mapping = map
+      end
+
+      # Auto-map flag (no-op in Ruby since snake_case is native)
+      def auto_map
+        @auto_map || false
+      end
+
+      def auto_map=(val)
+        @auto_map = val
       end
 
       # Relationship definitions
