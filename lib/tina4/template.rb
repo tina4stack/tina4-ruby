@@ -132,7 +132,10 @@ module Tina4
         "slice" => ->(v, s, e) { v.to_s[(s.to_i)..(e ? e.to_i : -1)] },
         "merge" => ->(v, o) { v.respond_to?(:merge) ? v.merge(o || {}) : v },
         "batch" => ->(v, s) { v.respond_to?(:each_slice) ? v.each_slice(s.to_i).to_a : [v] },
-        "date" => ->(v, fmt) { TwigEngine.format_date(v, fmt) }
+        "date" => ->(v, fmt) { TwigEngine.format_date(v, fmt) },
+        "to_json" => ->(v) { JSON.generate(v).gsub("<", "\\u003c").gsub(">", "\\u003e").gsub("&", "\\u0026") rescue v.to_s },
+        "tojson" => ->(v) { JSON.generate(v).gsub("<", "\\u003c").gsub(">", "\\u003e").gsub("&", "\\u0026") rescue v.to_s },
+        "js_escape" => ->(v) { v.to_s.gsub("\\", "\\\\").gsub("'", "\\'").gsub('"', '\\"').gsub("\n", "\\n").gsub("\r", "\\r") }
       }.freeze
 
       def initialize(context = {}, base_dir = nil)
@@ -335,8 +338,15 @@ module Tina4
         args = []
         current = +""
         in_quote = nil
+        escaped = false
         args_str.each_char do |ch|
-          if in_quote
+          if escaped
+            current << ch
+            escaped = false
+          elsif ch == "\\"
+            current << ch
+            escaped = true
+          elsif in_quote
             if ch == in_quote
               current << ch
               in_quote = nil
@@ -356,8 +366,8 @@ module Tina4
         args << current.strip unless current.strip.empty?
 
         args.map do |arg|
-          if arg =~ /\A["'](.*)["']\z/
-            Regexp.last_match(1)
+          if arg =~ /\A(["'])(.*)\1\z/m
+            process_escapes(Regexp.last_match(2))
           elsif arg =~ /\A\d+\z/
             arg.to_i
           elsif arg =~ /\A\d+\.\d+\z/
@@ -445,7 +455,9 @@ module Tina4
         expr = expr.strip
 
         # String literal early-return
-        return Regexp.last_match(1) if expr =~ /\A"([^"]*)"\z/ || expr =~ /\A'([^']*)'\z/
+        if expr =~ /\A"([^"]*)"\z/ || expr =~ /\A'([^']*)'\z/
+          return process_escapes(Regexp.last_match(1))
+        end
 
         return expr.to_i if expr =~ /\A-?\d+\z/
         return expr.to_f if expr =~ /\A-?\d+\.\d+\z/
@@ -616,6 +628,30 @@ module Tina4
         end
         parts << current unless current.empty?
         parts
+      end
+
+      # Process backslash escape sequences in a single pass so that
+      # \\' does not collapse to ' (it should become \').
+      def process_escapes(s)
+        out = +""
+        i = 0
+        while i < s.length
+          if s[i] == "\\" && i + 1 < s.length
+            nxt = s[i + 1]
+            case nxt
+            when "n"  then out << "\n"; i += 2
+            when "t"  then out << "\t"; i += 2
+            when "\\" then out << "\\"; i += 2
+            when "'"  then out << "'";  i += 2
+            when '"'  then out << '"';  i += 2
+            else out << "\\"; i += 1
+            end
+          else
+            out << s[i]
+            i += 1
+          end
+        end
+        out
       end
 
       def access_value(obj, key)
