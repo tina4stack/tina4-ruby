@@ -1459,6 +1459,25 @@ module Tina4
         },
         "url_encode"    => ->(v, *_a) { CGI.escape(v.to_s) },
 
+        # -- JSON / JS --
+        "to_json" => ->(v, *a) {
+          indent = a[0] ? a[0].to_i : nil
+          json = indent ? JSON.pretty_generate(v) : JSON.generate(v)
+          # Escape <, >, & for safe HTML embedding
+          Tina4::SafeString.new(json.gsub("<", '\u003c').gsub(">", '\u003e').gsub("&", '\u0026'))
+        },
+        "tojson" => ->(v, *a) {
+          indent = a[0] ? a[0].to_i : nil
+          json = indent ? JSON.pretty_generate(v) : JSON.generate(v)
+          Tina4::SafeString.new(json.gsub("<", '\u003c').gsub(">", '\u003e').gsub("&", '\u0026'))
+        },
+        "js_escape" => ->(v, *_a) {
+          Tina4::SafeString.new(
+            v.to_s.gsub("\\", "\\\\").gsub("'", "\\'").gsub('"', '\\"')
+                  .gsub("\n", "\\n").gsub("\r", "\\r").gsub("\t", "\\t")
+          )
+        },
+
         # -- Hashing --
         "md5"    => ->(v, *_a) { Digest::MD5.hexdigest(v.to_s) },
         "sha256" => ->(v, *_a) { Digest::SHA256.hexdigest(v.to_s) },
