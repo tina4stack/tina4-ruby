@@ -142,6 +142,14 @@ module Tina4
         @parent_template = nil
       end
 
+      # Reset context and blocks for reuse (avoids creating new instances in loops)
+      def reset_context(context)
+        @context = context
+        @blocks = {}
+        @parent_template = nil
+        self
+      end
+
       def render(content)
         content = process_extends(content)
         content = process_blocks(content)
@@ -226,6 +234,7 @@ module Tina4
                     when Integer then (0...collection).to_a
                     else []
                     end
+            sub_engine = TwigEngine.new({}, @base_dir)
             items.each_with_index do |item, index|
               loop_context = @context.dup
               loop_context["loop"] = {
@@ -241,7 +250,7 @@ module Tina4
               else
                 loop_context[key_or_val] = item
               end
-              sub_engine = TwigEngine.new(loop_context, @base_dir)
+              sub_engine.reset_context(loop_context)
               output << sub_engine.render(body)
             end
             output
