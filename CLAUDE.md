@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.9.2 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.10.0 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
