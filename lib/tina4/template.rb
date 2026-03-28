@@ -396,10 +396,24 @@ module Tina4
       end
 
       def resolve_variable(expr)
-        parts = expr.split(".")
+        parts = split_dot_parts(expr)
         value = @context
         parts.each do |part|
-          if part =~ /\A(\w+)\[(.+?)\]\z/
+          if part =~ /\A(\w+)\((.*)?\)\z/m
+            # Method call: e.g. t("key") or greet("hello", "world")
+            method_name = Regexp.last_match(1)
+            args_str = Regexp.last_match(2)
+            callable = access_value(value, method_name)
+            if callable.respond_to?(:call)
+              args = args_str && !args_str.strip.empty? ? parse_filter_args(args_str) : []
+              value = callable.call(*args)
+            elsif callable.respond_to?(method_name.to_sym)
+              args = args_str && !args_str.strip.empty? ? parse_filter_args(args_str) : []
+              value = callable.send(method_name.to_sym, *args)
+            else
+              return nil
+            end
+          elsif part =~ /\A(\w+)\[(.+?)\]\z/
             base = Regexp.last_match(1)
             index = Regexp.last_match(2)
             value = access_value(value, base)
@@ -415,6 +429,29 @@ module Tina4
           return nil if value.nil?
         end
         value
+      end
+
+      # Split expression on dots, but not dots inside parentheses
+      def split_dot_parts(expr)
+        parts = []
+        current = +""
+        depth = 0
+        expr.each_char do |ch|
+          if ch == "("
+            depth += 1
+            current << ch
+          elsif ch == ")"
+            depth -= 1
+            current << ch
+          elsif ch == "." && depth == 0
+            parts << current
+            current = +""
+          else
+            current << ch
+          end
+        end
+        parts << current unless current.empty?
+        parts
       end
 
       def access_value(obj, key)
