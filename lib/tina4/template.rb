@@ -368,9 +368,85 @@ module Tina4
         end
       end
 
+      # Find the first occurrence of +needle+ outside quotes and parentheses.
+      # Returns the index, or -1 if not found.
+      def find_outside_quotes(expr, needle)
+        in_q = nil
+        depth = 0
+        i = 0
+        while i <= expr.length - needle.length
+          ch = expr[i]
+          if (ch == '"' || ch == "'") && depth == 0
+            if in_q.nil?
+              in_q = ch
+            elsif ch == in_q
+              in_q = nil
+            end
+            i += 1
+            next
+          end
+          if in_q
+            i += 1
+            next
+          end
+          if ch == "("
+            depth += 1
+          elsif ch == ")"
+            depth -= 1
+          end
+          if depth == 0 && expr[i, needle.length] == needle
+            return i
+          end
+          i += 1
+        end
+        -1
+      end
+
+      # Split +expr+ on +sep+ only when +sep+ is outside quotes and parentheses.
+      def split_outside_quotes(expr, sep)
+        parts = []
+        current_start = 0
+        in_q = nil
+        depth = 0
+        i = 0
+        while i <= expr.length - sep.length
+          ch = expr[i]
+          if (ch == '"' || ch == "'") && depth == 0
+            if in_q.nil?
+              in_q = ch
+            elsif ch == in_q
+              in_q = nil
+            end
+            i += 1
+            next
+          end
+          if in_q
+            i += 1
+            next
+          end
+          if ch == "("
+            depth += 1
+          elsif ch == ")"
+            depth -= 1
+          end
+          if depth == 0 && expr[i, sep.length] == sep
+            parts << expr[current_start...i]
+            i += sep.length
+            current_start = i
+            next
+          end
+          i += 1
+        end
+        parts << expr[current_start..]
+        parts
+      end
+
       def evaluate_expression(expr)
         expr = expr.strip
+
+        # String literal early-return
         return Regexp.last_match(1) if expr =~ /\A"([^"]*)"\z/ || expr =~ /\A'([^']*)'\z/
+
         return expr.to_i if expr =~ /\A-?\d+\z/
         return expr.to_f if expr =~ /\A-?\d+\.\d+\z/
         return true if expr == "true"
@@ -382,10 +458,30 @@ module Tina4
         if expr =~ /\A(\d+)\.\.(\d+)\z/
           return (Regexp.last_match(1).to_i..Regexp.last_match(2).to_i)
         end
-        if expr.include?("~")
-          parts = expr.split("~").map { |p| evaluate_expression(p.strip) }
-          return parts.map(&:to_s).join
+
+        # Null coalescing: value ?? "default"
+        if find_outside_quotes(expr, "??") >= 0
+          pos = find_outside_quotes(expr, "??")
+          left = expr[0...pos]
+          right = expr[(pos + 2)..]
+          val = evaluate_expression(left.strip)
+          return val unless val.nil?
+          return evaluate_expression(right.strip)
         end
+
+        # String concatenation with ~ (only outside quotes/parens)
+        if find_outside_quotes(expr, "~") >= 0
+          parts = split_outside_quotes(expr, "~")
+          return parts.map { |p| (evaluate_expression(p.strip) || "").to_s }.join
+        end
+
+        # Comparison operators (only outside quotes/parens)
+        [" not in ", " in ", " is not ", " is ", "!=", "==", ">=", "<=", ">", "<", " and ", " or ", " not "].each do |op|
+          if find_outside_quotes(expr, op) >= 0
+            return evaluate_condition(expr)
+          end
+        end
+
         if expr =~ /\A(.+?)\s*(\+|-|\*|\/|%)\s*(.+)\z/
           left = evaluate_expression(Regexp.last_match(1))
           op = Regexp.last_match(2)
