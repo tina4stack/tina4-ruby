@@ -103,16 +103,36 @@ module Tina4
 
     def ensure_tracking_table
       unless @db.table_exists?(TRACKING_TABLE)
-        @db.execute(<<~SQL)
-          CREATE TABLE #{TRACKING_TABLE} (
-            id INTEGER PRIMARY KEY,
-            migration_name VARCHAR(255) NOT NULL,
-            description VARCHAR(255) DEFAULT '',
-            batch INTEGER NOT NULL DEFAULT 1,
-            executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            passed INTEGER NOT NULL DEFAULT 1
-          )
-        SQL
+        if firebird?
+          # Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
+          begin
+            @db.execute("CREATE GENERATOR GEN_TINA4_MIGRATION_ID")
+            @db.execute("COMMIT") rescue nil
+          rescue
+            # Generator may already exist
+          end
+          @db.execute(<<~SQL)
+            CREATE TABLE #{TRACKING_TABLE} (
+              id INTEGER NOT NULL PRIMARY KEY,
+              migration_name VARCHAR(500) NOT NULL,
+              description VARCHAR(500) DEFAULT '',
+              batch INTEGER NOT NULL DEFAULT 1,
+              executed_at VARCHAR(50) DEFAULT CURRENT_TIMESTAMP,
+              passed INTEGER NOT NULL DEFAULT 1
+            )
+          SQL
+        else
+          @db.execute(<<~SQL)
+            CREATE TABLE #{TRACKING_TABLE} (
+              id INTEGER PRIMARY KEY,
+              migration_name VARCHAR(255) NOT NULL,
+              description VARCHAR(255) DEFAULT '',
+              batch INTEGER NOT NULL DEFAULT 1,
+              executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              passed INTEGER NOT NULL DEFAULT 1
+            )
+          SQL
+        end
         Tina4::Log.info("Created migrations tracking table")
       end
     end
@@ -309,10 +329,22 @@ module Tina4
       # Extract description from filename (strip numeric prefix and extension)
       stem = File.basename(name, File.extname(name))
       desc = stem.sub(/\A\d+_/, "").tr("_", " ")
-      @db.execute(
-        "INSERT INTO #{TRACKING_TABLE} (migration_name, description, batch, passed) VALUES (?, ?, ?, ?)",
-        [name, desc, batch, passed]
-      )
+      if firebird?
+        # Firebird: generate ID from sequence
+        row = @db.fetch_one(
+          "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB\$DATABASE"
+        )
+        next_id = row ? (row[:NEXT_ID] || row[:next_id] || 1).to_i : 1
+        @db.execute(
+          "INSERT INTO #{TRACKING_TABLE} (id, migration_name, description, batch, passed) VALUES (?, ?, ?, ?, ?)",
+          [next_id, name, desc, batch, passed]
+        )
+      else
+        @db.execute(
+          "INSERT INTO #{TRACKING_TABLE} (migration_name, description, batch, passed) VALUES (?, ?, ?, ?)",
+          [name, desc, batch, passed]
+        )
+      end
     end
 
     def remove_migration_record(name)
