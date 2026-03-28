@@ -315,6 +315,7 @@ module Tina4
 
         sql = "CREATE TABLE IF NOT EXISTS #{table_name} (#{col_defs.join(', ')})"
         db.execute(sql)
+        db.commit
         true
       end
 
@@ -401,6 +402,7 @@ module Tina4
         end
         @persisted = true
       end
+      self.class.db.commit
       true
     rescue => e
       @errors << e.message
@@ -422,6 +424,7 @@ module Tina4
       else
         self.class.db.delete(self.class.table_name, { pk => pk_value })
       end
+      self.class.db.commit
       @persisted = false
       true
     end
@@ -432,6 +435,7 @@ module Tina4
       raise "Cannot delete: no primary key value" unless pk_value
 
       self.class.db.delete(self.class.table_name, { pk => pk_value })
+      self.class.db.commit
       @persisted = false
       true
     end
@@ -448,6 +452,7 @@ module Tina4
         { self.class.soft_delete_field => 0 },
         { pk => pk_value }
       )
+      self.class.db.commit
       __send__("#{self.class.soft_delete_field}=", 0) if respond_to?("#{self.class.soft_delete_field}=")
       true
     end
