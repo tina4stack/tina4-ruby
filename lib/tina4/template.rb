@@ -537,13 +537,19 @@ module Tina4
             end
           elsif part =~ /\A(\w+)\[(.+?)\]\z/
             base = Regexp.last_match(1)
-            index = Regexp.last_match(2)
+            index = Regexp.last_match(2).strip
             value = access_value(value, base)
-            if index =~ /\A\d+\z/
+            if index =~ /\A["'](.*)["']\z/
+              # Quoted string literal — use as-is
+              index = Regexp.last_match(1)
+              value = access_value(value, index)
+            elsif index =~ /\A\d+\z/
               value = value[index.to_i] if value.respond_to?(:[])
             else
-              index = index.gsub(/["']/, "")
-              value = access_value(value, index)
+              # Resolve as a variable from context
+              resolved = resolve_variable(index)
+              value = access_value(value, resolved.to_s) unless resolved.nil?
+              value = nil if resolved.nil?
             end
           else
             value = access_value(value, part)
