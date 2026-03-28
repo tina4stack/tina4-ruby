@@ -82,6 +82,7 @@ module Tina4
   # ── Lazy-loaded: optional modules ─────────────────────────────────────
   autoload :Swagger,             File.expand_path("tina4/swagger", __dir__)
   autoload :Crud,                File.expand_path("tina4/crud", __dir__)
+  autoload :CRUD,                File.expand_path("tina4/crud", __dir__)
   autoload :API,                 File.expand_path("tina4/api", __dir__)
   autoload :APIResponse,         File.expand_path("tina4/api", __dir__)
   autoload :GraphQLType,         File.expand_path("tina4/graphql", __dir__)
