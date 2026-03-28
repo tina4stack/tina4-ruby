@@ -56,7 +56,7 @@ module Tina4
       when "redis"
         RedisBackplane.new(url: url)
       when "nats"
-        raise NotImplementedError, "NATS backplane is on the roadmap but not yet implemented."
+        NATSBackplane.new(url: url)
       when ""
         nil
       else
@@ -113,6 +113,78 @@ module Tina4
       @threads.clear
       @subscriber.close
       @redis.close
+    end
+  end
+
+  # NATS pub/sub backplane.
+  #
+  # Requires the +nats-pure+ gem (+gem install nats-pure+). The require is
+  # deferred so the rest of Tina4 works fine without it installed — an error
+  # is raised only when this class is actually instantiated.
+  #
+  # NATS is async-native, so we run a background thread with an event
+  # machine for the subscription listener.
+  class NATSBackplane < WebSocketBackplane
+    def initialize(url: nil)
+      begin
+        require "nats/client"
+      rescue LoadError
+        raise LoadError,
+          "The 'nats-pure' gem is required for NATSBackplane. " \
+          "Install it with: gem install nats-pure"
+      end
+
+      @url = url || ENV.fetch("TINA4_WS_BACKPLANE_URL", "nats://localhost:4222")
+      @subs = {}
+      @threads = {}
+      @running = true
+      @mutex = Mutex.new
+
+      # Connect to NATS in a background thread with its own event loop
+      @nats = NATS::IO::Client.new
+      @nats.connect(@url)
+    end
+
+    def publish(channel, message)
+      @nats.publish(channel, message)
+      @nats.flush
+    end
+
+    def subscribe(channel, &block)
+      @mutex.synchronize do
+        sid = @nats.subscribe(channel) do |msg|
+          block.call(msg.data) if @running
+        end
+        @subs[channel] = sid
+
+        # Run NATS event processing in a background thread
+        @threads[channel] ||= Thread.new do
+          loop do
+            break unless @running
+            sleep 0.01
+          end
+        end
+      end
+    end
+
+    def unsubscribe(channel)
+      @mutex.synchronize do
+        sid = @subs.delete(channel)
+        @nats.unsubscribe(sid) if sid
+        thread = @threads.delete(channel)
+        thread&.kill
+      end
+    end
+
+    def close
+      @running = false
+      @mutex.synchronize do
+        @subs.each_value { |sid| @nats.unsubscribe(sid) rescue nil }
+        @subs.clear
+        @threads.each_value { |t| t.kill }
+        @threads.clear
+      end
+      @nats.close
     end
   end
 end

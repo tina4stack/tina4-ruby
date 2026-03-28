@@ -44,6 +44,18 @@ module Tina4
         end
       end
 
+      # Garbage-collect expired sessions. Matches the Python interface.
+      # @param max_age [Integer] maximum session age in seconds
+      def gc(max_age)
+        return unless Dir.exist?(@dir)
+        now = Time.now
+        Dir.glob(File.join(@dir, "sess_*")).each do |file|
+          File.delete(file) if File.mtime(file) + max_age < now
+        rescue StandardError
+          # Corrupt or locked file — skip
+        end
+      end
+
       private
 
       def session_path(session_id)

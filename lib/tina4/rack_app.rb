@@ -107,6 +107,16 @@ module Tina4
         if request_obj&.instance_variable_get(:@session)
           sess = request_obj.session
           sess.save
+
+          # Probabilistic garbage collection (~1% of requests)
+          if rand(1..100) == 1
+            begin
+              sess.gc
+            rescue StandardError
+              # GC failure is non-critical — silently ignore
+            end
+          end
+
           sid = sess.id
           cookie_val = (env["HTTP_COOKIE"] || "")[/tina4_session=([^;]+)/, 1]
           if sid && sid != cookie_val

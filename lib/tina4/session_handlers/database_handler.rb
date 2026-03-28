@@ -56,6 +56,12 @@ module Tina4
         @db.execute("DELETE FROM #{TABLE_NAME} WHERE expires_at > 0 AND expires_at < ?", [Time.now.to_f])
       end
 
+      # Garbage-collect expired sessions. Matches the Python interface.
+      # @param max_age [Integer] maximum session age in seconds (unused — expiry is absolute)
+      def gc(max_age)
+        @db.execute("DELETE FROM #{TABLE_NAME} WHERE expires_at > 0 AND expires_at < ?", [Time.now.to_f])
+      end
+
       private
 
       def ensure_table
