@@ -488,6 +488,32 @@ module Tina4
           right = evaluate_expression(Regexp.last_match(3))
           return apply_math(left, op, right)
         end
+
+        # Function call with dotted name: obj.method(args)
+        if expr =~ /\A([\w.]+)\s*\((.*)\)\z/m
+          func_name = Regexp.last_match(1)
+          args_str = Regexp.last_match(2)
+          if func_name.include?(".")
+            last_dot = func_name.rindex(".")
+            obj_path = func_name[0...last_dot]
+            method_name = func_name[(last_dot + 1)..]
+            obj = resolve_variable(obj_path)
+            if obj.respond_to?(:call)
+              # obj itself is callable — unlikely but handle
+            elsif obj.is_a?(Hash)
+              callable = obj[method_name] || obj[method_name.to_sym] || obj[method_name.to_s]
+              if callable.respond_to?(:call)
+                args = args_str && !args_str.strip.empty? ? parse_filter_args(args_str) : []
+                return callable.call(*args)
+              end
+            elsif obj.respond_to?(method_name.to_sym)
+              args = args_str && !args_str.strip.empty? ? parse_filter_args(args_str) : []
+              return obj.send(method_name.to_sym, *args)
+            end
+            return nil
+          end
+        end
+
         resolve_variable(expr)
       end
 
