@@ -431,24 +431,60 @@ module Tina4
         value
       end
 
-      # Split expression on dots, but not dots inside parentheses
+      # Split expression on dots, respecting quotes, parentheses and brackets.
+      # Dots inside quoted strings or nested parens/brackets are NOT separators.
+      # Bracket access like foo["bar"] is emitted as a separate part.
       def split_dot_parts(expr)
         parts = []
         current = +""
-        depth = 0
-        expr.each_char do |ch|
-          if ch == "("
-            depth += 1
+        paren_depth = 0
+        bracket_depth = 0
+        in_quote = nil
+
+        i = 0
+        chars = expr.chars
+        while i < chars.length
+          ch = chars[i]
+
+          if in_quote
+            current << ch
+            # End quote only when matching unescaped closer
+            in_quote = nil if ch == in_quote && (i == 0 || chars[i - 1] != "\\")
+          elsif ch == '"' || ch == "'"
+            in_quote = ch
+            current << ch
+          elsif ch == "("
+            paren_depth += 1
             current << ch
           elsif ch == ")"
-            depth -= 1
+            paren_depth -= 1
             current << ch
-          elsif ch == "." && depth == 0
-            parts << current
+          elsif ch == "[" && paren_depth == 0
+            if bracket_depth == 0 && !current.empty?
+              # Start of bracket access on an existing part -- split here
+              parts << current
+              current = +""
+            end
+            bracket_depth += 1
+            current << ch
+          elsif ch == "]"
+            bracket_depth -= 1
+            current << ch
+            if bracket_depth == 0 && paren_depth == 0
+              # End of top-level bracket access -- emit as its own part
+              parts << current
+              current = +""
+              # Skip a trailing dot that merely chains the next segment
+              i += 1 if i + 1 < chars.length && chars[i + 1] == "."
+            end
+          elsif ch == "." && paren_depth == 0 && bracket_depth == 0
+            parts << current unless current.empty?
             current = +""
           else
             current << ch
           end
+
+          i += 1
         end
         parts << current unless current.empty?
         parts
