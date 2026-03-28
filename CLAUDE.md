@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.10.13 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.10.14 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -496,7 +496,7 @@ Tina4::DevAdmin.request_inspector.clear
 - `tina4 init` generates Dockerfile and .dockerignore
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
 - Tests: 1,578 passing (38 features)
-- Version: 3.10.13
+- Version: 3.10.14
 
 ## Links
 

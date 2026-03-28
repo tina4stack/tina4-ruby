@@ -311,6 +311,61 @@ module Tina4
       tables.any? { |t| t.downcase == table_name.to_s.downcase }
     end
 
+    # Pre-generate the next available primary key ID using engine-aware strategies.
+    #
+    # - Firebird: auto-creates a generator if missing, then increments via GEN_ID.
+    # - PostgreSQL: tries nextval() on the standard sequence, falls through to MAX+1.
+    # - SQLite/MySQL/MSSQL: uses MAX(pk) + 1.
+    # - Returns 1 if the table is empty or does not exist.
+    #
+    # @param table [String] Table name
+    # @param pk_column [String] Primary key column name (default: "id")
+    # @param generator_name [String, nil] Firebird generator name override
+    # @return [Integer] The next available ID
+    def get_next_id(table, pk_column: "id", generator_name: nil)
+      drv = current_driver
+
+      # Firebird — use generators
+      if @driver_name == "firebird"
+        gen_name = generator_name || "GEN_#{table.upcase}_ID"
+
+        # Auto-create the generator if it does not exist
+        begin
+          drv.execute("CREATE GENERATOR #{gen_name}")
+        rescue
+          # Generator already exists — ignore
+        end
+
+        rows = drv.execute_query("SELECT GEN_ID(#{gen_name}, 1) AS NEXT_ID FROM RDB$DATABASE")
+        row = rows.is_a?(Array) ? rows.first : nil
+        return (row && (row["NEXT_ID"] || row["next_id"]))&.to_i || 1
+      end
+
+      # PostgreSQL — try sequence first, fall through to MAX
+      if @driver_name == "postgres"
+        seq_name = "#{table.downcase}_#{pk_column.downcase}_seq"
+        begin
+          rows = drv.execute_query("SELECT nextval('#{seq_name}') AS next_id")
+          row = rows.is_a?(Array) ? rows.first : nil
+          if row && (row["next_id"] || row["nextval"])
+            return (row["next_id"] || row["nextval"]).to_i
+          end
+        rescue
+          # No sequence — fall through to MAX
+        end
+      end
+
+      # SQLite / MySQL / MSSQL / PostgreSQL fallback — MAX + 1
+      begin
+        rows = drv.execute_query("SELECT MAX(#{pk_column}) + 1 AS next_id FROM #{table}")
+        row = rows.is_a?(Array) ? rows.first : nil
+        next_id = row && (row["next_id"] || row["max"])
+        return next_id ? next_id.to_i : 1
+      rescue
+        return 1
+      end
+    end
+
     private
 
     def truthy?(val)
