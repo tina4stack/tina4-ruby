@@ -13,6 +13,7 @@ require "cgi"
 require "uri"
 require "date"
 require "time"
+require "securerandom"
 
 module Tina4
   # Marker class for strings that should not be auto-escaped in Frond.
@@ -1861,7 +1862,7 @@ module Tina4
       require_relative "log"
       require_relative "auth"
 
-      payload = { "type" => "form" }
+      payload = { "type" => "form", "nonce" => SecureRandom.hex(8) }
       if descriptor && !descriptor.empty?
         if descriptor.include?("|")
           parts = descriptor.split("|", 2)
