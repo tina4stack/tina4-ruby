@@ -160,4 +160,55 @@ RSpec.describe Tina4::Database do
       expect { db.close }.not_to raise_error
     end
   end
+
+  describe "#get_next_id" do
+    it "returns 1 for an empty table" do
+      next_id = db.get_next_id("users")
+      expect(next_id).to eq(1)
+    end
+
+    it "returns MAX(pk) + 1 when rows exist" do
+      db.insert("users", { name: "Alice", email: "a@test.com", age: 30 })
+      db.insert("users", { name: "Bob", email: "b@test.com", age: 25 })
+      next_id = db.get_next_id("users")
+      expect(next_id).to be >= 3
+    end
+
+    it "increments monotonically on successive calls" do
+      ids = 5.times.map { db.get_next_id("users") }
+      expect(ids).to eq(ids.sort)
+      expect(ids.uniq.length).to eq(5)
+    end
+
+    it "creates the tina4_sequences table automatically" do
+      expect(db.table_exists?("tina4_sequences")).to be false
+      db.get_next_id("users")
+      expect(db.table_exists?("tina4_sequences")).to be true
+    end
+
+    it "supports custom pk_column" do
+      db.execute("CREATE TABLE items (item_id INTEGER PRIMARY KEY, name TEXT)")
+      db.execute("INSERT INTO items (item_id, name) VALUES (10, 'Widget')")
+      next_id = db.get_next_id("items", pk_column: "item_id")
+      expect(next_id).to eq(11)
+    end
+
+    it "supports custom generator_name" do
+      id1 = db.get_next_id("users", generator_name: "my_custom_seq")
+      id2 = db.get_next_id("users", generator_name: "my_custom_seq")
+      expect(id2).to eq(id1 + 1)
+    end
+
+    it "keeps separate counters for different tables" do
+      db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, total REAL)")
+      id_users = db.get_next_id("users")
+      id_orders = db.get_next_id("orders")
+      # Both should start at 1 for empty tables
+      expect(id_users).to eq(1)
+      expect(id_orders).to eq(1)
+      # Second call for users should be 2, orders still at 1 from last call
+      id_users2 = db.get_next_id("users")
+      expect(id_users2).to eq(2)
+    end
+  end
 end

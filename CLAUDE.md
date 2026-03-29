@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.10.18 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.10.20 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -23,6 +23,7 @@ Version 3.10.18 — Lightweight Ruby web framework. See https://tina4.com for fu
 - **Migrations for all schema changes** — Never execute DDL outside migration files
 - **Constants** — No magic strings or numbers in routes. Put constants in a dedicated constants module
 - **Service layer pattern** — For complex business logic, create service classes in `app/`. Routes should be thin wrappers
+- **Parity across all frameworks** — Every new feature, fix, or optimization must be implemented with equivalent logic AND tests in all 4 Tina4 frameworks (Python, PHP, Ruby, Node.js). Never ship to one without shipping to all.
 - **Error handling in routes** — Wrap route logic in `begin/rescue`, log with `Tina4::Log.error()`, return response with appropriate status
 - **All links and references** should point to https://tina4.com
 - **Push to staging only** — Never push to production without explicit approval
@@ -165,8 +166,15 @@ db.transaction { |db| yield }
 db.tables -> Array
 db.columns(table_name) -> Array
 db.table_exists?(table_name) -> Boolean
+db.get_next_id(table, pk_column: "id", generator_name: nil) -> Integer
+    # Race-safe ID generation using atomic sequence table (tina4_sequences).
+    # SQLite/MySQL/MSSQL: uses tina4_sequences table with atomic UPDATE+SELECT.
+    # PostgreSQL: auto-creates a sequence if missing, uses nextval().
+    # Firebird: uses existing generator (unchanged).
 db.close
 ```
+
+**`tina4_sequences` table** — Auto-created by `get_next_id` on first use for SQLite, MySQL, and MSSQL. Stores the current sequence value per table. Do not modify this table manually.
 
 ### ORM — Active Record base class
 
@@ -495,8 +503,10 @@ Tina4::DevAdmin.request_inspector.clear
 - SameSite=Lax default on session cookies (`TINA4_SESSION_SAMESITE`)
 - `tina4 init` generates Dockerfile and .dockerignore
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
+- Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
+- Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - Tests: 1,578 passing (38 features)
-- Version: 3.10.18
+- Version: 3.10.20
 
 ## Links
 

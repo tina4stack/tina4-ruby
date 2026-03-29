@@ -34,6 +34,121 @@ module Tina4
                         '"' => "&quot;", "'" => "&#39;" }.freeze
     HTML_ESCAPE_RE  = /[&<>"']/
 
+    # -- Compiled regex constants (optimization: avoid re-compiling in methods) --
+    EXTENDS_RE      = /\{%-?\s*extends\s+["'](.+?)["']\s*-?%\}/
+    BLOCK_RE        = /\{%-?\s*block\s+(\w+)\s*-?%\}(.*?)\{%-?\s*endblock\s*-?%\}/m
+    STRING_LIT_RE   = /\A["'](.*)["']\z/
+    INTEGER_RE      = /\A-?\d+\z/
+    FLOAT_RE        = /\A-?\d+\.\d+\z/
+    ARRAY_LIT_RE    = /\A\[(.+)\]\z/m
+    HASH_LIT_RE     = /\A\{(.+)\}\z/m
+    HASH_PAIR_RE    = /\A\s*["']?(\w+)["']?\s*:\s*(.+)\z/
+    RANGE_LIT_RE    = /\A(\d+)\.\.(\d+)\z/
+    ARITHMETIC_RE   = /\A(.+?)\s*(\+|-|\*|\/|%)\s*(.+)\z/
+    FUNC_CALL_RE    = /\A(\w+)\s*\((.*)\)\z/m
+    FILTER_WITH_ARGS_RE = /\A(\w+)\s*\((.*)\)\z/m
+    FILTER_CMP_RE   = /\A(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)\z/
+    OR_SPLIT_RE     = /\s+or\s+/
+    AND_SPLIT_RE    = /\s+and\s+/
+    IS_NOT_RE       = /\A(.+?)\s+is\s+not\s+(\w+)(.*)\z/
+    IS_RE           = /\A(.+?)\s+is\s+(\w+)(.*)\z/
+    NOT_IN_RE       = /\A(.+?)\s+not\s+in\s+(.+)\z/
+    IN_RE           = /\A(.+?)\s+in\s+(.+)\z/
+    DIVISIBLE_BY_RE = /\s*by\s*\(\s*(\d+)\s*\)/
+    RESOLVE_SPLIT_RE = /\.|\[([^\]]+)\]/
+    RESOLVE_STRIP_RE = /\A["']|["']\z/
+    DIGIT_RE        = /\A\d+\z/
+    FOR_RE          = /\Afor\s+(\w+)(?:\s*,\s*(\w+))?\s+in\s+(.+)\z/
+    SET_RE          = /\Aset\s+(\w+)\s*=\s*(.+)\z/m
+    INCLUDE_RE      = /\Ainclude\s+["'](.+?)["'](?:\s+with\s+(.+))?\z/
+    MACRO_RE        = /\Amacro\s+(\w+)\s*\(([^)]*)\)/
+    FROM_IMPORT_RE  = /\Afrom\s+["'](.+?)["']\s+import\s+(.+)/
+    CACHE_RE        = /\Acache\s+["'](.+?)["']\s*(\d+)?/
+    SPACELESS_RE    = />\s+</
+    AUTOESCAPE_RE   = /\Aautoescape\s+(false|true)/
+    STRIPTAGS_RE    = /<[^>]+>/
+    THOUSANDS_RE    = /(\d)(?=(\d{3})+(?!\d))/
+    SLUG_CLEAN_RE   = /[^a-z0-9]+/
+    SLUG_TRIM_RE    = /\A-|-\z/
+
+    # Set of common no-arg filter names that can be inlined for speed
+    INLINE_FILTERS = %w[upper lower length trim capitalize title string int escape e].each_with_object({}) { |f, h| h[f] = true }.freeze
+
+    # -- Lazy context overlay for for-loops (avoids full Hash#dup) --
+    class LoopContext
+      def initialize(parent)
+        @parent = parent
+        @local = {}
+      end
+
+      def [](key)
+        @local.key?(key) ? @local[key] : @parent[key]
+      end
+
+      def []=(key, value)
+        @local[key] = value
+      end
+
+      def key?(key)
+        @local.key?(key) || @parent.key?(key)
+      end
+      alias include? key?
+      alias has_key? key?
+
+      def fetch(key, *args, &block)
+        if @local.key?(key)
+          @local[key]
+        elsif @parent.key?(key)
+          @parent[key]
+        elsif block
+          yield key
+        elsif !args.empty?
+          args[0]
+        else
+          raise KeyError, "key not found: #{key.inspect}"
+        end
+      end
+
+      def merge(other)
+        dup_hash = to_h
+        dup_hash.merge!(other)
+        dup_hash
+      end
+
+      def merge!(other)
+        other.each { |k, v| @local[k] = v }
+        self
+      end
+
+      def dup
+        copy = LoopContext.new(@parent)
+        @local.each { |k, v| copy[k] = v }
+        copy
+      end
+
+      def to_h
+        h = @parent.is_a?(LoopContext) ? @parent.to_h : @parent.dup
+        @local.each { |k, v| h[k] = v }
+        h
+      end
+
+      def each(&block)
+        to_h.each(&block)
+      end
+
+      def respond_to_missing?(name, include_private = false)
+        @parent.respond_to?(name, include_private) || super
+      end
+
+      def is_a?(klass)
+        klass == Hash || super
+      end
+
+      def keys
+        (@parent.is_a?(LoopContext) ? @parent.keys : @parent.keys) | @local.keys
+      end
+    end
+
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
@@ -59,6 +174,15 @@ module Tina4
       # Token pre-compilation cache
       @compiled         = {}  # {template_name => [tokens, mtime]}
       @compiled_strings = {}  # {md5_hash => tokens}
+
+      # Parsed filter chain cache: expr_string => [variable, filters]
+      @filter_chain_cache = {}
+
+      # Resolved dotted-path split cache: expr_string => parts_array
+      @resolve_cache = {}
+
+      # Sandbox root-var split cache: var_name => root_var_string
+      @dotted_split_cache = {}
 
       # Built-in global functions
       register_builtin_globals
@@ -115,6 +239,9 @@ module Tina4
     def clear_cache
       @compiled.clear
       @compiled_strings.clear
+      @filter_chain_cache.clear
+      @resolve_cache.clear
+      @dotted_split_cache.clear
     end
 
     # Register a custom filter.
@@ -261,7 +388,7 @@ module Tina4
 
     def execute_with_tokens(source, tokens, context)
       # Handle extends first
-      if source =~ /\{%-?\s*extends\s+["'](.+?)["']\s*-?%\}/
+      if source =~ EXTENDS_RE
         parent_name = Regexp.last_match(1)
         parent_source = load_template(parent_name)
         child_blocks = extract_blocks(source)
@@ -273,7 +400,7 @@ module Tina4
 
     def execute(source, context)
       # Handle extends first
-      if source =~ /\{%-?\s*extends\s+["'](.+?)["']\s*-?%\}/
+      if source =~ EXTENDS_RE
         parent_name = Regexp.last_match(1)
         parent_source = load_template(parent_name)
         child_blocks = extract_blocks(source)
@@ -285,14 +412,14 @@ module Tina4
 
     def extract_blocks(source)
       blocks = {}
-      source.scan(/\{%-?\s*block\s+(\w+)\s*-?%\}(.*?)\{%-?\s*endblock\s*-?%\}/m) do
+      source.scan(BLOCK_RE) do
         blocks[Regexp.last_match(1)] = Regexp.last_match(2)
       end
       blocks
     end
 
     def render_with_blocks(parent_source, context, child_blocks)
-      result = parent_source.gsub(/\{%-?\s*block\s+(\w+)\s*-?%\}(.*?)\{%-?\s*endblock\s*-?%\}/m) do
+      result = parent_source.gsub(BLOCK_RE) do
         name = Regexp.last_match(1)
         default_content = Regexp.last_match(2)
         block_source = child_blocks.fetch(name, default_content)
@@ -422,7 +549,7 @@ module Tina4
           # The filter name may include a trailing comparison operator,
           # e.g. "length != 1".  Extract the real filter name and the
           # comparison suffix, apply the filter, then evaluate the comparison.
-          m = fname.match(/\A(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)\z/)
+          m = fname.match(FILTER_CMP_RE)
           if m
             real_filter = m[1]
             op = m[2]
@@ -455,7 +582,11 @@ module Tina4
 
       # Sandbox: check variable access
       if @sandbox && @allowed_vars
-        root_var = var_name.split(".")[0].split("[")[0].strip
+        root_var = @dotted_split_cache[var_name]
+        unless root_var
+          root_var = var_name.split(".")[0].split("[")[0].strip
+          @dotted_split_cache[var_name] = root_var
+        end
         return "" if !root_var.empty? && !@allowed_vars.include?(root_var) && root_var != "loop"
       end
 
@@ -470,6 +601,23 @@ module Tina4
 
         # Sandbox: check filter access
         if @sandbox && @allowed_filters && !@allowed_filters.include?(fname)
+          next
+        end
+
+        # Inline common no-arg filters for speed (skip generic dispatch)
+        if args.empty? && INLINE_FILTERS.include?(fname)
+          value = case fname
+                  when "upper"      then value.to_s.upcase
+                  when "lower"      then value.to_s.downcase
+                  when "length"     then value.respond_to?(:length) ? value.length : value.to_s.length
+                  when "trim"       then value.to_s.strip
+                  when "capitalize" then value.to_s.capitalize
+                  when "title"      then value.to_s.split.map(&:capitalize).join(" ")
+                  when "string"     then value.to_s
+                  when "int"        then value.to_i
+                  when "escape", "e" then Frond.escape_html(value.to_s)
+                  else value
+                  end
           next
         end
 
@@ -489,9 +637,9 @@ module Tina4
     end
 
     def eval_filter_arg(arg, context)
-      return Regexp.last_match(1) if arg =~ /\A["'](.*)["']\z/
-      return arg.to_i if arg =~ /\A-?\d+\z/
-      return arg.to_f if arg =~ /\A-?\d+\.\d+\z/
+      return Regexp.last_match(1) if arg =~ STRING_LIT_RE
+      return arg.to_i if arg =~ INTEGER_RE
+      return arg.to_f if arg =~ FLOAT_RE
       eval_expr(arg, context)
     end
 
@@ -597,13 +745,16 @@ module Tina4
     # -----------------------------------------------------------------------
 
     def parse_filter_chain(expr)
+      cached = @filter_chain_cache[expr]
+      return cached if cached
+
       parts = split_on_pipe(expr)
       variable = parts[0].strip
       filters = []
 
       parts[1..].each do |f|
         f = f.strip
-        if f =~ /\A(\w+)\s*\((.*)\)\z/m
+        if f =~ FILTER_WITH_ARGS_RE
           name = Regexp.last_match(1)
           raw_args = Regexp.last_match(2).strip
           args = raw_args.empty? ? [] : parse_args(raw_args)
@@ -613,7 +764,9 @@ module Tina4
         end
       end
 
-      [variable, filters]
+      result = [variable, filters].freeze
+      @filter_chain_cache[expr] = result
+      result
     end
 
     # Split expression on | but not inside quotes or parens.
@@ -694,8 +847,8 @@ module Tina4
       end
 
       # Numeric
-      return expr.to_i if expr =~ /\A-?\d+\z/
-      return expr.to_f if expr =~ /\A-?\d+\.\d+\z/
+      return expr.to_i if expr =~ INTEGER_RE
+      return expr.to_f if expr =~ FLOAT_RE
 
       # Boolean/null
       return true  if expr == "true"
@@ -703,17 +856,17 @@ module Tina4
       return nil   if expr == "null" || expr == "none" || expr == "nil"
 
       # Array literal [a, b, c]
-      if expr =~ /\A\[(.+)\]\z/m
+      if expr =~ ARRAY_LIT_RE
         inner = Regexp.last_match(1)
         return split_args_toplevel(inner).map { |item| eval_expr(item.strip, context) }
       end
 
       # Hash literal { key: value, ... }
-      if expr =~ /\A\{(.+)\}\z/m
+      if expr =~ HASH_LIT_RE
         inner = Regexp.last_match(1)
         hash = {}
         split_args_toplevel(inner).each do |pair|
-          if pair =~ /\A\s*["']?(\w+)["']?\s*:\s*(.+)\z/
+          if pair =~ HASH_PAIR_RE
             hash[Regexp.last_match(1)] = eval_expr(Regexp.last_match(2).strip, context)
           end
         end
@@ -721,7 +874,7 @@ module Tina4
       end
 
       # Range literal: 1..5
-      if expr =~ /\A(\d+)\.\.(\d+)\z/
+      if expr =~ RANGE_LIT_RE
         return (Regexp.last_match(1).to_i..Regexp.last_match(2).to_i).to_a
       end
 
@@ -786,7 +939,7 @@ module Tina4
       end
 
       # Arithmetic: +, -, *, /, %
-      if expr =~ /\A(.+?)\s*(\+|-|\*|\/|%)\s*(.+)\z/
+      if expr =~ ARITHMETIC_RE
         left  = eval_expr(Regexp.last_match(1), context)
         op    = Regexp.last_match(2)
         right = eval_expr(Regexp.last_match(3), context)
@@ -794,7 +947,7 @@ module Tina4
       end
 
       # Function call: name(arg1, arg2)
-      if expr =~ /\A(\w+)\s*\((.*)\)\z/m
+      if expr =~ FUNC_CALL_RE
         fn_name  = Regexp.last_match(1)
         raw_args = Regexp.last_match(2).strip
         fn = context[fn_name]
@@ -860,38 +1013,38 @@ module Tina4
       end
 
       # 'or' (lowest precedence)
-      or_parts = expr.split(/\s+or\s+/)
+      or_parts = expr.split(OR_SPLIT_RE)
       if or_parts.length > 1
         return or_parts.any? { |p| eval_comparison(p, context) }
       end
 
       # 'and'
-      and_parts = expr.split(/\s+and\s+/)
+      and_parts = expr.split(AND_SPLIT_RE)
       if and_parts.length > 1
         return and_parts.all? { |p| eval_comparison(p, context) }
       end
 
       # 'is not' test
-      if expr =~ /\A(.+?)\s+is\s+not\s+(\w+)(.*)\z/
+      if expr =~ IS_NOT_RE
         return !eval_test(Regexp.last_match(1).strip, Regexp.last_match(2),
                           Regexp.last_match(3).strip, context)
       end
 
       # 'is' test
-      if expr =~ /\A(.+?)\s+is\s+(\w+)(.*)\z/
+      if expr =~ IS_RE
         return eval_test(Regexp.last_match(1).strip, Regexp.last_match(2),
                          Regexp.last_match(3).strip, context)
       end
 
       # 'not in'
-      if expr =~ /\A(.+?)\s+not\s+in\s+(.+)\z/
+      if expr =~ NOT_IN_RE
         val = eval_expr(Regexp.last_match(1).strip, context)
         collection = eval_expr(Regexp.last_match(2).strip, context)
         return !(collection.respond_to?(:include?) && collection.include?(val))
       end
 
       # 'in'
-      if expr =~ /\A(.+?)\s+in\s+(.+)\z/
+      if expr =~ IN_RE
         val = eval_expr(Regexp.last_match(1).strip, context)
         collection = eval_expr(Regexp.last_match(2).strip, context)
         return collection.respond_to?(:include?) ? collection.include?(val) : false
@@ -930,7 +1083,7 @@ module Tina4
 
       # 'divisible by(n)'
       if test_name == "divisible"
-        if args_str =~ /\s*by\s*\(\s*(\d+)\s*\)/
+        if args_str =~ DIVISIBLE_BY_RE
           n = Regexp.last_match(1).to_i
           return val.is_a?(Integer) && (val % n).zero?
         end
@@ -964,14 +1117,19 @@ module Tina4
     # -----------------------------------------------------------------------
 
     def resolve(expr, context)
-      parts = expr.split(/\.|\[([^\]]+)\]/).reject(&:empty?)
+      parts = @resolve_cache[expr]
+      unless parts
+        parts = expr.split(RESOLVE_SPLIT_RE).reject(&:empty?)
+        @resolve_cache[expr] = parts
+      end
+
       value = context
 
       parts.each do |part|
-        part = part.strip.gsub(/\A["']|["']\z/, "") # strip quotes from bracket access
-        if value.is_a?(Hash)
+        part = part.strip.gsub(RESOLVE_STRIP_RE, "") # strip quotes from bracket access
+        if value.is_a?(Hash) || value.is_a?(LoopContext)
           value = value[part] || value[part.to_sym]
-        elsif value.is_a?(Array) && part =~ /\A\d+\z/
+        elsif value.is_a?(Array) && part =~ DIGIT_RE
           value = value[part.to_i]
         elsif value.respond_to?(part.to_sym)
           value = value.send(part.to_sym)
@@ -1084,7 +1242,7 @@ module Tina4
     # {% for item in items %}...{% else %}...{% endfor %}
     def handle_for(tokens, start, context)
       content, _, strip_a_open = strip_tag(tokens[start][1])
-      m = content.match(/\Afor\s+(\w+)(?:\s*,\s*(\w+))?\s+in\s+(.+)\z/)
+      m = content.match(FOR_RE)
       return ["", start + 1] unless m
 
       var1 = m[1]
@@ -1158,7 +1316,7 @@ module Tina4
       total = items.length
 
       items.each_with_index do |item, idx|
-        loop_ctx = context.dup
+        loop_ctx = LoopContext.new(context)
         loop_ctx["loop"] = {
           "index"     => idx + 1,
           "index0"    => idx,
@@ -1196,7 +1354,7 @@ module Tina4
 
     # {% set name = expr %}
     def handle_set(content, context)
-      if content =~ /\Aset\s+(\w+)\s*=\s*(.+)\z/m
+      if content =~ SET_RE
         name = Regexp.last_match(1)
         expr = Regexp.last_match(2).strip
         context[name] = eval_expr(expr, context)
@@ -1208,7 +1366,7 @@ module Tina4
       ignore_missing = content.include?("ignore missing")
       content = content.gsub("ignore missing", "").strip
 
-      m = content.match(/\Ainclude\s+["'](.+?)["'](?:\s+with\s+(.+))?\z/)
+      m = content.match(INCLUDE_RE)
       return "" unless m
 
       filename = m[1]
@@ -1233,7 +1391,7 @@ module Tina4
     # {% macro name(args) %}...{% endmacro %}
     def handle_macro(tokens, start, context)
       content, _, _ = strip_tag(tokens[start][1])
-      m = content.match(/\Amacro\s+(\w+)\s*\(([^)]*)\)/)
+      m = content.match(MACRO_RE)
       unless m
         i = start + 1
         while i < tokens.length
@@ -1276,7 +1434,7 @@ module Tina4
 
     # {% from "file" import macro1, macro2 %}
     def handle_from_import(content, context)
-      m = content.match(/\Afrom\s+["'](.+?)["']\s+import\s+(.+)/)
+      m = content.match(FROM_IMPORT_RE)
       return unless m
 
       filename = m[1]
@@ -1292,7 +1450,7 @@ module Tina4
           tag_content, _, _ = strip_tag(raw)
           tag = (tag_content.split[0] || "")
           if tag == "macro"
-            macro_m = tag_content.match(/\Amacro\s+(\w+)\s*\(([^)]*)\)/)
+            macro_m = tag_content.match(MACRO_RE)
             if macro_m && names.include?(macro_m[1])
               macro_name = macro_m[1]
               param_names = macro_m[2].split(",").map(&:strip).reject(&:empty?)
@@ -1332,7 +1490,7 @@ module Tina4
     # {% cache "key" ttl %}...{% endcache %}
     def handle_cache(tokens, start, context)
       content, _, _ = strip_tag(tokens[start][1])
-      m = content.match(/\Acache\s+["'](.+?)["']\s*(\d+)?/)
+      m = content.match(CACHE_RE)
       cache_key = m ? m[1] : "default"
       ttl = m && m[2] ? m[2].to_i : 60
 
@@ -1420,13 +1578,13 @@ module Tina4
       end
 
       rendered = render_tokens(body_tokens.dup, context)
-      rendered = rendered.gsub(/>\s+</, "><")
+      rendered = rendered.gsub(SPACELESS_RE, "><")
       [rendered, i]
     end
 
     def handle_autoescape(tokens, start, context)
       content, _, _ = strip_tag(tokens[start][1])
-      mode_match = content.match(/\Aautoescape\s+(false|true)/)
+      mode_match = content.match(AUTOESCAPE_RE)
       auto_escape_on = !(mode_match && mode_match[1] == "false")
 
       body_tokens = []
@@ -1497,7 +1655,7 @@ module Tina4
         "ltrim"      => ->(v, *_a) { v.to_s.lstrip },
         "rtrim"      => ->(v, *_a) { v.to_s.rstrip },
         "replace"    => ->(v, *a)  { a.length >= 2 ? v.to_s.gsub(a[0].to_s, a[1].to_s) : v.to_s },
-        "striptags"  => ->(v, *_a) { v.to_s.gsub(/<[^>]+>/, "") },
+        "striptags"  => ->(v, *_a) { v.to_s.gsub(STRIPTAGS_RE, "") },
 
         # -- Encoding --
         "escape"        => ->(v, *_a) { Frond.escape_html(v.to_s) },
@@ -1555,7 +1713,7 @@ module Tina4
           formatted = format("%.#{decimals}f", v.to_f)
           # Add comma thousands separator
           parts = formatted.split(".")
-          parts[0] = parts[0].gsub(/(\d)(?=(\d{3})+(?!\d))/, '\\1,')
+          parts[0] = parts[0].gsub(THOUSANDS_RE, '\\1,')
           parts.join(".")
         },
 
@@ -1660,7 +1818,7 @@ module Tina4
           lines << current unless current.empty?
           lines.join("\n")
         },
-        "slug"   => ->(v, *_a) { v.to_s.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-|-\z/, "") },
+        "slug"   => ->(v, *_a) { v.to_s.downcase.gsub(SLUG_CLEAN_RE, "-").gsub(SLUG_TRIM_RE, "") },
         "nl2br"  => ->(v, *_a) { v.to_s.gsub("\n", "<br>\n") },
         "format" => ->(v, *a) {
           if a.any?

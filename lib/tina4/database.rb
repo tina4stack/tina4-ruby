@@ -313,14 +313,18 @@ module Tina4
 
     # Pre-generate the next available primary key ID using engine-aware strategies.
     #
+    # Race-safe implementation using a `tina4_sequences` table for SQLite/MySQL/MSSQL
+    # fallback. Each call atomically increments the stored counter, so concurrent
+    # callers never receive the same value.
+    #
     # - Firebird: auto-creates a generator if missing, then increments via GEN_ID.
-    # - PostgreSQL: tries nextval() on the standard sequence, falls through to MAX+1.
-    # - SQLite/MySQL/MSSQL: uses MAX(pk) + 1.
+    # - PostgreSQL: tries nextval() on the named sequence, auto-creates it if missing.
+    # - SQLite/MySQL/MSSQL: atomic UPDATE on `tina4_sequences` table.
     # - Returns 1 if the table is empty or does not exist.
     #
     # @param table [String] Table name
     # @param pk_column [String] Primary key column name (default: "id")
-    # @param generator_name [String, nil] Firebird generator name override
+    # @param generator_name [String, nil] Override for sequence/generator name
     # @return [Integer] The next available ID
     def get_next_id(table, pk_column: "id", generator_name: nil)
       drv = current_driver
@@ -338,35 +342,100 @@ module Tina4
 
         rows = drv.execute_query("SELECT GEN_ID(#{gen_name}, 1) AS NEXT_ID FROM RDB$DATABASE")
         row = rows.is_a?(Array) ? rows.first : nil
-        return (row && (row["NEXT_ID"] || row["next_id"]))&.to_i || 1
+        val = row_value(row, :NEXT_ID) || row_value(row, :next_id)
+        return val&.to_i || 1
       end
 
-      # PostgreSQL — try sequence first, fall through to MAX
+      # PostgreSQL — try sequence first, auto-create if missing
       if @driver_name == "postgres"
-        seq_name = "#{table.downcase}_#{pk_column.downcase}_seq"
+        seq_name = generator_name || "#{table.downcase}_#{pk_column.downcase}_seq"
         begin
           rows = drv.execute_query("SELECT nextval('#{seq_name}') AS next_id")
           row = rows.is_a?(Array) ? rows.first : nil
-          if row && (row["next_id"] || row["nextval"])
-            return (row["next_id"] || row["nextval"]).to_i
-          end
+          val = row_value(row, :next_id) || row_value(row, :nextval)
+          return val.to_i if val
         rescue
-          # No sequence — fall through to MAX
+          # Sequence does not exist — auto-create it seeded from MAX
+          begin
+            max_rows = drv.execute_query("SELECT COALESCE(MAX(#{pk_column}), 0) AS max_id FROM #{table}")
+            max_row = max_rows.is_a?(Array) ? max_rows.first : nil
+            max_val = row_value(max_row, :max_id)
+            start_val = max_val ? max_val.to_i + 1 : 1
+            drv.execute("CREATE SEQUENCE #{seq_name} START WITH #{start_val}")
+            drv.commit rescue nil
+            rows = drv.execute_query("SELECT nextval('#{seq_name}') AS next_id")
+            row = rows.is_a?(Array) ? rows.first : nil
+            val = row_value(row, :next_id) || row_value(row, :nextval)
+            return val&.to_i || start_val
+          rescue
+            # Fall through to sequence table fallback
+          end
         end
       end
 
-      # SQLite / MySQL / MSSQL / PostgreSQL fallback — MAX + 1
-      begin
-        rows = drv.execute_query("SELECT MAX(#{pk_column}) + 1 AS next_id FROM #{table}")
-        row = rows.is_a?(Array) ? rows.first : nil
-        next_id = row && (row["next_id"] || row["max"])
-        return next_id ? next_id.to_i : 1
-      rescue
-        return 1
-      end
+      # SQLite / MySQL / MSSQL / PostgreSQL fallback — atomic sequence table
+      seq_key = generator_name || "#{table}.#{pk_column}"
+      sequence_next(seq_key, table: table, pk_column: pk_column)
     end
 
     private
+
+    # Ensure the tina4_sequences table exists for race-safe ID generation.
+    def ensure_sequence_table
+      return if table_exists?("tina4_sequences")
+
+      drv = current_driver
+      if @driver_name == "mssql"
+        drv.execute("CREATE TABLE tina4_sequences (seq_name VARCHAR(200) NOT NULL PRIMARY KEY, current_value INTEGER NOT NULL DEFAULT 0)")
+      else
+        drv.execute("CREATE TABLE IF NOT EXISTS tina4_sequences (seq_name VARCHAR(200) NOT NULL PRIMARY KEY, current_value INTEGER NOT NULL DEFAULT 0)")
+      end
+      drv.commit rescue nil
+    end
+
+    # Atomically increment and return the next value for a named sequence.
+    # Seeds from MAX(pk_column) on first use so existing data is respected.
+    def sequence_next(seq_name, table: nil, pk_column: "id")
+      ensure_sequence_table
+      drv = current_driver
+
+      # Check if the sequence key already exists
+      rows = drv.execute_query("SELECT current_value FROM tina4_sequences WHERE seq_name = ?", [seq_name])
+      row = rows.is_a?(Array) ? rows.first : nil
+
+      if row.nil?
+        # Seed from MAX(pk_column) if table data exists
+        seed_value = 0
+        if table
+          begin
+            max_rows = drv.execute_query("SELECT MAX(#{pk_column}) AS max_id FROM #{table}")
+            max_row = max_rows.is_a?(Array) ? max_rows.first : nil
+            val = row_value(max_row, :max_id)
+            seed_value = val.to_i if val
+          rescue
+            # Table may not exist yet — start from 0
+          end
+        end
+        drv.execute("INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)", [seq_name, seed_value])
+        drv.commit rescue nil
+      end
+
+      # Atomic increment
+      drv.execute("UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?", [seq_name])
+      drv.commit rescue nil
+
+      # Read back the incremented value
+      rows = drv.execute_query("SELECT current_value FROM tina4_sequences WHERE seq_name = ?", [seq_name])
+      row = rows.is_a?(Array) ? rows.first : nil
+      val = row_value(row, :current_value)
+      val ? val.to_i : 1
+    end
+
+    # Safely extract a value from a driver result row, trying both symbol and string keys.
+    def row_value(row, key)
+      return nil unless row
+      row[key.to_sym] || row[key.to_s] || row[key.to_s.upcase] || row[key.to_s.downcase]
+    end
 
     def truthy?(val)
       %w[true 1 yes on].include?((val || "").to_s.strip.downcase)
