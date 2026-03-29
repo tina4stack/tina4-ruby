@@ -1004,49 +1004,50 @@ module Tina4
     # Comparison / logical evaluator
     # -----------------------------------------------------------------------
 
-    def eval_comparison(expr, context)
+    def eval_comparison(expr, context, eval_fn = nil)
+      eval_fn ||= method(:eval_expr)
       expr = expr.strip
 
       # Handle 'not' prefix
       if expr.start_with?("not ")
-        return !eval_comparison(expr[4..], context)
+        return !eval_comparison(expr[4..], context, eval_fn)
       end
 
       # 'or' (lowest precedence)
       or_parts = expr.split(OR_SPLIT_RE)
       if or_parts.length > 1
-        return or_parts.any? { |p| eval_comparison(p, context) }
+        return or_parts.any? { |p| eval_comparison(p, context, eval_fn) }
       end
 
       # 'and'
       and_parts = expr.split(AND_SPLIT_RE)
       if and_parts.length > 1
-        return and_parts.all? { |p| eval_comparison(p, context) }
+        return and_parts.all? { |p| eval_comparison(p, context, eval_fn) }
       end
 
       # 'is not' test
       if expr =~ IS_NOT_RE
         return !eval_test(Regexp.last_match(1).strip, Regexp.last_match(2),
-                          Regexp.last_match(3).strip, context)
+                          Regexp.last_match(3).strip, context, eval_fn)
       end
 
       # 'is' test
       if expr =~ IS_RE
         return eval_test(Regexp.last_match(1).strip, Regexp.last_match(2),
-                         Regexp.last_match(3).strip, context)
+                         Regexp.last_match(3).strip, context, eval_fn)
       end
 
       # 'not in'
       if expr =~ NOT_IN_RE
-        val = eval_expr(Regexp.last_match(1).strip, context)
-        collection = eval_expr(Regexp.last_match(2).strip, context)
+        val = eval_fn.call(Regexp.last_match(1).strip, context)
+        collection = eval_fn.call(Regexp.last_match(2).strip, context)
         return !(collection.respond_to?(:include?) && collection.include?(val))
       end
 
       # 'in'
       if expr =~ IN_RE
-        val = eval_expr(Regexp.last_match(1).strip, context)
-        collection = eval_expr(Regexp.last_match(2).strip, context)
+        val = eval_fn.call(Regexp.last_match(1).strip, context)
+        collection = eval_fn.call(Regexp.last_match(2).strip, context)
         return collection.respond_to?(:include?) ? collection.include?(val) : false
       end
 
@@ -1059,8 +1060,8 @@ module Tina4
        ["<",  ->(a, b) { a.to_f < b.to_f }]].each do |op, fn|
         if expr.include?(op)
           left, _, right = expr.partition(op)
-          l = eval_expr(left.strip, context)
-          r = eval_expr(right.strip, context)
+          l = eval_fn.call(left.strip, context)
+          r = eval_fn.call(right.strip, context)
           begin
             return fn.call(l, r)
           rescue
@@ -1070,7 +1071,7 @@ module Tina4
       end
 
       # Fall through to simple eval
-      val = eval_expr(expr, context)
+      val = eval_fn.call(expr, context)
       truthy?(val)
     end
 
@@ -1078,8 +1079,9 @@ module Tina4
     # Tests ('is' expressions)
     # -----------------------------------------------------------------------
 
-    def eval_test(value_expr, test_name, args_str, context)
-      val = eval_expr(value_expr, context)
+    def eval_test(value_expr, test_name, args_str, context, eval_fn = nil)
+      eval_fn ||= method(:eval_expr)
+      val = eval_fn.call(value_expr, context)
 
       # 'divisible by(n)'
       if test_name == "divisible"
@@ -1231,7 +1233,7 @@ module Tina4
       end
 
       branches.each do |cond, branch_tokens|
-        if cond.nil? || eval_comparison(cond, context)
+        if cond.nil? || eval_comparison(cond, context, method(:eval_var_raw))
           return [render_tokens(branch_tokens.dup, context), i]
         end
       end

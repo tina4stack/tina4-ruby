@@ -1108,4 +1108,47 @@ RSpec.describe Tina4::Frond do
       expect(r2).to eq("hidden")
     end
   end
+
+  # ===========================================================================
+  # Filters in if conditions
+  # ===========================================================================
+
+  describe "filters in if conditions" do
+    it "evaluates length filter with non-empty list" do
+      src = "{% if items|length > 0 %}yes{% else %}no{% endif %}"
+      expect(engine.render_string(src, { "items" => [1, 2, 3] })).to eq("yes")
+    end
+
+    it "evaluates length filter with empty list" do
+      src = "{% if items|length > 0 %}yes{% else %}no{% endif %}"
+      expect(engine.render_string(src, { "items" => [] })).to eq("no")
+    end
+
+    it "evaluates length filter with equality" do
+      src = "{% if items|length == 3 %}three{% else %}other{% endif %}"
+      expect(engine.render_string(src, { "items" => [1, 2, 3] })).to eq("three")
+    end
+
+    it "evaluates upper filter in condition" do
+      src = '{% if name|upper == "ALICE" %}yes{% else %}no{% endif %}'
+      expect(engine.render_string(src, { "name" => "alice" })).to eq("yes")
+    end
+
+    it "evaluates compound condition with filters and 'and'" do
+      src = '{% if items|length >= 2 and name|upper == "ALICE" %}both{% else %}nope{% endif %}'
+      expect(engine.render_string(src, { "items" => [1, 2, 3], "name" => "alice" })).to eq("both")
+    end
+
+    it "still works without filters" do
+      src = "{% if x > 5 %}big{% else %}small{% endif %}"
+      expect(engine.render_string(src, { "x" => 10 })).to eq("big")
+      expect(engine.render_string(src, { "x" => 3 })).to eq("small")
+    end
+
+    it "still works with truthy check" do
+      src = "{% if items %}yes{% else %}no{% endif %}"
+      expect(engine.render_string(src, { "items" => [1] })).to eq("yes")
+      expect(engine.render_string(src, { "items" => [] })).to eq("no")
+    end
+  end
 end
