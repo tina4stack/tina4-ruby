@@ -495,6 +495,41 @@ module Tina4
       eval_expr(arg, context)
     end
 
+    # Find the first occurrence of +needle+ that is not inside quotes or
+    # parentheses.  Returns the index, or -1 if not found.
+    def find_outside_quotes(expr, needle)
+      in_q = nil
+      depth = 0
+      i = 0
+      nlen = needle.length
+      while i <= expr.length - nlen
+        ch = expr[i]
+        if (ch == '"' || ch == "'") && depth == 0
+          if in_q.nil?
+            in_q = ch
+          elsif ch == in_q
+            in_q = nil
+          end
+          i += 1
+          next
+        end
+        if in_q
+          i += 1
+          next
+        end
+        if ch == "("
+          depth += 1
+        elsif ch == ")"
+          depth -= 1
+        end
+        if depth == 0 && expr[i, nlen] == needle
+          return i
+        end
+        i += 1
+      end
+      -1
+    end
+
     # Find the index of a top-level ``?`` that is part of a ternary operator.
     # Respects quoted strings, parentheses, and skips ``??`` (null coalesce).
     # Returns -1 if not found.
@@ -690,18 +725,46 @@ module Tina4
         return (Regexp.last_match(1).to_i..Regexp.last_match(2).to_i).to_a
       end
 
-      # Ternary: condition ? "yes" : "no"
-      ternary = expr.match(/\A(.+?)\s*\?\s*(.+?)\s*:\s*(.+)\z/)
-      if ternary
-        cond = eval_expr(ternary[1], context)
-        return truthy?(cond) ? eval_expr(ternary[2], context) : eval_expr(ternary[3], context)
+      # Parenthesized sub-expression: (expr) — strip parens and evaluate inner
+      if expr.start_with?("(") && expr.end_with?(")")
+        depth = 0
+        matched = true
+        expr.each_char.with_index do |ch, pi|
+          depth += 1 if ch == "("
+          depth -= 1 if ch == ")"
+          if depth == 0 && pi < expr.length - 1
+            matched = false
+            break
+          end
+        end
+        return eval_expr(expr[1..-2], context) if matched
       end
 
-      # Jinja2-style inline if: value if condition else other_value
-      inline_if = expr.match(/\A(.+?)\s+if\s+(.+?)\s+else\s+(.+)\z/)
-      if inline_if
-        cond = eval_expr(inline_if[2], context)
-        return truthy?(cond) ? eval_expr(inline_if[1], context) : eval_expr(inline_if[3], context)
+      # Ternary: condition ? "yes" : "no" — quote-aware
+      q_pos = find_outside_quotes(expr, "?")
+      if q_pos > 0
+        cond_part = expr[0...q_pos].strip
+        rest = expr[(q_pos + 1)..]
+        c_pos = find_outside_quotes(rest, ":")
+        if c_pos >= 0
+          true_part = rest[0...c_pos].strip
+          false_part = rest[(c_pos + 1)..].strip
+          cond = eval_expr(cond_part, context)
+          return truthy?(cond) ? eval_expr(true_part, context) : eval_expr(false_part, context)
+        end
+      end
+
+      # Jinja2-style inline if: value if condition else other_value — quote-aware
+      if_pos = find_outside_quotes(expr, " if ")
+      if if_pos >= 0
+        else_pos = find_outside_quotes(expr, " else ")
+        if else_pos && else_pos > if_pos
+          value_part = expr[0...if_pos].strip
+          cond_part = expr[(if_pos + 4)...else_pos].strip
+          else_part = expr[(else_pos + 6)..].strip
+          cond = eval_expr(cond_part, context)
+          return truthy?(cond) ? eval_expr(value_part, context) : eval_expr(else_part, context)
+        end
       end
 
       # Null coalescing: value ?? "default"
