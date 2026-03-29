@@ -1840,6 +1840,8 @@ module Tina4
 
     def register_builtin_globals
       @globals["form_token"] = ->(descriptor = "") { Frond.generate_form_token(descriptor.to_s) }
+      @globals["formTokenValue"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
+      @globals["form_token_value"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
     end
 
     # Generate a JWT form token and return a hidden input element.
@@ -1858,7 +1860,15 @@ module Tina4
       attr_accessor :form_token_session_id
     end
 
-    def self.generate_form_token(descriptor = "")
+    # Generate a raw JWT form token string.
+    #
+    # @param descriptor [String] Optional string to enrich the token payload.
+    #   - Empty: payload is {"type" => "form"}
+    #   - "admin_panel": payload is {"type" => "form", "context" => "admin_panel"}
+    #   - "checkout|order_123": payload is {"type" => "form", "context" => "checkout", "ref" => "order_123"}
+    #
+    # @return [String] The raw JWT token string.
+    def self.generate_form_jwt(descriptor = "")
       require_relative "log"
       require_relative "auth"
 
@@ -1879,8 +1889,18 @@ module Tina4
 
       ttl_minutes = (ENV["TINA4_TOKEN_LIMIT"] || "60").to_i
       expires_in = ttl_minutes * 60
-      token = Tina4::Auth.create_token(payload, expires_in: expires_in)
+      Tina4::Auth.create_token(payload, expires_in: expires_in)
+    end
+
+    def self.generate_form_token(descriptor = "")
+      token = generate_form_jwt(descriptor)
       Tina4::SafeString.new(%(<input type="hidden" name="formToken" value="#{CGI.escapeHTML(token)}">))
+    end
+
+    # Return just the raw JWT form token string (no <input> wrapper).
+    # Registered as both formTokenValue and form_token_value template globals.
+    def self.generate_form_token_value(descriptor = "")
+      Tina4::SafeString.new(generate_form_jwt(descriptor))
     end
   end
 end
