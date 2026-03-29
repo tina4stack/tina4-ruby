@@ -197,20 +197,14 @@ module Tina4
       raise "Template not found: #{path}" unless File.exist?(path)
 
       debug_mode = ENV.fetch("TINA4_DEBUG", "").downcase == "true"
-      cached = @compiled[template]
 
-      if cached
-        if debug_mode
-          # Dev mode: check if file changed
-          mtime = File.mtime(path)
-          if cached[1] == mtime
-            return execute_cached(cached[0], context)
-          end
-        else
-          # Production: skip mtime check, cache is permanent
-          return execute_cached(cached[0], context)
-        end
+      unless debug_mode
+        # Production: use permanent cache (no filesystem checks)
+        cached = @compiled[template]
+        return execute_cached(cached[0], context) if cached
       end
+      # Dev mode: skip cache entirely — always re-read and re-tokenize
+      # so edits to partials and extended base templates are detected
 
       # Cache miss — load, tokenize, cache
       source = File.read(path, encoding: "utf-8")
