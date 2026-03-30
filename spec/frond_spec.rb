@@ -778,6 +778,30 @@ RSpec.describe Tina4::Frond do
     it "modulo" do
       expect(engine.render_string("{{ 10 % 3 }}", {})).to eq("1")
     end
+
+    it "floor division" do
+      expect(engine.render_string("{{ 7 // 2 }}", {})).to eq("3")
+    end
+
+    it "power" do
+      expect(engine.render_string("{{ 2 ** 3 }}", {})).to eq("8")
+    end
+
+    it "set with addition" do
+      expect(engine.render_string("{% set x = 5 + 3 %}{{ x }}", {})).to eq("8")
+    end
+
+    it "set with subtraction" do
+      expect(engine.render_string("{% set x = 10 - 4 %}{{ x }}", {})).to eq("6")
+    end
+
+    it "set with variables" do
+      expect(engine.render_string("{% set x = a * b %}{{ x }}", { "a" => 3, "b" => 7 })).to eq("21")
+    end
+
+    it "set with filter pipe" do
+      expect(engine.render_string("{% set x = name|upper %}{{ x }}", { "name" => "alice" })).to eq("ALICE")
+    end
   end
 
   # ===========================================================================

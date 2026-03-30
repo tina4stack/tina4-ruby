@@ -45,7 +45,7 @@ module Tina4
     HASH_LIT_RE     = /\A\{(.+)\}\z/m
     HASH_PAIR_RE    = /\A\s*["']?(\w+)["']?\s*:\s*(.+)\z/
     RANGE_LIT_RE    = /\A(\d+)\.\.(\d+)\z/
-    ARITHMETIC_RE   = /\A(.+?)\s*(\+|-|\*|\/|%)\s*(.+)\z/
+    ARITHMETIC_OPS  = [" + ", " - ", " * ", " // ", " / ", " % ", " ** "].freeze
     FUNC_CALL_RE    = /\A(\w+)\s*\((.*)\)\z/m
     FILTER_WITH_ARGS_RE = /\A(\w+)\s*\((.*)\)\z/m
     FILTER_CMP_RE   = /\A(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)\z/
@@ -933,12 +933,15 @@ module Tina4
         return eval_comparison(expr, context)
       end
 
-      # Arithmetic: +, -, *, /, %
-      if expr =~ ARITHMETIC_RE
-        left  = eval_expr(Regexp.last_match(1), context)
-        op    = Regexp.last_match(2)
-        right = eval_expr(Regexp.last_match(3), context)
-        return apply_math(left, op, right)
+      # Arithmetic: +, -, *, //, /, %, ** (lowest to highest precedence)
+      ARITHMETIC_OPS.each do |op|
+        pos = find_outside_quotes(expr, op)
+        next unless pos && pos >= 0
+        left_s = expr[0...pos].strip
+        right_s = expr[(pos + op.length)..].strip
+        l_val = eval_expr(left_s, context)
+        r_val = eval_expr(right_s, context)
+        return apply_math(l_val, op.strip, r_val)
       end
 
       # Function call: name(arg1, arg2)
@@ -1144,17 +1147,21 @@ module Tina4
     # -----------------------------------------------------------------------
 
     def apply_math(left, op, right)
-      l = left.to_f
-      r = right.to_f
+      l = (left || 0).to_f
+      r = (right || 0).to_f
+      # Preserve int type when both operands are int-like (except for / which returns float)
+      both_int = l == l.to_i && r == r.to_i && op != "/"
       result = case op
-               when "+" then l + r
-               when "-" then l - r
-               when "*" then l * r
-               when "/" then r != 0 ? l / r : 0
-               when "%" then l % r
+               when "+"  then l + r
+               when "-"  then l - r
+               when "*"  then l * r
+               when "/"  then r != 0 ? l / r : 0
+               when "//" then r != 0 ? (l / r).floor : 0
+               when "%"  then r != 0 ? l % r : 0
+               when "**" then l ** r
                else 0
                end
-      result == result.to_i ? result.to_i : result
+      both_int && result == result.to_i ? result.to_i : result.to_f == result.to_i ? result.to_i : result
     end
 
     # -----------------------------------------------------------------------
@@ -1354,7 +1361,7 @@ module Tina4
       if content =~ SET_RE
         name = Regexp.last_match(1)
         expr = Regexp.last_match(2).strip
-        context[name] = eval_expr(expr, context)
+        context[name] = eval_var_raw(expr, context)
       end
     end
 
