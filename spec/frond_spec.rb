@@ -670,6 +670,16 @@ RSpec.describe Tina4::Frond do
       result = engine.render_string(template, {})
       expect(result).to eq("1 + 2")
     end
+
+    it "does not escape HTML in macro output" do
+      tpl = '{% macro link(url, text) %}<a href="{{ url }}">{{ text }}</a>{% endmacro %}{{ link("https://tina4.com", "Tina4") }}'
+      expect(subject.render_string(tpl, {})).to eq('<a href="https://tina4.com">Tina4</a>')
+    end
+
+    it "does not double-escape nested macro calls" do
+      tpl = '{% macro wrap(x) %}<b>{{ x }}</b>{% endmacro %}{% macro btn(label) %}{{ wrap(label) }}{% endmacro %}{{ btn("test") }}'
+      expect(subject.render_string(tpl, {})).to eq('<b>test</b>')
+    end
   end
 
   # ===========================================================================
