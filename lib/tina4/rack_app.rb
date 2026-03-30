@@ -433,7 +433,7 @@ module Tina4
         <div class="hero">
             <img src="/images/tina4-logo-icon.webp" class="logo" alt="Tina4">
             <h1>Tina4Ruby</h1>
-            <p class="tagline">This is not a framework</p>
+            <p class="tagline">This Is Now A 4Framework</p>
             <div class="actions">
                 <a href="https://tina4.com/ruby" class="btn" target="_blank">Website</a>
                 <a href="/__dev" class="btn">Dev Admin</a>
