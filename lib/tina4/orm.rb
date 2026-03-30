@@ -388,21 +388,22 @@ module Tina4
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
 
-      if @persisted && pk_value
-        filter = { pk => pk_value }
-        data.delete(pk)
-        # Remove mapped primary key too
-        mapped_pk = self.class.field_mapping[pk.to_s]
-        data.delete(mapped_pk.to_sym) if mapped_pk
-        self.class.db.update(self.class.table_name, data, filter)
-      else
-        result = self.class.db.insert(self.class.table_name, data)
-        if result[:last_id] && respond_to?("#{pk}=")
-          __send__("#{pk}=", result[:last_id])
+      self.class.db.transaction do |db|
+        if @persisted && pk_value
+          filter = { pk => pk_value }
+          data.delete(pk)
+          # Remove mapped primary key too
+          mapped_pk = self.class.field_mapping[pk.to_s]
+          data.delete(mapped_pk.to_sym) if mapped_pk
+          db.update(self.class.table_name, data, filter)
+        else
+          result = db.insert(self.class.table_name, data)
+          if result[:last_id] && respond_to?("#{pk}=")
+            __send__("#{pk}=", result[:last_id])
+          end
+          @persisted = true
         end
-        @persisted = true
       end
-      self.class.db.commit
       true
     rescue => e
       @errors << e.message
@@ -414,17 +415,17 @@ module Tina4
       pk_value = __send__(pk)
       return false unless pk_value
 
-      if self.class.soft_delete
-        # Soft delete: set the flag
-        self.class.db.update(
-          self.class.table_name,
-          { self.class.soft_delete_field => 1 },
-          { pk => pk_value }
-        )
-      else
-        self.class.db.delete(self.class.table_name, { pk => pk_value })
+      self.class.db.transaction do |db|
+        if self.class.soft_delete
+          db.update(
+            self.class.table_name,
+            { self.class.soft_delete_field => 1 },
+            { pk => pk_value }
+          )
+        else
+          db.delete(self.class.table_name, { pk => pk_value })
+        end
       end
-      self.class.db.commit
       @persisted = false
       true
     end
@@ -434,8 +435,9 @@ module Tina4
       pk_value = __send__(pk)
       raise "Cannot delete: no primary key value" unless pk_value
 
-      self.class.db.delete(self.class.table_name, { pk => pk_value })
-      self.class.db.commit
+      self.class.db.transaction do |db|
+        db.delete(self.class.table_name, { pk => pk_value })
+      end
       @persisted = false
       true
     end
@@ -447,12 +449,13 @@ module Tina4
       pk_value = __send__(pk)
       raise "Cannot restore: no primary key value" unless pk_value
 
-      self.class.db.update(
-        self.class.table_name,
-        { self.class.soft_delete_field => 0 },
-        { pk => pk_value }
-      )
-      self.class.db.commit
+      self.class.db.transaction do |db|
+        db.update(
+          self.class.table_name,
+          { self.class.soft_delete_field => 0 },
+          { pk => pk_value }
+        )
+      end
       __send__("#{self.class.soft_delete_field}=", 0) if respond_to?("#{self.class.soft_delete_field}=")
       true
     end
