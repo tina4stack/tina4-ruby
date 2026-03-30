@@ -134,7 +134,7 @@ module Tina4
       end
 
       puts "#{color}#{BANNER}#{reset}"
-      puts "  Tina4 Ruby v#{VERSION} — This is not a framework"
+      puts "  Tina4 Ruby v#{VERSION} — This Is Now A 4Framework"
       puts ""
       puts "  Server:    http://#{display}:#{port} (#{server_name})"
       puts "  Swagger:   http://localhost:#{port}/swagger"
