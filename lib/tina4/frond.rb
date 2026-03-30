@@ -1423,7 +1423,7 @@ module Tina4
         param_names.each_with_index do |pname, pi|
           macro_ctx[pname] = pi < args.length ? args[pi] : nil
         end
-        engine.send(:render_tokens, captured_body.dup, macro_ctx)
+        Tina4::SafeString.new(engine.send(:render_tokens, captured_body.dup, macro_ctx))
       }
 
       i
@@ -1480,7 +1480,7 @@ module Tina4
         param_names.each_with_index do |pname, pi|
           macro_ctx[pname] = pi < args.length ? args[pi] : nil
         end
-        engine.send(:render_tokens, body_tokens.dup, macro_ctx)
+        Tina4::SafeString.new(engine.send(:render_tokens, body_tokens.dup, macro_ctx))
       }
     end
 
