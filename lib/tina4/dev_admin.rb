@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
+require "tmpdir"
 
 module Tina4
   # Thread-safe in-memory message log for dev dashboard
@@ -104,6 +106,171 @@ module Tina4
     end
   end
 
+  # Thread-safe, file-persisted error tracker for the dev dashboard Error Tracker panel.
+  #
+  # Errors are stored in a JSON file in the system temp directory keyed by
+  # project path, so they survive across requests and server restarts.
+  # Duplicate errors (same type + message + file + line) are de-duplicated —
+  # the count increments and the entry is re-opened if it was resolved.
+  class ErrorTracker
+    MAX_ERRORS = 200
+    private_constant :MAX_ERRORS
+
+    def initialize
+      @mutex  = Mutex.new
+      @errors = nil  # lazy-loaded
+      @store_path = File.join(
+        Dir.tmpdir,
+        "tina4_dev_errors_#{Digest::MD5.hexdigest(Dir.pwd)}.json"
+      )
+    end
+
+    # Capture a Ruby error / exception into the tracker.
+    # @param error_type [String]  e.g. "RuntimeError" or "NoMethodError"
+    # @param message    [String]  exception message
+    # @param traceback  [String]  formatted backtrace (optional)
+    # @param file       [String]  source file (optional)
+    # @param line       [Integer] source line (optional)
+    def capture(error_type:, message:, traceback: "", file: "", line: 0)
+      @mutex.synchronize do
+        load_unlocked
+        fingerprint = Digest::MD5.hexdigest("#{error_type}|#{message}|#{file}|#{line}")
+        now = Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        if @errors.key?(fingerprint)
+          @errors[fingerprint][:count]    += 1
+          @errors[fingerprint][:last_seen] = now
+          @errors[fingerprint][:resolved]  = false  # re-open resolved duplicates
+        else
+          @errors[fingerprint] = {
+            id:          fingerprint,
+            error_type:  error_type,
+            message:     message,
+            traceback:   traceback,
+            file:        file,
+            line:        line,
+            first_seen:  now,
+            last_seen:   now,
+            count:       1,
+            resolved:    false
+          }
+        end
+        save_unlocked
+      end
+    end
+
+    # Capture a Ruby exception object directly.
+    def capture_exception(exc)
+      capture(
+        error_type: exc.class.name,
+        message:    exc.message,
+        traceback:  (exc.backtrace || []).first(20).join("\n"),
+        file:       (exc.backtrace_locations&.first&.path || ""),
+        line:       (exc.backtrace_locations&.first&.lineno || 0)
+      )
+    end
+
+    # Return all errors (newest first).
+    # @param include_resolved [Boolean]
+    def get(include_resolved: true)
+      @mutex.synchronize do
+        load_unlocked
+        entries = @errors.values
+        entries = entries.reject { |e| e[:resolved] } unless include_resolved
+        entries.sort_by { |e| e[:last_seen] }.reverse
+      end
+    end
+
+    # Count of unresolved errors.
+    def unresolved_count
+      @mutex.synchronize do
+        load_unlocked
+        @errors.count { |_, e| !e[:resolved] }
+      end
+    end
+
+    # Health summary (matches Python BrokenTracker interface).
+    def health
+      @mutex.synchronize do
+        load_unlocked
+        total    = @errors.size
+        resolved = @errors.count { |_, e| e[:resolved] }
+        unresolved = total - resolved
+        { total: total, unresolved: unresolved, resolved: resolved, healthy: unresolved.zero? }
+      end
+    end
+
+    # Mark a single error as resolved.
+    def resolve(id)
+      @mutex.synchronize do
+        load_unlocked
+        return false unless @errors.key?(id)
+
+        @errors[id][:resolved] = true
+        save_unlocked
+        true
+      end
+    end
+
+    # Remove all resolved errors.
+    def clear_resolved
+      @mutex.synchronize do
+        load_unlocked
+        @errors.reject! { |_, e| e[:resolved] }
+        save_unlocked
+      end
+    end
+
+    # Remove ALL errors.
+    def clear_all
+      @mutex.synchronize do
+        @errors = {}
+        save_unlocked
+      end
+    end
+
+    # Reset (for testing).
+    def reset!
+      @mutex.synchronize do
+        @errors = {}
+        File.delete(@store_path) if File.exist?(@store_path)
+      end
+    end
+
+    private
+
+    def load_unlocked
+      return if @errors
+
+      if File.exist?(@store_path)
+        raw = File.read(@store_path) rescue nil
+        data = raw ? (JSON.parse(raw, symbolize_names: true) rescue nil) : nil
+        if data.is_a?(Array)
+          # Re-key by id
+          @errors = {}
+          data.each { |e| @errors[e[:id]] = e if e[:id] }
+        else
+          @errors = {}
+        end
+      else
+        @errors = {}
+      end
+    end
+
+    def save_unlocked
+      # Trim to max, keeping newest last_seen
+      if @errors.size > MAX_ERRORS
+        sorted = @errors.values.sort_by { |e| e[:last_seen] }.last(MAX_ERRORS)
+        @errors = {}
+        sorted.each { |e| @errors[e[:id]] = e }
+      end
+
+      File.write(@store_path, JSON.generate(@errors.values))
+    rescue StandardError
+      # Best-effort persistence — never raise in a tracker
+    end
+  end
+
   # Developer dashboard module - only active in debug mode
   module DevAdmin
     class << self
@@ -117,6 +284,10 @@ module Tina4
 
       def mailbox
         @mailbox ||= DevMailbox.new
+      end
+
+      def error_tracker
+        @error_tracker ||= ErrorTracker.new
       end
 
       def enabled?
@@ -163,13 +334,16 @@ module Tina4
           messages = mailbox.inbox
           json_response({ messages: messages, count: messages.size, unread: mailbox.unread_count })
         when ["GET", "/__dev/api/broken"]
-          json_response({ errors: [], health: { total: 0, unresolved: 0, resolved: 0, healthy: true } })
+          errors   = error_tracker.get(include_resolved: true)
+          h        = error_tracker.health
+          json_response({ errors: errors, count: errors.size, health: h })
         when ["POST", "/__dev/api/broken/resolve"]
           body = read_json_body(env)
-          # TODO: resolve tracked error by id from body["id"]
-          json_response({ resolved: true })
+          id   = body && body["id"]
+          resolved = id ? error_tracker.resolve(id) : false
+          json_response({ resolved: resolved, id: id })
         when ["POST", "/__dev/api/broken/clear"]
-          # TODO: clear resolved errors
+          error_tracker.clear_resolved
           json_response({ cleared: true })
         when ["GET", "/__dev/api/websockets"]
           json_response({ connections: [], count: 0 })
@@ -301,7 +475,8 @@ module Tina4
           uptime: (Time.now - (defined?(@boot_time) && @boot_time ? @boot_time : (@boot_time = Time.now))).round(1),
           route_count: Tina4::Router.routes.size,
           request_stats: request_inspector.stats,
-          message_counts: message_log.count
+          message_counts: message_log.count,
+          health: error_tracker.health
         }
       end
 
