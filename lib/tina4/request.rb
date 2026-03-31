@@ -3,6 +3,38 @@ require "uri"
 require "json"
 
 module Tina4
+  # A Hash subclass that supports indifferent access (both string and symbol keys).
+  # Used by Request#params so that params[:id] and params["id"] both work.
+  class IndifferentHash < Hash
+    def [](key)
+      super(convert_key(key))
+    end
+
+    def []=(key, value)
+      super(convert_key(key), value)
+    end
+
+    def fetch(key, *args, &block)
+      super(convert_key(key), *args, &block)
+    end
+
+    def key?(key)
+      super(convert_key(key))
+    end
+    alias has_key? key?
+    alias include? key?
+
+    def delete(key, &block)
+      super(convert_key(key), &block)
+    end
+
+    private
+
+    def convert_key(key)
+      key.is_a?(Symbol) ? key.to_s : key
+    end
+  end
+
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
                 :path_params, :ip
@@ -88,8 +120,14 @@ module Tina4
     end
 
     # Merged params: query + body + path_params (path_params highest priority)
+    # Supports both string and symbol key access (indifferent access).
     def params
       @params ||= build_params
+    end
+
+    # Look up a param by symbol or string key (indifferent access shortcut).
+    def param(key)
+      params[key.to_s] || params[key.to_sym]
     end
 
     def [](key)
@@ -168,10 +206,10 @@ module Tina4
     end
 
     def build_params
-      p = {}
+      p = IndifferentHash.new
 
       # Query string params
-      query.each { |k, v| p[k] = v }
+      query.each { |k, v| p[k.to_s] = v }
 
       # Body params
       body_parsed.each { |k, v| p[k.to_s] = v }

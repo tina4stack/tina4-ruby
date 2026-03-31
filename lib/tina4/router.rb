@@ -89,9 +89,13 @@ module Tina4
       parts = path.split("/").reject(&:empty?)
       regex_parts = parts.map do |part|
         if part =~ /\A\*(\w+)\z/
-          # Catch-all splat parameter: *path captures everything after
+          # Named catch-all splat parameter: *path captures everything after
           name = Regexp.last_match(1)
           @param_names << { name: name.to_sym, type: "path" }
+          '(.+)'
+        elsif part == "*"
+          # Bare catch-all wildcard: captures everything after (unnamed)
+          @param_names << { name: :splat, type: "path" }
           '(.+)'
         elsif part =~ /\A\{(\w+)(?::(\w+))?\}\z/
           # Tina4/Python-style brace params: {id} or {id:int}
