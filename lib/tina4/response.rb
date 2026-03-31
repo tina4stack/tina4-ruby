@@ -103,10 +103,15 @@ module Tina4
       self
     end
 
-    def render(template_path, data = {}, status: 200)
+    def render(template_path, data = {}, status: 200, template_dir: nil)
       @status_code = status
       @headers["content-type"] = HTML_CONTENT_TYPE
-      @body = Tina4::Template.render(template_path, data)
+      if template_dir
+        frond = Tina4::Frond.new(template_dir: template_dir)
+        @body = frond.render(template_path, data)
+      else
+        @body = Tina4::Template.render(template_path, data)
+      end
       self
     end
 
