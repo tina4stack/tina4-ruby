@@ -604,6 +604,56 @@ RSpec.describe Tina4::Frond do
       expect(result).to include("<h1>500</h1>")
       expect(result).to include("Internal Server Error")
     end
+
+    it "parent() includes parent block content alongside child content" do
+      File.write(File.join(tpl_dir, "base.html"), '{% block content %}Parent Content{% endblock %}')
+      File.write(File.join(tpl_dir, "child.html"), '{% extends "base.html" %}{% block content %}{{ parent() }} + Child Content{% endblock %}')
+      result = file_engine.render("child.html", {})
+      expect(result).to include("Parent Content")
+      expect(result).to include("+ Child Content")
+    end
+
+    it "super() is an alias for parent()" do
+      File.write(File.join(tpl_dir, "base.html"), '{% block content %}Parent Content{% endblock %}')
+      File.write(File.join(tpl_dir, "child.html"), '{% extends "base.html" %}{% block content %}{{ super() }} + Child Content{% endblock %}')
+      result = file_engine.render("child.html", {})
+      expect(result).to include("Parent Content")
+      expect(result).to include("+ Child Content")
+    end
+
+    it "no parent() means full replacement (existing behavior)" do
+      File.write(File.join(tpl_dir, "base.html"), '{% block content %}Parent Content{% endblock %}')
+      File.write(File.join(tpl_dir, "child.html"), '{% extends "base.html" %}{% block content %}Child Only{% endblock %}')
+      result = file_engine.render("child.html", {})
+      expect(result).to eq("Child Only")
+    end
+
+    it "parent() with template variables renders correctly" do
+      File.write(File.join(tpl_dir, "base.html"), '{% block content %}Hello {{ name }}{% endblock %}')
+      File.write(File.join(tpl_dir, "child.html"), '{% extends "base.html" %}{% block content %}{{ parent() }} and Goodbye {{ name }}{% endblock %}')
+      result = file_engine.render("child.html", { "name" => "World" })
+      expect(result).to include("Hello World")
+      expect(result).to include("and Goodbye World")
+    end
+
+    it "unreplaced blocks keep parent default content" do
+      File.write(File.join(tpl_dir, "base.html"), '{% block title %}Default Title{% endblock %} - {% block content %}Default Content{% endblock %}')
+      File.write(File.join(tpl_dir, "child.html"), '{% extends "base.html" %}{% block content %}Custom Content{% endblock %}')
+      result = file_engine.render("child.html", {})
+      expect(result).to include("Default Title")
+      expect(result).to include("Custom Content")
+      expect(result).not_to include("Default Content")
+    end
+
+    it "multiple blocks with parent() in same template" do
+      File.write(File.join(tpl_dir, "base.html"), '{% block header %}Base Header{% endblock %}|{% block footer %}Base Footer{% endblock %}')
+      File.write(File.join(tpl_dir, "child.html"), '{% extends "base.html" %}{% block header %}{{ parent() }} + Extra Header{% endblock %}{% block footer %}{{ parent() }} + Extra Footer{% endblock %}')
+      result = file_engine.render("child.html", {})
+      expect(result).to include("Base Header")
+      expect(result).to include("+ Extra Header")
+      expect(result).to include("Base Footer")
+      expect(result).to include("+ Extra Footer")
+    end
   end
 
   # ===========================================================================

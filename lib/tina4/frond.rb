@@ -414,11 +414,23 @@ module Tina4
     end
 
     def render_with_blocks(parent_source, context, child_blocks)
+      engine = self
       result = parent_source.gsub(BLOCK_RE) do
         name = Regexp.last_match(1)
-        default_content = Regexp.last_match(2)
-        block_source = child_blocks.fetch(name, default_content)
-        render_tokens(tokenize(block_source), context)
+        parent_content = Regexp.last_match(2)
+        block_source = child_blocks.fetch(name, parent_content)
+
+        # Make parent() and super() available inside child blocks
+        rendered_parent = nil
+        get_parent = lambda do
+          rendered_parent ||= Tina4::SafeString.new(
+            engine.send(:render_tokens, tokenize(parent_content), context)
+          )
+          rendered_parent
+        end
+
+        block_ctx = context.merge("parent" => get_parent, "super" => get_parent)
+        render_tokens(tokenize(block_source), block_ctx)
       end
       render_tokens(tokenize(result), context)
     end
