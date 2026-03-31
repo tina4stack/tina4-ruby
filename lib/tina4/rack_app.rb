@@ -644,11 +644,11 @@ module Tina4
             var el=document.getElementById('tina4-ver-latest');
             el.innerHTML='Checking for updates...';
             el.style.color='#888';
-            fetch('https://rubygems.org/api/v1/versions/tina4ruby/latest.json')
+            fetch('/__dev/api/version-check')
             .then(function(r){return r.json()})
             .then(function(d){
-                var latest=d.version;
-                var current='#{version}';
+                var latest=d.latest;
+                var current=d.current;
                 if(latest===current){
                     el.innerHTML='Latest: <strong style="color:#a6e3a1;">v'+latest+'</strong> &mdash; You are up to date!';
                     el.style.color='#a6e3a1';

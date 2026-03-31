@@ -3,6 +3,8 @@
 require "json"
 require "digest"
 require "tmpdir"
+require "net/http"
+require "uri"
 
 module Tina4
   # Thread-safe in-memory message log for dev dashboard
@@ -423,6 +425,8 @@ module Tina4
           body = read_json_body(env)
           name = (body && body["name"]) || ""
           json_response(gallery_deploy(name))
+        when ["GET", "/__dev/api/version-check"]
+          json_response(version_check_payload)
         else
           nil
         end
@@ -449,6 +453,27 @@ module Tina4
       def json_response(data)
         body = JSON.generate(data)
         [200, { "content-type" => "application/json; charset=utf-8" }, [body]]
+      end
+
+      def version_check_payload
+        current = Tina4::VERSION
+        latest = current
+        begin
+          uri = URI.parse("https://rubygems.org/api/v1/versions/tina4ruby/latest.json")
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.use_ssl = true
+          http.open_timeout = 5
+          http.read_timeout = 5
+          req = Net::HTTP::Get.new(uri)
+          resp = http.request(req)
+          if resp.is_a?(Net::HTTPSuccess)
+            data = JSON.parse(resp.body)
+            latest = data["version"] || current
+          end
+        rescue StandardError
+          # Offline or timeout — return current as latest
+        end
+        { current: current, latest: latest }
       end
 
       def serve_dashboard
