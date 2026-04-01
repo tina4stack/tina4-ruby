@@ -21,9 +21,25 @@ module Tina4
     @full_cache_time = 0
     CACHE_TTL = 60
 
+    # ── Root Resolution ──────────────────────────────────────────
+
+    # Pick the right directory to scan.
+    #
+    # If the root dir has Ruby files, scan the user's project code.
+    # Otherwise, scan the framework itself — so the bubble chart is never empty.
+    def self._resolve_root(root = 'src')
+      root_path = Pathname.new(root)
+      if root_path.directory? && !Dir.glob(root_path.join('**', '*.rb')).empty?
+        return root
+      end
+      # Fallback: scan the framework package itself
+      File.dirname(__FILE__)
+    end
+
     # ── Quick Metrics ───────────────────────────────────────────
 
     def self.quick_metrics(root = 'src')
+      root = _resolve_root(root)
       root_path = Pathname.new(root)
       return { "error" => "Directory not found: #{root}" } unless root_path.directory?
 
@@ -184,6 +200,7 @@ module Tina4
     # ── Full Analysis (Ripper-based) ────────────────────────────
 
     def self.full_analysis(root = 'src')
+      root = _resolve_root(root)
       root_path = Pathname.new(root)
       return { "error" => "Directory not found: #{root}" } unless root_path.directory?
 
@@ -295,6 +312,11 @@ module Tina4
       total_mi = file_metrics.sum { |f| f["maintainability"] }
       avg_mi = file_metrics.empty? ? 0 : total_mi.to_f / file_metrics.length
 
+      # Detect if we're scanning framework or project
+      framework_dir = File.expand_path(File.dirname(__FILE__))
+      resolved_root = File.expand_path(root_path.to_s)
+      scanning_framework = resolved_root == framework_dir || resolved_root.start_with?(framework_dir + '/')
+
       result = {
         "files_analyzed" => file_metrics.length,
         "total_functions" => all_functions.length,
@@ -303,7 +325,9 @@ module Tina4
         "most_complex_functions" => all_functions.first(15),
         "file_metrics" => file_metrics,
         "violations" => violations,
-        "dependency_graph" => import_graph
+        "dependency_graph" => import_graph,
+        "scan_mode" => scanning_framework ? "framework" : "project",
+        "scan_root" => resolved_root
       }
 
       @full_cache_hash = current_hash
