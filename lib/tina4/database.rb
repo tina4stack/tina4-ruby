@@ -281,12 +281,19 @@ module Tina4
     end
 
     def execute_many(sql, params_list = [])
-      total_affected = 0
-      params_list.each do |params|
-        current_driver.execute(sql, params)
-        total_affected += 1
+      results = []
+      drv = current_driver
+      drv.begin_transaction
+      begin
+        params_list.each do |params|
+          results << drv.execute(sql, params)
+        end
+        drv.commit
+      rescue => e
+        drv.rollback
+        raise e
       end
-      { success: true, affected_rows: total_affected }
+      results
     end
 
     def transaction

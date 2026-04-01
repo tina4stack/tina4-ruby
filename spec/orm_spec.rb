@@ -95,13 +95,13 @@ RSpec.describe Tina4::ORM do
       TestUser.new(name: "Alice", age: 25).save
       TestUser.new(name: "Bob", age: 30).save
 
-      result = TestUser.select_one("SELECT * FROM test_users WHERE name = ?", ["Alice"])
+      result = TestUser.select_one("SELECT * FROM testusers WHERE name = ?", ["Alice"])
       expect(result).to be_a(TestUser)
       expect(result.name).to eq("Alice")
     end
 
     it "returns nil when no rows match" do
-      result = TestUser.select_one("SELECT * FROM test_users WHERE name = ?", ["Nonexistent"])
+      result = TestUser.select_one("SELECT * FROM testusers WHERE name = ?", ["Nonexistent"])
       expect(result).to be_nil
     end
   end
@@ -145,13 +145,29 @@ RSpec.describe Tina4::ORM do
   end
 
   describe "#load" do
-    it "loads data into existing instance" do
+    it "loads data into existing instance by primary key" do
       created = TestUser.create(name: "LoadMe", email: "load@test.com")
       user = TestUser.new
       user.id = created.id
       result = user.load
       expect(result).to be true
       expect(user.name).to eq("LoadMe")
+    end
+
+    it "loads data with a filter SQL and params" do
+      TestUser.create(name: "FilterUser", email: "filter@test.com")
+      user = TestUser.new
+      result = user.load("email = ?", ["filter@test.com"])
+      expect(result).to be true
+      expect(user.name).to eq("FilterUser")
+      expect(user.email).to eq("filter@test.com")
+      expect(user.persisted?).to be true
+    end
+
+    it "returns false when filter matches no records" do
+      user = TestUser.new
+      result = user.load("email = ?", ["nonexistent@test.com"])
+      expect(result).to be false
     end
   end
 

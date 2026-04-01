@@ -81,6 +81,25 @@ module Tina4
         @listeners.keys
       end
 
+      # Fire an event asynchronously. Each listener runs in its own thread.
+      # Errors in listeners are silently caught.
+      #
+      #   Tina4::Events.emit_async("user.created", user_data)
+      #
+      def emit_async(event, *args)
+        return unless @listeners&.key?(event)
+
+        @listeners[event].sort_by { |l| -(l[:priority] || 0) }.each do |listener|
+          Thread.new do
+            begin
+              listener[:callback].call(*args)
+            rescue => e
+              # Async emit silently catches errors
+            end
+          end
+        end
+      end
+
       # Remove all listeners for all events.
       def clear
         @listeners.clear
