@@ -19,7 +19,9 @@ module Tina4
         if name
           @table_name = name
         else
-          @table_name || self.name.split("::").last.downcase + "s"
+          base = self.name.split("::").last.downcase
+          base += "s" if ENV.fetch("ORM_PLURAL_TABLE_NAMES", "").match?(/\A(true|1|yes)\z/i)
+          @table_name || base
         end
       end
 
