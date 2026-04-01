@@ -25,13 +25,13 @@ module Tina4
         row = @db.fetch_one("SELECT data, expires_at FROM #{TABLE_NAME} WHERE session_id = ?", [session_id])
         return nil unless row
 
-        expires_at = row["expires_at"].to_f
+        expires_at = (row[:expires_at] || row["expires_at"]).to_f
         if expires_at > 0 && expires_at < Time.now.to_f
           destroy(session_id)
           return nil
         end
 
-        JSON.parse(row["data"])
+        JSON.parse(row[:data] || row["data"])
       rescue JSON::ParserError
         nil
       end

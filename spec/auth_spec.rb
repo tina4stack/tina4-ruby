@@ -173,4 +173,153 @@ RSpec.describe Tina4::Auth do
       expect(result).to be false
     end
   end
+
+  # ── JWT Negative Tests ──────────────────────────────────────────
+
+  describe "JWT negative cases" do
+    it "rejects a tampered token" do
+      token = Tina4::Auth.create_token({ "user_id" => 1 })
+      parts = token.split(".")
+      parts[1] = parts[1] + "tampered"
+      result = Tina4::Auth.validate_token(parts.join("."))
+      expect(result[:valid]).to be false
+    end
+
+    it "rejects an empty token" do
+      result = Tina4::Auth.validate_token("")
+      expect(result[:valid]).to be false
+    end
+
+    it "rejects a two-part token" do
+      result = Tina4::Auth.validate_token("header.payload")
+      expect(result[:valid]).to be false
+    end
+
+    it "rejects a four-part token" do
+      result = Tina4::Auth.validate_token("a.b.c.d")
+      expect(result[:valid]).to be false
+    end
+
+    it "returns nil payload for empty token" do
+      expect(Tina4::Auth.get_payload("")).to be_nil
+    end
+
+    it "returns nil payload for two-part token" do
+      expect(Tina4::Auth.get_payload("a.b")).to be_nil
+    end
+  end
+
+  # ── JWT Standard Claims ──────────────────────────────────────────
+
+  describe "JWT standard claims" do
+    it "preserves sub and iss claims" do
+      token = Tina4::Auth.create_token({ "sub" => "user:1", "iss" => "tina4" })
+      result = Tina4::Auth.validate_token(token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]["sub"]).to eq("user:1")
+      expect(result[:payload]["iss"]).to eq("tina4")
+    end
+
+    it "preserves custom claims like roles and org" do
+      token = Tina4::Auth.create_token({ "roles" => ["admin", "editor"], "org" => "acme" })
+      result = Tina4::Auth.validate_token(token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]["roles"]).to eq(["admin", "editor"])
+      expect(result[:payload]["org"]).to eq("acme")
+    end
+  end
+
+  # ── Token Refresh Edge Cases ────────────────────────────────────
+
+  describe ".refresh_token edge cases" do
+    it "preserves all original payload claims" do
+      token = Tina4::Auth.create_token({ "user_id" => 1, "role" => "admin", "org" => "acme" }, expires_in: 60)
+      new_token = Tina4::Auth.refresh_token(token, expires_in: 3600)
+      result = Tina4::Auth.validate_token(new_token)
+      expect(result[:valid]).to be true
+      expect(result[:payload]["user_id"]).to eq(1)
+      expect(result[:payload]["role"]).to eq("admin")
+      expect(result[:payload]["org"]).to eq("acme")
+    end
+
+    it "produces a new iat on refresh" do
+      token = Tina4::Auth.create_token({ "user_id" => 1 }, expires_in: 60)
+      original = Tina4::Auth.validate_token(token)
+      sleep(1.1)
+      new_token = Tina4::Auth.refresh_token(token, expires_in: 60)
+      refreshed = Tina4::Auth.validate_token(new_token)
+      expect(refreshed[:payload]["iat"]).to be >= original[:payload]["iat"]
+    end
+  end
+
+  # ── Password Edge Cases ──────────────────────────────────────────
+
+  describe "password edge cases" do
+    it "hashes and verifies an empty password" do
+      hash = Tina4::Auth.hash_password("")
+      expect(Tina4::Auth.check_password("", hash)).to be true
+      expect(Tina4::Auth.check_password("x", hash)).to be false
+    end
+
+    it "hashes and verifies a unicode password" do
+      pw = "p@\$\$w0rd-emojis"
+      hash = Tina4::Auth.hash_password(pw)
+      expect(Tina4::Auth.check_password(pw, hash)).to be true
+      expect(Tina4::Auth.check_password("wrong", hash)).to be false
+    end
+
+    it "produces different hashes for the same password (different salts)" do
+      h1 = Tina4::Auth.hash_password("same")
+      h2 = Tina4::Auth.hash_password("same")
+      expect(h1).not_to eq(h2)
+    end
+
+    it "returns false for empty hash string" do
+      expect(Tina4::Auth.check_password("password", "")).to be false
+    end
+
+    it "check_password with wrong argument order returns false" do
+      hash = Tina4::Auth.hash_password("correct")
+      # passing hash as password and password as hash
+      expect(Tina4::Auth.check_password(hash, "correct")).to be false
+    end
+  end
+
+  # ── authenticate_request Edge Cases ─────────────────────────────
+
+  describe ".authenticate_request edge cases" do
+    it "returns nil for empty authorization value" do
+      result = Tina4::Auth.authenticate_request({ "HTTP_AUTHORIZATION" => "" })
+      expect(result).to be_nil
+    end
+
+    it "returns nil for Bearer without a value" do
+      result = Tina4::Auth.authenticate_request({ "HTTP_AUTHORIZATION" => "Bearer " })
+      expect(result).to be_nil
+    end
+
+    it "returns nil for invalid bearer token" do
+      result = Tina4::Auth.authenticate_request({ "HTTP_AUTHORIZATION" => "Bearer invalid.token" })
+      expect(result).to be_nil
+    end
+
+    it "is case-insensitive on header key lookup" do
+      token = Tina4::Auth.create_token({ "user_id" => 7 })
+      payload = Tina4::Auth.authenticate_request({ "HTTP_AUTHORIZATION" => "Bearer #{token}" })
+      expect(payload).not_to be_nil
+      expect(payload["user_id"]).to eq(7)
+    end
+  end
+
+  # ── validate_api_key Edge Cases ─────────────────────────────────
+
+  describe ".validate_api_key edge cases" do
+    it "is case-sensitive" do
+      expect(Tina4::Auth.validate_api_key("MyKey", expected: "mykey")).to be false
+    end
+
+    it "rejects whitespace-only key" do
+      expect(Tina4::Auth.validate_api_key("   ", expected: "key")).to be false
+    end
+  end
 end

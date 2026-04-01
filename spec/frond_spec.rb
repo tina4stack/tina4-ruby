@@ -1235,4 +1235,418 @@ RSpec.describe Tina4::Frond do
       expect(engine.render_string(src, { "items" => [] })).to eq("no")
     end
   end
+
+  # ===========================================================================
+  # Edge cases in filters (gap: Python has these, Ruby did not)
+  # ===========================================================================
+
+  describe "filter edge cases" do
+    it "default filter returns fallback for nil" do
+      expect(engine.render_string('{{ v | default("N/A") }}', {})).to eq("N/A")
+    end
+
+    it "default filter returns fallback for empty string" do
+      expect(engine.render_string('{{ v | default("N/A") }}', { "v" => "" })).to eq("N/A")
+    end
+
+    it "default filter returns value when present" do
+      expect(engine.render_string('{{ v | default("N/A") }}', { "v" => "ok" })).to eq("ok")
+    end
+
+    it "chained filters: trim then upper" do
+      result = engine.render_string("{{ name | trim | upper }}", { "name" => "  alice  " })
+      expect(result).to eq("ALICE")
+    end
+
+    it "chained filters: lower then capitalize" do
+      result = engine.render_string("{{ name | lower | capitalize }}", { "name" => "HELLO WORLD" })
+      expect(result).to eq("Hello world")
+    end
+
+    it "truncate with short string returns original" do
+      expect(engine.render_string("{{ v | truncate(20) }}", { "v" => "Hello" })).to eq("Hello")
+    end
+
+    it "sort filter on array" do
+      result = engine.render_string("{{ items | sort | join(', ') }}", { "items" => ["c", "a", "b"] })
+      expect(result).to eq("a, b, c")
+    end
+
+    it "reverse filter on array" do
+      result = engine.render_string("{{ items | reverse | join(', ') }}", { "items" => ["a", "b", "c"] })
+      expect(result).to eq("c, b, a")
+    end
+
+    it "reverse filter on string" do
+      expect(engine.render_string("{{ v | reverse }}", { "v" => "abc" })).to eq("cba")
+    end
+
+    it "unique filter removes duplicates" do
+      result = engine.render_string("{{ v | unique }}", { "v" => [1, 2, 2, 3] })
+      expect(result).to include("1")
+      expect(result).to include("2")
+      expect(result).to include("3")
+    end
+
+    it "first filter" do
+      expect(engine.render_string("{{ items | first }}", { "items" => [10, 20, 30] })).to eq("10")
+    end
+
+    it "last filter" do
+      expect(engine.render_string("{{ items | last }}", { "items" => [10, 20, 30] })).to eq("30")
+    end
+
+    it "keys filter" do
+      result = engine.render_string("{{ v | keys }}", { "v" => { "a" => 1, "b" => 2 } })
+      expect(result).to include("a")
+      expect(result).to include("b")
+    end
+
+    it "values filter" do
+      result = engine.render_string("{{ v | values }}", { "v" => { "a" => 1, "b" => 2 } })
+      expect(result).to include("1")
+      expect(result).to include("2")
+    end
+
+    it "split filter" do
+      result = engine.render_string("{{ v | split(',') }}", { "v" => "a,b,c" })
+      expect(result).to include("a")
+      expect(result).to include("b")
+      expect(result).to include("c")
+    end
+
+    it "batch filter groups elements" do
+      result = engine.render_string("{{ v | batch(2) }}", { "v" => [1, 2, 3, 4, 5] })
+      expect(result).to include("1")
+      expect(result).to include("2")
+    end
+
+    it "slice filter" do
+      result = engine.render_string("{{ v | slice(1, 3) }}", { "v" => [10, 20, 30, 40] })
+      expect(result).to include("20")
+      expect(result).to include("30")
+    end
+
+    it "date filter" do
+      result = engine.render_string('{{ v | date("%Y") }}', { "v" => "2026-03-29" })
+      expect(result).to eq("2026")
+    end
+
+    it "format filter with sprintf syntax" do
+      result = engine.render_string('{{ v | format("world") }}', { "v" => "hello %s" })
+      expect(result).to eq("hello world")
+    end
+
+    it "int filter" do
+      expect(engine.render_string("{{ v | int }}", { "v" => "42" })).to eq("42")
+    end
+
+    it "float filter" do
+      expect(engine.render_string("{{ v | float }}", { "v" => "3.14" })).to eq("3.14")
+    end
+
+    it "number_format filter" do
+      result = engine.render_string("{{ v | number_format(2) }}", { "v" => 1234.5 })
+      expect(result).to include("1")
+      expect(result).to include("234")
+      expect(result).to include("50")
+    end
+  end
+
+  # ===========================================================================
+  # Math expressions (gap: Python has these, Ruby did not)
+  # ===========================================================================
+
+  describe "math expressions" do
+    it "addition" do
+      expect(engine.render_string("{{ a + b }}", { "a" => 3, "b" => 4 })).to eq("7")
+    end
+
+    it "subtraction" do
+      expect(engine.render_string("{{ a - b }}", { "a" => 10, "b" => 3 })).to eq("7")
+    end
+
+    it "multiplication" do
+      expect(engine.render_string("{{ a * b }}", { "a" => 5, "b" => 6 })).to eq("30")
+    end
+
+    it "division" do
+      expect(engine.render_string("{{ a / b }}", { "a" => 10, "b" => 2 })).to eq("5")
+    end
+
+    it "modulo" do
+      expect(engine.render_string("{{ a % b }}", { "a" => 10, "b" => 3 })).to eq("1")
+    end
+
+    it "power / exponent" do
+      expect(engine.render_string("{{ a ** b }}", { "a" => 2, "b" => 3 })).to eq("8")
+    end
+  end
+
+  # ===========================================================================
+  # For/else edge cases (gap: Python tests more thoroughly)
+  # ===========================================================================
+
+  describe "for/else edge cases" do
+    it "for/else with non-empty list renders items" do
+      tpl = "{% for item in items %}{{ item }}{% else %}empty{% endfor %}"
+      expect(engine.render_string(tpl, { "items" => ["x"] })).to eq("x")
+    end
+
+    it "loop.even and loop.odd" do
+      tpl = "{% for i in items %}{% if loop.even %}E{% else %}O{% endif %}{% endfor %}"
+      expect(engine.render_string(tpl, { "items" => [1, 2, 3, 4] })).to eq("OEOE")
+    end
+
+    it "nested loop contexts are independent" do
+      tpl = "{% for g in groups %}{% for i in g %}{{ loop.index }}{% endfor %}-{% endfor %}"
+      result = engine.render_string(tpl, { "groups" => [[10, 20], [30]] })
+      expect(result).to include("12-")
+      expect(result).to include("1-")
+    end
+  end
+
+  # ===========================================================================
+  # Object (hash) iteration (gap from Python)
+  # ===========================================================================
+
+  describe "object (hash) iteration" do
+    it "iterates over hash with key/value" do
+      tpl = "{% for k, v in data %}{{ k }}={{ v }} {% endfor %}"
+      result = engine.render_string(tpl, { "data" => { "name" => "Alice", "age" => 30 } })
+      expect(result).to include("name=Alice")
+      expect(result).to include("age=30")
+    end
+
+    it "iterates over hash providing loop context" do
+      tpl = "{% for k, v in data %}{{ loop.index }}{% endfor %}"
+      result = engine.render_string(tpl, { "data" => { "a" => 1, "b" => 2 } })
+      expect(result).to eq("12")
+    end
+  end
+
+  # ===========================================================================
+  # Set tag edge cases (gap from Python)
+  # ===========================================================================
+
+  describe "set tag edge cases" do
+    it "set with concatenation using tilde" do
+      result = engine.render_string('{% set msg = "Hi " ~ name %}{{ msg }}', { "name" => "Alice" })
+      expect(result).to eq("Hi Alice")
+    end
+
+    it "set with numeric expression" do
+      result = engine.render_string("{% set total = a + b %}{{ total }}", { "a" => 5, "b" => 3 })
+      expect(result).to eq("8")
+    end
+
+    it "set overrides existing variable" do
+      result = engine.render_string('{% set x = "first" %}{% set x = "second" %}{{ x }}', {})
+      expect(result).to eq("second")
+    end
+
+    it "set with string literal" do
+      result = engine.render_string('{% set color = "red" %}{{ color }}', {})
+      expect(result).to eq("red")
+    end
+  end
+
+  # ===========================================================================
+  # Whitespace control edge cases (gap from Python)
+  # ===========================================================================
+
+  describe "whitespace control edge cases" do
+    it "strips before with variable {{-" do
+      result = engine.render_string("hello  {{- name }}", { "name" => "world" })
+      expect(result).to eq("helloworld")
+    end
+
+    it "strips after with variable -}}" do
+      result = engine.render_string("{{ name -}}  there", { "name" => "hello" })
+      expect(result).to eq("hellothere")
+    end
+
+    it "strips both sides with variable" do
+      result = engine.render_string("  {{- name -}}  ", { "name" => "centered" })
+      expect(result).to eq("centered")
+    end
+
+    it "strips whitespace around block tags" do
+      template = "  {%- if true -%}  ok  {%- endif -%}  "
+      expect(engine.render_string(template, {})).to eq("ok")
+    end
+  end
+
+  # ===========================================================================
+  # Concatenation with ~ operator (gap from Python)
+  # ===========================================================================
+
+  describe "concatenation" do
+    it "concatenates variables with ~" do
+      result = engine.render_string("{{ first ~ ' ' ~ last }}", { "first" => "Hello", "last" => "World" })
+      expect(result).to eq("Hello World")
+    end
+
+    it "concatenates string literal with variable" do
+      result = engine.render_string('{{ "prefix_" ~ name }}', { "name" => "test" })
+      expect(result).to eq("prefix_test")
+    end
+
+    it "concatenates numbers as strings" do
+      result = engine.render_string("{{ a ~ b }}", { "a" => 1, "b" => 2 })
+      expect(result).to eq("12")
+    end
+  end
+
+  # ===========================================================================
+  # Spaceless tag (gap from Python)
+  # ===========================================================================
+
+  describe "spaceless tag" do
+    it "removes whitespace between HTML tags" do
+      src = "{% spaceless %}<div>  <p>  Hello  </p>  </div>{% endspaceless %}"
+      result = engine.render_string(src, {})
+      expect(result).to eq("<div><p>  Hello  </p></div>")
+    end
+
+    it "preserves whitespace inside text content" do
+      src = "{% spaceless %}<span>  text  </span>{% endspaceless %}"
+      result = engine.render_string(src, {})
+      expect(result).to eq("<span>  text  </span>")
+    end
+
+    it "works with variables inside spaceless" do
+      src = "{% spaceless %}<div>  <span>{{ name }}</span>  </div>{% endspaceless %}"
+      result = engine.render_string(src, { "name" => "Alice" })
+      expect(result).to eq("<div><span>Alice</span></div>")
+    end
+  end
+
+  # ===========================================================================
+  # Autoescape tag (gap from Python)
+  # ===========================================================================
+
+  describe "autoescape tag" do
+    it "autoescape false disables escaping" do
+      src = '{% autoescape false %}{{ html }}{% endautoescape %}'
+      result = engine.render_string(src, { "html" => "<b>bold</b>" })
+      expect(result).to eq("<b>bold</b>")
+    end
+
+    it "autoescape true keeps escaping" do
+      src = '{% autoescape true %}{{ html }}{% endautoescape %}'
+      result = engine.render_string(src, { "html" => "<b>bold</b>" })
+      expect(result).to include("&lt;b&gt;")
+    end
+
+    it "autoescape false with filters" do
+      src = '{% autoescape false %}{{ name | upper }}{% endautoescape %}'
+      result = engine.render_string(src, { "name" => "alice" })
+      expect(result).to eq("ALICE")
+    end
+
+    it "autoescape false with multiple variables" do
+      src = '{% autoescape false %}{{ a }} {{ b }}{% endautoescape %}'
+      result = engine.render_string(src, { "a" => "<i>x</i>", "b" => "<b>y</b>" })
+      expect(result).to eq("<i>x</i> <b>y</b>")
+    end
+  end
+
+  # ===========================================================================
+  # Raw block tag (gap from Python)
+  # ===========================================================================
+
+  describe "raw block" do
+    it "preserves variable syntax" do
+      src = '{% raw %}{{ name }}{% endraw %}'
+      expect(engine.render_string(src, { "name" => "Alice" })).to eq("{{ name }}")
+    end
+
+    it "preserves block tag syntax" do
+      src = '{% raw %}{% if true %}yes{% endif %}{% endraw %}'
+      expect(engine.render_string(src, {})).to eq("{% if true %}yes{% endif %}")
+    end
+
+    it "mixed with normal content" do
+      src = 'Hello {{ name }}! {% raw %}{{ not_parsed }}{% endraw %} done'
+      expect(engine.render_string(src, { "name" => "World" })).to eq("Hello World! {{ not_parsed }} done")
+    end
+
+    it "multiple raw blocks" do
+      src = '{% raw %}{{ a }}{% endraw %} mid {% raw %}{{ b }}{% endraw %}'
+      expect(engine.render_string(src, {})).to eq("{{ a }} mid {{ b }}")
+    end
+  end
+
+  # ===========================================================================
+  # Include edge cases (gap from Python)
+  # ===========================================================================
+
+  describe "include edge cases" do
+    let(:tpl_dir) { Dir.mktmpdir("frond_include") }
+    let(:file_engine) { Tina4::Frond.new(template_dir: tpl_dir) }
+
+    after { FileUtils.rm_rf(tpl_dir) }
+
+    it "ignore missing does not raise" do
+      result = file_engine.render_string('{% include "nope.html" ignore missing %}', {})
+      expect(result).to eq("")
+    end
+
+    it "includes partial with variables" do
+      File.write(File.join(tpl_dir, "partial.html"), "Hello {{ name }}")
+      result = file_engine.render_string('{% include "partial.html" %}', { "name" => "World" })
+      expect(result).to eq("Hello World")
+    end
+
+    it "extends with include inside block" do
+      File.write(File.join(tpl_dir, "base.html"), "<main>{% block content %}{% endblock %}</main>")
+      File.write(File.join(tpl_dir, "partial.html"), "<p>{{ message }}</p>")
+      File.write(File.join(tpl_dir, "page.html"), "\n{% extends \"base.html\" %}\n{% block content %}{% include \"partial.html\" %}{% endblock %}")
+      result = file_engine.render("page.html", { "message" => "Included!" })
+      expect(result).to include("<main>")
+      expect(result).to include("<p>Included!</p>")
+    end
+  end
+
+  # ===========================================================================
+  # Inline if expression edge cases (gap from Python)
+  # ===========================================================================
+
+  describe "inline if expression edge cases" do
+    it "inline if with missing variable as false" do
+      src = "{{ name if name else 'Anonymous' }}"
+      result = engine.render_string(src, {})
+      expect(result).to eq("Anonymous")
+    end
+
+    it "inline if with present variable" do
+      src = "{{ name if name else 'Anonymous' }}"
+      result = engine.render_string(src, { "name" => "Bob" })
+      expect(result).to eq("Bob")
+    end
+  end
+
+  # ===========================================================================
+  # Custom filter registration (gap from Python)
+  # ===========================================================================
+
+  describe "custom filter registration" do
+    it "registers and uses a custom filter" do
+      engine.add_filter("double") { |v| v.to_s * 2 }
+      expect(engine.render_string("{{ x | double }}", { "x" => "ha" })).to eq("haha")
+    end
+  end
+
+  # ===========================================================================
+  # Custom test registration (gap from Python)
+  # ===========================================================================
+
+  describe "custom test" do
+    it "registers and uses a custom test with 'is'" do
+      engine.add_test("positive") { |v| v.is_a?(Numeric) && v > 0 }
+      expect(engine.render_string("{% if n is positive %}yes{% endif %}", { "n" => 5 })).to eq("yes")
+      expect(engine.render_string("{% if n is positive %}yes{% endif %}", { "n" => -1 })).to eq("")
+    end
+  end
 end

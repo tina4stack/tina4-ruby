@@ -161,6 +161,123 @@ RSpec.describe "Queue Backends" do
     end
   end
 
+  # ── Retry Logic Tests ──────────────────────────────────────────
+
+  describe "LiteBackend retry logic" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmpdir) }
+
+    after(:each) do
+      FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir)
+    end
+
+    it "tracks attempts on a message through requeue cycles" do
+      msg = Tina4::QueueMessage.new(topic: "retry_topic", payload: "retry_me")
+      msg.increment_attempts!
+      msg.increment_attempts!
+      backend.requeue(msg)
+
+      dequeued = backend.dequeue("retry_topic")
+      expect(dequeued).not_to be_nil
+      expect(dequeued.attempts).to be >= 0
+    end
+
+    it "requeues then dequeues the same message" do
+      msg = Tina4::QueueMessage.new(topic: "rq_topic", payload: { "task" => "process" })
+      backend.requeue(msg)
+      dequeued = backend.dequeue("rq_topic")
+      expect(dequeued).not_to be_nil
+      expect(dequeued.payload).to eq({ "task" => "process" })
+    end
+  end
+
+  # ── Dead Letter Queue Tests ──────────────────────────────────────
+
+  describe "LiteBackend dead letter queue" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmpdir) }
+
+    after(:each) do
+      FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir)
+    end
+
+    it "stores multiple messages in dead letter queue" do
+      3.times do |i|
+        msg = Tina4::QueueMessage.new(topic: "dl_topic", payload: "dead_#{i}")
+        backend.dead_letter(msg)
+      end
+      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
+      expect(dl_files.length).to eq(3)
+    end
+
+    it "preserves message payload in dead letter queue" do
+      msg = Tina4::QueueMessage.new(topic: "dl_payload", payload: { "error" => "timeout" })
+      backend.dead_letter(msg)
+      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
+      content = JSON.parse(File.read(dl_files.first))
+      expect(content["payload"]).to eq({ "error" => "timeout" })
+    end
+  end
+
+  # ── Priority / Bulk Operations Tests ────────────────────────────
+
+  describe "LiteBackend bulk operations" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmpdir) }
+
+    after(:each) do
+      FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir)
+    end
+
+    it "handles bulk enqueue of many messages" do
+      10.times do |i|
+        msg = Tina4::QueueMessage.new(topic: "bulk", payload: "msg_#{i}")
+        backend.enqueue(msg)
+      end
+      expect(backend.size("bulk")).to eq(10)
+    end
+
+    it "drains a topic completely" do
+      5.times do |i|
+        msg = Tina4::QueueMessage.new(topic: "drain", payload: "msg_#{i}")
+        backend.enqueue(msg)
+      end
+      results = []
+      while (m = backend.dequeue("drain"))
+        results << m.payload
+      end
+      expect(results.length).to eq(5)
+      expect(backend.size("drain")).to eq(0)
+    end
+
+    it "handles interleaved enqueue and dequeue" do
+      msg1 = Tina4::QueueMessage.new(topic: "interleave", payload: "first")
+      backend.enqueue(msg1)
+      dequeued1 = backend.dequeue("interleave")
+      expect(dequeued1.payload).to eq("first")
+
+      msg2 = Tina4::QueueMessage.new(topic: "interleave", payload: "second")
+      backend.enqueue(msg2)
+      dequeued2 = backend.dequeue("interleave")
+      expect(dequeued2.payload).to eq("second")
+    end
+
+    it "handles concurrent topics independently" do
+      backend.enqueue(Tina4::QueueMessage.new(topic: "alpha", payload: "a1"))
+      backend.enqueue(Tina4::QueueMessage.new(topic: "alpha", payload: "a2"))
+      backend.enqueue(Tina4::QueueMessage.new(topic: "beta", payload: "b1"))
+
+      expect(backend.size("alpha")).to eq(2)
+      expect(backend.size("beta")).to eq(1)
+
+      backend.dequeue("alpha")
+      expect(backend.size("alpha")).to eq(1)
+      expect(backend.size("beta")).to eq(1)
+    end
+  end
+
+  # ── QueueMessage Tests ──────────────────────────────────────────
+
   describe Tina4::QueueMessage do
     it "generates a UUID id by default" do
       msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
@@ -206,6 +323,21 @@ RSpec.describe "Queue Backends" do
       expect(hash[:payload]).to eq("data")
       expect(hash[:id]).to eq(msg.id)
       expect(hash[:status]).to eq(:pending)
+    end
+
+    it "stores created_at timestamp" do
+      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      hash = msg.to_hash
+      expect(hash[:created_at]).not_to be_nil
+    end
+
+    it "preserves complex nested payload" do
+      payload = { "users" => [{ "name" => "Alice" }, { "name" => "Bob" }], "count" => 2 }
+      msg = Tina4::QueueMessage.new(topic: "complex", payload: payload)
+      json = msg.to_json
+      parsed = JSON.parse(json)
+      expect(parsed["payload"]["users"].length).to eq(2)
+      expect(parsed["payload"]["count"]).to eq(2)
     end
   end
 

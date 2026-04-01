@@ -177,6 +177,111 @@ RSpec.describe "Session Handlers" do
     end
   end
 
+  # ── DatabaseHandler Functional Tests ────────────────────────────
+
+  describe Tina4::SessionHandlers::DatabaseHandler do
+    let(:tmp_dir) { Dir.mktmpdir("tina4_db_session") }
+    let(:db_path) { File.join(tmp_dir, "session.db") }
+    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+
+    after(:each) do
+      db.close rescue nil
+      FileUtils.rm_rf(tmp_dir)
+    end
+
+    it "writes and reads session data" do
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 3600)
+      handler.write("db_sess_1", { "user_id" => 42, "role" => "admin" })
+      data = handler.read("db_sess_1")
+      expect(data).to eq({ "user_id" => 42, "role" => "admin" })
+    end
+
+    it "returns nil for non-existent session" do
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 3600)
+      expect(handler.read("nonexistent_db_sess")).to be_nil
+    end
+
+    it "destroys a session" do
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 3600)
+      handler.write("db_sess_2", { "data" => "value" })
+      handler.destroy("db_sess_2")
+      expect(handler.read("db_sess_2")).to be_nil
+    end
+
+    it "returns nil for expired session" do
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 1)
+      handler.write("db_expired", { "data" => "old" })
+      sleep(1.2)
+      expect(handler.read("db_expired")).to be_nil
+    end
+
+    it "cleans up expired sessions via garbage collection" do
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 1)
+      handler.write("gc_1", { "a" => 1 })
+      handler.write("gc_2", { "b" => 2 })
+      sleep(1.2)
+      handler.cleanup
+      expect(handler.read("gc_1")).to be_nil
+      expect(handler.read("gc_2")).to be_nil
+    end
+
+    it "does not clean up valid sessions" do
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 3600)
+      handler.write("valid_sess", { "c" => 3 })
+      handler.cleanup
+      expect(handler.read("valid_sess")).to eq({ "c" => 3 })
+    end
+  end
+
+  # ── FileHandler Additional Tests ──────────────────────────────
+
+  describe "FileHandler additional TTL tests" do
+    let(:tmpdir) { Dir.mktmpdir }
+
+    after(:each) do
+      FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir)
+    end
+
+    it "renews TTL on write overwrite" do
+      handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 3600)
+      handler.write("renew_test", { "version" => 1 })
+      sleep(0.1)
+      handler.write("renew_test", { "version" => 2 })
+      data = handler.read("renew_test")
+      expect(data).to eq({ "version" => 2 })
+    end
+
+    it "handles special characters in session data" do
+      handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 3600)
+      handler.write("special", { "msg" => "hello <world> & \"friends\"" })
+      data = handler.read("special")
+      expect(data["msg"]).to eq("hello <world> & \"friends\"")
+    end
+
+    it "handles numeric session data" do
+      handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 3600)
+      handler.write("numeric", { "count" => 42, "price" => 19.99, "flag" => true })
+      data = handler.read("numeric")
+      expect(data["count"]).to eq(42)
+      expect(data["price"]).to eq(19.99)
+      expect(data["flag"]).to be true
+    end
+
+    it "handles empty hash as session data" do
+      handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 3600)
+      handler.write("empty_hash", {})
+      data = handler.read("empty_hash")
+      expect(data).to eq({})
+    end
+
+    it "does not raise on multiple destroys of the same session" do
+      handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 3600)
+      handler.write("multi_destroy", { "data" => "val" })
+      handler.destroy("multi_destroy")
+      expect { handler.destroy("multi_destroy") }.not_to raise_error
+    end
+  end
+
   describe "Session handler interface consistency" do
     let(:handlers) do
       [

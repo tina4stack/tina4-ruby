@@ -265,4 +265,247 @@ RSpec.describe "Database Driver Registration" do
       expect(result).to eq(sql)
     end
   end
+
+  # ── Connection URL Parsing ───────────────────────────────────────
+
+  describe "Connection URL parsing via URI" do
+    # Test URL parsing logic that all drivers rely on
+
+    it "parses PostgreSQL URL components" do
+      url = "postgresql://alice:secret@db.example.com:5433/myapp"
+      uri = URI.parse(url)
+      expect(uri.scheme).to eq("postgresql")
+      expect(uri.host).to eq("db.example.com")
+      expect(uri.port).to eq(5433)
+      expect(uri.user).to eq("alice")
+      expect(uri.password).to eq("secret")
+      expect(uri.path).to eq("/myapp")
+    end
+
+    it "parses MySQL URL components" do
+      url = "mysql://root:pass123@mysql-server:3307/shop"
+      uri = URI.parse(url)
+      expect(uri.scheme).to eq("mysql")
+      expect(uri.host).to eq("mysql-server")
+      expect(uri.port).to eq(3307)
+      expect(uri.user).to eq("root")
+      expect(uri.password).to eq("pass123")
+      expect(uri.path).to eq("/shop")
+    end
+
+    it "parses Firebird URL components" do
+      url = "firebird://SYSDBA:masterkey@fbhost:3050/var/lib/firebird/data/app.fdb"
+      uri = URI.parse(url)
+      expect(uri.scheme).to eq("firebird")
+      expect(uri.host).to eq("fbhost")
+      expect(uri.port).to eq(3050)
+      expect(uri.user).to eq("SYSDBA")
+      expect(uri.password).to eq("masterkey")
+    end
+
+    it "parses PostgreSQL URL with defaults" do
+      url = "postgresql://localhost/testdb"
+      uri = URI.parse(url)
+      expect(uri.host).to eq("localhost")
+      expect(uri.port).to be_nil
+      expect(uri.path).to eq("/testdb")
+    end
+
+    it "parses MSSQL URL components" do
+      url = "mssql://sa:MyPass@mssql-host:1434/warehouse"
+      uri = URI.parse(url)
+      expect(uri.scheme).to eq("mssql")
+      expect(uri.host).to eq("mssql-host")
+      expect(uri.port).to eq(1434)
+      expect(uri.user).to eq("sa")
+      expect(uri.password).to eq("MyPass")
+    end
+  end
+
+  # ── Adapter Contract (all drivers must implement same interface) ──
+
+  describe "Adapter contract" do
+    %w[SqliteDriver PostgresDriver MysqlDriver MssqlDriver FirebirdDriver].each do |driver_class_name|
+      describe driver_class_name do
+        let(:driver) { Tina4::Drivers.const_get(driver_class_name).new }
+
+        it "has connect" do
+          expect(driver).to respond_to(:connect)
+        end
+
+        it "has close" do
+          expect(driver).to respond_to(:close)
+        end
+
+        it "has execute_query" do
+          expect(driver).to respond_to(:execute_query)
+        end
+
+        it "has execute" do
+          expect(driver).to respond_to(:execute)
+        end
+
+        it "has placeholder" do
+          expect(driver).to respond_to(:placeholder)
+        end
+
+        it "has placeholders" do
+          expect(driver).to respond_to(:placeholders)
+        end
+
+        it "has apply_limit" do
+          expect(driver).to respond_to(:apply_limit)
+        end
+
+        it "has begin_transaction" do
+          expect(driver).to respond_to(:begin_transaction)
+        end
+
+        it "has commit" do
+          expect(driver).to respond_to(:commit)
+        end
+
+        it "has rollback" do
+          expect(driver).to respond_to(:rollback)
+        end
+
+        it "has tables" do
+          expect(driver).to respond_to(:tables)
+        end
+
+        it "has columns" do
+          expect(driver).to respond_to(:columns)
+        end
+
+        it "has close" do
+          expect(driver).to respond_to(:close)
+        end
+      end
+    end
+  end
+
+  # ── SQLite CRUD Tests (always available) ─────────────────────────
+
+  describe "SQLite CRUD" do
+    let(:tmp_dir) { Dir.mktmpdir("tina4_db_test") }
+    let(:db_path) { File.join(tmp_dir, "crud_test.db") }
+    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+
+    before(:each) do
+      db.execute("CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL DEFAULT 0.0, active INTEGER DEFAULT 1)")
+    end
+
+    after(:each) do
+      db.close
+      FileUtils.rm_rf(tmp_dir)
+    end
+
+    it "inserts a record" do
+      result = db.insert("products", { name: "Widget", price: 9.99 })
+      expect(result[:success]).to be true
+      expect(result[:last_id]).not_to be_nil
+    end
+
+    it "fetches records" do
+      db.insert("products", { name: "A", price: 1.0 })
+      db.insert("products", { name: "B", price: 2.0 })
+      db.insert("products", { name: "C", price: 3.0 })
+      result = db.fetch("SELECT * FROM products", [], limit: 2)
+      expect(result.records.length).to eq(2)
+    end
+
+    it "fetches one record" do
+      db.insert("products", { name: "Solo", price: 5.0 })
+      row = db.fetch_one("SELECT * FROM products WHERE name = ?", ["Solo"])
+      expect(row).not_to be_nil
+      expect(row[:name]).to eq("Solo")
+    end
+
+    it "updates a record" do
+      db.insert("products", { name: "Old", price: 1.0 })
+      db.update("products", { name: "New" }, { name: "Old" })
+      row = db.fetch_one("SELECT * FROM products WHERE name = ?", ["New"])
+      expect(row).not_to be_nil
+      expect(row[:name]).to eq("New")
+    end
+
+    it "deletes a record" do
+      db.insert("products", { name: "Gone", price: 0.0 })
+      db.delete("products", { name: "Gone" })
+      row = db.fetch_one("SELECT * FROM products WHERE name = ?", ["Gone"])
+      expect(row).to be_nil
+    end
+
+    it "checks table exists" do
+      expect(db.table_exists?("products")).to be true
+      expect(db.table_exists?("nonexistent")).to be false
+    end
+
+    it "gets table list" do
+      tables = db.tables
+      expect(tables).to include("products")
+    end
+
+    it "gets column list" do
+      cols = db.columns("products")
+      col_names = cols.map { |c| c[:name] || c["name"] }
+      expect(col_names).to include("id")
+      expect(col_names).to include("name")
+      expect(col_names).to include("price")
+      expect(col_names).to include("active")
+    end
+
+    it "rolls back a transaction" do
+      db.insert("products", { name: "Kept" })
+      begin
+        db.transaction do |_txn|
+          db.insert("products", { name: "Discarded" })
+          raise "rollback"
+        end
+      rescue RuntimeError
+        # expected — transaction was rolled back
+      end
+      row = db.fetch_one("SELECT * FROM products WHERE name = ?", ["Discarded"])
+      expect(row).to be_nil
+      row = db.fetch_one("SELECT * FROM products WHERE name = ?", ["Kept"])
+      expect(row).not_to be_nil
+    end
+
+    it "detects database type as sqlite" do
+      expect(db.driver_name).to eq("sqlite")
+    end
+  end
+
+  # ── Unknown scheme falls back to sqlite ───────────────────────────
+
+  describe "Unknown scheme" do
+    it "falls back to sqlite for unrecognised connection strings" do
+      # detect_driver defaults to sqlite when scheme is unknown
+      db_instance = Tina4::Database.new
+      detected = db_instance.send(:detect_driver, "fakedb://localhost/test")
+      expect(detected).to eq("sqlite")
+    end
+  end
+
+  # ── Database DRIVERS hash ────────────────────────────────────────
+
+  describe "DRIVERS constant completeness" do
+    it "contains all expected schemes" do
+      %w[sqlite sqlite3 postgres postgresql mysql mssql sqlserver firebird].each do |scheme|
+        expect(Tina4::Database::DRIVERS).to have_key(scheme)
+      end
+    end
+
+    it "postgres and postgresql map to same driver" do
+      expect(Tina4::Database::DRIVERS["postgres"]).to eq(Tina4::Database::DRIVERS["postgresql"])
+    end
+
+    it "mssql and sqlserver map to same driver" do
+      expect(Tina4::Database::DRIVERS["mssql"]).to eq(Tina4::Database::DRIVERS["sqlserver"])
+    end
+
+    it "sqlite and sqlite3 map to same driver" do
+      expect(Tina4::Database::DRIVERS["sqlite"]).to eq(Tina4::Database::DRIVERS["sqlite3"])
+    end
+  end
 end

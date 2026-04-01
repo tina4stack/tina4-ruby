@@ -80,5 +80,102 @@ RSpec.describe Tina4::Migration do
       expect(status[:completed].length).to eq(2)
       expect(status[:pending]).to be_empty
     end
+
+    it "shows pending migrations before any run" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_pending.sql"),
+                 "CREATE TABLE pending_table (id INTEGER PRIMARY KEY)")
+
+      status = migration.status
+      expect(status[:pending]).not_to be_empty
+      expect(status[:completed]).to be_empty
+    end
+
+    it "shows mixed completed and pending" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_done.sql"),
+                 "CREATE TABLE done_table (id INTEGER PRIMARY KEY)")
+      migration.run
+
+      File.write(File.join(mig_dir, "000002_todo.sql"),
+                 "CREATE TABLE todo_table (id INTEGER PRIMARY KEY)")
+      migration2 = Tina4::Migration.new(db, migrations_dir: mig_dir)
+      status = migration2.status
+      expect(status[:completed]).not_to be_empty
+      expect(status[:pending]).not_to be_empty
+    end
+  end
+
+  describe "#run with multiple migrations" do
+    it "runs migrations in order" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_create_a.sql"),
+                 "CREATE TABLE a_table (id INTEGER PRIMARY KEY)")
+      File.write(File.join(mig_dir, "000002_create_b.sql"),
+                 "CREATE TABLE b_table (id INTEGER PRIMARY KEY)")
+
+      results = migration.run
+      expect(results.length).to eq(2)
+      expect(db.table_exists?("a_table")).to be true
+      expect(db.table_exists?("b_table")).to be true
+    end
+
+    it "handles multi-statement SQL migration" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_multi.sql"),
+                 "CREATE TABLE t1 (id INTEGER PRIMARY KEY);\nCREATE TABLE t2 (id INTEGER PRIMARY KEY);")
+
+      results = migration.run
+      expect(results.length).to eq(1)
+      expect(db.table_exists?("t1")).to be true
+      expect(db.table_exists?("t2")).to be true
+    end
+
+    it "runs nothing from empty migration directory" do
+      FileUtils.mkdir_p(mig_dir)
+      results = migration.run
+      expect(results).to be_empty
+    end
+
+    it "handles missing migration directory" do
+      missing_mig = Tina4::Migration.new(db, migrations_dir: File.join(tmp_dir, "nonexistent"))
+      results = missing_mig.run
+      expect(results).to be_empty
+    end
+  end
+
+  describe "#create with various descriptions" do
+    it "sanitizes special characters in description" do
+      FileUtils.mkdir_p(mig_dir)
+      path = migration.create("add email & phone fields!")
+      expect(File.exist?(path)).to be true
+      expect(File.basename(path)).to match(/add_email/)
+    end
+
+    it "creates the migrations directory if it does not exist" do
+      new_mig_dir = File.join(tmp_dir, "new_migrations")
+      new_migration = Tina4::Migration.new(db, migrations_dir: new_mig_dir)
+      path = new_migration.create("test_migration")
+      expect(Dir.exist?(new_mig_dir)).to be true
+      expect(File.exist?(path)).to be true
+    end
+
+    it "uses timestamp format in filenames" do
+      FileUtils.mkdir_p(mig_dir)
+      path = migration.create("timestamp_test")
+      basename = File.basename(path)
+      expect(basename).to match(/\A\d{14}_/)
+    end
+  end
+
+  describe "SQL with comments" do
+    it "handles SQL with line comments" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_comments.sql"),
+                 "-- Comment\nCREATE TABLE commented (id INTEGER PRIMARY KEY);\n-- Another comment\n")
+      results = migration.run
+      expect(results.length).to eq(1)
+      expect(db.table_exists?("commented")).to be true
+    end
   end
 end
