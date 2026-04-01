@@ -70,13 +70,27 @@ module Tina4
         msg = messages[code] || "Error"
         colors = { 403 => "#f59e0b", 404 => "#3b82f6", 500 => "#ef4444" }
         color = colors[code] || "#ef4444"
+
         <<~HTML
           <!DOCTYPE html>
           <html lang="en">
-          <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>#{code} — #{msg}</title>
+          #{error_overlay_head("#{code} — #{msg}")}
+          <body>
+          #{error_overlay_css(color)}
+          <div class="error-card">
+              <div class="logo">T4</div>
+              <div class="error-code">#{code}</div>
+              <div class="error-title">#{msg}</div>
+              <div class="error-msg">Something went wrong while processing your request.</div>
+              <a href="/" class="error-home">Go Home</a>
+          </div>
+          </body>
+          </html>
+        HTML
+      end
+
+      def error_overlay_css(color)
+        <<~CSS
           <style>
           * { box-sizing: border-box; margin: 0; padding: 0; }
           body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -88,18 +102,46 @@ module Tina4
           .error-home:hover { opacity: 0.9; }
           .logo { font-size: 1.5rem; margin-bottom: 1rem; opacity: 0.5; }
           </style>
+        CSS
+      end
+
+      def error_overlay_head(title)
+        <<~HEAD
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>#{title}</title>
           </head>
-          <body>
-          <div class="error-card">
-              <div class="logo">T4</div>
-              <div class="error-code">#{code}</div>
-              <div class="error-title">#{msg}</div>
-              <div class="error-msg">Something went wrong while processing your request.</div>
-              <a href="/" class="error-home">Go Home</a>
-          </div>
-          </body>
-          </html>
-        HTML
+        HEAD
+      end
+
+      def error_overlay_stacktrace(exception)
+        return "" unless exception.respond_to?(:backtrace) && exception.backtrace
+        lines = exception.backtrace.map { |l| "<li>#{l}</li>" }.join("\n")
+        "<ul class=\"stacktrace\">#{lines}</ul>"
+      end
+
+      def error_overlay_source(file, line)
+        return "" unless file && line && File.exist?(file)
+        lines = File.readlines(file)
+        start = [line.to_i - 4, 0].max
+        finish = [line.to_i + 3, lines.length - 1].min
+        snippet = lines[start..finish].each_with_index.map do |l, i|
+          num = start + i + 1
+          "<div class=\"source-line#{num == line.to_i ? ' highlight' : ''}\"><span class=\"line-num\">#{num}</span>#{l.chomp}</div>"
+        end.join("\n")
+        "<pre class=\"source-context\">#{snippet}</pre>"
+      end
+
+      def error_overlay_request(env)
+        return "" unless env.is_a?(Hash)
+        method = env["REQUEST_METHOD"] || "?"
+        path = env["PATH_INFO"] || "?"
+        "<div class=\"request-info\"><strong>#{method}</strong> #{path}</div>"
+      end
+
+      def error_overlay_env
+        "<div class=\"env-info\">Ruby #{RUBY_VERSION} | Tina4</div>"
       end
     end
 
