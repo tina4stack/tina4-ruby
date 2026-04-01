@@ -1,0 +1,52 @@
+{
+  "date": "2026-04-01T09:04:12Z",
+  "machine": "arm64 Darwin",
+  "config": {
+    "runs": 3,
+    "requests": 5000,
+    "concurrency": 50,
+    "warmup": 500
+  },
+  "results": [
+    {
+      "framework": "Tina4 Ruby",
+      "language": "ruby",
+      "json_runs": [
+        10194.0393,
+        10294.1767,
+        10243.1143
+      ],
+      "list_runs": [
+        8112.2141,
+        8104.9543,
+        8061.8467
+      ],
+      "json_median": 10243.1143,
+      "list_median": 8104.9543,
+      "warmup_time_ms": 93.93662499496713,
+      "deps": 0,
+      "features": 38,
+      "server": "WEBrick"
+    },
+    {
+      "framework": "Sinatra",
+      "language": "ruby",
+      "json_runs": [
+        9547.6985,
+        9548.0548,
+        9572.3444
+      ],
+      "list_runs": [
+        7517.8464,
+        7514.3068,
+        7481.682
+      ],
+      "json_median": 9548.0548,
+      "list_median": 7514.3068,
+      "warmup_time_ms": 83.44358298927546,
+      "deps": 5,
+      "features": 4,
+      "server": "Puma"
+    }
+  ]
+}
