@@ -248,6 +248,11 @@ module Tina4
         instances
       end
 
+      def select_one(sql, params = [], include: nil)
+        results = select(sql, params, limit: 1, include: include)
+        results.first
+      end
+
       def count(conditions = nil, params = [])
         sql = "SELECT COUNT(*) as cnt FROM #{table_name}"
         where_parts = []
@@ -346,9 +351,7 @@ module Tina4
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
         end
-        result = db.fetch_one(sql, [id])
-        return nil unless result
-        from_hash(result)
+        select_one(sql, [id])
       end
 
       def find_by_filter(filter)

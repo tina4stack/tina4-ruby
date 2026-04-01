@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.10.40 — 54 built-in features, zero dependencies. See https://tina4.com for full documentation.
+Version 3.10.41 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -197,6 +197,8 @@ MyModel.where(conditions, params = []) -> Array
 MyModel.all(limit: nil, offset: nil, order_by: nil) -> Array
 MyModel.count(conditions = nil, params = []) -> Integer
 MyModel.create(attributes = {}) -> MyModel
+MyModel.select(sql, params = [], limit: nil, offset: nil, include: nil) -> Array
+MyModel.select_one(sql, params = [], include: nil) -> MyModel | nil  # Raw SQL, returns first match or nil
 ```
 
 NoSQL support: `to_mongo()` generates MongoDB query documents from the same fluent API.
@@ -505,8 +507,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
-- Tests: 1,793 passing (54 features)
-- Version: 3.10.40
+- Tests: 1,578 passing (38 features)
+- Version: 3.10.32
 
 ## Links
 
