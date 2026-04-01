@@ -361,30 +361,22 @@ module Tina4
     # ── ai ────────────────────────────────────────────────────────────────
 
     def cmd_ai(argv)
-      options = { all: false, force: false }
+      options = { all: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: tina4ruby ai [options]"
-        opts.on("--all", "Install context for ALL AI tools (not just detected ones)") { options[:all] = true }
-        opts.on("--force", "Overwrite existing context files") { options[:force] = true }
+        opts.on("--all", "Install context for ALL AI tools (non-interactive)") { options[:all] = true }
       end
       parser.parse!(argv)
 
       require_relative "ai"
 
       root_dir = Dir.pwd
-      puts Tina4::AI.status_report(root_dir)
 
       if options[:all]
-        created = Tina4::AI.install_all(root_dir, force: options[:force])
+        Tina4::AI.install_all(root_dir)
       else
-        created = Tina4::AI.install_ai_context(root_dir, force: options[:force])
-      end
-
-      if created.any?
-        puts "Created/updated context files:"
-        created.each { |f| puts "  #{f}" }
-      else
-        puts "No context files were created (files already exist; use --force to overwrite)."
+        selection = Tina4::AI.show_menu(root_dir)
+        Tina4::AI.install_selected(root_dir, selection) unless selection.empty?
       end
     end
 
