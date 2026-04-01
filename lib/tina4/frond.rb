@@ -843,32 +843,68 @@ module Tina4
     # Expression evaluator
     # -----------------------------------------------------------------------
 
+    # ── Expression evaluator (dispatcher) ──────────────────────────────
+    # Each expression type is handled by a focused helper method.
+    # Helpers return :not_matched when the expression doesn't match their
+    # type, so the dispatcher falls through to the next handler.
+
     def eval_expr(expr, context)
       expr = expr.strip
       return nil if expr.empty?
 
-      # String literal
+      result = eval_literal(expr)
+      return result unless result == :not_literal
+
+      result = eval_collection_literal(expr, context)
+      return result unless result == :not_collection
+
+      return eval_expr(expr[1..-2], context) if matched_parens?(expr)
+
+      result = eval_ternary(expr, context)
+      return result unless result == :not_ternary
+
+      result = eval_inline_if(expr, context)
+      return result unless result == :not_inline_if
+
+      result = eval_null_coalesce(expr, context)
+      return result unless result == :not_coalesce
+
+      result = eval_concat(expr, context)
+      return result unless result == :not_concat
+
+      return eval_comparison(expr, context) if has_comparison?(expr)
+
+      result = eval_arithmetic(expr, context)
+      return result unless result == :not_arithmetic
+
+      result = eval_function_call(expr, context)
+      return result unless result == :not_function
+
+      resolve(expr, context)
+    end
+
+    # ── Literal values: strings, numbers, booleans, null ──
+
+    def eval_literal(expr)
       if (expr.start_with?('"') && expr.end_with?('"')) ||
          (expr.start_with?("'") && expr.end_with?("'"))
         return expr[1..-2]
       end
-
-      # Numeric
       return expr.to_i if expr =~ INTEGER_RE
       return expr.to_f if expr =~ FLOAT_RE
-
-      # Boolean/null
       return true  if expr == "true"
       return false if expr == "false"
       return nil   if expr == "null" || expr == "none" || expr == "nil"
+      :not_literal
+    end
 
-      # Array literal [a, b, c]
+    # ── Collection literals: arrays, hashes, ranges ──
+
+    def eval_collection_literal(expr, context)
       if expr =~ ARRAY_LIT_RE
         inner = Regexp.last_match(1)
         return split_args_toplevel(inner).map { |item| eval_expr(item.strip, context) }
       end
-
-      # Hash literal { key: value, ... }
       if expr =~ HASH_LIT_RE
         inner = Regexp.last_match(1)
         hash = {}
@@ -879,99 +915,94 @@ module Tina4
         end
         return hash
       end
-
-      # Range literal: 1..5
       if expr =~ RANGE_LIT_RE
         return (Regexp.last_match(1).to_i..Regexp.last_match(2).to_i).to_a
       end
+      :not_collection
+    end
 
-      # Parenthesized sub-expression: (expr) — strip parens and evaluate inner
-      if expr.start_with?("(") && expr.end_with?(")")
-        depth = 0
-        matched = true
-        expr.each_char.with_index do |ch, pi|
-          depth += 1 if ch == "("
-          depth -= 1 if ch == ")"
-          if depth == 0 && pi < expr.length - 1
-            matched = false
-            break
-          end
-        end
-        return eval_expr(expr[1..-2], context) if matched
+    # ── Parenthesized sub-expression check ──
+
+    def matched_parens?(expr)
+      return false unless expr.start_with?("(") && expr.end_with?(")")
+      depth = 0
+      expr.each_char.with_index do |ch, pi|
+        depth += 1 if ch == "("
+        depth -= 1 if ch == ")"
+        return false if depth == 0 && pi < expr.length - 1
       end
+      true
+    end
 
-      # Ternary: condition ? "yes" : "no" — quote-aware
+    # ── Ternary: condition ? "yes" : "no" ──
+
+    def eval_ternary(expr, context)
       q_pos = find_outside_quotes(expr, "?")
-      if q_pos > 0
-        cond_part = expr[0...q_pos].strip
-        rest = expr[(q_pos + 1)..]
-        c_pos = find_outside_quotes(rest, ":")
-        if c_pos >= 0
-          true_part = rest[0...c_pos].strip
-          false_part = rest[(c_pos + 1)..].strip
-          cond = eval_expr(cond_part, context)
-          return truthy?(cond) ? eval_expr(true_part, context) : eval_expr(false_part, context)
-        end
-      end
+      return :not_ternary unless q_pos && q_pos > 0
+      cond_part = expr[0...q_pos].strip
+      rest = expr[(q_pos + 1)..]
+      c_pos = find_outside_quotes(rest, ":")
+      return :not_ternary unless c_pos && c_pos >= 0
+      true_part = rest[0...c_pos].strip
+      false_part = rest[(c_pos + 1)..].strip
+      cond = eval_expr(cond_part, context)
+      truthy?(cond) ? eval_expr(true_part, context) : eval_expr(false_part, context)
+    end
 
-      # Jinja2-style inline if: value if condition else other_value — quote-aware
+    # ── Inline if: value if condition else other_value ──
+
+    def eval_inline_if(expr, context)
       if_pos = find_outside_quotes(expr, " if ")
-      if if_pos >= 0
-        else_pos = find_outside_quotes(expr, " else ")
-        if else_pos && else_pos > if_pos
-          value_part = expr[0...if_pos].strip
-          cond_part = expr[(if_pos + 4)...else_pos].strip
-          else_part = expr[(else_pos + 6)..].strip
-          cond = eval_expr(cond_part, context)
-          return truthy?(cond) ? eval_expr(value_part, context) : eval_expr(else_part, context)
-        end
-      end
+      return :not_inline_if unless if_pos && if_pos >= 0
+      else_pos = find_outside_quotes(expr, " else ")
+      return :not_inline_if unless else_pos && else_pos > if_pos
+      value_part = expr[0...if_pos].strip
+      cond_part = expr[(if_pos + 4)...else_pos].strip
+      else_part = expr[(else_pos + 6)..].strip
+      cond = eval_expr(cond_part, context)
+      truthy?(cond) ? eval_expr(value_part, context) : eval_expr(else_part, context)
+    end
 
-      # Null coalescing: value ?? "default"
-      if expr.include?("??")
-        left, _, right = expr.partition("??")
-        val = eval_expr(left.strip, context)
-        return val.nil? ? eval_expr(right.strip, context) : val
-      end
+    # ── Null coalescing: value ?? "default" ──
 
-      # String concatenation with ~
-      if expr.include?("~")
-        parts = expr.split("~")
-        return parts.map { |p| (eval_expr(p.strip, context) || "").to_s }.join
-      end
+    def eval_null_coalesce(expr, context)
+      return :not_coalesce unless expr.include?("??")
+      left, _, right = expr.partition("??")
+      val = eval_expr(left.strip, context)
+      val.nil? ? eval_expr(right.strip, context) : val
+    end
 
-      # Check for comparison / logical operators -- delegate
-      if has_comparison?(expr)
-        return eval_comparison(expr, context)
-      end
+    # ── String concatenation: a ~ b ──
 
-      # Arithmetic: +, -, *, //, /, %, ** (lowest to highest precedence)
+    def eval_concat(expr, context)
+      return :not_concat unless expr.include?("~")
+      parts = expr.split("~")
+      parts.map { |p| (eval_expr(p.strip, context) || "").to_s }.join
+    end
+
+    # ── Arithmetic: +, -, *, //, /, %, ** ──
+
+    def eval_arithmetic(expr, context)
       ARITHMETIC_OPS.each do |op|
         pos = find_outside_quotes(expr, op)
         next unless pos && pos >= 0
-        left_s = expr[0...pos].strip
-        right_s = expr[(pos + op.length)..].strip
-        l_val = eval_expr(left_s, context)
-        r_val = eval_expr(right_s, context)
+        l_val = eval_expr(expr[0...pos].strip, context)
+        r_val = eval_expr(expr[(pos + op.length)..].strip, context)
         return apply_math(l_val, op.strip, r_val)
       end
+      :not_arithmetic
+    end
 
-      # Function call: name(arg1, arg2)
-      if expr =~ FUNC_CALL_RE
-        fn_name  = Regexp.last_match(1)
-        raw_args = Regexp.last_match(2).strip
-        fn = context[fn_name]
-        if fn.respond_to?(:call)
-          if raw_args.empty?
-            return fn.call
-          else
-            args = split_args_toplevel(raw_args).map { |a| eval_expr(a.strip, context) }
-            return fn.call(*args)
-          end
-        end
-      end
+    # ── Function call: name(arg1, arg2) ──
 
-      resolve(expr, context)
+    def eval_function_call(expr, context)
+      return :not_function unless expr =~ FUNC_CALL_RE
+      fn_name = Regexp.last_match(1)
+      raw_args = Regexp.last_match(2).strip
+      fn = context[fn_name]
+      return :not_function unless fn.respond_to?(:call)
+      args = raw_args.empty? ? [] : split_args_toplevel(raw_args).map { |a| eval_expr(a.strip, context) }
+      fn.call(*args)
     end
 
     def has_comparison?(expr)
