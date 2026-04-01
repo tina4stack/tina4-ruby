@@ -271,7 +271,9 @@ module Tina4
           "halstead_volume" => volume.round(1),
           "coupling_afferent" => ca,
           "coupling_efferent" => ce,
-          "instability" => instability.round(3)
+          "instability" => instability.round(3),
+          "has_tests" => _has_matching_test(rel_path),
+          "dep_count" => imports.length
         }
       end
 
@@ -371,6 +373,15 @@ module Tina4
     # ── Private Helpers ─────────────────────────────────────────
 
     private_class_method
+
+    def self._has_matching_test(rel_path)
+      name = File.basename(rel_path, '.rb')
+      ['spec', 'test'].any? do |dir|
+        File.exist?("#{dir}/#{name}_spec.rb") ||
+        File.exist?("#{dir}/#{name}_test.rb") ||
+        File.exist?("#{dir}/test_#{name}.rb")
+      end
+    end
 
     def self._files_hash(root)
       md5 = Digest::MD5.new
