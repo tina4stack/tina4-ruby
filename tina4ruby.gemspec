@@ -7,8 +7,8 @@ Gem::Specification.new do |spec|
   spec.version = Tina4::VERSION
   spec.authors = ["Tina4 Team"]
   spec.email = ["info@tina4.com"]
-  spec.summary = "Simple. Fast. Human. This is not a framework."
-  spec.description = "A lightweight, zero-configuration, Windows-friendly Ruby web framework."
+  spec.summary = "Tina4 for Ruby — 54 built-in features, zero dependencies"
+  spec.description = "Tina4 for Ruby — 54 built-in features, zero dependencies. Full parity with Python, PHP, and Node.js."
   spec.homepage = "https://tina4.com"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
