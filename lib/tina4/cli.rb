@@ -7,6 +7,22 @@ module Tina4
   class CLI
     COMMANDS = %w[init start migrate migrate:status migrate:rollback seed seed:create test version routes console generate ai help].freeze
 
+    # ── Field type mapping ──────────────────────────────────────────────
+    FIELD_TYPE_MAP = {
+      "string"   => { orm: "string_field",  sql: "VARCHAR(255)", default: "''" },
+      "str"      => { orm: "string_field",  sql: "VARCHAR(255)", default: "''" },
+      "int"      => { orm: "integer_field", sql: "INTEGER",      default: "0" },
+      "integer"  => { orm: "integer_field", sql: "INTEGER",      default: "0" },
+      "float"    => { orm: "float_field",   sql: "REAL",         default: "0" },
+      "numeric"  => { orm: "float_field",   sql: "REAL",         default: "0" },
+      "decimal"  => { orm: "float_field",   sql: "REAL",         default: "0" },
+      "bool"     => { orm: "boolean_field", sql: "INTEGER",      default: "0" },
+      "boolean"  => { orm: "boolean_field", sql: "INTEGER",      default: "0" },
+      "text"     => { orm: "string_field",  sql: "TEXT",         default: "''" },
+      "datetime" => { orm: "string_field",  sql: "TEXT",         default: "NULL" },
+      "blob"     => { orm: "string_field",  sql: "BLOB",         default: "NULL" },
+    }.freeze
+
     def self.start(argv)
       new.run(argv)
     end
@@ -15,7 +31,7 @@ module Tina4
       command = argv.shift || "help"
       case command
       when "init"       then cmd_init(argv)
-      when "start"      then cmd_start(argv)
+      when "start", "serve" then cmd_start(argv)
       when "migrate"    then cmd_migrate(argv)
       when "migrate:status" then cmd_migrate_status(argv)
       when "migrate:rollback" then cmd_migrate_rollback(argv)
@@ -36,6 +52,76 @@ module Tina4
     end
 
     private
+
+    # ── Helpers ──────────────────────────────────────────────────────────
+
+    # CamelCase -> snake_case: ProductCategory -> product_category
+    def to_snake_case(name)
+      name.gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+          .gsub(/([a-z0-9])([A-Z])/, '\1_\2')
+          .downcase
+    end
+
+    # Class name -> singular table name: Product -> product
+    def to_table_name(name)
+      to_snake_case(name)
+    end
+
+    # Parse "name:string,price:float" -> [["name","string"], ["price","float"]]
+    def parse_fields(fields_str)
+      return [] if fields_str.nil? || fields_str.strip.empty?
+
+      fields_str.split(",").map do |part|
+        part = part.strip
+        if part.include?(":")
+          name, type = part.split(":", 2)
+          [name.strip, type.strip.downcase]
+        elsif !part.empty?
+          [part.strip, "string"]
+        end
+      end.compact
+    end
+
+    # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
+    def parse_flags(args)
+      flags = {}
+      positional = []
+      i = 0
+      while i < args.length
+        if args[i].start_with?("--")
+          key = args[i][2..]
+          if i + 1 < args.length && !args[i + 1].start_with?("--")
+            flags[key] = args[i + 1]
+            i += 2
+          else
+            flags[key] = true
+            i += 1
+          end
+        else
+          positional << args[i]
+          i += 1
+        end
+      end
+      [flags, positional]
+    end
+
+    # Kill any process listening on the given port. Returns true if killed.
+    def kill_process_on_port(port)
+      result = `lsof -ti :#{port} 2>/dev/null`.strip
+      return false if result.empty?
+
+      pids = result.split("\n")
+      pids.each do |pid|
+        Process.kill("TERM", pid.to_i)
+      rescue Errno::ESRCH, Errno::EPERM
+        # Process already gone or no permission
+      end
+      sleep 0.5
+      puts "  Killed existing process on port #{port} (PID: #{pids.join(', ')})"
+      true
+    rescue Errno::ENOENT
+      false
+    end
 
     # ── init ──────────────────────────────────────────────────────────────
 
@@ -69,18 +155,27 @@ module Tina4
     # ── start ─────────────────────────────────────────────────────────────
 
     def cmd_start(argv)
-      options = { port: nil, host: nil, dev: false }
+      options = { port: nil, host: nil, dev: false, no_browser: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: tina4ruby start [options]"
         opts.on("-p", "--port PORT", Integer, "Port (default: 7147)") { |v| options[:port] = v }
         opts.on("-h", "--host HOST", "Host (default: 0.0.0.0)") { |v| options[:host] = v }
         opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
+        opts.on("--no-browser", "Do not open browser on start") { options[:no_browser] = true }
       end
       parser.parse!(argv)
+
+      # --no-browser from env
+      if ENV.fetch("TINA4_OPEN_BROWSER", "").downcase.match?(/\A(false|0|no)\z/)
+        options[:no_browser] = true
+      end
 
       # Priority: CLI flag > ENV var > default
       options[:port] = resolve_config(:port, options[:port])
       options[:host] = resolve_config(:host, options[:host])
+
+      # Kill existing process on port
+      kill_process_on_port(options[:port])
 
       require_relative "../tina4"
 
@@ -380,124 +475,722 @@ module Tina4
       end
     end
 
-    # ── help ──────────────────────────────────────────────────────────────
-
     # ── generate ────────────────────────────────────────────────────────
 
     def cmd_generate(argv)
       what = argv.shift
-      name = argv.shift
-      unless what && name
-        puts "Usage: tina4ruby generate <what> <name>"
-        puts "  Generators: model, route, migration, middleware"
+
+      unless what
+        puts "Usage: tina4ruby generate <what> <name> [options]"
+        puts "  Generators: model, route, crud, migration, middleware, test, form, view, auth"
+        puts '  Options:    --fields "name:string,price:float"  --model ModelName'
         exit 1
       end
+
+      # Auth doesn't require a name argument
+      no_name_generators = %w[auth]
+      unless no_name_generators.include?(what)
+        if argv.empty? || argv.first.start_with?("--")
+          puts "Usage: tina4ruby generate #{what} <name> [options]"
+          exit 1
+        end
+      end
+
+      name = no_name_generators.include?(what) ? "" : argv.shift
+      flags, _positional = parse_flags(argv)
 
       case what
-      when "model"    then generate_model(name)
-      when "route"    then generate_route(name)
-      when "migration" then generate_migration(name)
-      when "middleware" then generate_middleware(name)
+      when "model"      then generate_model(name, flags)
+      when "route"      then generate_route(name, flags)
+      when "crud"       then generate_crud(name, flags)
+      when "migration"  then generate_migration(name, flags)
+      when "middleware"  then generate_middleware(name, flags)
+      when "test"       then generate_test(name, flags)
+      when "form"       then generate_form(name, flags)
+      when "view"       then generate_view(name, flags)
+      when "auth"       then generate_auth(name, flags)
       else
         puts "Unknown generator: #{what}"
-        puts "  Available: model, route, migration, middleware"
+        puts "  Available: model, route, crud, migration, middleware, test, form, view, auth"
         exit 1
       end
     end
 
-    def generate_model(name)
+    # ── Generator: model ─────────────────────────────────────────────────
+
+    def generate_model(name, flags)
+      fields = parse_fields(flags["fields"])
+      table = to_table_name(name)
+      snake = to_snake_case(name)
+
+      # Build field lines
+      field_lines = ["  integer_field :id, primary_key: true, auto_increment: true"]
+      if fields.any?
+        fields.each do |fname, ftype|
+          info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP["string"]
+          field_lines << "  #{info[:orm]} :#{fname}"
+        end
+      else
+        field_lines << "  string_field :name"
+      end
+      field_lines << "  string_field :created_at"
+
+      # Write model file
       dir = "src/orm"
       FileUtils.mkdir_p(dir)
-      snake = name.gsub(/([A-Z])/) { |m| ($~.begin(0) > 0 ? "_" : "") + m.downcase }
       path = File.join(dir, "#{snake}.rb")
-      abort "  File already exists: #{path}" if File.exist?(path)
-      File.write(path, <<~RUBY)
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      content = <<~RUBY
         class #{name} < Tina4::ORM
-          integer_field :id, primary_key: true, auto_increment: true
-          string_field :name
-          string_field :email
+          table_name "#{table}"
+
+        #{field_lines.join("\n")}
         end
       RUBY
+
+      File.write(path, content)
       puts "  Created #{path}"
+
+      # Generate matching migration (unless --no-migration)
+      unless flags["no-migration"]
+        generate_migration("create_#{table}", flags, fields_override: fields, table_override: table)
+      end
     end
 
-    def generate_route(name)
+    # ── Generator: route ─────────────────────────────────────────────────
+
+    def generate_route(name, flags)
       route_path = name.sub(%r{^/}, "")
-      dir = "src/routes/#{route_path}"
+      singular = route_path.end_with?("s") ? route_path[0..-2] : route_path
+      model = flags["model"]
+
+      dir = "src/routes"
       FileUtils.mkdir_p(dir)
-      path = dir.chomp("/") + ".rb"
-      abort "  File already exists: #{path}" if File.exist?(path)
-      File.write(path, <<~RUBY)
-        Tina4.get "/#{route_path}" do |request, response|
-          response.json(data: [])
-        end
+      path = File.join(dir, "#{route_path}.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
 
-        Tina4.get "/#{route_path}/:id" do |request, response|
-          response.json(data: {})
-        end
+      if model
+        model_snake = to_snake_case(model)
+        content = <<~RUBY
+          require_relative "../orm/#{model_snake}"
 
-        Tina4.post "/#{route_path}" do |request, response|
-          response.json({ message: "created" }, 201)
-        end
+          Tina4.get "/api/#{route_path}" do |request, response|
+            # List all #{route_path} with pagination
+            page = (request.params["page"] || 1).to_i
+            per_page = (request.params["per_page"] || 20).to_i
+            offset = (page - 1) * per_page
+            results = #{model}.all(limit: per_page, offset: offset)
+            response.json({ data: results.map(&:to_h), page: page, per_page: per_page })
+          end
 
-        Tina4.put "/#{route_path}/:id" do |request, response|
-          response.json(message: "updated")
-        end
+          Tina4.get "/api/#{route_path}/{id:int}" do |request, response|
+            # Get a single #{singular} by ID
+            item = #{model}.find(request.params["id"])
+            if item.nil?
+              response.json({ error: "Not found" }, 404)
+            else
+              response.json(item.to_h)
+            end
+          end
 
-        Tina4.delete "/#{route_path}/:id" do |request, response|
-          response.json(message: "deleted")
-        end
-      RUBY
+          Tina4.post "/api/#{route_path}" do |request, response|
+            # Create a new #{singular}
+            item = #{model}.create(request.body)
+            response.json(item.to_h, 201)
+          end
+
+          Tina4.put "/api/#{route_path}/{id:int}" do |request, response|
+            # Update a #{singular} by ID
+            item = #{model}.find(request.params["id"])
+            if item.nil?
+              response.json({ error: "Not found" }, 404)
+            else
+              request.body.each do |key, value|
+                next if key.to_s == "id"
+                setter = "#{'#'}{key}="
+                item.send(setter, value) if item.respond_to?(setter)
+              end
+              item.save
+              response.json(item.to_h)
+            end
+          end
+
+          Tina4.delete "/api/#{route_path}/{id:int}" do |request, response|
+            # Delete a #{singular} by ID
+            item = #{model}.find(request.params["id"])
+            if item.nil?
+              response.json({ error: "Not found" }, 404)
+            else
+              item.delete
+              response.json(nil, 204)
+            end
+          end
+        RUBY
+      else
+        content = <<~RUBY
+          Tina4.get "/api/#{route_path}" do |request, response|
+            # List all #{route_path}
+            response.json({ data: [] })
+          end
+
+          Tina4.get "/api/#{route_path}/{id:int}" do |request, response|
+            # Get a single #{singular}
+            response.json({ data: {} })
+          end
+
+          Tina4.post "/api/#{route_path}" do |request, response|
+            # Create a new #{singular}
+            response.json({ data: request.body }, 201)
+          end
+
+          Tina4.put "/api/#{route_path}/{id:int}" do |request, response|
+            # Update a #{singular}
+            response.json({ data: request.body })
+          end
+
+          Tina4.delete "/api/#{route_path}/{id:int}" do |request, response|
+            # Delete a #{singular}
+            response.json(nil, 204)
+          end
+        RUBY
+      end
+
+      File.write(path, content)
       puts "  Created #{path}"
     end
 
-    def generate_migration(name)
+    # ── Generator: crud ──────────────────────────────────────────────────
+
+    def generate_crud(name, flags)
+      table = to_table_name(name)
+      route_name = "#{table}s"
+
+      puts "\n  Generating CRUD for #{name}...\n"
+
+      # 1. Model + migration
+      generate_model(name, flags)
+
+      # 2. Routes with model
+      generate_route(route_name, { "model" => name })
+
+      # 3. Form
+      generate_form(name, flags)
+
+      # 4. View (list + detail)
+      generate_view(name, flags)
+
+      # 5. Test
+      generate_test(route_name, { "model" => name })
+
+      puts "\n  CRUD generation complete for #{name}."
+      puts "  Run: tina4ruby migrate"
+      puts "  Visit: /swagger to see the API docs"
+    end
+
+    # ── Generator: migration ─────────────────────────────────────────────
+
+    def generate_migration(name, flags = {}, fields_override: nil, table_override: nil)
+      now = Time.now
+      timestamp = now.strftime("%Y%m%d%H%M%S")
       dir = "migrations"
       FileUtils.mkdir_p(dir)
-      timestamp = Time.now.strftime("%Y%m%d%H%M%S")
-      table = name.sub(/^create_/, "")
-      table = if table.end_with?("s")
-                table
-              elsif table.end_with?("y")
-                table[0..-2] + "ies"
-              else
-                table + "s"
-              end
+
+      # Determine table name
+      if table_override
+        table = table_override
+      else
+        table = name.sub(/^create_/, "").sub(/^add_/, "").sub(/^drop_/, "")
+        table = to_snake_case(table)
+      end
+
+      # Build SQL columns from fields
+      fields = fields_override || parse_fields(flags["fields"])
+      is_create = name.start_with?("create_") || !fields_override.nil?
+
       filename = "#{timestamp}_#{name}.sql"
       path = File.join(dir, filename)
-      now = Time.now.strftime("%Y-%m-%d %H:%M:%S")
-      File.write(path, <<~SQL)
-        -- Migration: #{name}
-        -- Created: #{now}
 
-        CREATE TABLE #{table} (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
+      if is_create
+        col_lines = ["    id INTEGER PRIMARY KEY AUTOINCREMENT"]
+        fields.each do |fname, ftype|
+          info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP["string"]
+          default = info[:default] != "NULL" ? " DEFAULT #{info[:default]}" : ""
+          col_lines << "    #{fname} #{info[:sql]}#{default}"
+        end
+        col_lines << "    created_at TEXT DEFAULT CURRENT_TIMESTAMP"
+
+        up_sql = "CREATE TABLE IF NOT EXISTS #{table} (\n#{col_lines.join(",\n")}\n);"
+        down_sql = "DROP TABLE IF EXISTS #{table};"
+      else
+        up_sql = "-- Write your UP migration SQL here\n-- Example: ALTER TABLE #{table} ADD COLUMN new_col TEXT DEFAULT '';"
+        down_sql = "-- Write your DOWN rollback SQL here\n-- Example: ALTER TABLE #{table} DROP COLUMN new_col;"
+      end
+
+      content = <<~SQL
+        -- Migration: #{name}
+        -- Created: #{now.strftime("%Y-%m-%d %H:%M:%S")}
+
+        -- UP
+        #{up_sql}
+
+        -- DOWN
+        #{down_sql}
       SQL
+
+      File.write(path, content)
       puts "  Created #{path}"
+
+      # Also create .down.sql for the migration runner
+      down_path = File.join(dir, "#{timestamp}_#{name}.down.sql")
+      down_content = <<~SQL
+        -- Rollback: #{name}
+        -- Created: #{now.strftime("%Y-%m-%d %H:%M:%S")}
+
+        #{down_sql}
+      SQL
+
+      File.write(down_path, down_content)
+      puts "  Created #{down_path}"
     end
 
-    def generate_middleware(name)
+    # ── Generator: middleware ────────────────────────────────────────────
+
+    def generate_middleware(name, flags = {})
+      snake = to_snake_case(name)
       dir = "src/middleware"
       FileUtils.mkdir_p(dir)
-      snake = name.gsub(/([A-Z])/) { |m| ($~.begin(0) > 0 ? "_" : "") + m.downcase }
       path = File.join(dir, "#{snake}.rb")
-      abort "  File already exists: #{path}" if File.exist?(path)
-      File.write(path, <<~RUBY)
-        class #{name} < Tina4::Middleware
-          def process(request, response)
-            auth = request.headers["Authorization"]
-            return response.json({ error: "Unauthorized" }, 401) unless auth
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
 
-            nil
+      content = <<~RUBY
+        # #{name} middleware
+        #
+        # Usage in routes:
+        #   require_relative "../middleware/#{snake}"
+        #   Tina4.get "/api/protected", middleware: [#{name}] do |request, response|
+        #     response.json({ data: "protected" })
+        #   end
+
+        class #{name}
+          def self.before_#{snake}(request, response)
+            # Runs before the route handler.
+            # Return [request, response] to continue, or
+            # return [request, response.json({ error: "Unauthorized" }, 401)] to block.
+            Tina4::Log.info("#{name}: \#{request.request_method} \#{request.path}")
+            [request, response]
+          end
+
+          def self.after_#{snake}(request, response)
+            # Runs after the route handler.
+            [request, response]
           end
         end
       RUBY
+
+      File.write(path, content)
       puts "  Created #{path}"
     end
+
+    # ── Generator: test ──────────────────────────────────────────────────
+
+    def generate_test(name, flags = {})
+      model = flags["model"]
+      snake = to_snake_case(name)
+      singular = snake.end_with?("s") ? snake[0..-2] : snake
+
+      dir = "spec"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{snake}_spec.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      if model
+        content = <<~RUBY
+          # Tests for #{name} CRUD operations
+          RSpec.describe "#{model}" do
+            before(:each) do
+              # Set up test fixtures
+            end
+
+            after(:each) do
+              # Clean up after tests
+            end
+
+            it "lists #{snake}" do
+              # TODO: implement
+              expect(true).to be true
+            end
+
+            it "gets a single #{singular}" do
+              # TODO: implement
+              expect(true).to be true
+            end
+
+            it "creates a #{singular}" do
+              # TODO: implement
+              expect(true).to be true
+            end
+
+            it "updates a #{singular}" do
+              # TODO: implement
+              expect(true).to be true
+            end
+
+            it "deletes a #{singular}" do
+              # TODO: implement
+              expect(true).to be true
+            end
+          end
+        RUBY
+      else
+        class_name = name.split("_").map(&:capitalize).join
+        content = <<~RUBY
+          # Tests for #{name}
+          RSpec.describe "#{class_name}" do
+            before(:each) do
+              # Set up test fixtures
+            end
+
+            after(:each) do
+              # Clean up after tests
+            end
+
+            it "works as expected" do
+              # TODO: replace with real tests
+              expect(true).to be true
+            end
+          end
+        RUBY
+      end
+
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: form ──────────────────────────────────────────────────
+
+    def generate_form(name, flags = {})
+      fields = parse_fields(flags["fields"])
+      table = to_table_name(name)
+      route_name = "#{table}s"
+
+      # Input type mapping
+      input_types = {
+        "string" => "text", "str" => "text", "text" => "textarea",
+        "int" => "number", "integer" => "number",
+        "float" => "number", "numeric" => "number", "decimal" => "number",
+        "bool" => "checkbox", "boolean" => "checkbox",
+        "datetime" => "datetime-local", "blob" => "file",
+      }
+
+      dir = "src/templates/forms"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{table}.twig")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      # Build form fields
+      field_html = ""
+      form_fields = fields.any? ? fields : [["name", "string"]]
+      form_fields.each do |fname, ftype|
+        itype = input_types[ftype] || "text"
+        label = fname.tr("_", " ").split.map(&:capitalize).join(" ")
+        step = %w[float numeric decimal].include?(ftype) ? ' step="0.01"' : ""
+
+        if itype == "textarea"
+          field_html += <<~HTML
+                <div class="form-group mb-3">
+                    <label for="#{fname}">#{label}</label>
+                    <textarea id="#{fname}" name="#{fname}" class="form-control" rows="4" placeholder="#{label}">{{ item.#{fname} }}</textarea>
+                </div>
+          HTML
+        elsif itype == "checkbox"
+          field_html += <<~HTML
+                <div class="form-group mb-3">
+                    <label>
+                        <input type="checkbox" id="#{fname}" name="#{fname}" value="1" {% if item.#{fname} %}checked{% endif %}>
+                        #{label}
+                    </label>
+                </div>
+          HTML
+        else
+          field_html += <<~HTML
+                <div class="form-group mb-3">
+                    <label for="#{fname}">#{label}</label>
+                    <input type="#{itype}" id="#{fname}" name="#{fname}" class="form-control"#{step} value="{{ item.#{fname} }}" placeholder="#{label}">
+                </div>
+          HTML
+        end
+      end
+
+      content = <<~HTML
+        {% extends "base.twig" %}
+        {% block title %}#{name} {% if item.id %}Edit{% else %}Create{% endif %}{% endblock %}
+        {% block content %}
+        <div class="container mt-4">
+            <h1>{% if item.id %}Edit #{name}{% else %}Create #{name}{% endif %}</h1>
+            <form method="post" action="/api/#{route_name}{% if item.id %}/{{ item.id }}{% endif %}">
+                {{ form_token() }}
+        #{field_html}        <button type="submit" class="btn btn-primary">
+                    {% if item.id %}Update{% else %}Create{% endif %}
+                </button>
+                <a href="/api/#{route_name}" class="btn btn-secondary">Cancel</a>
+            </form>
+        </div>
+        {% endblock %}
+      HTML
+
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: view ──────────────────────────────────────────────────
+
+    def generate_view(name, flags = {})
+      fields = parse_fields(flags["fields"])
+      table = to_table_name(name)
+      route_name = "#{table}s"
+
+      cols = fields.any? ? fields.map { |f, _| f } : ["name"]
+
+      dir = "src/templates/pages"
+      FileUtils.mkdir_p(dir)
+
+      # List view
+      list_path = File.join(dir, "#{route_name}.twig")
+      unless File.exist?(list_path)
+        th = cols.map { |c| "<th>#{c.tr('_', ' ').split.map(&:capitalize).join(' ')}</th>" }.join("\n                ")
+        td = cols.map { |c| "<td>{{ item.#{c} }}</td>" }.join("\n                ")
+
+        list_content = <<~HTML
+          {% extends "base.twig" %}
+          {% block title %}#{name}s{% endblock %}
+          {% block content %}
+          <div class="container mt-4">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                  <h1>#{name}s</h1>
+                  <a href="/#{route_name}/create" class="btn btn-primary">Add #{name}</a>
+              </div>
+              <table class="table">
+                  <thead>
+                      <tr>
+                          <th>ID</th>
+                          #{th}
+                          <th>Actions</th>
+                      </tr>
+                  </thead>
+                  <tbody>
+                  {% for item in items %}
+                      <tr>
+                          <td>{{ item.id }}</td>
+                          #{td}
+                          <td>
+                              <a href="/#{route_name}/{{ item.id }}" class="btn btn-sm btn-primary">View</a>
+                              <a href="/#{route_name}/{{ item.id }}/edit" class="btn btn-sm btn-secondary">Edit</a>
+                          </td>
+                      </tr>
+                  {% endfor %}
+                  </tbody>
+              </table>
+          </div>
+          {% endblock %}
+        HTML
+
+        File.write(list_path, list_content)
+        puts "  Created #{list_path}"
+      end
+
+      # Detail view
+      detail_path = File.join(dir, "#{table}.twig")
+      unless File.exist?(detail_path)
+        detail_fields = cols.map do |c|
+          "    <div class=\"mb-3\"><strong>#{c.tr('_', ' ').split.map(&:capitalize).join(' ')}:</strong> {{ item.#{c} }}</div>"
+        end.join("\n")
+
+        detail_content = <<~HTML
+          {% extends "base.twig" %}
+          {% block title %}#{name} Detail{% endblock %}
+          {% block content %}
+          <div class="container mt-4">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                  <h1>#{name} #{{ item.id }}</h1>
+                  <div>
+                      <a href="/#{route_name}/{{ item.id }}/edit" class="btn btn-secondary">Edit</a>
+                      <a href="/#{route_name}" class="btn btn-outline-secondary">Back</a>
+                  </div>
+              </div>
+          #{detail_fields}
+          </div>
+          {% endblock %}
+        HTML
+
+        File.write(detail_path, detail_content)
+        puts "  Created #{detail_path}"
+      end
+    end
+
+    # ── Generator: auth ──────────────────────────────────────────────────
+
+    def generate_auth(_name = nil, flags = {})
+      puts "\n  Generating authentication scaffolding...\n"
+
+      # 1. User model + migration
+      generate_model("User", { "fields" => "email:string,password:string,role:string" })
+
+      # 2. Auth routes
+      dir = "src/routes"
+      FileUtils.mkdir_p(dir)
+      auth_path = File.join(dir, "auth.rb")
+      unless File.exist?(auth_path)
+        content = <<~'RUBY'
+          require_relative "../orm/user"
+
+          Tina4.post "/api/auth/register" do |request, response|
+            # Register a new user
+            email = request.body["email"].to_s
+            password = request.body["password"].to_s
+
+            if email.empty? || password.empty?
+              next response.json({ error: "Email and password required" }, 400)
+            end
+
+            # Check if user exists
+            existing = User.where("email = ?", [email])
+            unless existing.empty?
+              next response.json({ error: "Email already registered" }, 409)
+            end
+
+            # Create user with hashed password
+            user = User.create({
+              email: email,
+              password: Tina4::Auth.hash_password(password),
+              role: "user",
+            })
+            response.json({ message: "Registered", id: user.id }, 201)
+          end
+
+          Tina4.post "/api/auth/login" do |request, response|
+            # Login with email and password
+            email = request.body["email"].to_s
+            password = request.body["password"].to_s
+
+            users = User.where("email = ?", [email])
+            if users.empty?
+              next response.json({ error: "Invalid credentials" }, 401)
+            end
+            user = users.first
+
+            unless Tina4::Auth.check_password(password, user.password)
+              next response.json({ error: "Invalid credentials" }, 401)
+            end
+
+            token = Tina4::Auth.get_token({ user_id: user.id, email: user.email, role: user.role })
+            response.json({ token: token })
+          end
+
+          Tina4.get "/api/auth/me" do |request, response|
+            # Get current authenticated user
+            payload = Tina4::Auth.authenticate_request(request.headers)
+            if payload.nil?
+              next response.json({ error: "Unauthorized" }, 401)
+            end
+
+            user = User.find(payload["user_id"])
+            if user.nil?
+              next response.json({ error: "User not found" }, 404)
+            end
+
+            response.json({ id: user.id, email: user.email, role: user.role })
+          end
+        RUBY
+
+        File.write(auth_path, content)
+        puts "  Created #{auth_path}"
+      end
+
+      # 3. Login template
+      forms_dir = "src/templates/forms"
+      FileUtils.mkdir_p(forms_dir)
+      login_path = File.join(forms_dir, "login.twig")
+      unless File.exist?(login_path)
+        File.write(login_path, <<~HTML)
+          {% extends "base.twig" %}
+          {% block title %}Login{% endblock %}
+          {% block content %}
+          <div class="container mt-4" style="max-width:400px">
+              <h1>Login</h1>
+              <form method="post" action="/api/auth/login">
+                  {{ form_token() }}
+                  <div class="form-group mb-3">
+                      <label for="email">Email</label>
+                      <input type="email" id="email" name="email" class="form-control" placeholder="Email" required>
+                  </div>
+                  <div class="form-group mb-3">
+                      <label for="password">Password</label>
+                      <input type="password" id="password" name="password" class="form-control" placeholder="Password" required>
+                  </div>
+                  <button type="submit" class="btn btn-primary w-100">Login</button>
+                  <p class="mt-3 text-center"><a href="/register">Create an account</a></p>
+              </form>
+          </div>
+          {% endblock %}
+        HTML
+        puts "  Created #{login_path}"
+      end
+
+      # 4. Register template
+      register_path = File.join(forms_dir, "register.twig")
+      unless File.exist?(register_path)
+        File.write(register_path, <<~HTML)
+          {% extends "base.twig" %}
+          {% block title %}Register{% endblock %}
+          {% block content %}
+          <div class="container mt-4" style="max-width:400px">
+              <h1>Register</h1>
+              <form method="post" action="/api/auth/register">
+                  {{ form_token() }}
+                  <div class="form-group mb-3">
+                      <label for="email">Email</label>
+                      <input type="email" id="email" name="email" class="form-control" placeholder="Email" required>
+                  </div>
+                  <div class="form-group mb-3">
+                      <label for="password">Password</label>
+                      <input type="password" id="password" name="password" class="form-control" placeholder="Password" minlength="8" required>
+                  </div>
+                  <button type="submit" class="btn btn-primary w-100">Register</button>
+                  <p class="mt-3 text-center"><a href="/login">Already have an account?</a></p>
+              </form>
+          </div>
+          {% endblock %}
+        HTML
+        puts "  Created #{register_path}"
+      end
+
+      # 5. Auth test
+      generate_test("auth", { "model" => "User" })
+
+      puts "\n  Authentication scaffolding complete."
+      puts "  Run: tina4ruby migrate"
+      puts "  POST /api/auth/register  - create account"
+      puts "  POST /api/auth/login     - get JWT token"
+      puts "  GET  /api/auth/me        - get profile (requires token)"
+    end
+
+    # ── help ──────────────────────────────────────────────────────────────
 
     def cmd_help
       puts <<~HELP
@@ -508,6 +1201,7 @@ module Tina4
         Commands:
           init [NAME]        Initialize a new Tina4 project
           start              Start the Tina4 web server
+          serve              Alias for start
           migrate            Run database migrations
           migrate:status     Show migration status (completed and pending)
           migrate:rollback   Rollback the last batch of migrations
@@ -517,9 +1211,24 @@ module Tina4
           version            Show Tina4 version
           routes             List all registered routes
           console            Start an interactive console
-          generate <what> <name>  Generate scaffolding (model, route, migration, middleware)
           ai                 Detect AI tools and install context files
           help               Show this help message
+
+        Generators:
+          generate model <Name> [--fields "name:string,price:float"]
+          generate route <name> [--model Name]
+          generate crud <Name> [--fields "..."]   Model + migration + routes + form + view + test
+          generate migration <description>
+          generate middleware <Name>
+          generate test <name>
+          generate form <Name> [--fields "..."]   Form template with inputs matching model fields
+          generate view <Name> [--fields "..."]   List + detail templates for viewing records
+          generate auth                           Login/register/logout routes + User model + templates
+
+        Field types: string, int, float, bool, text, datetime, blob
+        Table names: singular by default (Product -> product)
+
+        https://tina4.com
 
         Run 'tina4ruby COMMAND --help' for more information on a command.
       HELP
@@ -564,9 +1273,10 @@ module Tina4
 
     def create_project_structure(dir)
       %w[
-        src/routes src/orm src/templates src/templates/errors
+        src/routes src/orm src/middleware src/templates src/templates/errors
+        src/templates/forms src/templates/pages
         src/public src/public/css src/public/js src/public/images
-        migrations logs
+        migrations logs spec seeds
       ].each do |subdir|
         FileUtils.mkdir_p(File.join(dir, subdir))
       end
