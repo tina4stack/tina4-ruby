@@ -132,6 +132,14 @@ module Tina4
       handle_500(e, env)
     end
 
+    # Dispatch a pre-built Request through the Rack app and return the Rack response triple.
+    # Useful for testing and embedding without starting an HTTP server.
+    def handle(request)
+      env = request.env
+      env["rack.input"].rewind if env["rack.input"].respond_to?(:rewind)
+      call(env)
+    end
+
     private
 
     def handle_route(env, route, path_params)
