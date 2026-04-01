@@ -84,10 +84,9 @@ module Tina4
           end
         end
 
-        context = generate_context
-
         indices.each do |idx|
           tool = AI_TOOLS[idx]
+          context = generate_context(tool[:name])
           files = install_for_tool(root_path, tool, context)
           created.concat(files)
         end
@@ -105,140 +104,29 @@ module Tina4
         install_selected(root, "all")
       end
 
-      # Generate the universal Tina4 Ruby context document for any AI assistant.
+      # Generate per-tool Tina4 Ruby context document.
       #
+      # @param tool_name [String] AI tool name (default: "claude-code")
       # @return [String]
-      def generate_context
-        <<~CONTEXT
-          # Tina4 Ruby -- AI Context
-
-          This project uses **Tina4 Ruby**, a lightweight, batteries-included web framework
-          with zero third-party dependencies for core features.
-
-          **Documentation:** https://tina4.com
-
-          ## Quick Start
-
-          ```bash
-          tina4ruby init .          # Scaffold project
-          tina4ruby serve           # Start dev server on port 7147
-          tina4ruby migrate         # Run database migrations
-          tina4ruby test            # Run test suite
-          tina4ruby routes          # List all registered routes
-          ```
-
-          ## Project Structure
-
-          ```
-          lib/tina4/        -- Core framework modules
-          src/routes/       -- Route handlers (auto-discovered, one per resource)
-          src/orm/          -- ORM models (one per file, filename = class name)
-          src/templates/    -- Twig/ERB templates (extends base template)
-          src/app/          -- Shared helpers and service classes
-          src/scss/         -- SCSS files (auto-compiled to public/css/)
-          src/public/       -- Static assets served at /
-          src/locales/      -- Translation JSON files
-          src/seeds/        -- Database seeder scripts
-          migrations/       -- SQL migration files (sequential numbered)
-          spec/             -- RSpec test files
-          ```
-
-          ## Built-in Features (No External Gems Needed for Core)
-
-          | Feature | Module | Require |
-          |---------|--------|---------|
-          | Routing | Tina4::Router | `require "tina4/router"` |
-          | ORM | Tina4::ORM | `require "tina4/orm"` |
-          | Database | Tina4::Database | `require "tina4/database"` |
-          | Templates | Tina4::Template | `require "tina4/template"` |
-          | JWT Auth | Tina4::Auth | `require "tina4/auth"` |
-          | REST API Client | Tina4::API | `require "tina4/api"` |
-          | GraphQL | Tina4::GraphQL | `require "tina4/graphql"` |
-          | WebSocket | Tina4::WebSocket | `require "tina4/websocket"` |
-          | SOAP/WSDL | Tina4::WSDL | `require "tina4/wsdl"` |
-          | Email (SMTP+IMAP) | Tina4::Messenger | `require "tina4/messenger"` |
-          | Background Queue | Tina4::Queue | `require "tina4/queue"` |
-          | SCSS Compilation | Tina4::ScssCompiler | `require "tina4/scss_compiler"` |
-          | Migrations | Tina4::Migration | `require "tina4/migration"` |
-          | Seeder | Tina4::FakeData | `require "tina4/seeder"` |
-          | i18n | Tina4::Localization | `require "tina4/localization"` |
-          | Swagger/OpenAPI | Tina4::Swagger | `require "tina4/swagger"` |
-          | Sessions | Tina4::Session | `require "tina4/session"` |
-          | Middleware | Tina4::Middleware | `require "tina4/middleware"` |
-          | HTML Builder | Tina4::HtmlElement | `require "tina4/html_element"` |
-          | Form Tokens | Tina4::Template | `{{ form_token() }}` in Twig |
-
-          ## Key Conventions
-
-          1. **Routes use block handlers** with `|request, response|` params
-          2. **GET routes are public**, POST/PUT/PATCH/DELETE require auth by default
-          3. **Use `auth: false`** to make write routes public, `secure_get` to protect GET routes
-          4. **Every template extends a base template** -- no standalone HTML pages
-          5. **No inline styles** -- use SCSS with CSS variables
-          6. **All schema changes via migrations** -- never create tables in route code
-          7. **Service pattern** -- complex logic goes in service classes, routes stay thin
-          8. **Use built-in features** -- never install gems for things Tina4 already provides
-
-          ## AI Workflow -- Available Skills
-
-          When using an AI coding assistant with Tina4, these skills are available:
-
-          | Skill | Description |
-          |-------|-------------|
-          | `/tina4-route` | Create a new route with proper decorators and auth |
-          | `/tina4-orm` | Create an ORM model with migration |
-          | `/tina4-crud` | Generate complete CRUD (migration, ORM, routes, template, tests) |
-          | `/tina4-auth` | Set up JWT authentication with login/register |
-          | `/tina4-api` | Create an external API integration |
-          | `/tina4-queue` | Set up background job processing |
-          | `/tina4-template` | Create a server-rendered template page |
-          | `/tina4-graphql` | Set up a GraphQL endpoint |
-          | `/tina4-websocket` | Set up WebSocket communication |
-          | `/tina4-wsdl` | Create a SOAP/WSDL service |
-          | `/tina4-messenger` | Set up email send/receive |
-          | `/tina4-test` | Write tests for a feature |
-          | `/tina4-migration` | Create a database migration |
-          | `/tina4-seed` | Generate fake data for development |
-          | `/tina4-i18n` | Set up internationalization |
-          | `/tina4-scss` | Set up SCSS stylesheets |
-          | `/tina4-frontend` | Set up a frontend framework |
-
-          ## Common Patterns
-
-          ### Route
-          ```ruby
-          Tina4.get "/api/widgets" do |request, response|
-            response.json({ widgets: Widget.all })
-          end
-
-          Tina4.post "/api/widgets", auth: false do |request, response|
-            widget = Widget.create(request.body)
-            response.json({ created: true }, 201)
-          end
-          ```
-
-          ### ORM Model
-          ```ruby
-          class Widget < Tina4::ORM
-            integer_field :id, primary_key: true, auto_increment: true
-            string_field :name
-            numeric_field :price
-          end
-          ```
-
-          ### Template
-          ```twig
-          {% extends "base.twig" %}
-          {% block content %}
-          <div class="container">
-              <h1>{{ title }}</h1>
-              {% for item in items %}
-                  <p>{{ item.name }}</p>
-              {% endfor %}
-          </div>
-          {% endblock %}
-          ```
-        CONTEXT
+      def generate_context(tool_name = "claude-code")
+        case tool_name
+        when "claude-code"
+          generate_claude_code_context
+        when "cursor"
+          generate_cursor_context
+        when "copilot"
+          generate_copilot_context
+        when "windsurf"
+          generate_windsurf_context
+        when "aider"
+          generate_aider_context
+        when "cline"
+          generate_cline_context
+        when "codex"
+          generate_codex_context
+        else
+          generate_claude_code_context
+        end
       end
 
       # Install context file for a single tool.
@@ -332,6 +220,476 @@ module Tina4
           end
         end
         puts "  \e[33m!\e[0m Python/pip not available -- skip tina4-ai"
+      end
+
+      private
+
+      # Read existing CLAUDE.md from the framework root.
+      #
+      # @return [String]
+      def generate_claude_code_context
+        framework_root = File.expand_path("../../..", __FILE__)
+        claude_md = File.join(framework_root, "CLAUDE.md")
+        if File.exist?(claude_md)
+          File.read(claude_md)
+        else
+          "# Tina4 Ruby #{Tina4::VERSION}\n\nSee https://tina4.com for documentation.\n"
+        end
+      end
+
+      # Cursor context (~45 lines).
+      #
+      # @return [String]
+      def generate_cursor_context
+        <<~CONTEXT
+          # Tina4 Ruby #{Tina4::VERSION} — Cursor Rules
+
+          You are working in a **Tina4 Ruby** project — a zero-dependency, batteries-included web framework.
+          Documentation: https://tina4.com
+
+          ## Project Structure
+
+          ```
+          src/routes/    — Route handlers (auto-discovered)
+          src/orm/       — ORM models
+          src/templates/ — Twig templates
+          src/app/       — Service classes
+          src/scss/      — SCSS (auto-compiled)
+          src/public/    — Static assets
+          src/seeds/     — Database seeders
+          migrations/    — SQL migration files
+          spec/          — RSpec tests
+          ```
+
+          ## Route Pattern
+
+          ```ruby
+          Tina4.get "/api/users" do |request, response|
+            response.call({ users: [] }, Tina4::HTTP_OK)
+          end
+
+          Tina4.post "/api/users" do |request, response|
+            response.call({ created: request.body["name"] }, 201)
+          end
+          ```
+
+          ## ORM Pattern
+
+          ```ruby
+          class User < Tina4::ORM
+            table_name "users"
+            integer_field :id, primary_key: true, auto_increment: true
+            string_field :name, required: true
+            string_field :email
+          end
+          ```
+
+          ## Conventions
+
+          1. Routes return `response.call(data, status)` — never `puts` or `render`
+          2. GET routes are public; POST/PUT/PATCH/DELETE require auth by default
+          3. Every template extends `base.twig`
+          4. All schema changes via migrations — never create tables in route code
+          5. Use built-in features — never install gems for things Tina4 already provides
+          6. Service pattern — complex logic in `src/app/`, routes stay thin
+          7. Use `snake_case` for methods and variables
+
+          ## Built-in Features (No Gems Needed)
+
+          Router, ORM, Database (SQLite/PostgreSQL/MySQL/MSSQL/Firebird), Frond templates (Twig-compatible), JWT auth, Sessions (File/Redis/Valkey/MongoDB/DB), GraphQL + GraphiQL, WebSocket + Redis backplane, WSDL/SOAP, Queue (File/RabbitMQ/Kafka/MongoDB), HTTP client, Messenger (SMTP/IMAP), FakeData/Seeder, Migrations, SCSS compiler, Swagger/OpenAPI, i18n, Events, Container/DI, HtmlElement, Inline testing, Error overlay, Dev dashboard, Rate limiter, Response cache, Logging, MCP server
+        CONTEXT
+      end
+
+      # GitHub Copilot context (~30 lines).
+      #
+      # @return [String]
+      def generate_copilot_context
+        <<~CONTEXT
+          # Tina4 Ruby #{Tina4::VERSION} — Copilot Instructions
+
+          This is a **Tina4 Ruby** project. Tina4 is a zero-dependency web framework. Docs: https://tina4.com
+
+          ## Structure
+
+          Routes in `src/routes/`, ORM models in `src/orm/`, templates in `src/templates/`, services in `src/app/`, tests in `spec/`.
+
+          ## Route Example
+
+          ```ruby
+          Tina4.get "/api/users" do |request, response|
+            response.call({ users: [] }, Tina4::HTTP_OK)
+          end
+
+          Tina4.post "/api/users" do |request, response|
+            response.call({ created: request.body["name"] }, 201)
+          end
+          ```
+
+          ## ORM Example
+
+          ```ruby
+          class User < Tina4::ORM
+            table_name "users"
+            integer_field :id, primary_key: true, auto_increment: true
+            string_field :name, required: true
+            string_field :email
+          end
+          ```
+
+          ## Rules
+
+          - Always return `response.call(data, status)` from routes
+          - GET is public; POST/PUT/PATCH/DELETE require auth by default
+          - Templates extend `base.twig`; schema changes via migrations only
+          - Use `snake_case`; never install gems for built-in features
+          - Built-in: Router, ORM, Database, JWT auth, Sessions, GraphQL, WebSocket, Queue, Messenger, Migrations, SCSS, Swagger, i18n, Events, DI, Testing
+        CONTEXT
+      end
+
+      # Windsurf context (~60 lines).
+      #
+      # @return [String]
+      def generate_windsurf_context
+        <<~CONTEXT
+          # Tina4 Ruby #{Tina4::VERSION} — Windsurf Rules
+
+          You are working in a **Tina4 Ruby** project — a zero-dependency, batteries-included web framework.
+          Documentation: https://tina4.com
+
+          ## Project Structure
+
+          ```
+          src/routes/    — Route handlers (auto-discovered)
+          src/orm/       — ORM models
+          src/templates/ — Twig templates
+          src/app/       — Service classes
+          src/scss/      — SCSS (auto-compiled)
+          src/public/    — Static assets
+          src/seeds/     — Database seeders
+          migrations/    — SQL migration files
+          spec/          — RSpec tests
+          ```
+
+          ## CLI Commands
+
+          ```bash
+          tina4ruby init .          # Scaffold project
+          tina4ruby serve           # Start dev server on port 7147
+          tina4ruby migrate         # Run database migrations
+          tina4ruby test            # Run test suite
+          tina4ruby routes          # List all registered routes
+          ```
+
+          ## Route Pattern
+
+          ```ruby
+          Tina4.get "/api/users" do |request, response|
+            response.call({ users: [] }, Tina4::HTTP_OK)
+          end
+
+          Tina4.post "/api/users" do |request, response|
+            response.call({ created: request.body["name"] }, 201)
+          end
+          ```
+
+          ## ORM Pattern
+
+          ```ruby
+          class User < Tina4::ORM
+            table_name "users"
+            integer_field :id, primary_key: true, auto_increment: true
+            string_field :name, required: true
+            string_field :email
+          end
+          ```
+
+          ## Template Pattern
+
+          ```twig
+          {% extends "base.twig" %}
+          {% block content %}
+          <div class="container">
+            <h1>{{ title }}</h1>
+            {% for item in items %}
+              <p>{{ item.name }}</p>
+            {% endfor %}
+          </div>
+          {% endblock %}
+          ```
+
+          ## Conventions
+
+          1. Routes return `response.call(data, status)` — never `puts` or `render`
+          2. GET routes are public; POST/PUT/PATCH/DELETE require auth by default
+          3. Every template extends `base.twig`
+          4. All schema changes via migrations — never create tables in route code
+          5. Use built-in features — never install gems for things Tina4 already provides
+          6. Service pattern — complex logic in `src/app/`, routes stay thin
+          7. Use `snake_case` for methods and variables
+
+          ## Built-in Features (No Gems Needed)
+
+          Router, ORM, Database (SQLite/PostgreSQL/MySQL/MSSQL/Firebird), Frond templates (Twig-compatible), JWT auth, Sessions (File/Redis/Valkey/MongoDB/DB), GraphQL + GraphiQL, WebSocket + Redis backplane, WSDL/SOAP, Queue (File/RabbitMQ/Kafka/MongoDB), HTTP client, Messenger (SMTP/IMAP), FakeData/Seeder, Migrations, SCSS compiler, Swagger/OpenAPI, i18n, Events, Container/DI, HtmlElement, Inline testing, Error overlay, Dev dashboard, Rate limiter, Response cache, Logging, MCP server
+
+          ## Database Drivers
+
+          SQLite, PostgreSQL, MySQL, MSSQL, Firebird. Connection string format: `driver://host:port/database`.
+
+          ## Auth
+
+          JWT auth built-in via `Tina4::Auth`. `secure_get` / `secure_post` for protected routes. Password hashing via `Tina4::Auth.hash_password` / `check_password`.
+        CONTEXT
+      end
+
+      # Aider context (~58 lines).
+      #
+      # @return [String]
+      def generate_aider_context
+        <<~CONTEXT
+          # Tina4 Ruby #{Tina4::VERSION} — Conventions
+
+          ## Framework
+
+          Tina4 Ruby is a zero-dependency, batteries-included web framework. Docs: https://tina4.com
+
+          ## Project Structure
+
+          ```
+          src/routes/    — Route handlers (auto-discovered)
+          src/orm/       — ORM models
+          src/templates/ — Twig templates
+          src/app/       — Service classes
+          src/scss/      — SCSS (auto-compiled)
+          src/public/    — Static assets
+          src/seeds/     — Database seeders
+          migrations/    — SQL migration files
+          spec/          — RSpec tests
+          ```
+
+          ## CLI
+
+          ```bash
+          tina4ruby init .          # Scaffold project
+          tina4ruby serve           # Start dev server on port 7147
+          tina4ruby migrate         # Run database migrations
+          tina4ruby test            # Run test suite
+          tina4ruby routes          # List all registered routes
+          ```
+
+          ## Route Pattern
+
+          ```ruby
+          Tina4.get "/api/users" do |request, response|
+            response.call({ users: [] }, Tina4::HTTP_OK)
+          end
+
+          Tina4.post "/api/users" do |request, response|
+            response.call({ created: request.body["name"] }, 201)
+          end
+          ```
+
+          ## ORM Pattern
+
+          ```ruby
+          class User < Tina4::ORM
+            table_name "users"
+            integer_field :id, primary_key: true, auto_increment: true
+            string_field :name, required: true
+            string_field :email
+          end
+          ```
+
+          ## Conventions
+
+          1. Routes return `response.call(data, status)` — never `puts` or `render`
+          2. GET routes are public; POST/PUT/PATCH/DELETE require auth by default
+          3. Every template extends `base.twig`
+          4. All schema changes via migrations — never create tables in route code
+          5. Use built-in features — never install gems for things Tina4 already provides
+          6. Service pattern — complex logic in `src/app/`, routes stay thin
+          7. Use `snake_case` for methods and variables
+          8. Wrap route logic in `begin/rescue`, log with `Tina4::Log.error()`
+
+          ## Built-in Features
+
+          Router, ORM, Database (SQLite/PostgreSQL/MySQL/MSSQL/Firebird), Frond templates (Twig-compatible), JWT auth, Sessions (File/Redis/Valkey/MongoDB/DB), GraphQL + GraphiQL, WebSocket + Redis backplane, WSDL/SOAP, Queue (File/RabbitMQ/Kafka/MongoDB), HTTP client, Messenger (SMTP/IMAP), FakeData/Seeder, Migrations, SCSS compiler, Swagger/OpenAPI, i18n, Events, Container/DI, HtmlElement, Inline testing, Error overlay, Dev dashboard, Rate limiter, Response cache, Logging, MCP server
+
+          ## Testing
+
+          Run: `bundle exec rspec` or `tina4ruby test`. Tests in `spec/`.
+        CONTEXT
+      end
+
+      # Cline context (~42 lines).
+      #
+      # @return [String]
+      def generate_cline_context
+        <<~CONTEXT
+          # Tina4 Ruby #{Tina4::VERSION} — Cline Rules
+
+          Tina4 Ruby is a zero-dependency web framework. Docs: https://tina4.com
+
+          ## Structure
+
+          ```
+          src/routes/    — Route handlers (auto-discovered)
+          src/orm/       — ORM models
+          src/templates/ — Twig templates
+          src/app/       — Service classes
+          src/scss/      — SCSS (auto-compiled)
+          src/public/    — Static assets
+          src/seeds/     — Database seeders
+          migrations/    — SQL migration files
+          spec/          — RSpec tests
+          ```
+
+          ## Route Pattern
+
+          ```ruby
+          Tina4.get "/api/users" do |request, response|
+            response.call({ users: [] }, Tina4::HTTP_OK)
+          end
+
+          Tina4.post "/api/users" do |request, response|
+            response.call({ created: request.body["name"] }, 201)
+          end
+          ```
+
+          ## ORM Pattern
+
+          ```ruby
+          class User < Tina4::ORM
+            table_name "users"
+            integer_field :id, primary_key: true, auto_increment: true
+            string_field :name, required: true
+            string_field :email
+          end
+          ```
+
+          ## Conventions
+
+          1. Routes return `response.call(data, status)` — never `puts` or `render`
+          2. GET routes are public; POST/PUT/PATCH/DELETE require auth by default
+          3. Every template extends `base.twig`
+          4. All schema changes via migrations — never create tables in route code
+          5. Use built-in features — never install gems for things Tina4 already provides
+          6. Service pattern — complex logic in `src/app/`, routes stay thin
+          7. Use `snake_case` for methods and variables
+
+          ## Built-in Features
+
+          Router, ORM, Database (SQLite/PostgreSQL/MySQL/MSSQL/Firebird), Frond templates (Twig-compatible), JWT auth, Sessions, GraphQL, WebSocket, Queue, Messenger, Migrations, SCSS, Swagger, i18n, Events, Container/DI, Testing, Error overlay, Dev dashboard, Rate limiter, Response cache, Logging, MCP server
+        CONTEXT
+      end
+
+      # OpenAI Codex context (~70 lines).
+      #
+      # @return [String]
+      def generate_codex_context
+        <<~CONTEXT
+          # Tina4 Ruby #{Tina4::VERSION} — Codex Agent Instructions
+
+          You are working in a **Tina4 Ruby** project — a zero-dependency, batteries-included web framework.
+          Documentation: https://tina4.com
+
+          ## Project Structure
+
+          ```
+          src/routes/    — Route handlers (auto-discovered)
+          src/orm/       — ORM models
+          src/templates/ — Twig templates
+          src/app/       — Service classes
+          src/scss/      — SCSS (auto-compiled)
+          src/public/    — Static assets
+          src/seeds/     — Database seeders
+          migrations/    — SQL migration files
+          spec/          — RSpec tests
+          ```
+
+          ## CLI Commands
+
+          ```bash
+          tina4ruby init .          # Scaffold project
+          tina4ruby serve           # Start dev server on port 7147
+          tina4ruby serve --dev     # Dev mode with auto-reload
+          tina4ruby migrate         # Run database migrations
+          tina4ruby test            # Run test suite
+          tina4ruby routes          # List all registered routes
+          tina4ruby seed            # Run database seeders
+          ```
+
+          ## Route Pattern
+
+          ```ruby
+          Tina4.get "/api/users" do |request, response|
+            response.call({ users: [] }, Tina4::HTTP_OK)
+          end
+
+          Tina4.post "/api/users" do |request, response|
+            response.call({ created: request.body["name"] }, 201)
+          end
+
+          # Protected GET route
+          Tina4.secure_get "/api/admin/users" do |request, response|
+            response.call({ users: User.all }, Tina4::HTTP_OK)
+          end
+
+          # Route with template rendering
+          Tina4::Router.get "/dashboard", template: "dashboard.twig" do |request, response|
+            response.call({ title: "Dashboard" }, Tina4::HTTP_OK)
+          end
+          ```
+
+          ## ORM Pattern
+
+          ```ruby
+          class User < Tina4::ORM
+            table_name "users"
+            integer_field :id, primary_key: true, auto_increment: true
+            string_field :name, required: true
+            string_field :email
+          end
+
+          # Usage
+          user = User.create(name: "Alice", email: "alice@example.com")
+          users = User.where("name LIKE ?", ["%ali%"])
+          user = User.find(1)
+          ```
+
+          ## Template Pattern
+
+          ```twig
+          {% extends "base.twig" %}
+          {% block content %}
+          <div class="container">
+            <h1>{{ title }}</h1>
+            {% for item in items %}
+              <p>{{ item.name }}</p>
+            {% endfor %}
+          </div>
+          {% endblock %}
+          ```
+
+          ## Conventions
+
+          1. Routes return `response.call(data, status)` — never `puts` or `render`
+          2. GET routes are public; POST/PUT/PATCH/DELETE require auth by default
+          3. Every template extends `base.twig`
+          4. All schema changes via migrations — never create tables in route code
+          5. Use built-in features — never install gems for things Tina4 already provides
+          6. Service pattern — complex logic in `src/app/`, routes stay thin
+          7. Use `snake_case` for methods and variables
+          8. Wrap route logic in `begin/rescue`, log with `Tina4::Log.error()`
+          9. Database drivers: SQLite, PostgreSQL, MySQL, MSSQL, Firebird
+
+          ## Built-in Features (No Gems Needed)
+
+          Router, ORM, Database (SQLite/PostgreSQL/MySQL/MSSQL/Firebird), Frond templates (Twig-compatible), JWT auth, Sessions (File/Redis/Valkey/MongoDB/DB), GraphQL + GraphiQL, WebSocket + Redis backplane, WSDL/SOAP, Queue (File/RabbitMQ/Kafka/MongoDB), HTTP client, Messenger (SMTP/IMAP), FakeData/Seeder, Migrations, SCSS compiler, Swagger/OpenAPI, i18n, Events, Container/DI, HtmlElement, Inline testing, Error overlay, Dev dashboard, Rate limiter, Response cache, Logging, MCP server
+
+          ## Testing
+
+          Run: `bundle exec rspec` or `tina4ruby test`. Tests live in `spec/`. Use `Tina4::Testing` for inline tests.
+        CONTEXT
       end
     end
   end

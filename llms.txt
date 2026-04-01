@@ -1,10 +1,10 @@
 # tina4-ruby — LLM Context
 
-Tina4 Ruby v3.10.40. 54 built-in features, zero external dependencies. Web framework for Ruby 3.0+.
+Tina4 Ruby v3.10.42. 54 built-in features, zero external dependencies. Web framework for Ruby 3.0+.
 Routes, ORM, templates, auth, queue, websocket, graphql — all built in.
 
 Install: gem install tina4-ruby
-Version: 3.10.40
+Version: 3.10.42
 Default port: 7147
 
 ---
