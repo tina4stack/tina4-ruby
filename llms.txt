@@ -1,0 +1,216 @@
+# tina4-ruby — LLM Context
+
+Tina4 Ruby v3.10.40. 54 built-in features, zero external dependencies. Web framework for Ruby 3.0+.
+Routes, ORM, templates, auth, queue, websocket, graphql — all built in.
+
+Install: gem install tina4-ruby
+Version: 3.10.40
+Default port: 7147
+
+---
+
+## Router
+
+Route files go in src/routes/ and are auto-discovered.
+
+```ruby
+require "tina4"
+
+Tina4::Router.get "/api/users" do |request, response|
+  response.json({ users: [] })
+end
+
+Tina4::Router.post "/api/users" do |request, response|
+  body = request.body
+  response.json({ created: body["name"] }, 201)
+end
+
+Tina4::Router.get "/api/users/{id}" do |request, response|
+  id = request.params["id"]
+  response.json({ id: id })
+end
+
+# Auth: POST/PUT/DELETE require auth by default
+# Chain .no_auth to make public
+Tina4::Router.post("/api/public") { |req, res|
+  res.json({ open: true })
+}.no_auth
+
+# Chain .secure to protect a GET route
+Tina4::Router.get("/api/private") { |req, res|
+  res.json({ secret: true })
+}.secure
+
+# Template rendering
+Tina4::Router.get "/dashboard" do |request, response|
+  response.template("dashboard.twig", { title: "Dashboard" })
+end
+```
+
+---
+
+## Database
+
+```ruby
+require "tina4"
+
+db = Tina4::Database.new("sqlite:///app.db") # or postgres://, mysql://, mssql://, firebird://
+
+result = db.fetch("SELECT * FROM users WHERE active = ?", [true], limit: 10, offset: 0)
+row = db.fetch_one("SELECT * FROM users WHERE id = ?", [1])
+db.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])
+db.insert("users", { name: "Alice" })
+db.update("users", { id: 1, name: "Bob" })
+db.delete("users", { id: 1 })
+next_id = db.get_next_id("users") # race-safe atomic ID generation
+```
+
+---
+
+## ORM
+
+```ruby
+require "tina4"
+
+class User < Tina4::ORM
+  integer_field :id, primary_key: true, auto_increment: true
+  string_field :name
+  string_field :email
+
+  table_name "users"
+end
+
+Tina4.orm_bind(db)
+
+# Instance methods
+user = User.new(name: "Alice")
+user.save
+user.load("id = ?", [1])
+user.delete
+user.to_h
+user.to_json
+
+# Class methods
+users = User.where("active = ?", [true], order_by: "name", limit: 10, offset: 0)
+user = User.find(1)
+count = User.count
+```
+
+---
+
+## Frond (Templates)
+
+```ruby
+html = Tina4::Frond.render("page.twig", { title: "Home", items: items })
+```
+
+Templates use Twig syntax. Located in src/templates/.
+
+---
+
+## Auth
+
+```ruby
+token = Tina4::Auth.get_token({ user_id: 1, role: "admin" })
+payload = Tina4::Auth.valid_token(token) # returns hash or nil
+hashed = Tina4::Auth.hash_password("secret")
+valid = Tina4::Auth.check_password("secret", hashed)
+```
+
+---
+
+## Queue
+
+```ruby
+queue = Tina4::Queue.new(topic: "emails", max_retries: 3)
+queue.push({ to: "alice@example.com", subject: "Hello" })
+
+queue.consume("emails") do |job|
+  process(job.payload)
+  job.complete # or job.fail("reason")
+end
+
+queue.produce("other_topic", { data: "value" })
+dead = queue.dead_letters
+```
+
+Backends: file (default), RabbitMQ, Kafka — configured via TINA4_QUEUE_BACKEND env var.
+
+---
+
+## API Client
+
+```ruby
+api = Tina4::Api.new(base_url: "https://api.example.com")
+result = api.get("/users") # returns { http_code: 200, body: {...} }
+api.post("/users", { name: "Alice" })
+api.set_bearer_token("token123")
+```
+
+---
+
+## Events
+
+```ruby
+Tina4::Events.on("user.created") do |user|
+  puts "Welcome #{user['name']}"
+end
+
+Tina4::Events.emit("user.created", { name: "Alice" })
+Tina4::Events.once("app.ready") { puts "Started!" }
+```
+
+---
+
+## Migration
+
+```ruby
+Tina4::Migration.migrate(db)
+Tina4::Migration.create("add users table")
+```
+
+SQL files in migrations/ directory.
+
+---
+
+## Project Structure
+
+```
+src/
+  routes/       # Auto-discovered route files
+  orm/          # ORM model definitions
+  templates/    # Frond/Twig templates
+  public/       # Static files served at /
+  app/          # Shared helpers and services
+migrations/     # SQL migration files
+tests/          # Test files
+app.rb          # Entry point
+Gemfile         # Dependencies
+.env            # Environment variables
+```
+
+---
+
+## Entry Point (app.rb)
+
+```ruby
+require "tina4"
+Tina4.initialize!(__dir__)
+app = Tina4::RackApp.new
+Tina4::WebServer.new(app, port: 7147).start
+```
+
+---
+
+## Known Gotchas
+
+1. Route params use `{id}` not `:id` — matches Python/PHP convention
+2. POST/PUT/DELETE require auth by default. Chain `.no_auth` to make public
+3. GET is public by default. Chain `.secure` to protect
+4. ORM uses `to_h` for hash conversion (Ruby convention)
+5. Queue job payload accessed via `job.payload` not `job.data`
+6. Database `fetch()` uses `offset:` not `skip:`
+7. Namespace is `Tina4::` — e.g., `Tina4::Router`, `Tina4::ORM`, `Tina4::Auth`
+8. Templates are Twig syntax (not ERB)
+9. Default port: 7147
+10. Methods use snake_case (Ruby convention): `get_token`, `hash_password`, `dead_letters`

@@ -1,0 +1,36 @@
+# tina4-ruby — Cursor Rules
+
+Tina4 Ruby v3.10.40. 54 built-in features, zero external dependencies. Ruby 3.0+.
+
+## Key Patterns
+
+```ruby
+require "tina4"
+
+Tina4::Router.get "/api/users" do |request, response|
+  response.json({ users: [] })
+end
+
+Tina4::Router.post("/api/public") { |req, res|
+  res.json({ open: true })
+}.no_auth
+```
+
+## Critical Rules
+
+- Route params use `{id}` not `:id`
+- POST/PUT/DELETE require auth by default — chain `.no_auth` to make public
+- GET is public by default — chain `.secure` to protect
+- ORM uses `to_h` for hash conversion
+- Queue job payload: `job.payload` not `job.data`
+- Namespace: `Tina4::` — e.g., `Tina4::Router`, `Tina4::ORM`, `Tina4::Auth`
+- Methods use snake_case: `get_token`, `hash_password`, `dead_letters`
+- Templates are Twig syntax (not ERB)
+- Default port: 7147
+- Entry point: `Tina4.initialize!(__dir__); Tina4::WebServer.new(app, port: 7147).start`
+
+## Project Structure
+
+Routes in `src/routes/`, ORM in `src/orm/`, templates in `src/templates/`, static in `src/public/`.
+
+See llms.txt for complete API reference.
