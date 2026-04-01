@@ -339,6 +339,16 @@ module Tina4
       classes = lines.count { |l| l.strip.match?(/\A(class|module)\s+/) }
       imports = _extract_imports(lines)
 
+      warnings = []
+      functions.each do |f|
+        if f["loc"] <= 1
+          warnings << { "type" => "empty_method", "message" => "Method '#{f["name"]}' appears to be empty", "line" => f["line"] }
+        end
+      end
+      if classes > 0 && functions.empty? && loc <= 1
+        warnings << { "type" => "empty_class", "message" => "Class/module appears to be empty", "line" => 1 }
+      end
+
       {
         "path" => file_path,
         "loc" => loc,
@@ -353,7 +363,8 @@ module Tina4
             "args" => f["args"]
           }
         },
-        "imports" => imports
+        "imports" => imports,
+        "warnings" => warnings
       }
     end
 
