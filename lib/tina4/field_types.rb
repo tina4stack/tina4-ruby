@@ -20,7 +20,10 @@ module Tina4
           @table_name = name
         else
           base = self.name.split("::").last.downcase
-          base += "s" if ENV.fetch("ORM_PLURAL_TABLE_NAMES", "").match?(/\A(true|1|yes)\z/i)
+          # Pluralize by default (add "s") unless ORM_PLURAL_TABLE_NAMES is explicitly disabled
+          unless ENV.fetch("ORM_PLURAL_TABLE_NAMES", "").match?(/\A(false|0|no)\z/i)
+            base += "s" unless base.end_with?("s")
+          end
           @table_name || base
         end
       end

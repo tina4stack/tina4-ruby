@@ -370,4 +370,160 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
+  describe "status API" do
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+    end
+
+    it "includes db_tables as an integer" do
+      env = { "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
+      status, _headers, body = Tina4::DevAdmin.handle_request(env)
+      expect(status).to eq(200)
+      data = JSON.parse(body.first)
+      expect(data).to have_key("db_tables")
+      expect(data["db_tables"]).to be_a(Integer)
+    end
+  end
+
+  describe "multi-statement SQL execution" do
+    let(:db_path) { File.join(Dir.tmpdir, "tina4_multi_test_#{Process.pid}.db") }
+    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      Tina4.database = db
+    end
+
+    after do
+      db.close rescue nil
+      Tina4.database = nil
+      File.delete(db_path) if File.exist?(db_path)
+    end
+
+    it "executes a CREATE + INSERT batch via the query API" do
+      env = {
+        "PATH_INFO" => "/__dev/api/query",
+        "REQUEST_METHOD" => "POST",
+        "rack.input" => StringIO.new(JSON.generate({
+          query: "CREATE TABLE test_multi (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO test_multi (id, name) VALUES (1, 'Alice'); INSERT INTO test_multi (id, name) VALUES (2, 'Bob')"
+        }))
+      }
+      status, _headers, body = Tina4::DevAdmin.handle_request(env)
+      expect(status).to eq(200)
+      data = JSON.parse(body.first)
+      expect(data["success"]).to be true
+
+      # Verify data was inserted via a SELECT query
+      select_env = {
+        "PATH_INFO" => "/__dev/api/query",
+        "REQUEST_METHOD" => "POST",
+        "rack.input" => StringIO.new(JSON.generate({ query: "SELECT * FROM test_multi" }))
+      }
+      _s, _h, select_body = Tina4::DevAdmin.handle_request(select_env)
+      select_data = JSON.parse(select_body.first)
+      expect(select_data["rows"].size).to eq(2)
+    end
+
+    it "returns error when a batch contains a bad statement (rollback)" do
+      # Create table first
+      setup_env = {
+        "PATH_INFO" => "/__dev/api/query",
+        "REQUEST_METHOD" => "POST",
+        "rack.input" => StringIO.new(JSON.generate({
+          query: "CREATE TABLE test_rb (id INTEGER PRIMARY KEY, name TEXT)"
+        }))
+      }
+      Tina4::DevAdmin.handle_request(setup_env)
+
+      # Try batch with a bad statement — should rollback
+      bad_env = {
+        "PATH_INFO" => "/__dev/api/query",
+        "REQUEST_METHOD" => "POST",
+        "rack.input" => StringIO.new(JSON.generate({
+          query: "INSERT INTO test_rb (id, name) VALUES (1, 'Alice'); INSERT INTO nonexistent (x) VALUES (1)"
+        }))
+      }
+      status, _headers, body = Tina4::DevAdmin.handle_request(bad_env)
+      expect(status).to eq(200)
+      data = JSON.parse(body.first)
+      expect(data).to have_key("error")
+    end
+  end
+
+  describe "database tab HTML" do
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+    end
+
+    let(:html) do
+      env = { "PATH_INFO" => "/__dev", "REQUEST_METHOD" => "GET" }
+      _status, _headers, body = Tina4::DevAdmin.handle_request(env)
+      body.first
+    end
+
+    it "contains split-screen layout elements" do
+      expect(html).to include("table-list")
+      expect(html).to include("query-results")
+      expect(html).to include("query-input")
+    end
+
+    it "contains Copy CSV, Copy JSON, and Paste buttons" do
+      expect(html).to include("Copy CSV")
+      expect(html).to include("Copy JSON")
+      expect(html).to include("Paste")
+    end
+
+    it "contains the limit dropdown" do
+      expect(html).to include("query-limit")
+      expect(html).to include('<option value="20">20</option>')
+      expect(html).to include('<option value="0">All</option>')
+    end
+
+    it "contains seed controls" do
+      expect(html).to include("seed-table")
+      expect(html).to include("seed-count")
+      expect(html).to include("seedTable()")
+    end
+  end
+
+  describe "SQLite LIMIT dedup" do
+    let(:db_path) { File.join(Dir.tmpdir, "tina4_limit_test_#{Process.pid}.db") }
+    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+
+    after do
+      db.close rescue nil
+      File.delete(db_path) if File.exist?(db_path)
+    end
+
+    it "fetch with existing LIMIT in SQL does not double it" do
+      db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+      10.times { |i| db.execute("INSERT INTO items (id, name) VALUES (#{i}, 'item#{i}')") }
+
+      # SQL already has LIMIT — should return exactly 3 rows
+      result = db.fetch("SELECT * FROM items LIMIT 3")
+      expect(result.to_a.size).to eq(3)
+    end
+
+    it "fetch without LIMIT returns all rows when no limit: kwarg given" do
+      db.execute("CREATE TABLE items2 (id INTEGER PRIMARY KEY, name TEXT)")
+      30.times { |i| db.execute("INSERT INTO items2 (id, name) VALUES (#{i}, 'item#{i}')") }
+
+      # No LIMIT in SQL, no limit: kwarg — returns all rows
+      result = db.fetch("SELECT * FROM items2")
+      expect(result.to_a.size).to eq(30)
+    end
+
+    it "fetch with limit: kwarg applies the limit" do
+      db.execute("CREATE TABLE items3 (id INTEGER PRIMARY KEY, name TEXT)")
+      30.times { |i| db.execute("INSERT INTO items3 (id, name) VALUES (#{i}, 'item#{i}')") }
+
+      # Explicit limit: kwarg — should return exactly 20
+      result = db.fetch("SELECT * FROM items3", limit: 20)
+      expect(result.to_a.size).to eq(20)
+    end
+  end
+
 end

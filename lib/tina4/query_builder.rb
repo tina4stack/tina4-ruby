@@ -365,10 +365,16 @@ module Tina4
 
     # Ensure a database connection is available.
     def ensure_db!
-      return unless @db.nil?
+      if @db.nil?
+        @db = Tina4.database if defined?(Tina4.database) && Tina4.database
+      end
 
-      @db = Tina4.database if defined?(Tina4.database) && Tina4.database
       raise "QueryBuilder: No database connection provided." if @db.nil?
+
+      # Check if the database connection is still open
+      if @db.respond_to?(:connected) && !@db.connected
+        raise "QueryBuilder: No database connection provided."
+      end
     end
   end
 end

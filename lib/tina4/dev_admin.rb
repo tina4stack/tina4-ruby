@@ -498,6 +498,14 @@ module Tina4
       end
 
       def status_payload
+        db_table_count = 0
+        begin
+          db = Tina4.database
+          db_table_count = db.tables.size if db
+        rescue
+          # ignore
+        end
+
         {
           framework: "tina4-ruby",
           version: Tina4::VERSION,
@@ -505,6 +513,8 @@ module Tina4
           platform: RUBY_PLATFORM,
           debug: ENV["TINA4_DEBUG"] || "false",
           log_level: ENV["TINA4_LOG_LEVEL"] || "ERROR",
+          database: ENV["DATABASE_URL"] || "not configured",
+          db_tables: db_table_count,
           uptime: (Time.now - (defined?(@boot_time) && @boot_time ? @boot_time : (@boot_time = Time.now))).round(1),
           route_count: Tina4::Router.routes.size,
           request_stats: request_inspector.stats,
@@ -574,7 +584,9 @@ module Tina4
           },
           pid: Process.pid,
           thread_count: Thread.list.size,
-          env: ENV["TINA4_ENV"] || ENV["RACK_ENV"] || ENV["RUBY_ENV"] || "development"
+          env: ENV["TINA4_ENV"] || ENV["RACK_ENV"] || ENV["RUBY_ENV"] || "development",
+          db_tables: (begin; db = Tina4.database; db ? db.tables.size : 0; rescue; 0; end),
+          db_connected: (begin; db = Tina4.database; !db.nil?; rescue; false; end)
         }
       end
 
@@ -599,19 +611,38 @@ module Tina4
         sql = sql.to_s.strip
         return { error: "No SQL provided" } if sql.empty?
 
-        first_word = sql.split(/[\s\t\n\r]+/, 2).first.to_s.upcase
-        unless %w[SELECT PRAGMA EXPLAIN SHOW DESCRIBE].include?(first_word)
-          return { error: "Only SELECT queries are allowed in the dev dashboard" }
-        end
-
         db = Tina4.database
         return { error: "No database configured" } unless db
 
+        # Split multiple statements on semicolons
+        statements = sql.split(";").map(&:strip).reject(&:empty?)
+
         begin
-          result = db.fetch(sql)
-          rows = result.respond_to?(:to_a) ? result.to_a : (result.is_a?(Array) ? result : [])
-          columns = rows.first.is_a?(Hash) ? rows.first.keys.map(&:to_s) : []
-          { columns: columns, rows: rows, count: rows.size }
+          if statements.size == 1
+            first_word = statements[0].split(/[\s\t\n\r]+/, 2).first.to_s.upcase
+            if %w[SELECT PRAGMA EXPLAIN SHOW DESCRIBE].include?(first_word)
+              result = db.fetch(statements[0])
+              rows = result.respond_to?(:to_a) ? result.to_a : (result.is_a?(Array) ? result : [])
+              columns = rows.first.is_a?(Hash) ? rows.first.keys.map(&:to_s) : []
+              return { columns: columns, rows: rows, count: rows.size }
+            end
+          end
+
+          # Execute all statements (single write or multi-statement batch)
+          total_affected = 0
+          db.start_transaction if db.respond_to?(:start_transaction)
+          begin
+            statements.each do |stmt|
+              result = db.execute(stmt)
+              total_affected += (result.respond_to?(:affected_rows) ? result.affected_rows : 0)
+            end
+            db.commit if db.respond_to?(:commit)
+          rescue => e
+            db.rollback if db.respond_to?(:rollback)
+            return { error: e.message }
+          end
+
+          { affected: total_affected, success: true }
         rescue => e
           { error: e.message }
         end
@@ -1069,32 +1100,45 @@ module Tina4
                   <h2>Database</h2>
                   <button class="btn btn-sm" onclick="loadTables()">Refresh</button>
               </div>
-              <div class="flex gap-md p-md">
-                  <div class="flex-1">
-                      <div class="flex gap-sm items-center mb-sm">
-                          <select id="query-type" class="input">
-                              <option value="sql">SQL</option>
-                          </select>
-                          <button class="btn btn-sm btn-primary" onclick="runQuery()">Run</button>
-                          <span class="text-sm text-muted">Ctrl+Enter</span>
-                      </div>
-                      <textarea id="query-input" rows="4" placeholder="SELECT * FROM users LIMIT 20" class="input input-mono" style="width:100%"></textarea>
-                      <div id="query-error" class="hidden" style="color:var(--danger);font-size:0.75rem;margin-top:0.25rem"></div>
-                  </div>
-                  <div style="width:180px">
-                      <div class="text-sm text-muted" style="font-weight:600;margin-bottom:0.5rem">Tables</div>
+              <div style="display:flex;height:calc(100vh - 140px);overflow:hidden">
+                  <!-- Left: Tables navigation -->
+                  <div style="width:200px;min-width:200px;border-right:1px solid var(--border);padding:0.5rem;overflow-y:auto;display:flex;flex-direction:column;gap:0.5rem">
+                      <div class="text-sm text-muted" style="font-weight:600">Tables</div>
                       <div id="table-list" class="text-sm"></div>
-                      <div style="margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.75rem">
-                          <div class="text-sm text-muted" style="font-weight:600;margin-bottom:0.5rem">Seed Data</div>
-                          <select id="seed-table" class="input" style="width:100%;margin-bottom:0.25rem"><option value="">Pick table...</option></select>
+                      <div style="border-top:1px solid var(--border);padding-top:0.5rem;margin-top:auto">
+                          <div class="text-sm text-muted" style="font-weight:600;margin-bottom:0.25rem">Seed Data</div>
+                          <select id="seed-table" class="input" style="width:100%;margin-bottom:0.25rem;font-size:0.75rem"><option value="">Pick table...</option></select>
                           <div class="flex gap-sm items-center">
-                              <input type="number" id="seed-count" class="input" value="10" min="1" max="1000" style="width:60px">
+                              <input type="number" id="seed-count" class="input" value="10" min="1" max="1000" style="width:60px;font-size:0.75rem">
                               <button class="btn btn-sm btn-success" onclick="seedTable()">Seed</button>
                           </div>
                       </div>
                   </div>
+                  <!-- Right: Query + Results -->
+                  <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding:0.5rem">
+                      <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.25rem">
+                          <select id="query-type" class="input" style="width:auto;font-size:0.75rem">
+                              <option value="sql">SQL</option>
+                          </select>
+                          <span class="text-sm text-muted">Limit</span>
+                          <select id="query-limit" class="input" style="width:70px;font-size:0.75rem">
+                              <option value="20">20</option>
+                              <option value="50">50</option>
+                              <option value="100">100</option>
+                              <option value="500">500</option>
+                              <option value="0">All</option>
+                          </select>
+                          <button class="btn btn-sm btn-primary" onclick="runQuery()">Run</button>
+                          <button class="btn btn-sm" id="btn-csv" onclick="copyResults('csv',this)" title="Copy results as CSV">Copy CSV</button>
+                          <button class="btn btn-sm" id="btn-json" onclick="copyResults('json',this)" title="Copy results as JSON">Copy JSON</button>
+                          <button class="btn btn-sm" onclick="pasteData()" title="Paste tab-separated data as INSERTs">Paste</button>
+                          <span class="text-sm text-muted">Ctrl+Enter</span>
+                      </div>
+                      <textarea id="query-input" rows="3" placeholder="SELECT * FROM users LIMIT 20" class="input input-mono" style="width:100%;font-size:0.75rem;resize:vertical"></textarea>
+                      <div id="query-error" class="hidden" style="color:var(--danger);font-size:0.75rem;margin-top:0.25rem"></div>
+                      <div id="query-results" style="flex:1;overflow:auto;margin-top:0.25rem;font-size:0.75rem"></div>
+                  </div>
               </div>
-              <div id="query-results" style="overflow-x:auto"></div>
           </div>
 
           <!-- Requests Panel -->

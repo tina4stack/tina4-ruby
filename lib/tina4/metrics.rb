@@ -39,9 +39,12 @@ module Tina4
     # ── Quick Metrics ───────────────────────────────────────────
 
     def self.quick_metrics(root = 'src')
-      root = _resolve_root(root)
+      # Check if the requested directory exists before falling back
       root_path = Pathname.new(root)
       return { "error" => "Directory not found: #{root}" } unless root_path.directory?
+
+      root = _resolve_root(root)
+      root_path = Pathname.new(root)
 
       rb_files = Dir.glob(root_path.join('**', '*.rb'))
       twig_files = Dir.glob(root_path.join('**', '*.twig')) + Dir.glob(root_path.join('**', '*.erb'))
@@ -200,9 +203,12 @@ module Tina4
     # ── Full Analysis (Ripper-based) ────────────────────────────
 
     def self.full_analysis(root = 'src')
-      root = _resolve_root(root)
+      # Check if the requested directory exists before falling back
       root_path = Pathname.new(root)
       return { "error" => "Directory not found: #{root}" } unless root_path.directory?
+
+      root = _resolve_root(root)
+      root_path = Pathname.new(root)
 
       current_hash = _files_hash(root)
       now = Time.now.to_f

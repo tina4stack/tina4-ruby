@@ -14,6 +14,9 @@ RSpec.describe Tina4::Auth do
   end
 
   after(:each) do
+    Tina4::Auth.instance_variable_set(:@private_key, nil)
+    Tina4::Auth.instance_variable_set(:@public_key, nil)
+    Tina4::Auth.instance_variable_set(:@keys_dir, nil)
     FileUtils.rm_rf(tmp_dir)
   end
 

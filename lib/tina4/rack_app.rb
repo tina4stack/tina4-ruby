@@ -434,6 +434,8 @@ module Tina4
         .view-modal-content{background:#1e293b;border:1px solid #334155;border-radius:0.75rem;padding:2rem;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;position:relative}
         .view-modal-close{position:absolute;top:0.75rem;right:1rem;color:#94a3b8;cursor:pointer;font-size:1.25rem;background:none;border:none}
         .view-modal-close:hover{color:#e2e8f0}
+        @keyframes wiggle{0%{transform:rotate(0deg)}15%{transform:rotate(14deg)}30%{transform:rotate(-10deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-4deg)}75%{transform:rotate(2deg)}100%{transform:rotate(0deg)}}
+        .star-wiggle{display:inline-block;transform-origin:center}
         </style>
         </head>
         <body>
@@ -447,7 +449,7 @@ module Tina4
                 <a href="/__dev" class="btn">Dev Admin</a>
                 <a href="#gallery" class="btn">Gallery</a>
                 <a href="https://github.com/tina4stack/tina4-ruby" class="btn" target="_blank">GitHub</a>
-                <a href="https://github.com/tina4stack/tina4-ruby/stargazers" class="btn" target="_blank">&#11088; Star</a>
+                <a href="https://github.com/tina4stack/tina4-ruby/stargazers" class="btn" target="_blank"><span class="star-wiggle">&#9734;</span> Star</a>
             </div>
             <div class="status">
                 <span><span class="dot"></span>Server running</span>
@@ -543,6 +545,20 @@ module Tina4
         document.getElementById('viewModal').addEventListener('click', function(e) {
             if (e.target === this) this.classList.remove('active');
         });
+        (function(){
+            var star=document.querySelector('.star-wiggle');
+            if(!star)return;
+            function doWiggle(){
+                star.style.animation='wiggle 1.2s ease-in-out';
+                star.addEventListener('animationend',function onEnd(){
+                    star.removeEventListener('animationend',onEnd);
+                    star.style.animation='none';
+                    var delay=3000+Math.random()*15000;
+                    setTimeout(doWiggle,delay);
+                });
+            }
+            setTimeout(doWiggle,3000);
+        })();
         </script>
         </body>
         </html>

@@ -1027,7 +1027,7 @@ module Tina4
           {% block content %}
           <div class="container mt-4">
               <div class="d-flex justify-content-between align-items-center mb-3">
-                  <h1>#{name} #{{ item.id }}</h1>
+                  <h1>#{name} \#{{ item.id }}</h1>
                   <div>
                       <a href="/#{route_name}/{{ item.id }}/edit" class="btn btn-secondary">Edit</a>
                       <a href="/#{route_name}" class="btn btn-outline-secondary">Back</a>

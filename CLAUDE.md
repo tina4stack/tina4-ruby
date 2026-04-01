@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.10.42 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.10.44 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -507,8 +507,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
-- Tests: 1,578 passing (38 features)
-- Version: 3.10.32
+- Tests: 1,578 passing
+- Version: 3.10.44
 
 ## Links
 
