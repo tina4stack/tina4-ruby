@@ -382,6 +382,10 @@ module Tina4
       Tina4::Container.register(name, instance, &block)
     end
 
+    def singleton(name, &block)
+      Tina4::Container.singleton(name, &block)
+    end
+
     def resolve(name)
       Tina4::Container.resolve(name)
     end

@@ -3,9 +3,10 @@
 module Tina4
   # Lightweight dependency injection container.
   #
-  #   Tina4.register(:mailer, MailService.new)          # concrete instance
-  #   Tina4.register(:db) { Database.new(ENV["DB_URL"]) } # lazy factory
-  #   Tina4.resolve(:mailer)                            # => MailService instance
+  #   Tina4::Container.register(:mailer) { MailService.new } # transient — new instance each resolve
+  #   Tina4::Container.singleton(:db) { Database.new(ENV["DB_URL"]) } # singleton — memoised
+  #   Tina4::Container.register(:cache, RedisCacheInstance)  # concrete instance (always same)
+  #   Tina4::Container.resolve(:db)                          # => Database instance
   #
   module Container
     class << self
@@ -14,28 +15,47 @@ module Tina4
       end
 
       # Register a service by name.
-      # Pass an instance directly, or a block for lazy instantiation.
+      # Pass a concrete instance directly, or a block for transient instantiation.
+      # Blocks are called on every resolve() — use singleton() for memoised factories.
       def register(name, instance = nil, &factory)
         raise ArgumentError, "provide an instance or a block, not both" if instance && factory
         raise ArgumentError, "provide an instance or a block" unless instance || factory
 
         registry[name.to_sym] = if factory
-          { factory: factory, instance: nil }
+          { factory: factory, singleton: false, instance: nil }
         else
-          { factory: nil, instance: instance }
+          { factory: nil, singleton: false, instance: instance }
         end
       end
 
+      # Register a singleton factory by name.
+      # The block is called once on first resolve() and the result is memoised.
+      def singleton(name, &factory)
+        raise ArgumentError, "singleton requires a block" unless factory
+
+        registry[name.to_sym] = { factory: factory, singleton: true, instance: nil }
+      end
+
       # Resolve a service by name.
-      # Lazy factories are called once and memoized.
+      # Singletons and concrete instances return the same object each time.
+      # Transient factories (register with block) return a new object each time.
       def resolve(name)
         entry = registry[name.to_sym]
         raise KeyError, "service not registered: #{name}" unless entry
 
-        if entry[:instance]
-          entry[:instance]
-        elsif entry[:factory]
-          entry[:instance] = entry[:factory].call
+        # Concrete instance (register with value)
+        return entry[:instance] if entry[:instance] && entry[:factory].nil?
+
+        if entry[:factory]
+          if entry[:singleton]
+            # Singleton — call once, memoize
+            entry[:instance] ||= entry[:factory].call
+            entry[:instance]
+          else
+            # Transient — call every time
+            entry[:factory].call
+          end
+        else
           entry[:instance]
         end
       end

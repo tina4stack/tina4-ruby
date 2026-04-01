@@ -19,15 +19,15 @@ RSpec.describe Tina4::Container do
       expect(call_count).to eq(1)
     end
 
-    it "memoizes the factory result" do
+    it "calls the factory on every resolve (transient)" do
       call_count = 0
-      described_class.register(:memo) { call_count += 1; Object.new }
+      described_class.register(:transient) { call_count += 1; Object.new }
 
-      first = described_class.resolve(:memo)
-      second = described_class.resolve(:memo)
+      first = described_class.resolve(:transient)
+      second = described_class.resolve(:transient)
 
-      expect(first).to equal(second)
-      expect(call_count).to eq(1)
+      expect(first).not_to equal(second)
+      expect(call_count).to eq(2)
     end
 
     it "raises KeyError for unregistered services" do
@@ -59,6 +59,32 @@ RSpec.describe Tina4::Container do
     end
   end
 
+  describe ".singleton" do
+    it "memoizes the factory result" do
+      call_count = 0
+      described_class.singleton(:memo) { call_count += 1; Object.new }
+
+      first = described_class.resolve(:memo)
+      second = described_class.resolve(:memo)
+
+      expect(first).to equal(second)
+      expect(call_count).to eq(1)
+    end
+
+    it "raises ArgumentError without a block" do
+      expect {
+        described_class.singleton(:bad)
+      }.to raise_error(ArgumentError, /requires a block/)
+    end
+
+    it "can be resolved via Tina4 DSL" do
+      Tina4.singleton(:db) { Object.new }
+      first = Tina4.resolve(:db)
+      second = Tina4.resolve(:db)
+      expect(first).to equal(second)
+    end
+  end
+
   describe ".registered?" do
     it "returns true for registered services" do
       described_class.register(:present, "here")
@@ -86,11 +112,13 @@ RSpec.describe Tina4::Container do
       expect(Tina4.resolve(:greeter)).to eq("hello")
     end
 
-    it "works with lazy factories via DSL" do
-      Tina4.register(:counter) { rand(1000) }
+    it "works with transient factories via DSL" do
+      call_count = 0
+      Tina4.register(:counter) { call_count += 1; Object.new }
       first = Tina4.resolve(:counter)
       second = Tina4.resolve(:counter)
-      expect(first).to eq(second)
+      expect(first).not_to equal(second)
+      expect(call_count).to eq(2)
     end
   end
 

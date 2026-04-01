@@ -508,13 +508,13 @@ RSpec.describe "Tina4 Smoke Test" do
   # 18. AI Detection
   # ────────────────────────────────────────────────────────────────────────
   describe "AI Detection" do
-    it "returns results for an empty directory" do
+    it "returns tool list and installed? works for an empty directory" do
       tmpdir = Dir.mktmpdir("tina4_ai")
-      results = Tina4::AI.detect_ai(tmpdir)
-      expect(results).to be_an(Array)
-      # No AI tools should be detected in an empty dir
-      detected = results.select { |r| r[:status] == "detected" }
-      expect(detected).to be_empty
+      expect(Tina4::AI::AI_TOOLS).to be_an(Array)
+      expect(Tina4::AI::AI_TOOLS).not_to be_empty
+      # No AI tools should be installed in an empty dir
+      none_installed = Tina4::AI::AI_TOOLS.none? { |t| Tina4::AI.installed?(tmpdir, t) }
+      expect(none_installed).to be true
       FileUtils.rm_rf(tmpdir)
     end
   end
@@ -682,12 +682,21 @@ RSpec.describe "Tina4 Smoke Test" do
       expect(Tina4::Container.resolve(:smoke_svc)).to eq("hello_service")
     end
 
-    it "registers and resolves a lazy factory" do
+    it "registers and resolves a transient factory" do
       call_count = 0
-      Tina4::Container.register(:smoke_lazy) { call_count += 1; "lazy_value" }
-      expect(Tina4::Container.resolve(:smoke_lazy)).to eq("lazy_value")
-      # Second resolve should return memoized instance
-      Tina4::Container.resolve(:smoke_lazy)
+      Tina4::Container.register(:smoke_transient) { call_count += 1; "lazy_value" }
+      expect(Tina4::Container.resolve(:smoke_transient)).to eq("lazy_value")
+      # Second resolve calls factory again (transient)
+      Tina4::Container.resolve(:smoke_transient)
+      expect(call_count).to eq(2)
+    end
+
+    it "registers and resolves a singleton factory" do
+      call_count = 0
+      Tina4::Container.singleton(:smoke_singleton) { call_count += 1; "singleton_value" }
+      expect(Tina4::Container.resolve(:smoke_singleton)).to eq("singleton_value")
+      # Second resolve returns memoized instance
+      Tina4::Container.resolve(:smoke_singleton)
       expect(call_count).to eq(1)
     end
 

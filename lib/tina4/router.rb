@@ -194,6 +194,14 @@ module Tina4
         @routes ||= []
       end
 
+      def get_routes
+        routes
+      end
+
+      def list_routes
+        routes
+      end
+
       # Registered WebSocket routes
       def ws_routes
         @ws_routes ||= []
@@ -281,6 +289,11 @@ module Tina4
           return [route, params] if params
         end
         nil
+      end
+
+      # Alias for find_route().
+      def match(path, method)
+        find_route(path, method)
       end
 
       # Register a class-based middleware globally.
