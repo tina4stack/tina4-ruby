@@ -78,7 +78,8 @@ module Tina4
       "sqlserver" => "Tina4::Drivers::MssqlDriver",
       "firebird" => "Tina4::Drivers::FirebirdDriver",
       "mongodb" => "Tina4::Drivers::MongodbDriver",
-      "mongo" => "Tina4::Drivers::MongodbDriver"
+      "mongo" => "Tina4::Drivers::MongodbDriver",
+      "odbc" => "Tina4::Drivers::OdbcDriver"
     }.freeze
 
     def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: 0)
@@ -495,6 +496,8 @@ module Tina4
         "firebird"
       when /mongodb/, /^mongo:/
         "mongodb"
+      when /^odbc:/
+        "odbc"
       else
         "sqlite"
       end
