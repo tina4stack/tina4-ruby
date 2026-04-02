@@ -8,10 +8,71 @@ module Tina4
       @port = port
     end
 
+    # Kill whatever process is listening on *port*.
+    # Uses lsof on macOS/Linux and netstat + taskkill on Windows.
+    # Raises RuntimeError if the port cannot be freed.
+    def free_port(port)
+      puts "  Port #{port} in use — killing existing process..."
+
+      if RUBY_PLATFORM =~ /mswin|mingw|cygwin/
+        output = `netstat -ano 2>&1`
+        pid = nil
+        output.each_line do |line|
+          if line.include?(":#{port}") && (line.include?("LISTENING") || line.include?("ESTABLISHED"))
+            parts = line.strip.split(/\s+/)
+            candidate = parts.last
+            if candidate =~ /^\d+$/
+              pid = candidate
+              break
+            end
+          end
+        end
+        if pid
+          system("taskkill /PID #{pid} /F")
+        else
+          raise "Could not free port #{port}: no PID found"
+        end
+      else
+        pids = `lsof -ti :#{port} 2>/dev/null`.strip.split("\n")
+        if pids.empty?
+          return # Nothing found — port may have freed itself
+        end
+        pids.each do |pid|
+          pid = pid.strip
+          next unless pid =~ /^\d+$/
+          begin
+            Process.kill("TERM", pid.to_i)
+          rescue Errno::ESRCH
+            # Process already gone
+          end
+        end
+      end
+
+      # Give the OS a moment to reclaim the port
+      sleep(0.5)
+      puts "  Port #{port} freed"
+    end
+
     def start
       require "webrick"
       require "stringio"
       require "socket"
+
+      # Ensure the main port is available — kill whatever is on it if needed
+      begin
+        test = TCPServer.new("0.0.0.0", @port)
+        test.close
+      rescue Errno::EADDRINUSE
+        free_port(@port)
+        # Verify the port is now free; raise if still occupied
+        begin
+          test = TCPServer.new("0.0.0.0", @port)
+          test.close
+        rescue Errno::EADDRINUSE
+          raise "Could not free port #{@port}"
+        end
+      end
+
       Tina4.print_banner(host: @host, port: @port)
       Tina4::Log.info("Starting Tina4 WEBrick server on http://#{@host}:#{@port}")
       @server = WEBrick::HTTPServer.new(
