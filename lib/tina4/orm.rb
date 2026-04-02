@@ -18,7 +18,7 @@ module Tina4
 
     class << self
       def db
-        @db || Tina4.database
+        @db || Tina4.database || auto_discover_db
       end
 
       # Per-model database binding
@@ -344,6 +344,13 @@ module Tina4
       end
 
       private
+
+      def auto_discover_db
+        url = ENV["DATABASE_URL"]
+        return nil unless url
+        Tina4.database = Tina4::Database.new(url, username: ENV.fetch("DATABASE_USERNAME", ""), password: ENV.fetch("DATABASE_PASSWORD", ""))
+        Tina4.database
+      end
 
       def find_by_id(id)
         pk = primary_key_field || :id

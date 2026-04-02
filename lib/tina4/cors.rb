@@ -66,7 +66,7 @@ module Tina4
         elsif request_origin && origin_allowed?(request_origin.chomp("/"))
           request_origin.chomp("/")
         else
-          config[:origins].split(",").first&.strip || "*"
+          ""
         end
       end
     end
