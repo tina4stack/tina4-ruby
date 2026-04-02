@@ -406,11 +406,13 @@ module Tina4
 
     def self._has_matching_test(rel_path)
       name = File.basename(rel_path, '.rb')
-      ['spec', 'test'].any? do |dir|
-        File.exist?("#{dir}/#{name}_spec.rb") ||
-        File.exist?("#{dir}/#{name}_test.rb") ||
-        File.exist?("#{dir}/test_#{name}.rb")
-      end
+      File.exist?("spec/#{name}_spec.rb") ||
+      File.exist?("spec/#{name}s_spec.rb") ||
+      File.exist?("spec/tina4/#{name}_spec.rb") ||
+      File.exist?("test/#{name}_test.rb") ||
+      File.exist?("spec/#{name}_test.rb") ||
+      File.exist?("test/test_#{name}.rb") ||
+      File.exist?("test/#{name}_spec.rb")
     end
 
     def self._files_hash(root)
