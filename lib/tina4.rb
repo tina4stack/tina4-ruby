@@ -59,6 +59,7 @@ module Tina4
     autoload :MysqlDriver,    File.expand_path("tina4/drivers/mysql_driver", __dir__)
     autoload :MssqlDriver,    File.expand_path("tina4/drivers/mssql_driver", __dir__)
     autoload :FirebirdDriver, File.expand_path("tina4/drivers/firebird_driver", __dir__)
+    autoload :MongodbDriver,  File.expand_path("tina4/drivers/mongodb_driver", __dir__)
   end
 
   # ── Lazy-loaded: session handlers ─────────────────────────────────────
