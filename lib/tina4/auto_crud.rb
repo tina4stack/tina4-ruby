@@ -55,8 +55,10 @@ module Tina4
         # GET /api/{table} -- list all with pagination, filtering, sorting
         Tina4::Router.add_route("GET", "#{prefix}/#{table}", proc { |req, res|
           begin
-            limit = (req.query["limit"] || 10).to_i
-            offset = (req.query["offset"] || 0).to_i
+            per_page = (req.query["per_page"] || req.query["limit"] || 10).to_i
+            page     = (req.query["page"] || 1).to_i
+            limit    = per_page
+            offset   = req.query["offset"] ? req.query["offset"].to_i : (page - 1) * per_page
             order_by = parse_sort(req.query["sort"])
 
             # Filter support: ?filter[field]=value

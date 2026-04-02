@@ -86,10 +86,15 @@ module Tina4
       slice_offset = (page - 1) * per_page
       page_records = @records[slice_offset, per_page] || []
       {
+        records: page_records,
         data: page_records,
+        count: total,
+        total: total,
+        limit: per_page,
+        offset: (page - 1) * per_page,
         page: page,
         per_page: per_page,
-        total: total,
+        totalPages: total_pages,
         total_pages: total_pages,
         has_next: page < total_pages,
         has_prev: page > 1
