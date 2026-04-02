@@ -649,5 +649,42 @@ module Tina4
 
       @relationship_cache[name] = klass.find(fk_value)
     end
+
+    public
+
+    # ── Imperative relationship methods (ad-hoc, like Python/PHP/Node) ──
+
+    def query_has_one(related_class, foreign_key: nil)
+      pk = self.class.primary_key_field || :id
+      pk_value = __send__(pk)
+      return nil unless pk_value
+
+      fk = foreign_key || "#{self.class.name.split('::').last.downcase}_id"
+      result = related_class.db.fetch_one(
+        "SELECT * FROM #{related_class.table_name} WHERE #{fk} = ?", [pk_value]
+      )
+      result ? related_class.from_hash(result) : nil
+    end
+
+    def query_has_many(related_class, foreign_key: nil, limit: 100, offset: 0)
+      pk = self.class.primary_key_field || :id
+      pk_value = __send__(pk)
+      return [] unless pk_value
+
+      fk = foreign_key || "#{self.class.name.split('::').last.downcase}_id"
+      results = related_class.db.fetch(
+        "SELECT * FROM #{related_class.table_name} WHERE #{fk} = ?",
+        [pk_value], limit: limit, offset: offset
+      )
+      results.map { |row| related_class.from_hash(row) }
+    end
+
+    def query_belongs_to(related_class, foreign_key: nil)
+      fk = foreign_key || "#{related_class.name.split('::').last.downcase}_id"
+      fk_value = respond_to?(fk.to_sym) ? __send__(fk.to_sym) : nil
+      return nil unless fk_value
+
+      related_class.find(fk_value)
+    end
   end
 end
