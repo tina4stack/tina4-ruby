@@ -155,12 +155,13 @@ module Tina4
     # ── start ─────────────────────────────────────────────────────────────
 
     def cmd_start(argv)
-      options = { port: nil, host: nil, dev: false, no_browser: false }
+      options = { port: nil, host: nil, dev: false, no_browser: false, production: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: tina4ruby start [options]"
         opts.on("-p", "--port PORT", Integer, "Port (default: 7147)") { |v| options[:port] = v }
         opts.on("-h", "--host HOST", "Host (default: 0.0.0.0)") { |v| options[:host] = v }
         opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
+        opts.on("--production", "Use production server (Puma)") { options[:production] = true }
         opts.on("--no-browser", "Do not open browser on start") { options[:no_browser] = true }
       end
       parser.parse!(argv)
@@ -197,9 +198,9 @@ module Tina4
 
       is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
 
-      # Try Puma first (production-grade), fall back to WEBrick
-      # In debug mode, always use WEBrick for dev toolbar/reload support
-      if !is_debug
+      # Use Puma only when explicitly requested via --production flag
+      # WEBrick is used for development (supports dev toolbar/reload)
+      if options[:production]
         begin
           require "puma"
           require "puma/configuration"
