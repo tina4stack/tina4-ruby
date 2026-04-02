@@ -3,6 +3,19 @@ require "json"
 require "securerandom"
 
 module Tina4
+  # Middleware wrapper that tags requests arriving on the AI dev port.
+  # Suppresses live-reload behaviour so AI tools get stable responses.
+  class AiPortRackApp
+    def initialize(app)
+      @app = app
+    end
+
+    def call(env)
+      env["tina4.ai_port"] = true
+      @app.call(env)
+    end
+  end
+
   class RackApp
     STATIC_DIRS = %w[public src/public src/assets assets].freeze
 
@@ -43,6 +56,10 @@ module Tina4
 
       # Dev dashboard routes (handled before anything else)
       if path.start_with?("/__dev")
+        # Block live-reload endpoint on the AI port — AI tools must get stable responses
+        if path == "/__dev_reload" && env["tina4.ai_port"]
+          return [404, { "content-type" => "text/plain" }, ["Not available on AI port"]]
+        end
         dev_response = Tina4::DevAdmin.handle_request(env)
         return dev_response if dev_response
       end
@@ -95,7 +112,7 @@ module Tina4
             matched_pattern: matched_pattern || "(no match)",
           }
           joined = body_parts.join
-          overlay = inject_dev_overlay(joined, request_info)
+          overlay = inject_dev_overlay(joined, request_info, ai_port: env["tina4.ai_port"])
           rack_response = [status, headers, [overlay]]
         end
       end
@@ -630,7 +647,7 @@ module Tina4
       [-1, {}, []]
     end
 
-    def inject_dev_overlay(body, request_info)
+    def inject_dev_overlay(body, request_info, ai_port: false)
       version = Tina4::VERSION
       method = request_info[:method]
       path = request_info[:path]
@@ -638,9 +655,11 @@ module Tina4
       request_id = Tina4::Log.request_id || "-"
       route_count = Tina4::Router.routes.length
 
+      ai_badge = ai_port ? '<span style="background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:bold;">AI PORT</span>' : ""
+
       toolbar = <<~HTML.strip
         <div id="tina4-dev-toolbar" style="position:fixed;bottom:0;left:0;right:0;background:#333;color:#fff;font-family:monospace;font-size:12px;padding:6px 16px;z-index:99999;display:flex;align-items:center;gap:16px;">
-            <span id="tina4-ver-btn" style="color:#d32f2f;font-weight:bold;cursor:pointer;text-decoration:underline dotted;" onclick="tina4VersionModal()" title="Click to check for updates">Tina4 v#{version}</span>
+            #{ai_badge}<span id="tina4-ver-btn" style="color:#d32f2f;font-weight:bold;cursor:pointer;text-decoration:underline dotted;" onclick="tina4VersionModal()" title="Click to check for updates">Tina4 v#{version}</span>
             <div id="tina4-ver-modal" style="display:none;position:fixed;bottom:3rem;left:1rem;background:#1e1e2e;border:1px solid #d32f2f;border-radius:8px;padding:16px 20px;z-index:100000;min-width:320px;box-shadow:0 8px 32px rgba(0,0,0,0.5);font-family:monospace;font-size:13px;color:#cdd6f4;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                 <strong style="color:#89b4fa;">Version Info</strong>
@@ -709,6 +728,7 @@ module Tina4
                 el.style.color='#f38ba8';
             });
         }
+        #{ai_port ? "" : "/* tina4:reload-js */"}
         </script>
       HTML
 

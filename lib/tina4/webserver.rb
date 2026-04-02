@@ -11,6 +11,7 @@ module Tina4
     def start
       require "webrick"
       require "stringio"
+      require "socket"
       Tina4.print_banner(host: @host, port: @port)
       Tina4::Log.info("Starting Tina4 WEBrick server on http://#{@host}:#{@port}")
       @server = WEBrick::HTTPServer.new(
@@ -101,10 +102,117 @@ module Tina4
       servlet.define_method(:webrick_req_port) { port }
 
       @server.mount("/", servlet, rack_app)
+
+      # AI dev port (port + 1) — no-reload, no-browser
+      @ai_server = nil
+      @ai_thread = nil
+      no_ai_port = %w[true 1 yes].include?(ENV.fetch("TINA4_NO_AI_PORT", "").downcase)
+      is_debug   = %w[true 1 yes].include?(ENV.fetch("TINA4_DEBUG", "").downcase)
+
+      if is_debug && !no_ai_port
+        ai_port = @port + 1
+        begin
+          test = TCPServer.new("0.0.0.0", ai_port)
+          test.close
+
+          @ai_server = WEBrick::HTTPServer.new(
+            BindAddress: @host,
+            Port: ai_port,
+            Logger: WEBrick::Log.new(File::NULL),
+            AccessLog: []
+          )
+
+          # Wrap the rack app so AI-port requests are tagged
+          ai_rack_app = Tina4::AiPortRackApp.new(@app)
+
+          # Build a servlet identical to the main one but bound to the AI port host/port
+          ai_host = @host
+          ai_port_str = ai_port.to_s
+          ai_servlet = Class.new(WEBrick::HTTPServlet::AbstractServlet) do
+            define_method(:initialize) do |server, app|
+              super(server)
+              @app = app
+            end
+
+            %w[GET POST PUT DELETE PATCH HEAD OPTIONS].each do |http_method|
+              define_method("do_#{http_method}") do |webrick_req, webrick_res|
+                handle_request(webrick_req, webrick_res)
+              end
+            end
+
+            define_method(:handle_request) do |webrick_req, webrick_res|
+              if Tina4::Shutdown.shutting_down?
+                webrick_res.status = 503
+                webrick_res.body = '{"error":"Service shutting down"}'
+                webrick_res["content-type"] = "application/json"
+                return
+              end
+
+              Tina4::Shutdown.track_request do
+                env = build_rack_env(webrick_req)
+                status, headers, body = @app.call(env)
+
+                webrick_res.status = status
+                headers.each do |key, value|
+                  if key.downcase == "set-cookie"
+                    Array(value.split("\n")).each { |c| webrick_res.cookies << WEBrick::Cookie.parse_set_cookie(c) }
+                  else
+                    webrick_res[key] = value
+                  end
+                end
+
+                response_body = ""
+                body.each { |chunk| response_body += chunk }
+                webrick_res.body = response_body
+              end
+            end
+
+            define_method(:build_rack_env) do |req|
+              input = StringIO.new(req.body || "")
+              env = {
+                "REQUEST_METHOD"  => req.request_method,
+                "PATH_INFO"       => req.path,
+                "QUERY_STRING"    => req.query_string || "",
+                "SERVER_NAME"     => webrick_req_host,
+                "SERVER_PORT"     => webrick_req_port,
+                "CONTENT_TYPE"    => req.content_type || "",
+                "CONTENT_LENGTH"  => (req.content_length rescue 0).to_s,
+                "REMOTE_ADDR"     => req.peeraddr&.last || "127.0.0.1",
+                "rack.input"      => input,
+                "rack.errors"     => $stderr,
+                "rack.url_scheme" => "http",
+                "rack.version"    => [1, 3],
+                "rack.multithread"  => true,
+                "rack.multiprocess" => false,
+                "rack.run_once"     => false
+              }
+
+              req.header.each do |key, values|
+                env_key = "HTTP_#{key.upcase.gsub('-', '_')}"
+                env[env_key] = values.join(", ")
+              end
+
+              env
+            end
+          end
+
+          ai_servlet.define_method(:webrick_req_host) { ai_host }
+          ai_servlet.define_method(:webrick_req_port) { ai_port_str }
+
+          @ai_server.mount("/", ai_servlet, ai_rack_app)
+          @ai_thread = Thread.new { @ai_server.start }
+          puts "  AI Port:   http://localhost:#{ai_port} (no-reload)"
+        rescue Errno::EADDRINUSE
+          puts "  AI Port:   SKIPPED (port #{ai_port} in use)"
+        end
+      end
+
       @server.start
     end
 
     def stop
+      @ai_server&.shutdown
+      @ai_thread&.join(5)
       @server&.shutdown
     end
   end
