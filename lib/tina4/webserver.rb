@@ -103,14 +103,14 @@ module Tina4
 
       @server.mount("/", servlet, rack_app)
 
-      # AI dev port (port + 1) — no-reload, no-browser
+      # Test port (port + 1000) — stable, no-browser
       @ai_server = nil
       @ai_thread = nil
       no_ai_port = %w[true 1 yes].include?(ENV.fetch("TINA4_NO_AI_PORT", "").downcase)
       is_debug   = %w[true 1 yes].include?(ENV.fetch("TINA4_DEBUG", "").downcase)
 
       if is_debug && !no_ai_port
-        ai_port = @port + 1
+        ai_port = @port + 1000
         begin
           test = TCPServer.new("0.0.0.0", ai_port)
           test.close
@@ -201,9 +201,9 @@ module Tina4
 
           @ai_server.mount("/", ai_servlet, ai_rack_app)
           @ai_thread = Thread.new { @ai_server.start }
-          puts "  AI Port:   http://localhost:#{ai_port} (no-reload)"
+          puts "  Test Port: http://localhost:#{ai_port} (stable — no hot-reload)"
         rescue Errno::EADDRINUSE
-          puts "  AI Port:   SKIPPED (port #{ai_port} in use)"
+          puts "  Test Port: SKIPPED (port #{ai_port} in use)"
         end
       end
 
