@@ -155,7 +155,7 @@ module Tina4
     # ── start ─────────────────────────────────────────────────────────────
 
     def cmd_start(argv)
-      options = { port: nil, host: nil, dev: false, no_browser: false, production: false }
+      options = { port: nil, host: nil, dev: false, no_browser: false, no_reload: false, production: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: tina4ruby start [options]"
         opts.on("-p", "--port PORT", Integer, "Port (default: 7147)") { |v| options[:port] = v }
@@ -163,6 +163,7 @@ module Tina4
         opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
         opts.on("--production", "Use production server (Puma)") { options[:production] = true }
         opts.on("--no-browser", "Do not open browser on start") { options[:no_browser] = true }
+        opts.on("--no-reload", "Disable file watcher / live-reload") { options[:no_reload] = true }
       end
       parser.parse!(argv)
 
@@ -170,6 +171,11 @@ module Tina4
       no_browser_env = ENV.fetch("TINA4_NO_BROWSER", "").downcase
       if no_browser_env.match?(/\A(true|1|yes)\z/)
         options[:no_browser] = true
+      end
+
+      # --no-reload flag sets TINA4_NO_RELOAD so the existing env check picks it up
+      if options[:no_reload]
+        ENV["TINA4_NO_RELOAD"] = "true"
       end
 
       # Priority: CLI flag > ENV var > default
@@ -191,7 +197,8 @@ module Tina4
       load_routes(root_dir)
 
       if options[:dev]
-        Tina4::DevReload.start(root_dir: root_dir)
+        no_reload = %w[true 1 yes].include?(ENV.fetch("TINA4_NO_RELOAD", "").downcase)
+        Tina4::DevReload.start(root_dir: root_dir) unless no_reload
         Tina4::ScssCompiler.compile_all(root_dir)
       end
 
