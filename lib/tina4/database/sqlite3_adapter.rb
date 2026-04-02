@@ -38,7 +38,7 @@ module Tina4
       end
 
       # Paginated fetch
-      def fetch(sql, limit = nil, offset = nil)
+      def fetch(sql, limit = 100, offset = nil)
         effective_sql = sql
         if limit
           effective_sql = "#{sql} LIMIT #{limit}"

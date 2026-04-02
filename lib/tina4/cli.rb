@@ -166,8 +166,9 @@ module Tina4
       end
       parser.parse!(argv)
 
-      # --no-browser from env
-      if ENV.fetch("TINA4_OPEN_BROWSER", "").downcase.match?(/\A(false|0|no)\z/)
+      # --no-browser from env (TINA4_NO_BROWSER=true)
+      no_browser_env = ENV.fetch("TINA4_NO_BROWSER", "").downcase
+      if no_browser_env.match?(/\A(true|1|yes)\z/)
         options[:no_browser] = true
       end
 
@@ -1280,6 +1281,26 @@ module Tina4
         migrations logs spec seeds
       ].each do |subdir|
         FileUtils.mkdir_p(File.join(dir, subdir))
+      end
+
+      # Copy framework public assets into the project so they're visible
+      framework_public = File.join(File.dirname(__FILE__), "public")
+      project_public = File.join(dir, "src", "public")
+      assets_to_copy = %w[
+        css/tina4.css
+        css/tina4.min.css
+        js/tina4.min.js
+        js/frond.min.js
+        images/tina4-logo-icon.webp
+      ]
+      assets_to_copy.each do |asset|
+        src = File.join(framework_public, asset)
+        dst = File.join(project_public, asset)
+        FileUtils.mkdir_p(File.dirname(dst))
+        if File.exist?(src) && !File.exist?(dst)
+          FileUtils.cp(src, dst)
+          puts "  Copied #{asset}"
+        end
       end
     end
 

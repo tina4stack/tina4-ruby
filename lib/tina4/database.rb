@@ -169,12 +169,14 @@ module Tina4
       end
     end
 
-    def fetch(sql, params = [], limit: nil, offset: nil)
+    def fetch(sql, params = [], limit: 100, offset: nil)
       offset ||= 0
       drv = current_driver
 
       effective_sql = sql
-      if limit
+      # Skip appending LIMIT if SQL already has one
+      has_limit = sql.upcase.split("--")[0].include?("LIMIT")
+      if limit && !has_limit
         effective_sql = drv.apply_limit(effective_sql, limit, offset)
       end
 
