@@ -187,7 +187,10 @@ end
 model = MyModel.new(attributes = {})
 model.save -> Boolean
 model.delete -> Boolean
-model.load(id = nil) -> Boolean
+model.load(filter_or_id = nil, params = []) -> Boolean
+    # load()           — loads by instance's PK value
+    # load(42)         — loads by PK value 42
+    # load("email = ?", ["a@b.com"]) — loads by filter
 model.persisted? -> Boolean
 model.to_h -> Hash              # Ruby idiom (alias: to_hash)
 model.to_json -> String
