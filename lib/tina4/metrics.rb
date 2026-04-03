@@ -21,6 +21,9 @@ module Tina4
     @full_cache_time = 0
     CACHE_TTL = 60
 
+    # Stores the resolved scan root so file_detail can locate framework files.
+    @last_scan_root = ""
+
     # ── Root Resolution ──────────────────────────────────────────
 
     # Pick the right directory to scan.
@@ -30,10 +33,17 @@ module Tina4
     def self._resolve_root(root = 'src')
       root_path = Pathname.new(root)
       if root_path.directory? && !Dir.glob(root_path.join('**', '*.rb')).empty?
+        @last_scan_root = File.expand_path(root)
         return root
       end
       # Fallback: scan the framework package itself
-      File.dirname(__FILE__)
+      fw_dir = File.dirname(__FILE__)
+      @last_scan_root = fw_dir
+      fw_dir
+    end
+
+    def self.last_scan_root
+      @last_scan_root
     end
 
     # ── Quick Metrics ───────────────────────────────────────────
@@ -346,6 +356,15 @@ module Tina4
     # ── File Detail ─────────────────────────────────────────────
 
     def self.file_detail(file_path)
+      unless File.exist?(file_path)
+        # Try resolving relative to the last scan root (framework mode)
+        if @last_scan_root && !@last_scan_root.empty?
+          candidate = File.join(@last_scan_root, file_path)
+          if File.exist?(candidate)
+            file_path = candidate
+          end
+        end
+      end
       unless File.exist?(file_path)
         return { "error" => "File not found: #{file_path}" }
       end
