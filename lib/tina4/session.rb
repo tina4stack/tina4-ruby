@@ -93,12 +93,19 @@ module Tina4
       end
     end
 
-    # Regenerate the session ID while preserving data
+    # Get flash data by key (alias for flash(key) without value)
+    def get_flash(key, default = nil)
+      result = flash(key)
+      result.nil? ? default : result
+    end
+
+    # Regenerate the session ID while preserving data — returns new ID
     def regenerate
       old_id = @id
       @id = SecureRandom.hex(32)
       @handler.destroy(old_id)
       @modified = true
+      @id
     end
 
     # Garbage collection: remove expired sessions from the handler
