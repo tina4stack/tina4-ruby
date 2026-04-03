@@ -184,21 +184,42 @@ class MyModel < Tina4::ORM
   string_field :name
 end
 
+# Instance methods
 model = MyModel.new(attributes = {})
-model.save -> Boolean
-model.delete -> Boolean
-model.load(sql, params = [], include: nil) -> Boolean  # selectOne into instance, returns true/false
+model.save -> Boolean                 # Insert or update
+model.delete -> Boolean               # Soft-delete if enabled, else hard delete
+model.force_delete -> Boolean         # Hard delete (bypasses soft-delete)
+model.restore -> Boolean              # Restore soft-deleted record
+model.load(sql, params = [], include: nil) -> Boolean  # selectOne into self; true if found
+model.validate -> Array[String]       # Validate fields; empty = valid
 model.persisted? -> Boolean
-model.to_h -> Hash              # Ruby idiom (alias: to_hash)
-model.to_json -> String
+model.to_h(include: nil) -> Hash      # Ruby idiom (aliases: to_hash, to_dict, to_object)
+model.to_json(include: nil) -> String
+model.to_array -> Array              # List of values
+model.to_list -> Array               # Alias for to_array
+model.query_has_one(related_class, foreign_key: nil) -> MyModel | nil
+model.query_has_many(related_class, foreign_key: nil, limit: 100, offset: 0) -> Array
+model.query_belongs_to(related_class, foreign_key: nil) -> MyModel | nil
 
+# Class methods
 MyModel.find(id) -> MyModel | nil
-MyModel.where(conditions, params = []) -> Array
-MyModel.all(limit: nil, offset: nil, order_by: nil) -> Array
-MyModel.count(conditions = nil, params = []) -> Integer
+MyModel.find_or_fail(id) -> MyModel   # Find or raise error
 MyModel.create(attributes = {}) -> MyModel
+MyModel.where(conditions, params = [], include: nil) -> Array
+MyModel.all(limit: nil, offset: nil, order_by: nil, include: nil) -> Array
+MyModel.count(conditions = nil, params = []) -> Integer
 MyModel.select(sql, params = [], limit: nil, offset: nil, include: nil) -> Array
-MyModel.select_one(sql, params = [], include: nil) -> MyModel | nil  # Raw SQL, returns first match or nil
+MyModel.select_one(sql, params = [], include: nil) -> MyModel | nil
+MyModel.with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0) -> Array
+MyModel.create_table -> Boolean
+MyModel.query -> QueryBuilder         # Fluent query builder
+MyModel.scope(name, filter_sql, params = [])  # Register reusable query scope
+MyModel.from_hash(hash) -> MyModel    # Create instance from DB row hash
+
+# Relationship definitions (class level)
+has_one :profile, class_name: "Profile", foreign_key: :user_id
+has_many :posts, class_name: "Post", foreign_key: :user_id
+belongs_to :company, class_name: "Company", foreign_key: :company_id
 ```
 
 NoSQL support: `to_mongo()` generates MongoDB query documents from the same fluent API.
