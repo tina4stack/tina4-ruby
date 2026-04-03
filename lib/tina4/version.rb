@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module Tina4
-  VERSION = "3.10.60"
+  VERSION = "3.10.65"
 end
