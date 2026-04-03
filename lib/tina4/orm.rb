@@ -414,7 +414,7 @@ module Tina4
           @persisted = true
         end
       end
-      true
+      self
     rescue => e
       @errors << e.message
       false
