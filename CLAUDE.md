@@ -187,7 +187,7 @@ end
 model = MyModel.new(attributes = {})
 model.save -> Boolean
 model.delete -> Boolean
-MyModel.load(sql, params = [], include: nil) -> MyModel | nil  # Alias for select_one()
+model.load(sql, params = [], include: nil) -> Boolean  # selectOne into instance, returns true/false
 model.persisted? -> Boolean
 model.to_h -> Hash              # Ruby idiom (alias: to_hash)
 model.to_json -> String

@@ -82,8 +82,8 @@ RSpec.describe "Tina4 Smoke Test" do
       expect(w.save).to be true
       expect(w.id).not_to be_nil
 
-      loaded = SmokeWidget.load("SELECT * FROM smoke_widgets WHERE id = ?", [w.id])
-      expect(loaded).not_to be_nil
+      loaded = SmokeWidget.new
+      expect(loaded.load("SELECT * FROM smoke_widgets WHERE id = ?", [w.id])).to be true
       expect(loaded.name).to eq("Bolt")
 
       h = loaded.to_h

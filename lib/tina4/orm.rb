@@ -481,9 +481,21 @@ module Tina4
       errors
     end
 
-    # Alias for select_one — same params.
-    def self.load(sql, params = [], include: nil)
-      select_one(sql, params, include: include)
+    # Load a record into this instance via select_one.
+    # Returns true if found and loaded, false otherwise.
+    def load(sql, params = [], include: nil)
+      @relationship_cache = {}
+      result = self.class.select_one(sql, params, include: include)
+      return false unless result
+
+      mapping_reverse = self.class.field_mapping.invert
+      result.to_h.each do |key, value|
+        attr_name = mapping_reverse[key.to_s] || key
+        setter = "#{attr_name}="
+        __send__(setter, value) if respond_to?(setter)
+      end
+      @persisted = true
+      true
     end
 
     def persisted?

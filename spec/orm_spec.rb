@@ -144,25 +144,29 @@ RSpec.describe Tina4::ORM do
     end
   end
 
-  describe ".load" do
+  describe "#load" do
     it "loads data by primary key via select_one" do
       created = TestUser.create(name: "LoadMe", email: "load@test.com")
-      user = TestUser.load("SELECT * FROM testusers WHERE id = ?", [created.id])
-      expect(user).not_to be_nil
+      user = TestUser.new
+      result = user.load("SELECT * FROM testusers WHERE id = ?", [created.id])
+      expect(result).to be true
       expect(user.name).to eq("LoadMe")
     end
 
     it "loads data with a filter SQL and params" do
       TestUser.create(name: "FilterUser", email: "filter@test.com")
-      user = TestUser.load("SELECT * FROM testusers WHERE email = ?", ["filter@test.com"])
-      expect(user).not_to be_nil
+      user = TestUser.new
+      result = user.load("SELECT * FROM testusers WHERE email = ?", ["filter@test.com"])
+      expect(result).to be true
       expect(user.name).to eq("FilterUser")
       expect(user.email).to eq("filter@test.com")
+      expect(user.persisted?).to be true
     end
 
-    it "returns nil when filter matches no records" do
-      result = TestUser.load("SELECT * FROM testusers WHERE email = ?", ["nonexistent@test.com"])
-      expect(result).to be_nil
+    it "returns false when filter matches no records" do
+      user = TestUser.new
+      result = user.load("SELECT * FROM testusers WHERE email = ?", ["nonexistent@test.com"])
+      expect(result).to be false
     end
   end
 
