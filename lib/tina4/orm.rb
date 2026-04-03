@@ -542,6 +542,7 @@ module Tina4
 
     alias to_hash to_h
     alias to_dict to_h
+    alias to_assoc to_h
     alias to_object to_h
 
     def to_array
@@ -672,5 +673,11 @@ module Tina4
 
       related_class.find(fk_value)
     end
+
+    # Instance-level aliases matching Python/PHP/Node.js naming
+    # These are imperative relationship queries (not class-level declarations)
+    alias imperative_has_one query_has_one
+    alias imperative_has_many query_has_many
+    alias imperative_belongs_to query_belongs_to
   end
 end
