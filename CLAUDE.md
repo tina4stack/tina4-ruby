@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.10.50 — Lightweight Ruby web framework. See https://tina4.com for full documentation.
+Version 3.10.50 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 

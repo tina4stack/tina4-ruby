@@ -2,7 +2,8 @@
   <img src="https://tina4.com/logo.svg" alt="Tina4" width="200">
 </p>
 <h1 align="center">Tina4 Ruby</h1>
-<h3 align="center">This Is Now A 4Framework</h3>
+<h3 align="center">TINA4 — The Intelligent Native Application 4ramework</h3>
+<p align="center"><em>Simple. Fast. Human. &nbsp;|&nbsp; Built for AI. Built for you.</em></p>
 <p align="center">54 built-in features. Zero runtime dependencies. One require, everything works.</p>
 <p align="center">
   <a href="https://rubygems.org/gems/tina4ruby"><img src="https://img.shields.io/gem/v/tina4ruby?color=7b1fa2&label=RubyGems" alt="RubyGems"></a>

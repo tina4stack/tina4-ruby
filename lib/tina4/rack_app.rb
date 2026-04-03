@@ -460,7 +460,8 @@ module Tina4
         <div class="hero">
             <img src="/images/tina4-logo-icon.webp" class="logo" alt="Tina4">
             <h1>Tina4Ruby</h1>
-            <p class="tagline">This Is Now A 4Framework</p>
+            <p class="tagline">The Intelligent Native Application 4ramework</p>
+            <p class="tagline" style="font-size:0.95rem;margin-top:-1rem">Simple. Fast. Human. &nbsp;|&nbsp; Built for AI. Built for you.</p>
             <div class="actions">
                 <a href="https://tina4.com/ruby" class="btn" target="_blank">Website</a>
                 <a href="/__dev" class="btn">Dev Admin</a>

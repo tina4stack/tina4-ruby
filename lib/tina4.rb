@@ -138,7 +138,8 @@ module Tina4
       end
 
       puts "#{color}#{BANNER}#{reset}"
-      puts "  Tina4 Ruby v#{VERSION} — This Is Now A 4Framework"
+      puts "  TINA4 — The Intelligent Native Application 4ramework"
+      puts "  Simple. Fast. Human. | Built for AI. Built for you."
       puts ""
       puts "  Server:    http://#{display}:#{port} (#{server_name})"
       puts "  Swagger:   http://localhost:#{port}/swagger"
