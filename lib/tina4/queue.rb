@@ -147,28 +147,49 @@ module Tina4
     #   # Or as an enumerator:
     #   queue.consume("emails").each { |job| process(job) }
     #
-    def consume(topic = nil, id: nil, &block)
+    # Consume jobs from a topic using a long-running generator.
+    #
+    # Polls the queue continuously. When empty, sleeps for poll_interval
+    # seconds before polling again. No external while-loop or sleep needed.
+    #
+    #   queue.consume("emails") { |job| process(job) }
+    #   queue.consume("emails", poll_interval: 5) { |job| process(job) }
+    #   queue.consume("emails", id: "abc-123") { |job| process(job) }
+    #
+    def consume(topic = nil, id: nil, poll_interval: 1.0, &block)
       topic ||= @topic
 
+      if id
+        # Single job by ID — no polling
+        job = pop_by_id(topic, id)
+        if job
+          block_given? ? yield(job) : (return Enumerator.new { |y| y << job })
+        end
+        return block_given? ? nil : Enumerator.new { |_| }
+      end
+
+      # poll_interval=0 → single-pass drain (returns when empty)
+      # poll_interval>0 → long-running poll (sleeps when empty, never returns)
       if block_given?
-        if id
-          job = pop_by_id(topic, id)
-          yield job if job
-        else
-          while (job = @backend.dequeue(topic))
-            yield job
+        loop do
+          job = @backend.dequeue(topic)
+          if job.nil?
+            break if poll_interval <= 0
+            sleep(poll_interval)
+            next
           end
+          yield job
         end
       else
-        # Return an Enumerator when no block given
         Enumerator.new do |yielder|
-          if id
-            job = pop_by_id(topic, id)
-            yielder << job if job
-          else
-            while (job = @backend.dequeue(topic))
-              yielder << job
+          loop do
+            job = @backend.dequeue(topic)
+            if job.nil?
+              break if poll_interval <= 0
+              sleep(poll_interval)
+              next
             end
+            yielder << job
           end
         end
       end
