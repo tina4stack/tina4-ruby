@@ -45,6 +45,23 @@ module Tina4
       end
     end
 
+    # Callable response — auto-detects content type from data.
+    # Matches Python __call__ / PHP __invoke / Node response() pattern.
+    def call(data = nil, status_code = 200, content_type = nil)
+      @status_code = status_code
+      if content_type
+        @headers["content-type"] = content_type
+        @body = data.to_s
+      elsif data.is_a?(Hash) || data.is_a?(Array)
+        @headers["content-type"] = JSON_CONTENT_TYPE
+        @body = JSON.generate(data)
+      else
+        @headers["content-type"] = HTML_CONTENT_TYPE
+        @body = data.to_s
+      end
+      self
+    end
+
     def json(data, status_or_opts = nil, status: nil)
       @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
       @headers["content-type"] = JSON_CONTENT_TYPE
