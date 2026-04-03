@@ -224,6 +224,32 @@ belongs_to :company, class_name: "Company", foreign_key: :company_id
 
 NoSQL support: `to_mongo()` generates MongoDB query documents from the same fluent API.
 
+### File Uploads
+
+Multipart file uploads are available via `request.files` (hash keyed by field name). Each file is a hash:
+
+```ruby
+# request.files["avatar"] =>
+{
+  fieldName: "avatar",
+  filename: "photo.png",
+  type: "image/png",
+  tempfile: <File>,          # Rack tempfile — read with .read
+  size: 102400
+}
+```
+
+```ruby
+post "/api/upload" do |request, response|
+  file = request.files["avatar"]
+  return response.json({ error: "No file" }, 400) unless file
+  File.binwrite("src/public/uploads/#{file[:filename]}", file[:tempfile].read)
+  response.json({ ok: true })
+end
+```
+
+Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
+
 ### Template — ERB/Twig engine
 
 ```ruby
