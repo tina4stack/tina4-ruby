@@ -280,9 +280,19 @@ module Tina4
       { success: true }
     end
 
+    # Execute a write statement. Returns true/false for simple writes.
+    # Returns DatabaseResult if SQL contains RETURNING, CALL, EXEC, or SELECT.
     def execute(sql, params = [])
       cache_invalidate if @cache_enabled
-      current_driver.execute(sql, params)
+      result = current_driver.execute(sql, params)
+      sql_upper = sql.strip.upcase
+      if sql_upper.include?("RETURNING") || sql_upper.start_with?("CALL ") ||
+         sql_upper.start_with?("EXEC ") || sql_upper.start_with?("SELECT ")
+        return result
+      end
+      true
+    rescue
+      false
     end
 
     def execute_many(sql, params_list = [])
