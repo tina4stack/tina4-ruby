@@ -60,19 +60,20 @@ RSpec.describe Tina4::Auth do
       expect(result[:valid]).to be false
     end
 
-    it "respects custom expiry" do
-      token = Tina4::Auth.create_token({ "user_id" => 1 }, expires_in: 60)
+    it "respects custom expiry in minutes" do
+      token = Tina4::Auth.create_token({ "user_id" => 1 }, expires_in: 5)
       result = Tina4::Auth.validate_token(token)
       expect(result[:valid]).to be true
-      expect(result[:payload]["exp"] - result[:payload]["iat"]).to eq(60)
+      expect(result[:payload]["exp"] - result[:payload]["iat"]).to eq(300) # 5 minutes = 300 seconds
     end
   end
 
   describe ".hash_password / .check_password" do
-    it "hashes a password" do
+    it "hashes a password with PBKDF2" do
       hash = Tina4::Auth.hash_password("secret123")
-      expect(hash.to_s).to be_a(String)
-      expect(hash.to_s).to start_with("$2a$")
+      expect(hash).to be_a(String)
+      expect(hash).to start_with("pbkdf2_sha256$")
+      expect(hash.split("$").length).to eq(4)
     end
 
     it "verifies correct password" do
@@ -104,14 +105,14 @@ RSpec.describe Tina4::Auth do
 
   describe ".refresh_token" do
     it "returns a new token with fresh expiry" do
-      token = Tina4::Auth.create_token({ "user_id" => 1 }, expires_in: 60)
-      new_token = Tina4::Auth.refresh_token(token, expires_in: 7200)
+      token = Tina4::Auth.create_token({ "user_id" => 1 }, expires_in: 5)
+      new_token = Tina4::Auth.refresh_token(token, expires_in: 120)
       expect(new_token).to be_a(String)
       expect(new_token).not_to eq(token)
       result = Tina4::Auth.validate_token(new_token)
       expect(result[:valid]).to be true
       expect(result[:payload]["user_id"]).to eq(1)
-      expect(result[:payload]["exp"] - result[:payload]["iat"]).to eq(7200)
+      expect(result[:payload]["exp"] - result[:payload]["iat"]).to eq(7200) # 120 minutes = 7200 seconds
     end
 
     it "returns nil for invalid token" do

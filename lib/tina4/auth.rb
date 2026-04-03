@@ -89,11 +89,11 @@ module Tina4
 
       # ── Token API (auto-selects HS256 or RS256) ─────────────────
 
-      def get_token(payload, expires_in: 3600)
+      def get_token(payload, expires_in: 60)
         now = Time.now.to_i
         claims = payload.merge(
           "iat" => now,
-          "exp" => now + expires_in,
+          "exp" => now + (expires_in * 60).to_i,
           "nbf" => now
         )
 
@@ -142,15 +142,23 @@ module Tina4
         { valid: false, error: e.message }
       end
 
-      def hash_password(password)
-        require "bcrypt"
-        BCrypt::Password.create(password)
+      def hash_password(password, salt = nil, iterations = 260000)
+        salt ||= SecureRandom.hex(16)
+        dk = OpenSSL::KDF.pbkdf2_hmac(password, salt: salt, iterations: iterations, length: 32, hash: "sha256")
+        "pbkdf2_sha256$#{iterations}$#{salt}$#{dk.unpack1('H*')}"
       end
 
       def check_password(password, hash)
-        require "bcrypt"
-        BCrypt::Password.new(hash) == password
-      rescue BCrypt::Errors::InvalidHash
+        parts = hash.split('$')
+        return false unless parts.length == 4 && parts[0] == 'pbkdf2_sha256'
+        iterations = parts[1].to_i
+        salt = parts[2]
+        expected = parts[3]
+        dk = OpenSSL::KDF.pbkdf2_hmac(password, salt: salt, iterations: iterations, length: 32, hash: "sha256")
+        actual = dk.unpack1('H*')
+        # Timing-safe comparison
+        OpenSSL.fixed_length_secure_compare(actual, expected)
+      rescue
         false
       end
 
@@ -165,7 +173,7 @@ module Tina4
         nil
       end
 
-      def refresh_token(token, expires_in: 3600)
+      def refresh_token(token, expires_in: 60)
         payload = valid_token(token)
         return nil unless payload
 
@@ -192,8 +200,9 @@ module Tina4
         expected ||= ENV["TINA4_API_KEY"] || ENV["API_KEY"]
         return false if expected.nil? || expected.empty?
         return false if provided.nil? || provided.empty?
+        return false if provided.length != expected.length
 
-        provided == expected
+        OpenSSL.fixed_length_secure_compare(provided, expected)
       end
 
       def auth_handler(&block)
