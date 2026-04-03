@@ -768,6 +768,42 @@ module Tina4
       { "data" => nil, "errors" => [{ "message" => "Internal error: #{e.message}" }] }
     end
 
+    # Return schema as GraphQL SDL string.
+    def schema
+      sdl = ""
+      @schema.types.each do |name, type_obj|
+        sdl += "type #{name} {\n"
+        type_obj.fields.each { |f| sdl += "  #{f[:name]}: #{f[:type]}\n" }
+        sdl += "}\n\n"
+      end
+      unless @schema.queries.empty?
+        sdl += "type Query {\n"
+        @schema.queries.each do |name, config|
+          args = (config[:args] || {}).map { |k, v| "#{k}: #{v}" }.join(", ")
+          arg_str = args.empty? ? "" : "(#{args})"
+          sdl += "  #{name}#{arg_str}: #{config[:type]}\n"
+        end
+        sdl += "}\n\n"
+      end
+      unless @schema.mutations.empty?
+        sdl += "type Mutation {\n"
+        @schema.mutations.each do |name, config|
+          args = (config[:args] || {}).map { |k, v| "#{k}: #{v}" }.join(", ")
+          arg_str = args.empty? ? "" : "(#{args})"
+          sdl += "  #{name}#{arg_str}: #{config[:type]}\n"
+        end
+        sdl += "}\n\n"
+      end
+      sdl
+    end
+
+    # Return schema metadata for debugging.
+    def introspect
+      queries = @schema.queries.transform_values { |v| { type: v[:type], args: v[:args] || {} } }
+      mutations = @schema.mutations.transform_values { |v| { type: v[:type], args: v[:args] || {} } }
+      { types: @schema.types.keys, queries: queries, mutations: mutations }
+    end
+
     # Handle an HTTP request body (JSON string)
     def handle_request(body, context: {})
       payload = JSON.parse(body)
