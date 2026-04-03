@@ -137,7 +137,7 @@ module Tina4
         total_functions += functions
 
         rel_path = begin
-          Pathname.new(f).relative_path_from(Pathname.new('.')).to_s
+          Pathname.new(f).relative_path_from(root_path).to_s
         rescue ArgumentError
           f
         end
@@ -238,7 +238,7 @@ module Tina4
         end
 
         rel_path = begin
-          Pathname.new(f).relative_path_from(Pathname.new('.')).to_s
+          Pathname.new(f).relative_path_from(root_path).to_s
         rescue ArgumentError
           f
         end
