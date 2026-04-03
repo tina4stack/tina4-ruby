@@ -481,35 +481,9 @@ module Tina4
       errors
     end
 
-    def load(filter_sql = nil, params = [])
-      @relationship_cache = {} # Clear relationship cache on reload
-
-      pk = self.class.primary_key_field || :id
-
-      # Determine the SQL to execute
-      if filter_sql.nil? || filter_sql.is_a?(Integer)
-        # Legacy: load by primary key (load() or load(id))
-        id = filter_sql || __send__(pk)
-        return false unless id
-        sql = "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?"
-        query_params = [id]
-      else
-        # Filter-based: load("email = ?", ["alice@example.com"])
-        sql = "SELECT * FROM #{self.class.table_name} WHERE #{filter_sql}"
-        query_params = params
-      end
-
-      result = self.class.db.fetch_one(sql, query_params)
-      return false unless result
-
-      mapping_reverse = self.class.field_mapping.invert
-      result.each do |key, value|
-        attr_name = mapping_reverse[key.to_s] || key
-        setter = "#{attr_name}="
-        __send__(setter, value) if respond_to?(setter)
-      end
-      @persisted = true
-      true
+    # Alias for select_one — same params.
+    def self.load(sql, params = [], include: nil)
+      select_one(sql, params, include: include)
     end
 
     def persisted?
