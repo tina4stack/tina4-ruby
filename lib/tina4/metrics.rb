@@ -405,14 +405,61 @@ module Tina4
     private_class_method
 
     def self._has_matching_test(rel_path)
+      require 'set'
+
       name = File.basename(rel_path, '.rb')
-      File.exist?("spec/#{name}_spec.rb") ||
-      File.exist?("spec/#{name}s_spec.rb") ||
-      File.exist?("spec/tina4/#{name}_spec.rb") ||
-      File.exist?("test/#{name}_test.rb") ||
-      File.exist?("spec/#{name}_test.rb") ||
-      File.exist?("test/test_#{name}.rb") ||
-      File.exist?("test/#{name}_spec.rb")
+      # Parent directory name (e.g. "database" from "database/sqlite3_adapter.rb")
+      parent_dir = File.dirname(rel_path)
+      parent_module = (parent_dir != '.' && !parent_dir.empty?) ? File.basename(parent_dir) : ''
+
+      # Stage 1: Filename matching — name_spec, name_test, test_name patterns
+      test_dirs = ['spec', 'spec/tina4', 'test', 'tests']
+      test_dirs.each do |td|
+        patterns = [
+          "#{td}/#{name}_spec.rb",
+          "#{td}/#{name}s_spec.rb",
+          "#{td}/#{name}_test.rb",
+          "#{td}/test_#{name}.rb",
+        ]
+        # Also check parent-named tests (spec/database_spec.rb covers database/sqlite3_adapter.rb)
+        if parent_module && !parent_module.empty? && parent_module != name
+          patterns << "#{td}/#{parent_module}_spec.rb"
+          patterns << "#{td}/#{parent_module}s_spec.rb"
+          patterns << "#{td}/#{parent_module}_test.rb"
+          patterns << "#{td}/test_#{parent_module}.rb"
+        end
+        return true if patterns.any? { |p| File.exist?(p) }
+      end
+
+      # Build a dotted/slashed require path for import matching
+      # e.g. "lib/tina4/database/sqlite3_adapter.rb" → "tina4/database/sqlite3_adapter"
+      path_without_ext = rel_path.sub(/\.rb$/, '')
+      # Strip leading lib/ prefix if present
+      require_path = path_without_ext.sub(%r{^lib/}, '')
+
+      # Build CamelCase class name from snake_case module name
+      # e.g. "sqlite3_adapter" → "Sqlite3Adapter"
+      class_name = name.split('_').map(&:capitalize).join
+
+      # Stage 2+3: Content scan — check if any spec/test file references this module
+      scan_dirs = ['spec', 'test', 'tests']
+      scan_dirs.each do |td|
+        next unless Dir.exist?(td)
+        Dir.glob(File.join(td, '**', '*.rb')).each do |test_file|
+          content = begin
+            File.read(test_file, encoding: 'utf-8')
+          rescue StandardError
+            next
+          end
+          # Stage 2: require/require_relative path matching
+          return true if !require_path.empty? && content.include?(require_path)
+          # Stage 3: class name or module name mention
+          return true if content.match?(/\b#{Regexp.escape(class_name)}\b/)
+          return true if content.match?(/\b#{Regexp.escape(name)}\b/i)
+        end
+      end
+
+      false
     end
 
     def self._files_hash(root)
