@@ -186,14 +186,14 @@ end
 
 # Instance methods
 model = MyModel.new(attributes = {})
-model.save -> Boolean                 # Insert or update
+model.save -> self | false            # Returns self on success (fluent), false on failure
 model.delete -> Boolean               # Soft-delete if enabled, else hard delete
 model.force_delete -> Boolean         # Hard delete (bypasses soft-delete)
 model.restore -> Boolean              # Restore soft-deleted record
 model.load(sql, params = [], include: nil) -> Boolean  # selectOne into self; true if found
 model.validate -> Array[String]       # Validate fields; empty = valid
 model.persisted? -> Boolean
-model.to_h(include: nil) -> Hash      # Ruby idiom (aliases: to_hash, to_dict, to_object)
+model.to_h(include: nil) -> Hash      # Ruby idiom (aliases: to_hash, to_dict, to_assoc, to_object)
 model.to_json(include: nil) -> String
 model.to_array -> Array              # List of values
 model.to_list -> Array               # Alias for to_array
@@ -249,6 +249,57 @@ end
 ```
 
 Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
+
+### Auth
+
+```ruby
+# expires_in is in MINUTES (default 60). Reads SECRET from env.
+Tina4::Auth.get_token(payload, expires_in: 60) -> String
+Tina4::Auth.valid_token(token) -> Hash | nil
+Tina4::Auth.get_payload(token) -> Hash | nil
+Tina4::Auth.refresh_token(token, expires_in: 60) -> String | nil
+Tina4::Auth.hash_password(password, salt=nil, iterations=260000) -> String  # PBKDF2-SHA256, $ delimiter
+Tina4::Auth.check_password(password, hash) -> Boolean  # timing-safe
+Tina4::Auth.validate_api_key(provided, expected: nil) -> Boolean  # timing-safe, reads TINA4_API_KEY
+Tina4::Auth.authenticate_request(headers) -> Hash | nil  # Bearer JWT, falls back to API key
+```
+
+### Session
+
+```ruby
+session.start(session_id = nil) -> String
+session.get(key, default = nil)
+session.set(key, value)
+session.delete(key)
+session.has?(key) -> Boolean
+session.all -> Hash
+session.clear
+session.destroy
+session.regenerate -> String           # Returns new session ID
+session.flash(key, value = nil)        # Dual-mode: set with value, get+remove without
+session.get_flash(key, default = nil)  # Explicit getter
+session.save
+session.cookie_header -> String
+session.gc(max_age = nil)
+```
+
+Backends: file, redis, valkey, mongodb, database.
+
+### Database extras
+
+```ruby
+db.execute(sql, params) -> true/false | result  # bool for writes, result for RETURNING/CALL/EXEC
+db.get_last_id -> Integer | nil
+db.get_error -> String | nil
+```
+
+### Request/Response extras
+
+```ruby
+request.cookies -> Hash               # Parsed from Cookie header
+response.xml(content, status: 200)    # XML response
+response.call(data, status, content_type)  # Callable response (auto-detects type)
+```
 
 ### Template — ERB/Twig engine
 
