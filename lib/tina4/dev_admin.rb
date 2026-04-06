@@ -485,7 +485,8 @@ module Tina4
       end
 
       def serve_dashboard
-        [200, { "content-type" => "text/html; charset=utf-8" }, [render_dashboard]]
+        spa = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tina4 Dev Admin</title></head><body><div id="app" data-framework="ruby" data-color="#ef4444"></div><script src="/__dev/js/tina4-dev-admin.min.js"></script></body></html>'
+        [200, { "content-type" => "text/html; charset=utf-8" }, [spa]]
       end
 
       def serve_dev_js
