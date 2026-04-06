@@ -1,4 +1,4 @@
-# Tina4 Ruby 3.10.50 — Codex Agent Instructions
+# Tina4 Ruby 3.10.70 — Codex Agent Instructions
 
 You are working in a **Tina4 Ruby** project — a zero-dependency, batteries-included web framework.
 Documentation: https://tina4.com

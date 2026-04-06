@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.10.50 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.10.70 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -299,6 +299,7 @@ db.get_error -> String | nil
 request.cookies -> Hash               # Parsed from Cookie header
 response.xml(content, status: 200)    # XML response
 response.call(data, status, content_type)  # Callable response (auto-detects type)
+response.stream(generator, content_type: "text/event-stream", status: 200)  # SSE/streaming
 ```
 
 ### Template — ERB/Twig engine
@@ -605,8 +606,9 @@ Tina4::DevAdmin.request_inspector.clear
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
+- SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
 - Tests: 1,578 passing
-- Version: 3.10.50
+- Version: 3.10.70
 
 ## Links
 

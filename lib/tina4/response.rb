@@ -205,20 +205,50 @@ module Tina4
       self
     end
 
+    # Stream response from a block for Server-Sent Events (SSE).
+    #
+    # Usage:
+    #   Tina4::Router.get "/events" do |request, response|
+    #     response.stream do |out|
+    #       10.times do |i|
+    #         out << "data: message #{i}\n\n"
+    #         sleep 1
+    #       end
+    #     end
+    #   end
+    #
+    # @param content_type [String] Content type (default: text/event-stream)
+    # @yield [Enumerator::Yielder] Block receives a yielder to push chunks
+    # @return [self]
+    def stream(content_type: "text/event-stream", &block)
+      @status_code = @status_code || 200
+      @headers["content-type"] = content_type
+      @headers["cache-control"] = "no-cache"
+      @headers["connection"] = "keep-alive"
+      @headers["x-accel-buffering"] = "no"
+      @_streaming = true
+      @_stream_block = block
+      self
+    end
+
     # Flush / finalize -- alias for to_rack for semantic clarity
     def send
       to_rack
     end
 
     def to_rack
-      # Fast path: no cookies (99% of API responses)
-      if @cookies.nil? || @cookies.empty?
-        return [@status_code, @headers, [@body.to_s]]
+      final_headers = @headers.dup
+      final_headers["set-cookie"] = @cookies.join("\n") if @cookies && !@cookies.empty?
+
+      if @_streaming
+        # Streaming mode — return an Enumerator as the body
+        body = Enumerator.new do |yielder|
+          @_stream_block.call(yielder)
+        end
+        return [@status_code, final_headers, body]
       end
 
-      # Cookie path
-      final_headers = @headers.dup
-      final_headers["set-cookie"] = @cookies.join("\n")
+      # Normal buffered response
       [@status_code, final_headers, [@body.to_s]]
     end
 
