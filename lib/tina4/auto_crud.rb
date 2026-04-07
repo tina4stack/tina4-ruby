@@ -97,7 +97,7 @@ module Tina4
         Tina4::Router.add_route("GET", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
-            record = model_class.find(id.to_i)
+            record = model_class.find_by_id(id.to_i)
             if record
               res.json({ data: record.to_h })
             else
@@ -140,7 +140,7 @@ module Tina4
         Tina4::Router.add_route("PUT", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
-            record = model_class.find(id.to_i)
+            record = model_class.find_by_id(id.to_i)
             unless record
               next res.json({ error: "Not found" }, status: 404)
             end
@@ -178,7 +178,7 @@ module Tina4
         Tina4::Router.add_route("DELETE", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
-            record = model_class.find(id.to_i)
+            record = model_class.find_by_id(id.to_i)
             unless record
               next res.json({ error: "Not found" }, status: 404)
             end

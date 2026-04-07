@@ -174,7 +174,7 @@ RSpec.describe Tina4::AutoCrud do
       result = route.handler.call(req, res)
       body = JSON.parse(result.body)
       expect(body["message"]).to eq("Deleted")
-      expect(CrudItem.find(item.id)).to be_nil
+      expect(CrudItem.find_by_id(item.id)).to be_nil
     end
   end
 

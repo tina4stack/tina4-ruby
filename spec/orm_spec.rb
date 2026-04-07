@@ -69,7 +69,7 @@ RSpec.describe Tina4::ORM do
       user.name = "Alice Updated"
       user.save
 
-      loaded = TestUser.find(user.id)
+      loaded = TestUser.find_by_id(user.id)
       expect(loaded.name).to eq("Alice Updated")
     end
   end
@@ -79,14 +79,14 @@ RSpec.describe Tina4::ORM do
       user = TestUser.new(name: "Bob", email: "bob@test.com")
       user.save
 
-      found = TestUser.find(user.id)
+      found = TestUser.find_by_id(user.id)
       expect(found).not_to be_nil
       expect(found.name).to eq("Bob")
       expect(found.email).to eq("bob@test.com")
     end
 
     it "returns nil for non-existent record" do
-      expect(TestUser.find(99999)).to be_nil
+      expect(TestUser.find_by_id(99999)).to be_nil
     end
   end
 
@@ -140,7 +140,7 @@ RSpec.describe Tina4::ORM do
       user = TestUser.create(name: "ToDelete")
       id = user.id
       user.delete
-      expect(TestUser.find(id)).to be_nil
+      expect(TestUser.find_by_id(id)).to be_nil
     end
   end
 
@@ -214,7 +214,7 @@ RSpec.describe Tina4::ORM do
   describe ".find_by_id" do
     it "finds a record by its primary key (alias)" do
       user = TestUser.create(name: "FindById")
-      found = TestUser.find(user.id)
+      found = TestUser.find_by_id(user.id)
       expect(found).not_to be_nil
       expect(found.name).to eq("FindById")
     end
@@ -299,7 +299,7 @@ RSpec.describe Tina4::ORM do
       user.name = "Alice Updated"
       user.save
 
-      reloaded = TestUser.find(user.id)
+      reloaded = TestUser.find_by_id(user.id)
       expect(reloaded.name).to eq("Alice Updated")
       expect(reloaded.email).to eq("alice@test.com")
       expect(reloaded.age).to eq(25)
@@ -343,11 +343,11 @@ RSpec.describe Tina4::ORM do
       user = TestUser.create(name: "Gone")
       uid = user.id
       user.delete
-      expect(TestUser.find(uid)).to be_nil
+      expect(TestUser.find_by_id(uid)).to be_nil
     end
 
     it "find returns nil for non-existent" do
-      expect(TestUser.find(99999)).to be_nil
+      expect(TestUser.find_by_id(99999)).to be_nil
     end
   end
 end

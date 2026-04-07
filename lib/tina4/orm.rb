@@ -353,15 +353,7 @@ module Tina4
         instance
       end
 
-      private
-
-      def auto_discover_db
-        url = ENV["DATABASE_URL"]
-        return nil unless url
-        Tina4.database = Tina4::Database.new(url, username: ENV.fetch("DATABASE_USERNAME", ""), password: ENV.fetch("DATABASE_PASSWORD", ""))
-        Tina4.database
-      end
-
+      # Find a single record by primary key. Returns instance or nil.
       def find_by_id(id)
         pk = primary_key_field || :id
         sql = "SELECT * FROM #{table_name} WHERE #{pk} = ?"
@@ -369,6 +361,15 @@ module Tina4
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
         end
         select_one(sql, [id])
+      end
+
+      private
+
+      def auto_discover_db
+        url = ENV["DATABASE_URL"]
+        return nil unless url
+        Tina4.database = Tina4::Database.new(url, username: ENV.fetch("DATABASE_USERNAME", ""), password: ENV.fetch("DATABASE_PASSWORD", ""))
+        Tina4.database
       end
 
       def find_by_filter(filter)
