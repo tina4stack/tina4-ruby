@@ -1,75 +1,9 @@
 # frozen_string_literal: true
 require "json"
 require "securerandom"
+require_relative "job"
 
 module Tina4
-  class QueueMessage
-    attr_reader :id, :topic, :payload, :created_at, :attempts, :priority, :available_at
-    attr_accessor :status
-
-    def initialize(topic:, payload:, id: nil, priority: 0, available_at: nil, attempts: 0)
-      @id = id || SecureRandom.uuid
-      @topic = topic
-      @payload = payload
-      @created_at = Time.now
-      @attempts = attempts
-      @priority = priority
-      @available_at = available_at
-      @status = :pending
-    end
-
-    # Re-queue this message with incremented attempts.
-    # Delegates to the queue's backend via the queue reference.
-    def retry(queue:, delay_seconds: 0)
-      @attempts += 1
-      @status = :pending
-      @available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
-      queue.backend.enqueue(self)
-      self
-    end
-
-    def to_hash
-      h = {
-        id: @id,
-        topic: @topic,
-        payload: @payload,
-        created_at: @created_at.iso8601,
-        attempts: @attempts,
-        status: @status,
-        priority: @priority
-      }
-      h[:available_at] = @available_at.iso8601 if @available_at
-      h
-    end
-
-    def to_json(*_args)
-      JSON.generate(to_hash)
-    end
-
-    def increment_attempts!
-      @attempts += 1
-    end
-
-    # Mark this job as completed.
-    def complete
-      @status = :completed
-    end
-
-    # Mark this job as failed with a reason.
-    def fail(reason = "")
-      @status = :failed
-      @error = reason
-      @attempts += 1
-    end
-
-    # Reject this job with a reason. Alias for fail().
-    def reject(reason = "")
-      fail(reason)
-    end
-
-    attr_reader :error
-  end
-
   # Queue — unified wrapper for queue management operations.
   # Auto-detects backend from TINA4_QUEUE_BACKEND env var.
   #
@@ -91,19 +25,37 @@ module Tina4
       @backend = resolve_backend_arg(backend)
     end
 
-    # Push a job onto the queue. Returns the QueueMessage.
+    # Push a job onto the queue. Returns the Job.
     # priority: higher-priority messages are dequeued first (default 0).
     # delay_seconds: delay before the message becomes available (default 0).
     def push(payload, priority: 0, delay_seconds: 0)
       available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
-      message = QueueMessage.new(topic: @topic, payload: payload, priority: priority, available_at: available_at)
+      message = Job.new(topic: @topic, payload: payload, priority: priority, available_at: available_at)
       @backend.enqueue(message)
       message
     end
 
-    # Pop the next available job. Returns QueueMessage or nil.
+    # Pop the next available job. Returns Job or nil.
     def pop
       @backend.dequeue(@topic)
+    end
+
+    # Clear all pending jobs from this queue's topic. Returns count removed.
+    def clear
+      return 0 unless @backend.respond_to?(:clear)
+      @backend.clear(@topic)
+    end
+
+    # Get jobs that failed but are still eligible for retry (under max_retries).
+    def failed
+      return [] unless @backend.respond_to?(:failed)
+      @backend.failed(@topic, max_retries: @max_retries)
+    end
+
+    # Retry a specific failed job by ID. Returns true if found and re-queued.
+    def retry(job_id, delay_seconds: 0)
+      return false unless @backend.respond_to?(:retry_job)
+      @backend.retry_job(@topic, job_id, delay_seconds: delay_seconds)
     end
 
     # Get dead letter jobs — messages that exceeded max retries.
@@ -126,8 +78,8 @@ module Tina4
     end
 
     # Produce a message onto a topic. Convenience wrapper around push().
-    def produce(topic, payload)
-      message = QueueMessage.new(topic: topic, payload: payload)
+    def produce(topic, payload, priority: 0)
+      message = Job.new(topic: topic, payload: payload, priority: priority)
       @backend.enqueue(message)
       message
     end
@@ -156,7 +108,7 @@ module Tina4
     #   queue.consume("emails", poll_interval: 5) { |job| process(job) }
     #   queue.consume("emails", id: "abc-123") { |job| process(job) }
     #
-    def consume(topic = nil, id: nil, poll_interval: 1.0, &block)
+    def consume(topic = nil, id: nil, poll_interval: 1.0, iterations: 0, &block)
       topic ||= @topic
 
       if id
@@ -170,7 +122,9 @@ module Tina4
 
       # poll_interval=0 → single-pass drain (returns when empty)
       # poll_interval>0 → long-running poll (sleeps when empty, never returns)
+      # iterations>0    → stop after consuming N jobs
       if block_given?
+        consumed = 0
         loop do
           job = @backend.dequeue(topic)
           if job.nil?
@@ -179,9 +133,12 @@ module Tina4
             next
           end
           yield job
+          consumed += 1
+          break if iterations > 0 && consumed >= iterations
         end
       else
         Enumerator.new do |yielder|
+          consumed = 0
           loop do
             job = @backend.dequeue(topic)
             if job.nil?
@@ -190,15 +147,17 @@ module Tina4
               next
             end
             yielder << job
+            consumed += 1
+            break if iterations > 0 && consumed >= iterations
           end
         end
       end
     end
 
     # Pop a specific job by ID from the queue.
-    def pop_by_id(topic, id)
+    def pop_by_id(id)
       return nil unless @backend.respond_to?(:find_by_id)
-      @backend.find_by_id(topic, id)
+      @backend.find_by_id(@topic, id)
     end
 
     # Get the number of messages by status.

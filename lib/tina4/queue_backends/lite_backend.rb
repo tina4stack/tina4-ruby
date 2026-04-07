@@ -52,7 +52,7 @@ module Tina4
           File.delete(chosen[:file])
           data = chosen[:data]
 
-          Tina4::QueueMessage.new(
+          Tina4::Job.new(
             topic: data["topic"] || topic.to_s,
             payload: data["payload"],
             id: data["id"],
@@ -176,7 +176,7 @@ module Tina4
           next if (data["attempts"] || 0) >= max_retries
 
           data["status"] = "pending"
-          msg = Tina4::QueueMessage.new(
+          msg = Tina4::Job.new(
             topic: data["topic"],
             payload: data["payload"],
             id: data["id"]
@@ -189,6 +189,57 @@ module Tina4
         end
 
         count
+      end
+
+      # Remove all pending jobs from a topic. Returns count removed.
+      def clear(topic)
+        dir = topic_path(topic)
+        return 0 unless Dir.exist?(dir)
+        count = 0
+        Dir.glob(File.join(dir, "*.json")).each do |file|
+          File.delete(file)
+          count += 1
+        end
+        count
+      end
+
+      # Get jobs that failed but are still eligible for retry (under max_retries).
+      def failed(topic, max_retries: 3)
+        return [] unless Dir.exist?(@dead_letter_dir)
+        jobs = []
+        Dir.glob(File.join(@dead_letter_dir, "*.json")).sort_by { |f| File.mtime(f) }.each do |file|
+          data = JSON.parse(File.read(file))
+          next unless data["topic"] == topic.to_s
+          next if (data["attempts"] || 0) >= max_retries
+          jobs << data
+        rescue JSON::ParserError
+          next
+        end
+        jobs
+      end
+
+      # Retry a specific failed job by ID. Returns true if found and re-queued.
+      def retry_job(topic, job_id, delay_seconds: 0)
+        return false unless Dir.exist?(@dead_letter_dir)
+        file = File.join(@dead_letter_dir, "#{job_id}.json")
+        return false unless File.exist?(file)
+
+        data = JSON.parse(File.read(file))
+        return false unless data["topic"] == topic.to_s
+
+        available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
+        msg = Tina4::Job.new(
+          topic: data["topic"],
+          payload: data["payload"],
+          id: data["id"],
+          attempts: (data["attempts"] || 0) + 1,
+          available_at: available_at
+        )
+        enqueue(msg)
+        File.delete(file)
+        true
+      rescue JSON::ParserError
+        false
       end
 
       private

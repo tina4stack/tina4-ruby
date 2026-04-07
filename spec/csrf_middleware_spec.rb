@@ -19,6 +19,9 @@ RSpec.describe Tina4::CsrfMiddleware do
     Tina4::Router.clear!
     Tina4::Middleware.clear!
     ENV.delete("TINA4_CSRF")
+    Tina4::Auth.instance_variable_set(:@private_key, nil)
+    Tina4::Auth.instance_variable_set(:@public_key, nil)
+    Tina4::Auth.instance_variable_set(:@keys_dir, nil)
     FileUtils.rm_rf(tmp_dir)
   end
 

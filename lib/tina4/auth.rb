@@ -12,7 +12,7 @@ module Tina4
       def setup(root_dir = Dir.pwd)
         @keys_dir = File.join(root_dir, KEYS_DIR)
         FileUtils.mkdir_p(@keys_dir)
-        ensure_keys unless use_hmac?
+        ensure_keys
       end
 
       # ── HS256 helpers (stdlib only, no gem) ──────────────────────
@@ -258,8 +258,6 @@ module Tina4
       private
 
       def ensure_keys
-        return if use_hmac?
-
         @keys_dir ||= File.join(Dir.pwd, KEYS_DIR)
         FileUtils.mkdir_p(@keys_dir)
         unless File.exist?(private_key_path) && File.exist?(public_key_path)
