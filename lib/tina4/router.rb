@@ -14,7 +14,9 @@ module Tina4
       @swagger_meta = swagger_meta
       @middleware = middleware.freeze
       @template = template&.freeze
-      @auth_required = %w[POST PUT PATCH DELETE].include?(@method)
+      # Write routes are secure by default, unless custom middleware is registered
+      # (developer handles auth themselves via middleware)
+      @auth_required = %w[POST PUT PATCH DELETE].include?(@method) && middleware.empty?
       @cached = false
       @param_names = []
       @path_regex = compile_pattern(@path)
