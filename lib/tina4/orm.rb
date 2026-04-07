@@ -115,27 +115,37 @@ module Tina4
         QueryBuilder.from(table_name, db: db)
       end
 
-      def find(id_or_filter = nil, filter = nil, **kwargs)
-        include_list = kwargs.delete(:include)
+      # Find records by filter dict. Always returns an array.
+      #
+      # Usage:
+      #   User.find(name: "Alice")                  → [User, ...]
+      #   User.find({age: 18}, limit: 10)           → [User, ...]
+      #   User.find(order_by: "name ASC")            → [User, ...]
+      #   User.find                                  → all records
+      #
+      # Use find_by_id(id) for single-record primary key lookup.
+      def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil)
+        conditions = []
+        params = []
 
-        # find(id) — find by primary key
-        # find(filter_hash) — find by criteria
-        # find(name: "Alice") — keyword args as filter hash
-        result = if id_or_filter.is_a?(Hash)
-          find_by_filter(id_or_filter)
-        elsif filter.is_a?(Hash)
-          find_by_filter(filter)
-        elsif !kwargs.empty?
-          find_by_filter(kwargs)
-        else
-          find_by_id(id_or_filter)
+        filter.each do |key, value|
+          col = field_mapping[key.to_s] || key
+          conditions << "#{col} = ?"
+          params << value
         end
 
-        if include_list && result
-          instances = result.is_a?(Array) ? result : [result]
-          eager_load(instances, include_list)
+        if soft_delete
+          conditions << "(#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
         end
-        result
+
+        sql = "SELECT * FROM #{table_name}"
+        sql += " WHERE #{conditions.join(' AND ')}" unless conditions.empty?
+        sql += " ORDER BY #{order_by}" if order_by
+
+        results = db.fetch(sql, params, limit: limit, offset: offset)
+        instances = results.map { |row| from_hash(row) }
+        eager_load(instances, include) if include
+        instances
       end
 
       # Eager load relationships for a collection of instances (prevents N+1).
