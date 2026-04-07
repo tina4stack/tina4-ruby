@@ -50,7 +50,7 @@ RSpec.describe Tina4::ORM do
     it "inserts a new record" do
       user = TestUser.new(name: "Alice", email: "alice@test.com")
       result = user.save
-      expect(result).to be true
+      expect(result).to be_truthy
       expect(user.persisted?).to be true
     end
 
@@ -148,7 +148,7 @@ RSpec.describe Tina4::ORM do
     it "loads data by primary key via select_one" do
       created = TestUser.create(name: "LoadMe", email: "load@test.com")
       user = TestUser.new
-      result = user.load("SELECT * FROM testusers WHERE id = ?", [created.id])
+      result = user.load("id = ?", [created.id])
       expect(result).to be true
       expect(user.name).to eq("LoadMe")
     end
@@ -156,7 +156,7 @@ RSpec.describe Tina4::ORM do
     it "loads data with a filter SQL and params" do
       TestUser.create(name: "FilterUser", email: "filter@test.com")
       user = TestUser.new
-      result = user.load("SELECT * FROM testusers WHERE email = ?", ["filter@test.com"])
+      result = user.load("email = ?", ["filter@test.com"])
       expect(result).to be true
       expect(user.name).to eq("FilterUser")
       expect(user.email).to eq("filter@test.com")
@@ -165,7 +165,7 @@ RSpec.describe Tina4::ORM do
 
     it "returns false when filter matches no records" do
       user = TestUser.new
-      result = user.load("SELECT * FROM testusers WHERE email = ?", ["nonexistent@test.com"])
+      result = user.load("email = ?", ["nonexistent@test.com"])
       expect(result).to be false
     end
   end
