@@ -483,8 +483,29 @@ module Tina4
 
     # Load a record into this instance via select_one.
     # Returns true if found and loaded, false otherwise.
-    def load(sql, params = [], include: nil)
+    # Load a record into this instance.
+    #
+    # Usage:
+    #   orm.id = 1; orm.load          — uses PK already set
+    #   orm.load("id = ?", [1])       — filter with params
+    #   orm.load("id = 1")            — filter string
+    #
+    # Returns true if a record was found, false otherwise.
+    def load(filter = nil, params = [], include: nil)
       @relationship_cache = {}
+      table = self.class.table_name
+
+      if filter.nil?
+        pk = self.class.primary_key
+        pk_col = self.class.field_mapping[pk.to_s] || pk
+        pk_value = __send__(pk)
+        return false if pk_value.nil?
+        sql = "SELECT * FROM #{table} WHERE #{pk_col} = ?"
+        params = [pk_value]
+      else
+        sql = "SELECT * FROM #{table} WHERE #{filter}"
+      end
+
       result = self.class.select_one(sql, params, include: include)
       return false unless result
 
