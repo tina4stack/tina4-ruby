@@ -52,10 +52,10 @@ module Tina4
       @backend.failed(@topic, max_retries: @max_retries)
     end
 
-    # Retry a specific failed job by ID. Returns true if found and re-queued.
-    def retry(job_id, delay_seconds: 0)
+    # Retry failed jobs on this queue's topic. Returns true if re-queued.
+    def retry(delay_seconds = 0)
       return false unless @backend.respond_to?(:retry_job)
-      @backend.retry_job(@topic, job_id, delay_seconds: delay_seconds)
+      @backend.retry_job(@topic, delay_seconds: delay_seconds)
     end
 
     # Get dead letter jobs — messages that exceeded max retries.
@@ -78,7 +78,7 @@ module Tina4
     end
 
     # Produce a message onto a topic. Convenience wrapper around push().
-    def produce(topic, payload, priority: 0)
+    def produce(topic, payload, priority = 0)
       message = Job.new(topic: topic, payload: payload, priority: priority)
       @backend.enqueue(message)
       message
