@@ -198,7 +198,7 @@ RSpec.describe "ORM v3 features" do
       Author.new(name: "Alice").save
       Author.new(name: "Bob").save
 
-      results = Author.find(name: "Alice")
+      results = Author.find({name: "Alice"})
       expect(results.length).to eq(1)
       expect(results.first.name).to eq("Alice")
     end

@@ -61,6 +61,18 @@ module Tina4
         @auto_map = val
       end
 
+      # Auto-CRUD flag: when set to true, registers this model for CRUD route generation
+      def auto_crud
+        @auto_crud || false
+      end
+
+      def auto_crud=(val)
+        @auto_crud = val
+        if val
+          Tina4::AutoCrud.register(self) if defined?(Tina4::AutoCrud)
+        end
+      end
+
       # Relationship definitions
       def relationship_definitions
         @relationship_definitions ||= {}

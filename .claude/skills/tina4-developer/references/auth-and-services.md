@@ -8,9 +8,6 @@ Set your secret in `.env`:
 SECRET=a-long-random-string-here
 ```
 
-Auth auto-selects the signing algorithm: **HS256** if a `SECRET` env var is set, or **RS256** if
-RSA key files exist. No manual algorithm configuration needed.
-
 ### Generating Tokens (Python)
 ```python
 from tina4 import tina4_auth
@@ -25,7 +22,7 @@ async def login(request, response):
     if not user or not tina4_auth.check_password(user.password_hash, password):
         return response.json({"error": "Invalid credentials"}, 401)
 
-    token = tina4_auth.get_token({"user_id": user.id, "email": user.email}, expires_in=3600)
+    token = tina4_auth.get_token({"user_id": user.id, "email": user.email})
     return response.json({"token": token})
 ```
 
@@ -60,9 +57,6 @@ Configure in `.env`:
 TINA4_SESSION_HANDLER=file    # file, redis, valkey, mongodb, database
 ```
 
-A **Redis session handler** is available out of the box — set `TINA4_SESSION_HANDLER=redis`
-and point to your Redis instance. No extra dependencies required.
-
 ### Usage
 ```python
 @post("/login")
@@ -82,18 +76,13 @@ async def dashboard(request, response):
 
 @get("/logout")
 async def logout(request, response):
-    request.session.clear()   # Wipes session data without destroying the session
+    request.session.clear()
     return response.redirect("/")
 ```
-
-`session.clear()` wipes all session data but keeps the session itself alive (the session ID
-and cookie persist). Use this for logout flows where you want to reset state without
-forcing a new session.
 
 ## Queue System
 
 For background jobs like sending emails, processing uploads, etc.
-Queue files use the `.queue-data` extension on disk.
 
 ### Producing Messages
 ```python

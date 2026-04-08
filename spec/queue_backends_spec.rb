@@ -21,13 +21,13 @@ RSpec.describe "Queue Backends" do
     end
 
     it "enqueues a message to a topic" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: { key: "value" })
+      msg = Tina4::Job.new(topic: "test_topic", payload: { key: "value" })
       backend.enqueue(msg)
       expect(backend.size("test_topic")).to eq(1)
     end
 
     it "dequeues a message from a topic" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: { key: "value" })
+      msg = Tina4::Job.new(topic: "test_topic", payload: { key: "value" })
       backend.enqueue(msg)
       dequeued = backend.dequeue("test_topic")
       expect(dequeued).not_to be_nil
@@ -40,7 +40,7 @@ RSpec.describe "Queue Backends" do
     end
 
     it "removes message file on dequeue" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: "data")
+      msg = Tina4::Job.new(topic: "test_topic", payload: "data")
       backend.enqueue(msg)
       expect(backend.size("test_topic")).to eq(1)
       backend.dequeue("test_topic")
@@ -48,14 +48,14 @@ RSpec.describe "Queue Backends" do
     end
 
     it "preserves message payload through enqueue/dequeue" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: { "name" => "Alice", "count" => 42 })
+      msg = Tina4::Job.new(topic: "test_topic", payload: { "name" => "Alice", "count" => 42 })
       backend.enqueue(msg)
       dequeued = backend.dequeue("test_topic")
       expect(dequeued.payload).to eq({ "name" => "Alice", "count" => 42 })
     end
 
     it "preserves message id through enqueue/dequeue" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: "data")
+      msg = Tina4::Job.new(topic: "test_topic", payload: "data")
       original_id = msg.id
       backend.enqueue(msg)
       dequeued = backend.dequeue("test_topic")
@@ -64,7 +64,7 @@ RSpec.describe "Queue Backends" do
 
     it "processes messages in FIFO order" do
       3.times do |i|
-        msg = Tina4::QueueMessage.new(topic: "ordered", payload: "msg_#{i}")
+        msg = Tina4::Job.new(topic: "ordered", payload: "msg_#{i}")
         backend.enqueue(msg)
         sleep(0.01) # ensure different mtime
       end
@@ -73,14 +73,14 @@ RSpec.describe "Queue Backends" do
     end
 
     it "sends message to dead letter queue" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: "failed")
+      msg = Tina4::Job.new(topic: "test_topic", payload: "failed")
       backend.dead_letter(msg)
       dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
       expect(dl_files.length).to eq(1)
     end
 
     it "requeues a message" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: "retry")
+      msg = Tina4::Job.new(topic: "test_topic", payload: "retry")
       backend.requeue(msg)
       expect(backend.size("test_topic")).to eq(1)
     end
@@ -90,8 +90,8 @@ RSpec.describe "Queue Backends" do
     end
 
     it "lists topics" do
-      backend.enqueue(Tina4::QueueMessage.new(topic: "topic_a", payload: "a"))
-      backend.enqueue(Tina4::QueueMessage.new(topic: "topic_b", payload: "b"))
+      backend.enqueue(Tina4::Job.new(topic: "topic_a", payload: "a"))
+      backend.enqueue(Tina4::Job.new(topic: "topic_b", payload: "b"))
       topics = backend.topics
       expect(topics).to include("topic_a")
       expect(topics).to include("topic_b")
@@ -99,14 +99,14 @@ RSpec.describe "Queue Backends" do
     end
 
     it "sanitizes topic names for directory safety" do
-      msg = Tina4::QueueMessage.new(topic: "my/unsafe.topic!", payload: "safe")
+      msg = Tina4::Job.new(topic: "my/unsafe.topic!", payload: "safe")
       backend.enqueue(msg)
       # The topic should be sanitized to use underscores
       expect(backend.size("my/unsafe.topic!")).to eq(1)
     end
 
     it "acknowledge is a no-op (file already deleted)" do
-      msg = Tina4::QueueMessage.new(topic: "test_topic", payload: "ack")
+      msg = Tina4::Job.new(topic: "test_topic", payload: "ack")
       expect { backend.acknowledge(msg) }.not_to raise_error
     end
   end
@@ -172,7 +172,7 @@ RSpec.describe "Queue Backends" do
     end
 
     it "tracks attempts on a message through requeue cycles" do
-      msg = Tina4::QueueMessage.new(topic: "retry_topic", payload: "retry_me")
+      msg = Tina4::Job.new(topic: "retry_topic", payload: "retry_me")
       msg.increment_attempts!
       msg.increment_attempts!
       backend.requeue(msg)
@@ -183,7 +183,7 @@ RSpec.describe "Queue Backends" do
     end
 
     it "requeues then dequeues the same message" do
-      msg = Tina4::QueueMessage.new(topic: "rq_topic", payload: { "task" => "process" })
+      msg = Tina4::Job.new(topic: "rq_topic", payload: { "task" => "process" })
       backend.requeue(msg)
       dequeued = backend.dequeue("rq_topic")
       expect(dequeued).not_to be_nil
@@ -203,7 +203,7 @@ RSpec.describe "Queue Backends" do
 
     it "stores multiple messages in dead letter queue" do
       3.times do |i|
-        msg = Tina4::QueueMessage.new(topic: "dl_topic", payload: "dead_#{i}")
+        msg = Tina4::Job.new(topic: "dl_topic", payload: "dead_#{i}")
         backend.dead_letter(msg)
       end
       dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
@@ -211,7 +211,7 @@ RSpec.describe "Queue Backends" do
     end
 
     it "preserves message payload in dead letter queue" do
-      msg = Tina4::QueueMessage.new(topic: "dl_payload", payload: { "error" => "timeout" })
+      msg = Tina4::Job.new(topic: "dl_payload", payload: { "error" => "timeout" })
       backend.dead_letter(msg)
       dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
       content = JSON.parse(File.read(dl_files.first))
@@ -231,7 +231,7 @@ RSpec.describe "Queue Backends" do
 
     it "handles bulk enqueue of many messages" do
       10.times do |i|
-        msg = Tina4::QueueMessage.new(topic: "bulk", payload: "msg_#{i}")
+        msg = Tina4::Job.new(topic: "bulk", payload: "msg_#{i}")
         backend.enqueue(msg)
       end
       expect(backend.size("bulk")).to eq(10)
@@ -239,7 +239,7 @@ RSpec.describe "Queue Backends" do
 
     it "drains a topic completely" do
       5.times do |i|
-        msg = Tina4::QueueMessage.new(topic: "drain", payload: "msg_#{i}")
+        msg = Tina4::Job.new(topic: "drain", payload: "msg_#{i}")
         backend.enqueue(msg)
       end
       results = []
@@ -251,21 +251,21 @@ RSpec.describe "Queue Backends" do
     end
 
     it "handles interleaved enqueue and dequeue" do
-      msg1 = Tina4::QueueMessage.new(topic: "interleave", payload: "first")
+      msg1 = Tina4::Job.new(topic: "interleave", payload: "first")
       backend.enqueue(msg1)
       dequeued1 = backend.dequeue("interleave")
       expect(dequeued1.payload).to eq("first")
 
-      msg2 = Tina4::QueueMessage.new(topic: "interleave", payload: "second")
+      msg2 = Tina4::Job.new(topic: "interleave", payload: "second")
       backend.enqueue(msg2)
       dequeued2 = backend.dequeue("interleave")
       expect(dequeued2.payload).to eq("second")
     end
 
     it "handles concurrent topics independently" do
-      backend.enqueue(Tina4::QueueMessage.new(topic: "alpha", payload: "a1"))
-      backend.enqueue(Tina4::QueueMessage.new(topic: "alpha", payload: "a2"))
-      backend.enqueue(Tina4::QueueMessage.new(topic: "beta", payload: "b1"))
+      backend.enqueue(Tina4::Job.new(topic: "alpha", payload: "a1"))
+      backend.enqueue(Tina4::Job.new(topic: "alpha", payload: "a2"))
+      backend.enqueue(Tina4::Job.new(topic: "beta", payload: "b1"))
 
       expect(backend.size("alpha")).to eq(2)
       expect(backend.size("beta")).to eq(1)
@@ -276,32 +276,32 @@ RSpec.describe "Queue Backends" do
     end
   end
 
-  # ── QueueMessage Tests ──────────────────────────────────────────
+  # ── Job Tests ──────────────────────────────────────────
 
-  describe Tina4::QueueMessage do
+  describe Tina4::Job do
     it "generates a UUID id by default" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      msg = Tina4::Job.new(topic: "test", payload: "data")
       expect(msg.id).not_to be_nil
       expect(msg.id.length).to eq(36) # UUID format
     end
 
     it "accepts a custom id" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data", id: "custom-id")
+      msg = Tina4::Job.new(topic: "test", payload: "data", id: "custom-id")
       expect(msg.id).to eq("custom-id")
     end
 
     it "starts with status :pending" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      msg = Tina4::Job.new(topic: "test", payload: "data")
       expect(msg.status).to eq(:pending)
     end
 
     it "starts with 0 attempts" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      msg = Tina4::Job.new(topic: "test", payload: "data")
       expect(msg.attempts).to eq(0)
     end
 
     it "increments attempts" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      msg = Tina4::Job.new(topic: "test", payload: "data")
       msg.increment_attempts!
       expect(msg.attempts).to eq(1)
       msg.increment_attempts!
@@ -309,7 +309,7 @@ RSpec.describe "Queue Backends" do
     end
 
     it "serializes to JSON" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: { key: "val" })
+      msg = Tina4::Job.new(topic: "test", payload: { key: "val" })
       json = msg.to_json
       parsed = JSON.parse(json)
       expect(parsed["topic"]).to eq("test")
@@ -317,7 +317,7 @@ RSpec.describe "Queue Backends" do
     end
 
     it "converts to hash" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      msg = Tina4::Job.new(topic: "test", payload: "data")
       hash = msg.to_hash
       expect(hash[:topic]).to eq("test")
       expect(hash[:payload]).to eq("data")
@@ -326,14 +326,14 @@ RSpec.describe "Queue Backends" do
     end
 
     it "stores created_at timestamp" do
-      msg = Tina4::QueueMessage.new(topic: "test", payload: "data")
+      msg = Tina4::Job.new(topic: "test", payload: "data")
       hash = msg.to_hash
       expect(hash[:created_at]).not_to be_nil
     end
 
     it "preserves complex nested payload" do
       payload = { "users" => [{ "name" => "Alice" }, { "name" => "Bob" }], "count" => 2 }
-      msg = Tina4::QueueMessage.new(topic: "complex", payload: payload)
+      msg = Tina4::Job.new(topic: "complex", payload: payload)
       json = msg.to_json
       parsed = JSON.parse(json)
       expect(parsed["payload"]["users"].length).to eq(2)

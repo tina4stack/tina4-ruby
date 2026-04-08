@@ -130,7 +130,7 @@ module Tina4
       add_query(table_lower, type: type_name,
                 args: { pk_field => { type: "ID!" } },
                 description: "Fetch a single #{model_name} by #{pk_field}") do |_root, args, _ctx|
-        record = klass.find(args[pk_field])
+        record = klass.find_by_id(args[pk_field])
         record&.to_hash
       end
 
@@ -158,7 +158,7 @@ module Tina4
       add_mutation("update#{model_name}", type: type_name,
                    args: { pk_field => { type: "ID!" }, "input" => { type: "#{type_name}Input!" } },
                    description: "Update an existing #{model_name}") do |_root, args, _ctx|
-        record = klass.find(args[pk_field])
+        record = klass.find_by_id(args[pk_field])
         return nil unless record
         (args["input"] || {}).each { |k, v| record.send(:"#{k}=", v) if record.respond_to?(:"#{k}=") }
         record.save
@@ -169,7 +169,7 @@ module Tina4
       add_mutation("delete#{model_name}", type: "Boolean",
                    args: { pk_field => { type: "ID!" } },
                    description: "Delete a #{model_name} by #{pk_field}") do |_root, args, _ctx|
-        record = klass.find(args[pk_field])
+        record = klass.find_by_id(args[pk_field])
         return false unless record
         record.delete
         true
@@ -769,7 +769,7 @@ module Tina4
     end
 
     # Return schema as GraphQL SDL string.
-    def to_sdl
+    def schema_sdl
       sdl = ""
       @schema.types.each do |name, type_obj|
         sdl += "type #{name} {\n"

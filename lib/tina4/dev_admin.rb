@@ -631,20 +631,12 @@ module Tina4
 
           # Execute all statements (single write or multi-statement batch)
           total_affected = 0
-          db.start_transaction if db.respond_to?(:start_transaction)
-          begin
-            statements.each do |stmt|
-              result = db.execute(stmt)
-              if result == false
-                error_msg = db.respond_to?(:get_error) ? db.get_error : nil
-                raise(error_msg || "Statement failed: #{stmt.strip[0, 60]}")
-              end
-              total_affected += (result.respond_to?(:affected_rows) ? result.affected_rows : 0)
+          statements.each do |stmt|
+            result = db.execute(stmt)
+            if result == false
+              return { error: db.get_error || "Statement failed: #{stmt}" }
             end
-            db.commit if db.respond_to?(:commit)
-          rescue => e
-            db.rollback if db.respond_to?(:rollback)
-            return { error: e.message }
+            total_affected += (result.respond_to?(:affected_rows) ? result.affected_rows : 0)
           end
 
           { affected: total_affected, success: true }

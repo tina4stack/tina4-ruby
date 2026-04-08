@@ -31,7 +31,7 @@ module Tina4
         return nil unless payload
 
         data = JSON.parse(payload)
-        msg = Tina4::QueueMessage.new(
+        msg = Tina4::Job.new(
           topic: data["topic"],
           payload: data["payload"],
           id: data["id"]

@@ -79,7 +79,7 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "saves, loads, and converts to hash" do
       w = SmokeWidget.new(name: "Bolt", weight: 1.5)
-      expect(w.save).to be true
+      expect(w.save).to be_truthy
       expect(w.id).not_to be_nil
 
       loaded = SmokeWidget.new
@@ -95,7 +95,7 @@ RSpec.describe "Tina4 Smoke Test" do
       w = SmokeWidget.create(name: "Temp", weight: 0.1)
       expect(w.persisted?).to be true
       expect(w.delete).to be true
-      expect(SmokeWidget.find(w.id)).to be_nil
+      expect(SmokeWidget.find_by_id(w.id)).to be_nil
     end
   end
 
@@ -231,8 +231,8 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "hashes and checks a password" do
       hash = Tina4::Auth.hash_password("s3cret!")
-      # Hash must be a non-empty string (format depends on available gems)
-      expect(hash.to_s).not_to be_empty
+      # PBKDF2-SHA256 hash starts with "pbkdf2_sha256$"
+      expect(hash.to_s).to start_with("pbkdf2_sha256$")
       expect(Tina4::Auth.check_password("s3cret!", hash.to_s)).to be true
       expect(Tina4::Auth.check_password("wrong", hash.to_s)).to be false
     end

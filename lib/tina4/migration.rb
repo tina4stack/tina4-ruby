@@ -290,8 +290,7 @@ module Tina4
         end
         result = @db.execute(stmt)
         if result == false
-          error_msg = @db.respond_to?(:get_error) ? @db.get_error : nil
-          raise(error_msg || "Statement failed: #{stmt.strip[0, 60]}")
+          raise RuntimeError, @db.get_error || "SQL execution failed: #{stmt}"
         end
       end
     end

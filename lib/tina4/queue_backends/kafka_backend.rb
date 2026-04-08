@@ -45,7 +45,7 @@ module Tina4
         data = JSON.parse(msg.payload)
         @last_message = msg
 
-        Tina4::QueueMessage.new(
+        Tina4::Job.new(
           topic: data["topic"],
           payload: data["payload"],
           id: data["id"]
@@ -63,7 +63,7 @@ module Tina4
       end
 
       def dead_letter(message)
-        dead_msg = Tina4::QueueMessage.new(
+        dead_msg = Tina4::Job.new(
           topic: "#{message.topic}.dead_letter",
           payload: message.payload,
           id: message.id

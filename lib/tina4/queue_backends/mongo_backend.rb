@@ -49,7 +49,7 @@ module Tina4
         )
         return nil unless doc
 
-        Tina4::QueueMessage.new(
+        Tina4::Job.new(
           topic: doc["topic"],
           payload: doc["payload"],
           id: doc["_id"]
@@ -82,7 +82,7 @@ module Tina4
 
       def dead_letters(topic, max_retries: 3)
         collection.find(topic: "#{topic}.dead_letter", status: "dead").map do |doc|
-          Tina4::QueueMessage.new(
+          Tina4::Job.new(
             topic: doc["topic"],
             payload: doc["payload"],
             id: doc["_id"]

@@ -60,7 +60,7 @@ RSpec.describe Tina4::Migration do
 
     it "handles migration errors" do
       FileUtils.mkdir_p(mig_dir)
-      File.write(File.join(mig_dir, "000001_bad.sql"), "INVALID SQL STATEMENT")
+      File.write(File.join(mig_dir, "000001_bad.sql"), "SELECT * FROM this_table_does_not_exist_xyz")
 
       results = migration.run
       expect(results[0][:status]).to eq("failed")

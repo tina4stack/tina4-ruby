@@ -452,7 +452,7 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
-  describe "database tab HTML" do
+  describe "SPA shell and JS bundle" do
     before do
       allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
@@ -464,23 +464,34 @@ RSpec.describe Tina4::DevAdmin do
       body.first
     end
 
-    it "contains the SPA app mount point" do
+    it "returns SPA shell with app container" do
       expect(html).to include('id="app"')
-      expect(html).to include('data-framework="ruby"')
-    end
-
-    it "loads the dev admin JavaScript bundle" do
       expect(html).to include("tina4-dev-admin.min.js")
     end
 
-    it "contains framework colour metadata" do
-      expect(html).to include('data-color="#ef4444"')
+    it "serves the dev admin JS bundle" do
+      env = { "PATH_INFO" => "/__dev/js/tina4-dev-admin.min.js", "REQUEST_METHOD" => "GET" }
+      status, headers, body = Tina4::DevAdmin.handle_request(env)
+      expect(status).to eq(200)
+      expect(headers["content-type"]).to include("javascript")
+      expect(body.first.length).to be > 1000
     end
 
-    it "is valid HTML with a head and body" do
-      expect(html).to include("<!DOCTYPE html>")
-      expect(html).to include("<title>")
-      expect(html).to include("</body>")
+    it "JS bundle contains database tab elements" do
+      js_path = File.join(File.dirname(__FILE__), "..", "lib", "tina4", "public", "js", "tina4-dev-admin.js")
+      skip("tina4-dev-admin.js not found") unless File.exist?(js_path)
+      js = File.read(js_path, encoding: "UTF-8")
+      expect(js).to include("db-table-list")
+      expect(js).to include("db-result")
+      expect(js).to include("db-query")
+    end
+
+    it "JS bundle contains seed controls" do
+      js_path = File.join(File.dirname(__FILE__), "..", "lib", "tina4", "public", "js", "tina4-dev-admin.js")
+      skip("tina4-dev-admin.js not found") unless File.exist?(js_path)
+      js = File.read(js_path, encoding: "UTF-8")
+      expect(js).to include("db-seed-table")
+      expect(js).to include("db-seed-count")
     end
   end
 
