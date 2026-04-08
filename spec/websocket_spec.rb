@@ -693,3 +693,156 @@ RSpec.describe Tina4::WebSocketConnection do
     end
   end
 end
+
+# ── Rooms / Namespaces ──────────────────────────────────────────
+
+RSpec.describe "WebSocket Rooms" do
+  let(:ws_server) { Tina4::WebSocket.new }
+
+  def make_connection(id, path: "/")
+    socket = StringIO.new
+    Tina4::WebSocketConnection.new(id, socket, ws_server: ws_server, path: path)
+  end
+
+  # ── Connection-level rooms ────────────────────────────────────
+
+  describe "WebSocketConnection#rooms" do
+    it "is empty initially" do
+      conn = make_connection("a")
+      expect(conn.rooms).to be_empty
+    end
+
+    it "join_room adds connection to a named room" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      expect(conn.rooms).to include("chat")
+    end
+
+    it "leave_room removes connection from a named room" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.leave_room("chat")
+      expect(conn.rooms).not_to include("chat")
+    end
+
+    it "join_room is idempotent" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.join_room("chat")
+      expect(ws_server.room_count("chat")).to eq(1)
+    end
+
+    it "leave_room on non-member does not raise" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      expect { conn.leave_room("nonexistent") }.not_to raise_error
+    end
+
+    it "connection can be in multiple rooms" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.join_room("lobby")
+      expect(conn.rooms).to include("chat")
+      expect(conn.rooms).to include("lobby")
+    end
+
+    it "leaving one room keeps other rooms intact" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.join_room("lobby")
+      conn.leave_room("chat")
+      expect(conn.rooms).not_to include("chat")
+      expect(conn.rooms).to include("lobby")
+    end
+  end
+
+  # ── Server-level rooms ─────────────────────────────────────────
+
+  describe "Tina4::WebSocket room management" do
+    it "room_count returns 0 for unknown room" do
+      expect(ws_server.room_count("ghost")).to eq(0)
+    end
+
+    it "room_count reflects joined members" do
+      conn1 = make_connection("a")
+      conn2 = make_connection("b")
+      ws_server.connections["a"] = conn1
+      ws_server.connections["b"] = conn2
+      conn1.join_room("chat")
+      conn2.join_room("chat")
+      expect(ws_server.room_count("chat")).to eq(2)
+    end
+
+    it "room_count decreases when a member leaves" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.leave_room("chat")
+      expect(ws_server.room_count("chat")).to eq(0)
+    end
+
+    it "get_room_connections returns members only" do
+      conn1 = make_connection("a")
+      conn2 = make_connection("b")
+      conn3 = make_connection("c")
+      ws_server.connections["a"] = conn1
+      ws_server.connections["b"] = conn2
+      ws_server.connections["c"] = conn3
+      conn1.join_room("chat")
+      conn2.join_room("chat")
+      members = ws_server.get_room_connections("chat")
+      expect(members).to include(conn1)
+      expect(members).to include(conn2)
+      expect(members).not_to include(conn3)
+    end
+
+    it "get_room_connections returns empty array for unknown room" do
+      expect(ws_server.get_room_connections("ghost")).to eq([])
+    end
+
+    it "broadcast_to_room sends to all room members" do
+      conn1 = make_connection("a")
+      conn2 = make_connection("b")
+      conn3 = make_connection("c")
+      ws_server.connections["a"] = conn1
+      ws_server.connections["b"] = conn2
+      ws_server.connections["c"] = conn3
+      conn1.join_room("chat")
+      conn2.join_room("chat")
+
+      expect(conn1).to receive(:send_text).with("hello room")
+      expect(conn2).to receive(:send_text).with("hello room")
+      expect(conn3).not_to receive(:send_text)
+
+      allow(conn1).to receive(:send_text)
+      allow(conn2).to receive(:send_text)
+
+      ws_server.broadcast_to_room("chat", "hello room")
+    end
+
+    it "broadcast_to_room excludes specified connection" do
+      conn1 = make_connection("a")
+      conn2 = make_connection("b")
+      ws_server.connections["a"] = conn1
+      ws_server.connections["b"] = conn2
+      conn1.join_room("chat")
+      conn2.join_room("chat")
+
+      expect(conn1).not_to receive(:send_text)
+      expect(conn2).to receive(:send_text).with("msg")
+
+      allow(conn2).to receive(:send_text)
+
+      ws_server.broadcast_to_room("chat", "msg", exclude: "a")
+    end
+
+    it "broadcast_to_room on empty room does not raise" do
+      expect { ws_server.broadcast_to_room("ghost", "msg") }.not_to raise_error
+    end
+  end
+end

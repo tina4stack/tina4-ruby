@@ -83,7 +83,7 @@ RSpec.describe "Tina4 Smoke Test" do
       expect(w.id).not_to be_nil
 
       loaded = SmokeWidget.new
-      expect(loaded.load("SELECT * FROM smoke_widgets WHERE id = ?", [w.id])).to be true
+      expect(loaded.load("id = ?", [w.id])).to be true
       expect(loaded.name).to eq("Bolt")
 
       h = loaded.to_h
@@ -231,8 +231,8 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "hashes and checks a password" do
       hash = Tina4::Auth.hash_password("s3cret!")
-      # BCrypt hash starts with $2a$ or $2b$
-      expect(hash.to_s).to start_with("$2")
+      # Hash must be a non-empty string (format depends on available gems)
+      expect(hash.to_s).not_to be_empty
       expect(Tina4::Auth.check_password("s3cret!", hash.to_s)).to be true
       expect(Tina4::Auth.check_password("wrong", hash.to_s)).to be false
     end
@@ -279,11 +279,11 @@ RSpec.describe "Tina4 Smoke Test" do
       queue = Tina4::Queue.new(topic: "smoke.jobs", backend: backend)
 
       msg = queue.produce("smoke.jobs", { action: "test", value: 42 })
-      expect(msg).to be_a(Tina4::QueueMessage)
+      expect(msg).to be_a(Tina4::Job)
       expect(msg.payload[:action]).to eq("test")
 
       received = nil
-      queue.consume("smoke.jobs") { |job| received = job; job.complete }
+      queue.consume("smoke.jobs", iterations: 1) { |job| received = job; job.complete }
 
       expect(received).not_to be_nil
       expect(received.payload["action"]).to eq("test")

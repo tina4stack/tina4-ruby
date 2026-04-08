@@ -635,6 +635,10 @@ module Tina4
           begin
             statements.each do |stmt|
               result = db.execute(stmt)
+              if result == false
+                error_msg = db.respond_to?(:get_error) ? db.get_error : nil
+                raise(error_msg || "Statement failed: #{stmt.strip[0, 60]}")
+              end
               total_affected += (result.respond_to?(:affected_rows) ? result.affected_rows : 0)
             end
             db.commit if db.respond_to?(:commit)

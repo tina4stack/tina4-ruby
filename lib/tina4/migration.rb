@@ -288,7 +288,11 @@ module Tina4
           Tina4::Log.info("Migration #{File.basename(file)}: #{skip_reason}")
           next
         end
-        @db.execute(stmt)
+        result = @db.execute(stmt)
+        if result == false
+          error_msg = @db.respond_to?(:get_error) ? @db.get_error : nil
+          raise(error_msg || "Statement failed: #{stmt.strip[0, 60]}")
+        end
       end
     end
 

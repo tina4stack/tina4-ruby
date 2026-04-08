@@ -125,6 +125,9 @@ module Tina4
       #
       # Use find_by_id(id) for single-record primary key lookup.
       def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil, **extra_filter)
+        # Integer or string-digit argument → primary key lookup (returns single record or nil)
+        return find_by_id(filter) if filter.is_a?(Integer)
+
         # Merge keyword-style filters: find(name: "Alice") and find({name: "Alice"}) both work
         filter = filter.merge(extra_filter) unless extra_filter.empty?
         conditions = []
@@ -427,7 +430,7 @@ module Tina4
           @persisted = true
         end
       end
-      self
+      true
     rescue => e
       @errors << e.message
       false

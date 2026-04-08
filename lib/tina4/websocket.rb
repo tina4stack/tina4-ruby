@@ -2,6 +2,7 @@
 require "socket"
 require "digest"
 require "base64"
+require "set"
 
 module Tina4
   class WebSocket
@@ -17,6 +18,7 @@ module Tina4
         close: [],
         error: []
       }
+      @rooms = {}  # room_name => Set of conn_ids
     end
 
     def on(event, &block)
@@ -69,6 +71,7 @@ module Tina4
           emit(:error, connection, e)
         ensure
           @connections.delete(conn_id)
+          remove_from_all_rooms(conn_id)
           emit(:close, connection)
           socket.close rescue nil
         end
@@ -83,15 +86,46 @@ module Tina4
       end
     end
 
+    # ── Rooms ──────────────────────────────────────────────────
+
+    def join_room_for(conn_id, room_name)
+      @rooms[room_name] ||= Set.new
+      @rooms[room_name].add(conn_id)
+    end
+
+    def leave_room_for(conn_id, room_name)
+      @rooms[room_name]&.delete(conn_id)
+    end
+
+    def room_count(room_name)
+      (@rooms[room_name] || Set.new).size
+    end
+
+    def get_room_connections(room_name)
+      ids = @rooms[room_name] || Set.new
+      ids.filter_map { |id| @connections[id] }
+    end
+
+    def broadcast_to_room(room_name, message, exclude: nil)
+      (get_room_connections(room_name)).each do |conn|
+        next if exclude && conn.id == exclude
+        conn.send_text(message)
+      end
+    end
+
     private
 
     def emit(event, *args)
       @handlers[event]&.each { |h| h.call(*args) }
     end
+
+    def remove_from_all_rooms(conn_id)
+      @rooms.each_value { |members| members.delete(conn_id) }
+    end
   end
 
   class WebSocketConnection
-    attr_reader :id
+    attr_reader :id, :rooms
     attr_accessor :params, :path
 
     def initialize(id, socket, ws_server: nil, path: "/")
@@ -100,6 +134,24 @@ module Tina4
       @params = {}
       @ws_server = ws_server
       @path = path
+      @rooms = Set.new
+    end
+
+    def join_room(room_name)
+      @rooms.add(room_name)
+      @ws_server&.join_room_for(@id, room_name)
+    end
+
+    def leave_room(room_name)
+      @rooms.delete(room_name)
+      @ws_server&.leave_room_for(@id, room_name)
+    end
+
+    def broadcast_to_room(room_name, message, exclude_self: false)
+      return unless @ws_server
+
+      exclude = exclude_self ? @id : nil
+      @ws_server.broadcast_to_room(room_name, message, exclude: exclude)
     end
 
     # Broadcast a message to all other connections on the same path

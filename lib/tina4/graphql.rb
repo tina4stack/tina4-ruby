@@ -769,7 +769,7 @@ module Tina4
     end
 
     # Return schema as GraphQL SDL string.
-    def schema
+    def to_sdl
       sdl = ""
       @schema.types.each do |name, type_obj|
         sdl += "type #{name} {\n"

@@ -464,28 +464,23 @@ RSpec.describe Tina4::DevAdmin do
       body.first
     end
 
-    it "contains split-screen layout elements" do
-      expect(html).to include("table-list")
-      expect(html).to include("query-results")
-      expect(html).to include("query-input")
+    it "contains the SPA app mount point" do
+      expect(html).to include('id="app"')
+      expect(html).to include('data-framework="ruby"')
     end
 
-    it "contains Copy CSV, Copy JSON, and Paste buttons" do
-      expect(html).to include("Copy CSV")
-      expect(html).to include("Copy JSON")
-      expect(html).to include("Paste")
+    it "loads the dev admin JavaScript bundle" do
+      expect(html).to include("tina4-dev-admin.min.js")
     end
 
-    it "contains the limit dropdown" do
-      expect(html).to include("query-limit")
-      expect(html).to include('<option value="20">20</option>')
-      expect(html).to include('<option value="0">All</option>')
+    it "contains framework colour metadata" do
+      expect(html).to include('data-color="#ef4444"')
     end
 
-    it "contains seed controls" do
-      expect(html).to include("seed-table")
-      expect(html).to include("seed-count")
-      expect(html).to include("seedTable()")
+    it "is valid HTML with a head and body" do
+      expect(html).to include("<!DOCTYPE html>")
+      expect(html).to include("<title>")
+      expect(html).to include("</body>")
     end
   end
 

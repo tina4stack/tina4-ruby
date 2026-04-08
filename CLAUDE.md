@@ -600,7 +600,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Cache backends: memory (default), Redis, file
 - Session handlers: file, Redis, MongoDB. `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
-- WebSocket backplane (Redis pub/sub) for horizontal scaling. Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL` env vars
+- WebSocket backplane (Redis pub/sub) for horizontal scaling. Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL` env vars. Rooms API: `conn.join_room(name)`, `conn.leave_room(name)`, `conn.rooms`, `conn.broadcast_to_room(name, msg)`, `ws.room_count(name)`, `ws.get_room_connections(name)`, `ws.broadcast_to_room(name, msg, exclude: nil)`
 - SameSite=Lax default on session cookies (`TINA4_SESSION_SAMESITE`)
 - `tina4 init` generates Dockerfile and .dockerignore
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
