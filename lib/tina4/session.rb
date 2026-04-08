@@ -114,9 +114,10 @@ module Tina4
       @handler.gc(max_age) if @handler.respond_to?(:gc)
     end
 
-    def cookie_header
+    def cookie_header(cookie_name = nil)
+      name = cookie_name || @options[:cookie_name]
       samesite = ENV["TINA4_SESSION_SAMESITE"] || "Lax"
-      "#{@options[:cookie_name]}=#{@id}; Path=/; HttpOnly; SameSite=#{samesite}; Max-Age=#{@options[:max_age]}"
+      "#{name}=#{@id}; Path=/; HttpOnly; SameSite=#{samesite}; Max-Age=#{@options[:max_age]}"
     end
 
     private
@@ -223,9 +224,9 @@ module Tina4
       @session.gc(max_age)
     end
 
-    def cookie_header
+    def cookie_header(cookie_name = nil)
       ensure_loaded
-      @session.cookie_header
+      @session.cookie_header(cookie_name)
     end
 
     def to_hash
