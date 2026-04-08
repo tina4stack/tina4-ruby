@@ -83,7 +83,7 @@ RSpec.describe "ORM v3 features" do
       user.save
       user.delete
 
-      found = SoftDeleteUser.find(user.id)
+      found = SoftDeleteUser.find_by_id(user.id)
       expect(found).to be_nil
     end
 
@@ -132,7 +132,7 @@ RSpec.describe "ORM v3 features" do
         user.save
         expect(user.persisted?).to be true
 
-        found = SoftDeleteUser.find(user.id)
+        found = SoftDeleteUser.find_by_id(user.id)
         expect(found).not_to be_nil
         expect(found.name).to eq("OtherDB")
       ensure

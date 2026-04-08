@@ -124,7 +124,9 @@ module Tina4
       #   User.find                                  → all records
       #
       # Use find_by_id(id) for single-record primary key lookup.
-      def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil)
+      def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil, **extra_filter)
+        # Merge keyword-style filters: find(name: "Alice") and find({name: "Alice"}) both work
+        filter = filter.merge(extra_filter) unless extra_filter.empty?
         conditions = []
         params = []
 
@@ -666,7 +668,7 @@ module Tina4
       fk_value = __send__(fk.to_sym) if respond_to?(fk.to_sym)
       return nil unless fk_value
 
-      @relationship_cache[name] = klass.find(fk_value)
+      @relationship_cache[name] = klass.find_by_id(fk_value)
     end
 
     public
@@ -703,7 +705,7 @@ module Tina4
       fk_value = respond_to?(fk.to_sym) ? __send__(fk.to_sym) : nil
       return nil unless fk_value
 
-      related_class.find(fk_value)
+      related_class.find_by_id(fk_value)
     end
 
     # Instance-level aliases matching Python/PHP/Node.js naming
