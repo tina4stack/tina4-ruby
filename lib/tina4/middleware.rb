@@ -307,8 +307,7 @@ module Tina4
         if auth_header.start_with?("Bearer ")
           bearer_token = auth_header[7..].strip
           unless bearer_token.empty?
-            payload = Tina4::Auth.valid_token(bearer_token)
-            return [request, response] if payload
+            return [request, response] if Tina4::Auth.valid_token(bearer_token)
           end
         end
 
@@ -344,14 +343,13 @@ module Tina4
         end
 
         # Validate the token
-        payload = Tina4::Auth.valid_token(token.to_s)
-
-        if payload.nil?
+        unless Tina4::Auth.valid_token(token.to_s)
           response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
           return [request, response]
         end
 
         # Session binding — if token has session_id, verify it matches
+        payload = Tina4::Auth.get_payload(token.to_s) || {}
         token_session_id = payload["session_id"]
         if token_session_id
           current_session_id = nil

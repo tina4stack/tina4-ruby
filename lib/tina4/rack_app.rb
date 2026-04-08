@@ -176,11 +176,10 @@ module Tina4
         if api_key && !api_key.empty? && token == api_key
           env["tina4.auth_payload"] = { "api_key" => true }
         elsif token
-          payload = Tina4::Auth.valid_token(token)
-          unless payload
+          unless Tina4::Auth.valid_token(token)
             return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
           end
-          env["tina4.auth_payload"] = payload
+          env["tina4.auth_payload"] = Tina4::Auth.get_payload(token)
         else
           return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
         end
