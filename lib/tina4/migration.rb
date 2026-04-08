@@ -87,6 +87,23 @@ module Tina4
       filepath
     end
 
+    # Get list of applied migration records (public alias for completed_migrations)
+    def get_applied
+      completed_migrations
+    end
+
+    # Get list of pending migration filenames (public alias for pending_migrations)
+    def get_pending
+      pending_migrations.map { |f| File.basename(f) }
+    end
+
+    # Get all migration files on disk, excluding .down files
+    def get_files
+      migration_files = Dir.glob(File.join(@migrations_dir, "*.sql")).reject { |f| f.end_with?(".down.sql") }
+      migration_files += Dir.glob(File.join(@migrations_dir, "*.rb"))
+      migration_files.map { |f| File.basename(f) }.sort
+    end
+
     private
 
     # Resolve migrations directory: prefer src/migrations, fall back to migrations/

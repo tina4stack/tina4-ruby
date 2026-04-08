@@ -79,7 +79,7 @@ module Tina4
       end
 
       # has_one :profile, class_name: "Profile", foreign_key: "user_id"
-      def has_one(name, class_name: nil, foreign_key: nil)
+      def has_one(name, class_name: nil, foreign_key: nil) # -> nil
         relationship_definitions[name] = {
           type: :has_one,
           class_name: class_name || name.to_s.split("_").map(&:capitalize).join,
@@ -92,7 +92,7 @@ module Tina4
       end
 
       # has_many :posts, class_name: "Post", foreign_key: "user_id"
-      def has_many(name, class_name: nil, foreign_key: nil)
+      def has_many(name, class_name: nil, foreign_key: nil) # -> nil
         relationship_definitions[name] = {
           type: :has_many,
           class_name: class_name || name.to_s.sub(/s$/, "").split("_").map(&:capitalize).join,
@@ -105,7 +105,7 @@ module Tina4
       end
 
       # belongs_to :user, class_name: "User", foreign_key: "user_id"
-      def belongs_to(name, class_name: nil, foreign_key: nil)
+      def belongs_to(name, class_name: nil, foreign_key: nil) # -> nil
         relationship_definitions[name] = {
           type: :belongs_to,
           class_name: class_name || name.to_s.split("_").map(&:capitalize).join,
@@ -123,7 +123,7 @@ module Tina4
       #   results = User.query.where("active = ?", [1]).order_by("name").get
       #
       # @return [Tina4::QueryBuilder]
-      def query
+      def query # -> QueryBuilder
         QueryBuilder.from(table_name, db: db)
       end
 
@@ -136,7 +136,7 @@ module Tina4
       #   User.find                                  → all records
       #
       # Use find_by_id(id) for single-record primary key lookup.
-      def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil, **extra_filter)
+      def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil, **extra_filter) # -> list[Self]
         # Integer or string-digit argument → primary key lookup (returns single record or nil)
         return find_by_id(filter) if filter.is_a?(Integer)
 
@@ -243,7 +243,7 @@ module Tina4
         end
       end
 
-      def where(conditions, params = [], include: nil)
+      def where(conditions, params = [], include: nil) # -> list[Self]
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0) AND (#{conditions})"
@@ -256,7 +256,7 @@ module Tina4
         instances
       end
 
-      def all(limit: nil, offset: nil, order_by: nil, include: nil)
+      def all(limit: nil, offset: nil, order_by: nil, include: nil) # -> list[Self]
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE #{soft_delete_field} IS NULL OR #{soft_delete_field} = 0"
@@ -268,19 +268,19 @@ module Tina4
         instances
       end
 
-      def select(sql, params = [], limit: nil, offset: nil, include: nil)
+      def select(sql, params = [], limit: nil, offset: nil, include: nil) # -> list[Self]
         results = db.fetch(sql, params, limit: limit, offset: offset)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
       end
 
-      def select_one(sql, params = [], include: nil)
+      def select_one(sql, params = [], include: nil) # -> Self | nil
         results = select(sql, params, limit: 1, include: include)
         results.first
       end
 
-      def count(conditions = nil, params = [])
+      def count(conditions = nil, params = []) # -> int
         sql = "SELECT COUNT(*) as cnt FROM #{table_name}"
         where_parts = []
         if soft_delete
@@ -292,25 +292,48 @@ module Tina4
         result[:cnt].to_i
       end
 
-      def create(attributes = {})
+      def create(attributes = {}) # -> Self
         instance = new(attributes)
         instance.save
         instance
       end
 
-      def find_or_fail(id)
+      def find_or_fail(id) # -> Self
         result = find(id)
         raise "#{name} with #{primary_key_field || :id}=#{id} not found" if result.nil?
         result
       end
 
-      def with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0)
+      # Return true if a record with the given primary key exists.
+      def exists(pk_value) # -> bool
+        find(pk_value) != nil
+      end
+
+      # SQL query with in-memory result caching.
+      # Results are cached by (class, sql, params, limit, offset) for +ttl+ seconds.
+      def cached(sql, params = [], ttl: 60, limit: 20, offset: 0, include: nil) # -> list[Self]
+        @_query_cache ||= Tina4::QueryCache.new(default_ttl: ttl, max_size: 500)
+        cache_key = Tina4::QueryCache.query_key("#{name}:#{sql}", params + [limit, offset])
+        hit = @_query_cache.get(cache_key)
+        return hit unless hit.nil?
+
+        results = select(sql, params, limit: limit, offset: offset, include: include)
+        @_query_cache.set(cache_key, results, ttl: ttl, tags: [name])
+        results
+      end
+
+      # Clear all cached query results for this model.
+      def clear_cache # -> nil
+        @_query_cache&.clear_tag(name)
+      end
+
+      def with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0) # -> list[Self]
         sql = "SELECT * FROM #{table_name} WHERE #{conditions}"
         results = db.fetch(sql, params, limit: limit, offset: offset)
         results.map { |row| from_hash(row) }
       end
 
-      def create_table
+      def create_table # -> bool
         return true if db.table_exists?(table_name)
 
         type_map = {
@@ -351,7 +374,7 @@ module Tina4
         true
       end
 
-      def scope(name, filter_sql, params = [])
+      def scope(name, filter_sql, params = []) # -> nil
         define_singleton_method(name) do |limit: 20, offset: 0|
           where(filter_sql, params)
         end
@@ -371,7 +394,7 @@ module Tina4
       end
 
       # Find a single record by primary key. Returns instance or nil.
-      def find_by_id(id)
+      def find_by_id(id) # -> Self | nil
         pk = primary_key_field || :id
         sql = "SELECT * FROM #{table_name} WHERE #{pk} = ?"
         if soft_delete
@@ -416,7 +439,7 @@ module Tina4
       end
     end
 
-    def save
+    def save # -> Self | bool
       @errors = []
       @relationship_cache = {} # Clear relationship cache on save
       validate_fields
@@ -448,7 +471,7 @@ module Tina4
       false
     end
 
-    def delete
+    def delete # -> bool
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       return false unless pk_value
@@ -468,7 +491,7 @@ module Tina4
       true
     end
 
-    def force_delete
+    def force_delete # -> bool
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       raise "Cannot delete: no primary key value" unless pk_value
@@ -480,7 +503,7 @@ module Tina4
       true
     end
 
-    def restore
+    def restore # -> bool
       raise "Model does not support soft delete" unless self.class.soft_delete
 
       pk = self.class.primary_key_field || :id
@@ -498,7 +521,7 @@ module Tina4
       true
     end
 
-    def validate
+    def validate # -> list[str]
       errors = []
       self.class.field_definitions.each do |name, opts|
         value = __send__(name)
@@ -519,7 +542,7 @@ module Tina4
     #   orm.load("id = 1")            — filter string
     #
     # Returns true if a record was found, false otherwise.
-    def load(filter = nil, params = [], include: nil)
+    def load(filter = nil, params = [], include: nil) # -> bool
       @relationship_cache = {}
       table = self.class.table_name
 
@@ -557,7 +580,7 @@ module Tina4
 
     # Convert to hash using Ruby attribute names.
     # Optionally include relationships via the include keyword.
-    def to_h(include: nil)
+    def to_h(include: nil) # -> dict
       hash = {}
       self.class.field_definitions.each_key do |name|
         hash[name] = __send__(name)
@@ -594,13 +617,13 @@ module Tina4
     alias to_assoc to_h
     alias to_object to_h
 
-    def to_array
+    def to_array # -> list
       to_h.values
     end
 
     alias to_list to_array
 
-    def to_json(include: nil, **_args)
+    def to_json(include: nil, **_args) # -> str
       JSON.generate(to_h(include: include))
     end
 

@@ -36,43 +36,43 @@ module Tina4
     end
 
     # Pop the next available job. Returns Job or nil.
-    def pop
+    def pop # -> Job|None
       @backend.dequeue(@topic)
     end
 
     # Clear all pending jobs from this queue's topic. Returns count removed.
-    def clear
+    def clear # -> int
       return 0 unless @backend.respond_to?(:clear)
       @backend.clear(@topic)
     end
 
     # Get jobs that failed but are still eligible for retry (under max_retries).
-    def failed
+    def failed # -> list[dict]
       return [] unless @backend.respond_to?(:failed)
       @backend.failed(@topic, max_retries: @max_retries)
     end
 
     # Retry failed jobs on this queue's topic. Returns true if re-queued.
-    def retry(delay_seconds = 0)
+    def retry(delay_seconds = 0) # -> bool
       return false unless @backend.respond_to?(:retry_job)
       @backend.retry_job(@topic, delay_seconds: delay_seconds)
     end
 
     # Get dead letter jobs — messages that exceeded max retries.
-    def dead_letters
+    def dead_letters # -> list[dict]
       return [] unless @backend.respond_to?(:dead_letters)
       @backend.dead_letters(@topic, max_retries: @max_retries)
     end
 
     # Delete messages by status (completed, failed, dead).
-    def purge(status)
+    def purge(status) # -> int
       return 0 unless @backend.respond_to?(:purge)
       @backend.purge(@topic, status)
     end
 
     # Re-queue failed messages (under max_retries) back to pending.
     # Returns the number of jobs re-queued.
-    def retry_failed
+    def retry_failed # -> int
       return 0 unless @backend.respond_to?(:retry_failed)
       @backend.retry_failed(@topic, max_retries: @max_retries)
     end

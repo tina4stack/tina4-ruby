@@ -107,19 +107,19 @@ module Tina4
       end
 
 
-      def valid_token(token)
+      def valid_token(token) # -> bool
         if use_hmac?
-          hmac_decode(token, hmac_secret)
+          !hmac_decode(token, hmac_secret).nil?
         else
           ensure_keys
           require "jwt"
-          decoded = JWT.decode(token, public_key, true, algorithm: "RS256")
-          decoded[0]
+          JWT.decode(token, public_key, true, algorithm: "RS256")
+          true
         end
       rescue JWT::ExpiredSignature
-        nil
+        false
       rescue JWT::DecodeError
-        nil
+        false
       end
 
       def valid_token_detail(token)
@@ -174,9 +174,10 @@ module Tina4
       end
 
       def refresh_token(token, expires_in: 60)
-        payload = valid_token(token)
-        return nil unless payload
+        return nil unless valid_token(token)
 
+        payload = get_payload(token)
+        return nil unless payload
         payload = payload.reject { |k, _| %w[iat exp nbf].include?(k) }
         get_token(payload, expires_in: expires_in)
       end
@@ -193,7 +194,7 @@ module Tina4
           return { "api_key" => true }
         end
 
-        valid_token(token)
+        valid_token(token) ? get_payload(token) : nil
       end
 
       def validate_api_key(provided, expected: nil)
@@ -227,9 +228,8 @@ module Tina4
             return true
           end
 
-          payload = valid_token(token)
-          if payload
-            env["tina4.auth"] = payload
+          if valid_token(token)
+            env["tina4.auth"] = get_payload(token)
             true
           else
             false
@@ -287,7 +287,7 @@ module Tina4
         return true if auth_header.empty?
 
         if auth_header =~ /\ABearer\s+(.+)\z/i
-          !valid_token(Regexp.last_match(1)).nil?
+          valid_token(Regexp.last_match(1))
         else
           false
         end
