@@ -40,6 +40,21 @@ module Tina4
       @backend.dequeue(@topic)
     end
 
+    # Pop up to count jobs at once. Returns a partial batch if fewer available.
+    def pop_batch(count)
+      if @backend.respond_to?(:dequeue_batch)
+        @backend.dequeue_batch(@topic, count)
+      else
+        jobs = []
+        count.times do
+          job = @backend.dequeue(@topic)
+          break if job.nil?
+          jobs << job
+        end
+        jobs
+      end
+    end
+
     # Clear all pending jobs from this queue's topic. Returns count removed.
     def clear # -> int
       return 0 unless @backend.respond_to?(:clear)
@@ -108,7 +123,7 @@ module Tina4
     #   queue.consume("emails", poll_interval: 5) { |job| process(job) }
     #   queue.consume("emails", id: "abc-123") { |job| process(job) }
     #
-    def consume(topic = nil, id: nil, poll_interval: 1.0, iterations: 0, &block)
+    def consume(topic = nil, id: nil, poll_interval: 1.0, iterations: 0, batch_size: 1, &block)
       topic ||= @topic
 
       if id
@@ -125,16 +140,30 @@ module Tina4
       # iterations>0    → stop after consuming N jobs
       if block_given?
         consumed = 0
-        loop do
-          job = @backend.dequeue(topic)
-          if job.nil?
-            break if poll_interval <= 0
-            sleep(poll_interval)
-            next
+        if batch_size > 1
+          loop do
+            jobs = pop_batch(batch_size)
+            if jobs.empty?
+              break if poll_interval <= 0
+              sleep(poll_interval)
+              next
+            end
+            yield jobs
+            consumed += jobs.length
+            break if iterations > 0 && consumed >= iterations
           end
-          yield job
-          consumed += 1
-          break if iterations > 0 && consumed >= iterations
+        else
+          loop do
+            job = @backend.dequeue(topic)
+            if job.nil?
+              break if poll_interval <= 0
+              sleep(poll_interval)
+              next
+            end
+            yield job
+            consumed += 1
+            break if iterations > 0 && consumed >= iterations
+          end
         end
       else
         Enumerator.new do |yielder|
@@ -190,20 +219,34 @@ module Tina4
     #   queue.process { |job| handle(job); job.complete }
     #   queue.process(topic: "emails", max_jobs: 10) { |job| ... }
     #
-    def process(topic: nil, max_jobs: nil, &handler)
+    def process(topic: nil, max_jobs: nil, batch_size: 1, &handler)
       raise ArgumentError, "block required" unless block_given?
       drain_topic = topic || @topic
       processed = 0
       loop do
         break if max_jobs && processed >= max_jobs
-        job = @backend.dequeue(drain_topic)
-        break if job.nil?
-        begin
-          handler.call(job)
-        rescue => e
-          job.fail(e.message)
+        if batch_size > 1
+          remaining = max_jobs ? [batch_size, max_jobs - processed].min : batch_size
+          jobs = @backend.respond_to?(:dequeue_batch) ?
+                   @backend.dequeue_batch(drain_topic, remaining) :
+                   (1..remaining).map { @backend.dequeue(drain_topic) }.compact
+          break if jobs.empty?
+          begin
+            handler.call(jobs)
+          rescue => e
+            jobs.each { |job| job.fail(e.message) }
+          end
+          processed += jobs.length
+        else
+          job = @backend.dequeue(drain_topic)
+          break if job.nil?
+          begin
+            handler.call(job)
+          rescue => e
+            job.fail(e.message)
+          end
+          processed += 1
         end
-        processed += 1
       end
     end
 

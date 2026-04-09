@@ -163,6 +163,67 @@ RSpec.describe Tina4::QueueBackends::LiteBackend do
   end
 end
 
+RSpec.describe "Queue batch operations" do
+  describe "pop_batch" do
+    it "returns up to count jobs as an array" do
+      queue = Tina4::Queue.new(topic: "batch_test")
+      queue.push({ n: 1 })
+      queue.push({ n: 2 })
+      queue.push({ n: 3 })
+      jobs = queue.pop_batch(2)
+      expect(jobs).to be_an(Array)
+      expect(jobs.length).to eq(2)
+      queue.clear
+    end
+
+    it "returns partial batch when fewer jobs available" do
+      queue = Tina4::Queue.new(topic: "batch_partial")
+      queue.push({ n: 1 })
+      jobs = queue.pop_batch(10)
+      expect(jobs.length).to eq(1)
+      queue.clear
+    end
+
+    it "returns empty array when queue is empty" do
+      queue = Tina4::Queue.new(topic: "batch_empty")
+      queue.clear
+      jobs = queue.pop_batch(5)
+      expect(jobs).to eq([])
+    end
+  end
+
+  describe "consume with batch_size" do
+    it "yields arrays of jobs when batch_size > 1" do
+      queue = Tina4::Queue.new(topic: "batch_consume")
+      queue.clear
+      5.times { |i| queue.push({ n: i }) }
+      batches = []
+      queue.consume(batch_size: 2, poll_interval: 0) do |jobs|
+        batches << jobs
+        jobs.each(&:complete)
+      end
+      expect(batches.flatten.length).to eq(5)
+      expect(batches.all? { |b| b.is_a?(Array) }).to be true
+    end
+  end
+
+  describe "process with batch_size" do
+    it "passes arrays of jobs to handler when batch_size > 1" do
+      queue = Tina4::Queue.new(topic: "batch_process")
+      queue.clear
+      6.times { |i| queue.push({ n: i }) }
+      received = []
+      queue.process(batch_size: 3) do |jobs|
+        jobs.each do |job|
+          received << job.payload[:n]
+          job.complete
+        end
+      end
+      expect(received.length).to eq(6)
+    end
+  end
+end
+
 RSpec.describe Tina4::Queue do
   let(:tmp_dir) { Dir.mktmpdir("tina4_queue_unified_test") }
   let(:backend) { Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir) }

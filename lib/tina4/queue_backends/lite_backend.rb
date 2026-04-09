@@ -63,6 +63,45 @@ module Tina4
         end
       end
 
+      def dequeue_batch(topic, count)
+        @mutex.synchronize do
+          dir = topic_path(topic)
+          return [] unless Dir.exist?(dir)
+
+          now = Time.now
+          candidates = []
+
+          Dir.glob(File.join(dir, "*.json")).each do |f|
+            data = JSON.parse(File.read(f))
+            if data["available_at"]
+              available_at = Time.parse(data["available_at"])
+              next if available_at > now
+            end
+            candidates << { file: f, data: data, priority: data["priority"] || 0, mtime: File.mtime(f) }
+          rescue JSON::ParserError
+            next
+          end
+
+          return [] if candidates.empty?
+
+          candidates.sort_by! { |c| [-c[:priority], c[:mtime]] }
+          chosen = candidates.first(count)
+
+          chosen.map do |c|
+            File.delete(c[:file])
+            data = c[:data]
+            Tina4::Job.new(
+              topic: data["topic"] || topic.to_s,
+              payload: data["payload"],
+              id: data["id"],
+              priority: data["priority"] || 0,
+              available_at: data["available_at"] ? Time.parse(data["available_at"]) : nil,
+              attempts: data["attempts"] || 0
+            )
+          end
+        end
+      end
+
       def acknowledge(message)
         # File already deleted on dequeue
       end
