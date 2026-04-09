@@ -220,6 +220,13 @@ MyModel.from_hash(hash) -> MyModel    # Create instance from DB row hash
 has_one :profile, class_name: "Profile", foreign_key: :user_id
 has_many :posts, class_name: "Post", foreign_key: :user_id
 belongs_to :company, class_name: "Company", foreign_key: :company_id
+
+# Foreign key auto-wire DSL — one line wires BOTH sides
+# foreign_key_field :user_id, references: User
+# → declaring class gets: belongs_to :user (association name = column minus _id)
+# → referenced class gets: has_many :<tableName>s (or related_name: override)
+foreign_key_field :user_id, references: User
+foreign_key_field :category_id, references: Category, related_name: :blog_posts
 ```
 
 NoSQL support: `to_mongo()` generates MongoDB query documents from the same fluent API.
