@@ -7,7 +7,7 @@ module Tina4
     attr_reader :id, :topic, :payload, :created_at, :attempts, :priority, :available_at
     attr_accessor :status
 
-    def initialize(topic:, payload:, id: nil, priority: 0, available_at: nil, attempts: 0)
+    def initialize(topic:, payload:, id: nil, priority: 0, available_at: nil, attempts: 0, queue: nil)
       @id = id || SecureRandom.uuid
       @topic = topic
       @payload = payload
@@ -16,15 +16,20 @@ module Tina4
       @priority = priority
       @available_at = available_at
       @status = :pending
+      @queue = queue
     end
 
     # Re-queue this message with incremented attempts.
-    # Delegates to the queue's backend via the queue reference.
-    def retry(queue:, delay_seconds: 0)
+    # Uses the stored queue reference (set at construction time).
+    # Accepts an optional queue: keyword for backwards compatibility.
+    def retry(delay_seconds: 0, queue: nil)
+      q = queue || @queue
+      raise ArgumentError, "No queue reference — pass queue: or set at construction" unless q
+
       @attempts += 1
       @status = :pending
       @available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
-      queue.backend.enqueue(self)
+      q.backend.enqueue(self)
       self
     end
 

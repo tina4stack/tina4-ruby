@@ -30,7 +30,7 @@ module Tina4
     # delay_seconds: delay before the message becomes available (default 0).
     def push(payload, priority: 0, delay_seconds: 0)
       available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
-      message = Job.new(topic: @topic, payload: payload, priority: priority, available_at: available_at)
+      message = Job.new(topic: @topic, payload: payload, priority: priority, available_at: available_at, queue: self)
       @backend.enqueue(message)
       message
     end
@@ -79,7 +79,7 @@ module Tina4
 
     # Produce a message onto a topic. Convenience wrapper around push().
     def produce(topic, payload, priority = 0)
-      message = Job.new(topic: topic, payload: payload, priority: priority)
+      message = Job.new(topic: topic, payload: payload, priority: priority, queue: self)
       @backend.enqueue(message)
       message
     end
