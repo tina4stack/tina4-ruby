@@ -335,17 +335,41 @@ module Tina4
       raise e
     end
 
+    # Begin a transaction without a block — matches PHP/Python/Node API.
+    def start_transaction
+      current_driver.begin_transaction
+    end
+
+    # Commit the current transaction — matches PHP/Python/Node API.
+    def commit
+      current_driver.commit
+    end
+
+    # Roll back the current transaction — matches PHP/Python/Node API.
+    def rollback
+      current_driver.rollback
+    end
+
     def tables
       current_driver.tables
     end
+
+    # Cross-framework alias for tables — matches PHP/Python/Node get_tables.
+    alias get_tables tables
 
     def columns(table_name)
       current_driver.columns(table_name)
     end
 
+    # Cross-framework alias for columns — matches PHP/Python/Node get_columns.
+    alias get_columns columns
+
     def table_exists?(table_name)
       tables.any? { |t| t.downcase == table_name.to_s.downcase }
     end
+
+    # Cross-framework alias for table_exists? — matches PHP/Python/Node table_exists.
+    alias table_exists table_exists?
 
     # Pre-generate the next available primary key ID using engine-aware strategies.
     #
