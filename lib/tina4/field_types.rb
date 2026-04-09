@@ -79,6 +79,67 @@ module Tina4
         register_field(name, :json, nullable: nullable, default: default)
       end
 
+      # Declare a foreign key integer column and auto-wire relationships.
+      #
+      # Automatically:
+      #   - Registers an integer field for the column
+      #   - Calls belongs_to on this class (strip _id suffix for association name)
+      #   - Calls has_many on the referenced class (if already loaded)
+      #
+      # @param name [Symbol]  Column name (e.g. :user_id)
+      # @param references [Class, String]  Referenced model class or its name
+      # @param related_name [Symbol, String, nil]  Override the has-many name on the referenced model
+      #
+      # Example:
+      #   class Post < Tina4::ORM
+      #     integer_field :id, primary_key: true
+      #     foreign_key_field :user_id, references: User
+      #   end
+      #   # post.user  → belongs_to auto-wired
+      #   # user.posts → has_many auto-wired
+      def foreign_key_field(name, references:, related_name: nil, **options)
+        register_field(name, :integer, **options)
+
+        # Derive association name: strip _id suffix
+        belongs_name = name.to_s.end_with?("_id") ? name.to_s[0..-4].to_sym : name.to_sym
+
+        # Wire belongs_to on this class
+        belongs_to(belongs_name, class_name: references.to_s.split("::").last, foreign_key: name.to_s) if respond_to?(:belongs_to, true)
+
+        # Wire has_many on referenced class (if already a loaded Class)
+        if references.is_a?(Class) && references.respond_to?(:has_many, true)
+          hm_name = (related_name || "#{self.name.split("::").last.downcase}s").to_sym
+          references.has_many(hm_name, class_name: self.name.split("::").last, foreign_key: name.to_s)
+        end
+
+        # Register for deferred wiring (resolves when referenced class is later loaded)
+        @@_fk_registry ||= {}
+        ref_name = references.is_a?(Class) ? references.name.split("::").last : references.to_s.split("::").last
+        @@_fk_registry[ref_name] ||= []
+        hm_key = (related_name || "#{self.name.split("::").last.downcase}s").to_s
+        @@_fk_registry[ref_name] << {
+          declaring_class: self,
+          has_many_name: hm_key.to_sym,
+          foreign_key: name.to_s
+        }
+      end
+
+      # Apply any deferred FK-registry has_many wiring for this class.
+      # Called automatically when a class that is referenced by a ForeignKeyField is defined.
+      def apply_fk_registry!
+        class_simple_name = self.name.split("::").last
+        return unless defined?(@@_fk_registry) && @@_fk_registry.key?(class_simple_name)
+
+        @@_fk_registry[class_simple_name].each do |entry|
+          next if entry[:applied]
+
+          has_many(entry[:has_many_name],
+                   class_name: entry[:declaring_class].name.split("::").last,
+                   foreign_key: entry[:foreign_key]) if respond_to?(:has_many, true)
+          entry[:applied] = true
+        end
+      end
+
       private
 
       def register_field(name, type, **options)
