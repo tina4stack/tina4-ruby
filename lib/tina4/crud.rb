@@ -211,7 +211,7 @@ module Tina4
 
         # GET list (already handled by the page itself)
         # POST create
-        Tina4::Router.add_route("POST", api_path, proc { |req, res|
+        Tina4::Router.add("POST", api_path, proc { |req, res|
           begin
             data = req.body_parsed
             result = db.insert(table_name, data)
@@ -222,7 +222,7 @@ module Tina4
         })
 
         # PUT update
-        Tina4::Router.add_route("PUT", "#{api_path}/{id}", proc { |req, res|
+        Tina4::Router.add("PUT", "#{api_path}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             data = req.body_parsed
@@ -234,7 +234,7 @@ module Tina4
         })
 
         # DELETE
-        Tina4::Router.add_route("DELETE", "#{api_path}/{id}", proc { |req, res|
+        Tina4::Router.add("DELETE", "#{api_path}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             db.delete(table_name, { pk => id })

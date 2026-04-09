@@ -1931,6 +1931,14 @@ module Tina4
 
     class << self
       attr_accessor :form_token_session_id
+
+      # Set the session ID used for CSRF form token binding.
+      # Parity with Python/PHP/Node: Frond.set_form_token_session_id(id)
+      #
+      # @param session_id [String] The session ID to bind form tokens to
+      def set_form_token_session_id(session_id)
+        self.form_token_session_id = session_id
+      end
     end
 
     # Generate a raw JWT form token string.

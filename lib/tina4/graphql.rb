@@ -68,23 +68,36 @@ module Tina4
       register_scalars
     end
 
-    def add_type(type)
-      @types[type.name] = type
+    # add_type(name, fields) — parity with PHP/Python/Node
+    # add_type(type_object)  — legacy Ruby form (type_object responds to .name)
+    def add_type(name_or_type, fields = nil)
+      if fields
+        # New form: add_type("User", { "id" => "ID", "name" => "String" })
+        @types[name_or_type] = fields
+      else
+        # Legacy form: add_type(GraphQLType.new(...))
+        @types[name_or_type.name] = name_or_type
+      end
     end
 
     def get_type(name)
       @types[name]
     end
 
-    # Register a query field
-    #   schema.add_query("user", type: "User", args: { id: { type: "ID!" } }) { |root, args, ctx| ... }
-    def add_query(name, type:, args: {}, description: nil, &resolve)
-      @queries[name] = { type: type, args: args, resolve: resolve, description: description }
+    # Register a query field.
+    # Cross-framework form: add_query(name, args, return_type, resolver)
+    # Block form also accepted: add_query(name, args, return_type) { |root, args, ctx| ... }
+    def add_query(name, args = {}, return_type = nil, resolver = nil, &block)
+      resolve = resolver || block
+      @queries[name] = { type: return_type, args: args, resolve: resolve }
     end
 
-    # Register a mutation field
-    def add_mutation(name, type:, args: {}, description: nil, &resolve)
-      @mutations[name] = { type: type, args: args, resolve: resolve, description: description }
+    # Register a mutation field.
+    # Cross-framework form: add_mutation(name, args, return_type, resolver)
+    # Block form also accepted: add_mutation(name, args, return_type) { |root, args, ctx| ... }
+    def add_mutation(name, args = {}, return_type = nil, resolver = nil, &block)
+      resolve = resolver || block
+      @mutations[name] = { type: return_type, args: args, resolve: resolve }
     end
 
     # ── ORM Auto-Schema ──────────────────────────────────────────────────
@@ -127,17 +140,13 @@ module Tina4
       # ── Queries ──
 
       # Single record: user(id: ID!): User
-      add_query(table_lower, type: type_name,
-                args: { pk_field => { type: "ID!" } },
-                description: "Fetch a single #{model_name} by #{pk_field}") do |_root, args, _ctx|
+      add_query(table_lower, { pk_field => { type: "ID!" } }, type_name) do |_root, args, _ctx|
         record = klass.find_by_id(args[pk_field])
         record&.to_hash
       end
 
       # List: users(limit: Int, offset: Int): [User]
-      add_query(plural, type: "[#{type_name}]",
-                args: { "limit" => { type: "Int" }, "offset" => { type: "Int" } },
-                description: "Fetch a list of #{model_name} records") do |_root, args, _ctx|
+      add_query(plural, { "limit" => { type: "Int" }, "offset" => { type: "Int" } }, "[#{type_name}]") do |_root, args, _ctx|
         limit  = args["limit"] || 100
         offset = args["offset"] || 0
         result = klass.all(limit: limit, offset: offset)
@@ -147,17 +156,13 @@ module Tina4
       # ── Mutations ──
 
       # Create
-      add_mutation("create#{model_name}", type: type_name,
-                   args: { "input" => { type: "#{type_name}Input!" } },
-                   description: "Create a new #{model_name}") do |_root, args, _ctx|
+      add_mutation("create#{model_name}", { "input" => { type: "#{type_name}Input!" } }, type_name) do |_root, args, _ctx|
         record = klass.create(args["input"] || {})
         record.respond_to?(:to_hash) ? record.to_hash : record
       end
 
       # Update
-      add_mutation("update#{model_name}", type: type_name,
-                   args: { pk_field => { type: "ID!" }, "input" => { type: "#{type_name}Input!" } },
-                   description: "Update an existing #{model_name}") do |_root, args, _ctx|
+      add_mutation("update#{model_name}", { pk_field => { type: "ID!" }, "input" => { type: "#{type_name}Input!" } }, type_name) do |_root, args, _ctx|
         record = klass.find_by_id(args[pk_field])
         return nil unless record
         (args["input"] || {}).each { |k, v| record.send(:"#{k}=", v) if record.respond_to?(:"#{k}=") }
@@ -166,9 +171,7 @@ module Tina4
       end
 
       # Delete
-      add_mutation("delete#{model_name}", type: "Boolean",
-                   args: { pk_field => { type: "ID!" } },
-                   description: "Delete a #{model_name} by #{pk_field}") do |_root, args, _ctx|
+      add_mutation("delete#{model_name}", { pk_field => { type: "ID!" } }, "Boolean") do |_root, args, _ctx|
         record = klass.find_by_id(args[pk_field])
         return false unless record
         record.delete

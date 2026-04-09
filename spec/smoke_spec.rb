@@ -19,7 +19,7 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "registers and matches a GET route" do
       Tina4::Router.get("/smoke/hello") { |_req, _res| "hello" }
-      route, params = Tina4::Router.find_route("/smoke/hello", "GET")
+      route, params = Tina4::Router.match("GET", "/smoke/hello")
       expect(route).not_to be_nil
       expect(route.method).to eq("GET")
       expect(params).to eq({})
@@ -27,28 +27,28 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "registers and matches a POST route" do
       Tina4::Router.post("/smoke/data") { |_req, _res| "posted" }
-      route, _params = Tina4::Router.find_route("/smoke/data", "POST")
+      route, _params = Tina4::Router.match("POST", "/smoke/data")
       expect(route).not_to be_nil
       expect(route.method).to eq("POST")
     end
 
     it "extracts brace-style params {id}" do
       Tina4::Router.get("/smoke/users/{id}") { |_req, _res| "user" }
-      route, params = Tina4::Router.find_route("/smoke/users/42", "GET")
+      route, params = Tina4::Router.match("GET", "/smoke/users/42")
       expect(route).not_to be_nil
       expect(params[:id]).to eq("42")
     end
 
     it "extracts typed params {id:int}" do
-      Tina4::Router.add_route("GET", "/smoke/items/{id:int}", proc { "item" })
-      route, params = Tina4::Router.find_route("/smoke/items/7", "GET")
+      Tina4::Router.add("GET", "/smoke/items/{id:int}", proc { "item" })
+      route, params = Tina4::Router.match("GET", "/smoke/items/7")
       expect(route).not_to be_nil
       expect(params[:id]).to eq(7)
     end
 
     it "extracts multiple params" do
       Tina4::Router.get("/smoke/{a}/and/{b}") { "pair" }
-      route, params = Tina4::Router.find_route("/smoke/foo/and/bar", "GET")
+      route, params = Tina4::Router.match("GET", "/smoke/foo/and/bar")
       expect(route).not_to be_nil
       expect(params[:a]).to eq("foo")
       expect(params[:b]).to eq("bar")
@@ -252,10 +252,10 @@ RSpec.describe "Tina4 Smoke Test" do
       req = double("request", path: "/test")
       res = double("response")
 
-      result = Tina4::Middleware.run_before(req, res)
+      result = Tina4::Middleware.run_before([], req, res)
       expect(result).to be true
 
-      Tina4::Middleware.run_after(req, res)
+      Tina4::Middleware.run_after([], req, res)
       expect(log).to eq([:before, :after])
     end
 
@@ -263,7 +263,7 @@ RSpec.describe "Tina4 Smoke Test" do
       Tina4::Middleware.before { |_req, _res| false }
       req = double("request", path: "/blocked")
       res = double("response")
-      expect(Tina4::Middleware.run_before(req, res)).to be false
+      expect(Tina4::Middleware.run_before([], req, res)).to be false
     end
   end
 
@@ -445,11 +445,11 @@ RSpec.describe "Tina4 Smoke Test" do
       Tina4::AutoCrud.generate_routes
 
       # Verify routes exist
-      route_get, _ = Tina4::Router.find_route("/api/smoke_products", "GET")
-      route_post, _ = Tina4::Router.find_route("/api/smoke_products", "POST")
-      route_single, _ = Tina4::Router.find_route("/api/smoke_products/1", "GET")
-      route_put, _ = Tina4::Router.find_route("/api/smoke_products/1", "PUT")
-      route_del, _ = Tina4::Router.find_route("/api/smoke_products/1", "DELETE")
+      route_get, _ = Tina4::Router.match("GET", "/api/smoke_products")
+      route_post, _ = Tina4::Router.match("POST", "/api/smoke_products")
+      route_single, _ = Tina4::Router.match("GET", "/api/smoke_products/1")
+      route_put, _ = Tina4::Router.match("PUT", "/api/smoke_products/1")
+      route_del, _ = Tina4::Router.match("DELETE", "/api/smoke_products/1")
 
       expect(route_get).not_to be_nil
       expect(route_post).not_to be_nil
@@ -675,33 +675,33 @@ RSpec.describe "Tina4 Smoke Test" do
   # 26. Container (DI)
   # ────────────────────────────────────────────────────────────────────────
   describe "Container" do
-    before { Tina4::Container.clear! }
+    before { Tina4::Container.reset }
 
     it "registers and resolves an instance" do
       Tina4::Container.register(:smoke_svc, "hello_service")
-      expect(Tina4::Container.resolve(:smoke_svc)).to eq("hello_service")
+      expect(Tina4::Container.get(:smoke_svc)).to eq("hello_service")
     end
 
     it "registers and resolves a transient factory" do
       call_count = 0
       Tina4::Container.register(:smoke_transient) { call_count += 1; "lazy_value" }
-      expect(Tina4::Container.resolve(:smoke_transient)).to eq("lazy_value")
-      # Second resolve calls factory again (transient)
-      Tina4::Container.resolve(:smoke_transient)
+      expect(Tina4::Container.get(:smoke_transient)).to eq("lazy_value")
+      # Second get calls factory again (transient)
+      Tina4::Container.get(:smoke_transient)
       expect(call_count).to eq(2)
     end
 
     it "registers and resolves a singleton factory" do
       call_count = 0
       Tina4::Container.singleton(:smoke_singleton) { call_count += 1; "singleton_value" }
-      expect(Tina4::Container.resolve(:smoke_singleton)).to eq("singleton_value")
-      # Second resolve returns memoized instance
-      Tina4::Container.resolve(:smoke_singleton)
+      expect(Tina4::Container.get(:smoke_singleton)).to eq("singleton_value")
+      # Second get returns memoized instance
+      Tina4::Container.get(:smoke_singleton)
       expect(call_count).to eq(1)
     end
 
     it "raises on unknown service" do
-      expect { Tina4::Container.resolve(:nonexistent) }.to raise_error(KeyError)
+      expect { Tina4::Container.get(:nonexistent) }.to raise_error(KeyError)
     end
   end
 end

@@ -31,7 +31,7 @@ RSpec.describe Tina4::Health do
 
     it "registers a GET /health route" do
       Tina4::Health.register!
-      result = Tina4::Router.find_route("/health", "GET")
+      result = Tina4::Router.find_route("GET", "/health")
       expect(result).not_to be_nil
     end
   end

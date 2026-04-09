@@ -350,4 +350,24 @@ RSpec.describe Tina4::ORM do
       expect(TestUser.find_by_id(99999)).to be_nil
     end
   end
+
+  # ── snake_to_camel / camel_to_snake ───────────────────────────
+
+  describe "Tina4.snake_to_camel" do
+    it "converts snake_case to camelCase" do
+      expect(Tina4.snake_to_camel("first_name")).to eq("firstName")
+      expect(Tina4.snake_to_camel("user_id")).to eq("userId")
+      expect(Tina4.snake_to_camel("id")).to eq("id")
+      expect(Tina4.snake_to_camel("my_field_name")).to eq("myFieldName")
+    end
+  end
+
+  describe "Tina4.camel_to_snake" do
+    it "converts camelCase to snake_case" do
+      expect(Tina4.camel_to_snake("firstName")).to eq("first_name")
+      expect(Tina4.camel_to_snake("userId")).to eq("user_id")
+      expect(Tina4.camel_to_snake("id")).to eq("id")
+      expect(Tina4.camel_to_snake("myFieldName")).to eq("my_field_name")
+    end
+  end
 end

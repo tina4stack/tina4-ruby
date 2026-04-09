@@ -3,10 +3,10 @@
 module Tina4
   # Lightweight dependency injection container.
   #
-  #   Tina4::Container.register(:mailer) { MailService.new } # transient — new instance each resolve
+  #   Tina4::Container.register(:mailer) { MailService.new } # transient — new instance each get
   #   Tina4::Container.singleton(:db) { Database.new(ENV["DB_URL"]) } # singleton — memoised
   #   Tina4::Container.register(:cache, RedisCacheInstance)  # concrete instance (always same)
-  #   Tina4::Container.resolve(:db)                          # => Database instance
+  #   Tina4::Container.get(:db)                              # => Database instance
   #
   module Container
     class << self
@@ -16,7 +16,7 @@ module Tina4
 
       # Register a service by name.
       # Pass a concrete instance directly, or a block for transient instantiation.
-      # Blocks are called on every resolve() — use singleton() for memoised factories.
+      # Blocks are called on every get() — use singleton() for memoised factories.
       def register(name, instance = nil, &factory)
         raise ArgumentError, "provide an instance or a block, not both" if instance && factory
         raise ArgumentError, "provide an instance or a block" unless instance || factory
@@ -39,7 +39,7 @@ module Tina4
       # Resolve a service by name.
       # Singletons and concrete instances return the same object each time.
       # Transient factories (register with block) return a new object each time.
-      def resolve(name)
+      def get(name)
         entry = registry[name.to_sym]
         raise KeyError, "service not registered: #{name}" unless entry
 
@@ -61,12 +61,12 @@ module Tina4
       end
 
       # Check if a service is registered.
-      def registered?(name)
+      def has(name)
         registry.key?(name.to_sym)
       end
 
       # Remove all registrations (useful in tests).
-      def clear!
+      def reset
         @registry = {}
       end
     end

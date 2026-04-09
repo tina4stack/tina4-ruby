@@ -10,7 +10,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
 
     it "uses :splat as the key for a bare * wildcard" do
       Tina4::Router.get("/docs/*") { |req, res| res.text("docs") }
-      route, params = Tina4::Router.find_route("/docs/some/deep/path", "GET")
+      route, params = Tina4::Router.match("GET", "/docs/some/deep/path")
       expect(route).not_to be_nil
       expect(params).to have_key(:splat)
       expect(params[:splat]).to eq("some/deep/path")
@@ -18,7 +18,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
 
     it "uses the named key for *name wildcard" do
       Tina4::Router.get("/files/*path") { |req, res| res.text("file") }
-      route, params = Tina4::Router.find_route("/files/a/b/c.txt", "GET")
+      route, params = Tina4::Router.match("GET", "/files/a/b/c.txt")
       expect(route).not_to be_nil
       expect(params).to have_key(:path)
       expect(params[:path]).to eq("a/b/c.txt")
@@ -37,7 +37,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
       Tina4::Router.group("/api/v1") do
         get("/items") { "items" }
       end
-      route, _ = Tina4::Router.find_route("/api/v1/items", "GET")
+      route, _ = Tina4::Router.match("GET", "/api/v1/items")
       expect(route).not_to be_nil
       expect(route.method).to eq("GET")
     end
@@ -46,7 +46,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
       Tina4::Router.group("/api/v1") do
         get("/items") { "items" }
       end
-      result = Tina4::Router.find_route("/items", "GET")
+      result = Tina4::Router.match("GET", "/items")
       expect(result).to be_nil
     end
   end

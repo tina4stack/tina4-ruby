@@ -43,7 +43,7 @@ RSpec.describe "Router template: keyword" do
     end
 
     it "stores template via add_route" do
-      route = Tina4::Router.add_route("POST", "/api", proc { {} }, template: "api.twig")
+      route = Tina4::Router.add("POST", "/api", proc { {} }, template: "api.twig")
       expect(route.template).to eq("api.twig")
     end
   end

@@ -323,4 +323,41 @@ RSpec.describe Tina4::Auth do
       expect(Tina4::Auth.validate_api_key("   ", expected: "key")).to be false
     end
   end
+
+  # ── secret override params ────────────────────────────────────
+
+  describe ".get_token with explicit secret" do
+    it "accepts a secret: keyword param" do
+      token = Tina4::Auth.get_token({ "user" => 1 }, secret: "custom-secret")
+      expect(token).to be_a(String)
+      expect(token.split(".").length).to eq(3)
+    end
+
+    it "token signed with custom secret differs from env-secret token" do
+      env_token = Tina4::Auth.get_token({ "user" => 1 })
+      custom_token = Tina4::Auth.get_token({ "user" => 1 }, secret: "custom-secret")
+      expect(env_token).not_to eq(custom_token)
+    end
+  end
+
+  describe ".authenticate_request with explicit params" do
+    it "accepts secret: and algorithm: keyword params" do
+      token = Tina4::Auth.get_token({ "user" => 2 })
+      result = Tina4::Auth.authenticate_request(
+        { "HTTP_AUTHORIZATION" => "Bearer #{token}" },
+        algorithm: "HS256"
+      )
+      # authenticate_request still uses env SECRET for validation
+      expect(result).not_to be_nil
+    end
+
+    it "returns nil when secret param does not match" do
+      token = Tina4::Auth.get_token({ "user" => 3 }, secret: "custom-secret")
+      result = Tina4::Auth.authenticate_request(
+        { "HTTP_AUTHORIZATION" => "Bearer #{token}" },
+        secret: "wrong-secret"
+      )
+      expect(result).to be_nil
+    end
+  end
 end

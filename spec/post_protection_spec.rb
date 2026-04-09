@@ -37,7 +37,7 @@ RSpec.describe "POST route protection" do
 
   describe "POST with bearer_auth" do
     it "returns 403 when no token is provided" do
-      Tina4::Router.add_route("POST", "/api/items",
+      Tina4::Router.add("POST", "/api/items",
         ->(req, res) { res.json({ created: true }, 201) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -47,7 +47,7 @@ RSpec.describe "POST route protection" do
     end
 
     it "succeeds with a valid token" do
-      Tina4::Router.add_route("POST", "/api/items",
+      Tina4::Router.add("POST", "/api/items",
         ->(req, res) { res.json({ created: true }, 201) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -58,7 +58,7 @@ RSpec.describe "POST route protection" do
     end
 
     it "returns 403 with an invalid token" do
-      Tina4::Router.add_route("POST", "/api/items",
+      Tina4::Router.add("POST", "/api/items",
         ->(req, res) { res.json({ created: true }, 201) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -68,7 +68,7 @@ RSpec.describe "POST route protection" do
     end
 
     it "returns 403 with a malformed Authorization header" do
-      Tina4::Router.add_route("POST", "/api/items",
+      Tina4::Router.add("POST", "/api/items",
         ->(req, res) { res.json({ created: true }, 201) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -82,7 +82,7 @@ RSpec.describe "POST route protection" do
 
   describe "GET without auth_handler" do
     it "works without a token" do
-      Tina4::Router.add_route("GET", "/api/items",
+      Tina4::Router.add("GET", "/api/items",
         ->(req, res) { res.json({ items: [] }) })
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
@@ -95,7 +95,7 @@ RSpec.describe "POST route protection" do
 
   describe "GET with bearer_auth" do
     it "returns 403 without a token" do
-      Tina4::Router.add_route("GET", "/api/admin/stats",
+      Tina4::Router.add("GET", "/api/admin/stats",
         ->(req, res) { res.json({ secret: true }) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -105,7 +105,7 @@ RSpec.describe "POST route protection" do
     end
 
     it "succeeds with a valid token" do
-      Tina4::Router.add_route("GET", "/api/admin/stats",
+      Tina4::Router.add("GET", "/api/admin/stats",
         ->(req, res) { res.json({ secret: true }) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -120,7 +120,7 @@ RSpec.describe "POST route protection" do
 
   describe "PUT with bearer_auth" do
     it "returns 403 without a token" do
-      Tina4::Router.add_route("PUT", "/api/items/{id}",
+      Tina4::Router.add("PUT", "/api/items/{id}",
         ->(req, res) { res.json({ updated: true }) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -130,7 +130,7 @@ RSpec.describe "POST route protection" do
     end
 
     it "succeeds with a valid token" do
-      Tina4::Router.add_route("PUT", "/api/items/{id}",
+      Tina4::Router.add("PUT", "/api/items/{id}",
         ->(req, res) { res.json({ updated: true }) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -143,7 +143,7 @@ RSpec.describe "POST route protection" do
 
   describe "PATCH with bearer_auth" do
     it "returns 403 without a token" do
-      Tina4::Router.add_route("PATCH", "/api/items/{id}",
+      Tina4::Router.add("PATCH", "/api/items/{id}",
         ->(req, res) { res.json({ patched: true }) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -155,7 +155,7 @@ RSpec.describe "POST route protection" do
 
   describe "DELETE with bearer_auth" do
     it "returns 403 without a token" do
-      Tina4::Router.add_route("DELETE", "/api/items/{id}",
+      Tina4::Router.add("DELETE", "/api/items/{id}",
         ->(req, res) { res.json({ deleted: true }) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -169,7 +169,7 @@ RSpec.describe "POST route protection" do
 
   describe "POST without auth_handler (public via no_auth)" do
     it "works without a token when opted out with no_auth" do
-      Tina4::Router.add_route("POST", "/api/webhook",
+      Tina4::Router.add("POST", "/api/webhook",
         ->(req, res) { res.json({ ok: true }) }).no_auth
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
@@ -182,10 +182,10 @@ RSpec.describe "POST route protection" do
 
   describe "mixed secure and non-secure routes" do
     it "GET is public, POST requires auth" do
-      Tina4::Router.add_route("GET", "/api/items",
+      Tina4::Router.add("GET", "/api/items",
         ->(req, res) { res.json({ items: [] }) })
 
-      Tina4::Router.add_route("POST", "/api/items",
+      Tina4::Router.add("POST", "/api/items",
         ->(req, res) { res.json({ created: true }, 201) },
         auth_handler: Tina4::Auth.bearer_auth)
 
@@ -223,7 +223,7 @@ RSpec.describe "POST route protection" do
 
   describe "POST secure-by-default (no auth_handler)" do
     it "returns 401 when no Bearer token is provided" do
-      Tina4::Router.add_route("POST", "/api/data",
+      Tina4::Router.add("POST", "/api/data",
         ->(req, res) { res.json({ saved: true }, 201) })
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
@@ -234,7 +234,7 @@ RSpec.describe "POST route protection" do
     end
 
     it "returns 200 with a valid Bearer token" do
-      Tina4::Router.add_route("POST", "/api/data",
+      Tina4::Router.add("POST", "/api/data",
         ->(req, res) { res.json({ saved: true }) })
 
       token = Tina4::Auth.create_token({ "user_id" => 1 })
@@ -248,7 +248,7 @@ RSpec.describe "POST route protection" do
 
   describe "POST with .no_auth" do
     it "returns 200 without any token" do
-      Tina4::Router.add_route("POST", "/api/public-hook",
+      Tina4::Router.add("POST", "/api/public-hook",
         ->(req, res) { res.json({ received: true }) }).no_auth
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
@@ -261,7 +261,7 @@ RSpec.describe "POST route protection" do
 
   describe "GET with .secure" do
     it "returns 401 without a token" do
-      Tina4::Router.add_route("GET", "/api/protected",
+      Tina4::Router.add("GET", "/api/protected",
         ->(req, res) { res.json({ secret: true }) }).secure
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
@@ -276,7 +276,7 @@ RSpec.describe "POST route protection" do
 
   describe "GET without .secure" do
     it "returns 200 without a token" do
-      Tina4::Router.add_route("GET", "/api/public",
+      Tina4::Router.add("GET", "/api/public",
         ->(req, res) { res.json({ open: true }) })
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)

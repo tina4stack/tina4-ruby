@@ -85,6 +85,14 @@ module Tina4
     STREET_TYPES = %w[Street Avenue Road Drive Lane Boulevard Way Place].freeze
     COMPANY_WORDS = %w[Tech Global Apex Nova Core Prime Next Blue Bright Smart Swift Peak Fusion Pulse Vertex].freeze
     COMPANY_SUFFIXES = %w[Inc Corp Ltd LLC Group Solutions Systems Labs].freeze
+    JOB_TITLES = [
+      "Software Engineer", "Product Manager", "Designer", "Data Analyst",
+      "DevOps Engineer", "CEO", "CTO", "Sales Manager", "Marketing Lead",
+      "Accountant", "Operations Manager", "QA Engineer", "UX Researcher",
+      "Support Specialist", "HR Manager", "Technical Writer"
+    ].freeze
+    CURRENCIES = %w[USD EUR GBP JPY CAD AUD CHF ZAR INR CNY].freeze
+    CREDIT_CARD_PREFIXES = %w[4111 4242 5500 5105].freeze
 
     def initialize(seed: nil)
       @rng = seed ? Random.new(seed) : Random.new
@@ -221,6 +229,25 @@ module Tina4
       "#{w1}#{w2} #{suffix}"
     end
 
+    def job_title
+      JOB_TITLES[@rng.rand(JOB_TITLES.length)]
+    end
+
+    def currency
+      CURRENCIES[@rng.rand(CURRENCIES.length)]
+    end
+
+    def ip_address
+      "#{@rng.rand(1..255)}.#{@rng.rand(0..255)}.#{@rng.rand(0..255)}.#{@rng.rand(1..254)}"
+    end
+
+    # Generate a fake credit card number (test numbers only, e.g. 4111...).
+    def credit_card
+      prefix = CREDIT_CARD_PREFIXES[@rng.rand(CREDIT_CARD_PREFIXES.length)]
+      rest = Array.new(12) { @rng.rand(0..9) }.join
+      prefix + rest
+    end
+
     def color_hex
       "#%06x" % @rng.rand(0..0xFFFFFF)
     end
@@ -233,6 +260,11 @@ module Tina4
     def password(length: 16)
       chars = [*"a".."z", *"A".."Z", *"0".."9"]
       Array.new(length) { chars[@rng.rand(chars.length)] }.join
+    end
+
+    # Run a generator block `count` times and return the results.
+    def run(count = 1, &block)
+      Array.new(count) { block.call }
     end
 
     # Generate appropriate data based on field definition and column name.
@@ -495,7 +527,7 @@ module Tina4
   # Run all seed files in the given folder.
   #
   # @param seed_folder [String] path to seed files (default: "seeds")
-  def self.seed(seed_folder: "seeds", clear: false)
+  def self.seed_dir(seed_folder: "seeds", clear: false)
     unless Dir.exist?(seed_folder)
       Tina4::Log.info("Seeder: No seeds folder found at #{seed_folder}")
       return

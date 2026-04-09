@@ -258,7 +258,7 @@ module Tina4
       end
 
       # Retry all dead letter jobs for this topic. Returns true if any were re-queued.
-      def retry_job(topic, delay_seconds: 0)
+      def retry_job(topic, job_id: nil, delay_seconds: 0)
         return false unless Dir.exist?(@dead_letter_dir)
 
         available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
@@ -267,6 +267,7 @@ module Tina4
         Dir.glob(File.join(@dead_letter_dir, "*.json")).each do |file|
           data = JSON.parse(File.read(file))
           next unless data["topic"] == topic.to_s
+          next if job_id && data["id"] != job_id.to_s
 
           msg = Tina4::Job.new(
             topic: data["topic"],
@@ -278,6 +279,7 @@ module Tina4
           enqueue(msg)
           File.delete(file)
           count += 1
+          break if job_id  # found the specific job, stop scanning
         rescue JSON::ParserError
           next
         end

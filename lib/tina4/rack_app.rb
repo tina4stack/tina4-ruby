@@ -80,7 +80,7 @@ module Tina4
       end
 
       # Route matching
-      result = Tina4::Router.find_route(path, method)
+      result = Tina4::Router.match(method, path)
       if result
         route, path_params = result
         rack_response = handle_route(env, route, path_params)
@@ -191,7 +191,7 @@ module Tina4
       response = Tina4::Response.new
 
       # Run global middleware (block-based + class-based before_* methods)
-      unless Tina4::Middleware.run_before(request, response)
+      unless Tina4::Middleware.run_before(Tina4::Middleware.global_middleware, request, response)
         # Middleware halted the request -- return whatever response was set
         return response.to_rack
       end
@@ -229,7 +229,7 @@ module Tina4
       final_response = result.equal?(response) ? result : Tina4::Response.auto_detect(result, response)
 
       # Run global after middleware (block-based + class-based after_* methods)
-      Tina4::Middleware.run_after(request, final_response)
+      Tina4::Middleware.run_after(Tina4::Middleware.global_middleware, request, final_response)
 
       final_response.to_rack
     end

@@ -2,6 +2,7 @@
 require "net/http"
 require "uri"
 require "json"
+require "base64"
 
 module Tina4
   class API
@@ -16,41 +17,51 @@ module Tina4
       @timeout = timeout
     end
 
-    def get(path, params: {}, headers: {})
+    def get(path, params: {})
       uri = build_uri(path, params)
       request = Net::HTTP::Get.new(uri)
-      apply_headers(request, headers)
+      apply_headers(request, {})
       execute(uri, request)
     end
 
-    def post(path, body: nil, headers: {})
+    def post(path, body: nil, content_type: "application/json")
       uri = build_uri(path)
       request = Net::HTTP::Post.new(uri)
-      request.body = body.is_a?(String) ? body : JSON.generate(body) if body
-      apply_headers(request, headers)
+      if body
+        request.body = body.is_a?(String) ? body : JSON.generate(body)
+        request["Content-Type"] = content_type
+      end
+      apply_headers(request, {})
       execute(uri, request)
     end
 
-    def put(path, body: nil, headers: {})
+    def put(path, body: nil, content_type: "application/json")
       uri = build_uri(path)
       request = Net::HTTP::Put.new(uri)
-      request.body = body.is_a?(String) ? body : JSON.generate(body) if body
-      apply_headers(request, headers)
+      if body
+        request.body = body.is_a?(String) ? body : JSON.generate(body)
+        request["Content-Type"] = content_type
+      end
+      apply_headers(request, {})
       execute(uri, request)
     end
 
-    def patch(path, body: nil, headers: {})
+    def patch(path, body: nil, content_type: "application/json")
       uri = build_uri(path)
       request = Net::HTTP::Patch.new(uri)
-      request.body = body.is_a?(String) ? body : JSON.generate(body) if body
-      apply_headers(request, headers)
+      if body
+        request.body = body.is_a?(String) ? body : JSON.generate(body)
+        request["Content-Type"] = content_type
+      end
+      apply_headers(request, {})
       execute(uri, request)
     end
 
-    def delete(path, headers: {})
+    def delete(path, body: nil)
       uri = build_uri(path)
       request = Net::HTTP::Delete.new(uri)
-      apply_headers(request, headers)
+      request.body = body.is_a?(String) ? body : JSON.generate(body) if body
+      apply_headers(request, {})
       execute(uri, request)
     end
 
@@ -65,6 +76,32 @@ module Tina4
       request["Content-Type"] = "multipart/form-data; boundary=#{boundary}"
       headers.each { |k, v| request[k] = v }
       execute(uri, request)
+    end
+
+    def set_basic_auth(username, password)
+      @headers["Authorization"] = "Basic #{Base64.strict_encode64("#{username}:#{password}")}"
+      self
+    end
+
+    def set_bearer_token(token)
+      @headers["Authorization"] = "Bearer #{token}"
+      self
+    end
+
+    def add_headers(headers)
+      @headers.merge!(headers)
+      self
+    end
+
+    def send_request(method = "GET", path = "", body: nil, content_type: "application/json")
+      case method.upcase
+      when "GET"    then get(path)
+      when "POST"   then post(path, body: body, content_type: content_type)
+      when "PUT"    then put(path, body: body, content_type: content_type)
+      when "PATCH"  then patch(path, body: body, content_type: content_type)
+      when "DELETE" then delete(path, body: body)
+      else get(path)
+      end
     end
 
     private

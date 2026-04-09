@@ -368,7 +368,7 @@ module Tina4
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
       load_routes(Dir.pwd)
-      Tina4.seed(seed_folder: "seeds", clear: options[:clear])
+      Tina4.seed_dir(seed_folder: "seeds", clear: options[:clear])
     end
 
     # ── seed:create ───────────────────────────────────────────────────────

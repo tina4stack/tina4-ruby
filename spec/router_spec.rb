@@ -8,94 +8,94 @@ RSpec.describe Tina4::Router do
   describe ".add_route" do
     it "registers a GET route" do
       handler = proc { "hello" }
-      Tina4::Router.add_route("GET", "/hello", handler)
+      Tina4::Router.add("GET", "/hello", handler)
       expect(Tina4::Router.routes.length).to eq(1)
     end
 
     it "registers routes for different methods" do
-      Tina4::Router.add_route("GET", "/test", proc { "get" })
-      Tina4::Router.add_route("POST", "/test", proc { "post" })
+      Tina4::Router.add("GET", "/test", proc { "get" })
+      Tina4::Router.add("POST", "/test", proc { "post" })
       expect(Tina4::Router.routes.length).to eq(2)
     end
 
     it "stores swagger metadata" do
       meta = { summary: "Test endpoint", tags: ["test"] }
-      route = Tina4::Router.add_route("GET", "/api", proc { "api" }, swagger_meta: meta)
+      route = Tina4::Router.add("GET", "/api", proc { "api" }, swagger_meta: meta)
       expect(route.swagger_meta).to eq(meta)
     end
   end
 
   describe ".find_route" do
     it "finds an exact match" do
-      Tina4::Router.add_route("GET", "/hello", proc { "hello" })
-      route, params = Tina4::Router.find_route("/hello", "GET")
+      Tina4::Router.add("GET", "/hello", proc { "hello" })
+      route, params = Tina4::Router.match("GET", "/hello")
       expect(route).not_to be_nil
       expect(params).to eq({})
     end
 
     it "returns nil for non-matching path" do
-      Tina4::Router.add_route("GET", "/hello", proc { "hello" })
-      result = Tina4::Router.find_route("/world", "GET")
+      Tina4::Router.add("GET", "/hello", proc { "hello" })
+      result = Tina4::Router.match("GET", "/world")
       expect(result).to be_nil
     end
 
     it "returns nil for non-matching method" do
-      Tina4::Router.add_route("GET", "/hello", proc { "hello" })
-      result = Tina4::Router.find_route("/hello", "POST")
+      Tina4::Router.add("GET", "/hello", proc { "hello" })
+      result = Tina4::Router.match("POST", "/hello")
       expect(result).to be_nil
     end
 
     it "extracts string path parameters" do
-      Tina4::Router.add_route("GET", "/users/{name}", proc { "user" })
-      route, params = Tina4::Router.find_route("/users/alice", "GET")
+      Tina4::Router.add("GET", "/users/{name}", proc { "user" })
+      route, params = Tina4::Router.match("GET", "/users/alice")
       expect(route).not_to be_nil
       expect(params["name"] || params[:name]).to eq("alice")
     end
 
     it "extracts integer path parameters" do
-      Tina4::Router.add_route("GET", "/users/{id:int}", proc { "user" })
-      route, params = Tina4::Router.find_route("/users/42", "GET")
+      Tina4::Router.add("GET", "/users/{id:int}", proc { "user" })
+      route, params = Tina4::Router.match("GET", "/users/42")
       expect(route).not_to be_nil
       id_val = params["id"] || params[:id]
       expect(id_val.to_i).to eq(42)
     end
 
     it "extracts float path parameters" do
-      Tina4::Router.add_route("GET", "/price/{amount:float}", proc { "price" })
-      route, params = Tina4::Router.find_route("/price/19.99", "GET")
+      Tina4::Router.add("GET", "/price/{amount:float}", proc { "price" })
+      route, params = Tina4::Router.match("GET", "/price/19.99")
       expect(route).not_to be_nil
       amount = params["amount"] || params[:amount]
       expect(amount.to_f).to eq(19.99)
     end
 
     it "does not match int param with non-numeric value" do
-      Tina4::Router.add_route("GET", "/users/{id:int}", proc { "user" })
-      result = Tina4::Router.find_route("/users/abc", "GET")
+      Tina4::Router.add("GET", "/users/{id:int}", proc { "user" })
+      result = Tina4::Router.match("GET", "/users/abc")
       expect(result).to be_nil
     end
 
     it "handles multiple path parameters" do
-      Tina4::Router.add_route("GET", "/users/{userId:int}/posts/{postId:int}", proc { "post" })
-      route, params = Tina4::Router.find_route("/users/1/posts/5", "GET")
+      Tina4::Router.add("GET", "/users/{userId:int}/posts/{postId:int}", proc { "post" })
+      route, params = Tina4::Router.match("GET", "/users/1/posts/5")
       expect(route).not_to be_nil
     end
 
     it "handles trailing slash" do
-      Tina4::Router.add_route("GET", "/hello", proc { "hello" })
-      route, _ = Tina4::Router.find_route("/hello/", "GET")
+      Tina4::Router.add("GET", "/hello", proc { "hello" })
+      route, _ = Tina4::Router.match("GET", "/hello/")
       expect(route).not_to be_nil
     end
 
     it "does NOT support Ruby :id syntax (only {id})" do
-      Tina4::Router.add_route("GET", "/users/:id", proc { "user" })
-      result = Tina4::Router.find_route("/users/42", "GET")
+      Tina4::Router.add("GET", "/users/:id", proc { "user" })
+      result = Tina4::Router.match("GET", "/users/42")
       expect(result).to be_nil
     end
   end
 
   describe ".clear!" do
     it "removes all routes" do
-      Tina4::Router.add_route("GET", "/test", proc { "test" })
+      Tina4::Router.add("GET", "/test", proc { "test" })
       Tina4::Router.clear!
       expect(Tina4::Router.routes).to be_empty
     end
@@ -106,7 +106,7 @@ RSpec.describe Tina4::Router do
       Tina4::Router.group("/api/v1") do
         get("/users") { "users" }
       end
-      route, _ = Tina4::Router.find_route("/api/v1/users", "GET")
+      route, _ = Tina4::Router.match("GET", "/api/v1/users")
       expect(route).not_to be_nil
     end
   end
@@ -115,8 +115,8 @@ RSpec.describe Tina4::Router do
 
   describe "wildcard routes" do
     it "matches a catch-all splat route" do
-      Tina4::Router.add_route("GET", "/docs/*path", proc { "docs" })
-      route, params = Tina4::Router.find_route("/docs/api/v1/users", "GET")
+      Tina4::Router.add("GET", "/docs/*path", proc { "docs" })
+      route, params = Tina4::Router.match("GET", "/docs/api/v1/users")
       expect(route).not_to be_nil
       path_val = params["path"] || params[:path]
       expect(path_val).to eq("api/v1/users")
@@ -127,31 +127,31 @@ RSpec.describe Tina4::Router do
 
   describe "method matching" do
     it "registers and matches PUT routes" do
-      Tina4::Router.add_route("PUT", "/update/{id}", proc { "update" })
-      route, params = Tina4::Router.find_route("/update/5", "PUT")
+      Tina4::Router.add("PUT", "/update/{id}", proc { "update" })
+      route, params = Tina4::Router.match("PUT", "/update/5")
       expect(route).not_to be_nil
     end
 
     it "registers and matches PATCH routes" do
-      Tina4::Router.add_route("PATCH", "/patch/{id}", proc { "patch" })
-      route, _ = Tina4::Router.find_route("/patch/5", "PATCH")
+      Tina4::Router.add("PATCH", "/patch/{id}", proc { "patch" })
+      route, _ = Tina4::Router.match("PATCH", "/patch/5")
       expect(route).not_to be_nil
     end
 
     it "registers and matches DELETE routes" do
-      Tina4::Router.add_route("DELETE", "/remove/{id}", proc { "delete" })
-      route, _ = Tina4::Router.find_route("/remove/5", "DELETE")
+      Tina4::Router.add("DELETE", "/remove/{id}", proc { "delete" })
+      route, _ = Tina4::Router.match("DELETE", "/remove/5")
       expect(route).not_to be_nil
     end
 
     it "matches correct handler for same path, different methods" do
       get_handler = proc { "get" }
       post_handler = proc { "post" }
-      Tina4::Router.add_route("GET", "/dual", get_handler)
-      Tina4::Router.add_route("POST", "/dual", post_handler)
+      Tina4::Router.add("GET", "/dual", get_handler)
+      Tina4::Router.add("POST", "/dual", post_handler)
 
-      get_route, _ = Tina4::Router.find_route("/dual", "GET")
-      post_route, _ = Tina4::Router.find_route("/dual", "POST")
+      get_route, _ = Tina4::Router.match("GET", "/dual")
+      post_route, _ = Tina4::Router.match("POST", "/dual")
       expect(get_route.handler).to eq(get_handler)
       expect(post_route.handler).to eq(post_handler)
     end
@@ -162,8 +162,8 @@ RSpec.describe Tina4::Router do
   describe "middleware chains" do
     it "attaches middleware to a route" do
       auth_mw = proc { |req, res| true }
-      Tina4::Router.add_route("GET", "/mw", proc { "ok" }, middleware: [auth_mw])
-      route, _ = Tina4::Router.find_route("/mw", "GET")
+      Tina4::Router.add("GET", "/mw", proc { "ok" }, middleware: [auth_mw])
+      route, _ = Tina4::Router.match("GET", "/mw")
       expect(route).not_to be_nil
       expect(route.middleware.length).to eq(1)
     end
@@ -172,16 +172,16 @@ RSpec.describe Tina4::Router do
       order = []
       mw1 = proc { |req, res| order << 1; true }
       mw2 = proc { |req, res| order << 2; true }
-      Tina4::Router.add_route("GET", "/chain", proc { "ok" }, middleware: [mw1, mw2])
-      route, _ = Tina4::Router.find_route("/chain", "GET")
+      Tina4::Router.add("GET", "/chain", proc { "ok" }, middleware: [mw1, mw2])
+      route, _ = Tina4::Router.match("GET", "/chain")
       route.run_middleware(double("req"), double("res"))
       expect(order).to eq([1, 2])
     end
 
     it "halts when middleware returns false" do
       deny_mw = proc { |req, res| false }
-      Tina4::Router.add_route("GET", "/blocked", proc { "nope" }, middleware: [deny_mw])
-      route, _ = Tina4::Router.find_route("/blocked", "GET")
+      Tina4::Router.add("GET", "/blocked", proc { "nope" }, middleware: [deny_mw])
+      route, _ = Tina4::Router.match("GET", "/blocked")
       result = route.run_middleware(double("req"), double("res"))
       expect(result).to be false
     end
@@ -196,7 +196,7 @@ RSpec.describe Tina4::Router do
           get("/items") { "items" }
         end
       end
-      route, _ = Tina4::Router.find_route("/api/v2/items", "GET")
+      route, _ = Tina4::Router.match("GET", "/api/v2/items")
       expect(route).not_to be_nil
     end
 
@@ -206,7 +206,7 @@ RSpec.describe Tina4::Router do
       Tina4::Router.group("/admin", middleware: [group_mw]) do
         get("/dashboard") { "dash" }
       end
-      route, _ = Tina4::Router.find_route("/admin/dashboard", "GET")
+      route, _ = Tina4::Router.match("GET", "/admin/dashboard")
       expect(route).not_to be_nil
       expect(route.middleware.length).to eq(1)
     end
@@ -217,9 +217,9 @@ RSpec.describe Tina4::Router do
         post("/users") { "create" }
         get("/products") { "products" }
       end
-      route1, _ = Tina4::Router.find_route("/api/v3/users", "GET")
-      route2, _ = Tina4::Router.find_route("/api/v3/users", "POST")
-      route3, _ = Tina4::Router.find_route("/api/v3/products", "GET")
+      route1, _ = Tina4::Router.match("GET", "/api/v3/users")
+      route2, _ = Tina4::Router.match("POST", "/api/v3/users")
+      route3, _ = Tina4::Router.match("GET", "/api/v3/products")
       expect(route1).not_to be_nil
       expect(route2).not_to be_nil
       expect(route3).not_to be_nil
@@ -230,14 +230,14 @@ RSpec.describe Tina4::Router do
 
   describe "path parameter edge cases" do
     it "handles root path" do
-      Tina4::Router.add_route("GET", "/", proc { "root" })
-      route, _ = Tina4::Router.find_route("/", "GET")
+      Tina4::Router.add("GET", "/", proc { "root" })
+      route, _ = Tina4::Router.match("GET", "/")
       expect(route).not_to be_nil
     end
 
     it "handles path type parameter" do
-      Tina4::Router.add_route("GET", "/files/{filepath:path}", proc { "file" })
-      route, params = Tina4::Router.find_route("/files/docs/readme.md", "GET")
+      Tina4::Router.add("GET", "/files/{filepath:path}", proc { "file" })
+      route, params = Tina4::Router.match("GET", "/files/docs/readme.md")
       if route
         fp = params["filepath"] || params[:filepath]
         expect(fp).to include("docs")
@@ -245,8 +245,8 @@ RSpec.describe Tina4::Router do
     end
 
     it "does not match extra segments on exact path" do
-      Tina4::Router.add_route("GET", "/api/users", proc { "users" })
-      result = Tina4::Router.find_route("/api/users/extra", "GET")
+      Tina4::Router.add("GET", "/api/users", proc { "users" })
+      result = Tina4::Router.match("GET", "/api/users/extra")
       expect(result).to be_nil
     end
   end

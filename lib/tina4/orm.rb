@@ -243,14 +243,14 @@ module Tina4
         end
       end
 
-      def where(conditions, params = [], include: nil) # -> list[Self]
+      def where(conditions, params = [], limit: 20, offset: 0, include: nil) # -> list[Self]
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0) AND (#{conditions})"
         else
           sql += " WHERE #{conditions}"
         end
-        results = db.fetch(sql, params)
+        results = db.fetch(sql, params, limit: limit, offset: offset)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
@@ -394,13 +394,32 @@ module Tina4
       end
 
       # Find a single record by primary key. Returns instance or nil.
-      def find_by_id(id) # -> Self | nil
+      def find_by_id(id, include: nil) # -> Self | nil
         pk = primary_key_field || :id
         sql = "SELECT * FROM #{table_name} WHERE #{pk} = ?"
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
         end
-        select_one(sql, [id])
+        select_one(sql, [id], include: include)
+      end
+
+      # Clear the relationship cache on all loaded instances (class-level helper).
+      # Useful after bulk operations when you want to force relationship re-loads.
+      def clear_rel_cache # -> nil
+        @_rel_cache = {}
+        nil
+      end
+
+      # Return the database connection used by this model.
+      def get_db # -> Database
+        db
+      end
+
+      # Map a Ruby property name to its database column name using field_mapping.
+      # Returns the column name as a symbol.
+      def get_db_column(property) # -> Symbol
+        col = field_mapping[property.to_s] || property
+        col.to_sym
       end
 
       private

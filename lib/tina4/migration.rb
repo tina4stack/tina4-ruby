@@ -61,35 +61,85 @@ module Tina4
     end
 
     # Create a new migration file
-    def create(description)
+    #
+    # kind="ruby"   — creates {timestamp}_{description}.rb with MigrationBase subclass (default)
+    # kind="sql"    — creates {timestamp}_{description}.sql + .down.sql
+    # kind="python" — alias for "ruby" (class-based scaffold for cross-framework parity)
+    def create(description, kind = "ruby")
       FileUtils.mkdir_p(@migrations_dir)
       timestamp = Time.now.strftime("%Y%m%d%H%M%S")
-      filename = "#{timestamp}_#{description.gsub(/\s+/, '_')}.rb"
-      filepath = File.join(@migrations_dir, filename)
+      created_at = Time.now.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+      safe_name = description.gsub(/[^a-z0-9]+/i, "_").downcase.gsub(/^_|_$/, "")
 
-      File.write(filepath, <<~RUBY)
-        # frozen_string_literal: true
-        # Migration: #{description}
-        # Created: #{Time.now}
+      if kind == "ruby" || kind == "python"
+        filename = "#{timestamp}_#{safe_name}.rb"
+        filepath = File.join(@migrations_dir, filename)
 
-        class #{classify(description)} < Tina4::MigrationBase
-          def up(db)
-            # db.exec("CREATE TABLE ...")
+        File.write(filepath, <<~RUBY)
+          # frozen_string_literal: true
+          # Migration: #{description}
+          # Created: #{created_at}
+
+          class #{classify(description)} < Tina4::MigrationBase
+            def up(db)
+              # db.execute("CREATE TABLE ...")
+            end
+
+            def down(db)
+              # db.execute("DROP TABLE IF EXISTS ...")
+            end
           end
+        RUBY
 
-          def down(db)
-            # db.exec("DROP TABLE IF EXISTS ...")
-          end
-        end
-      RUBY
+        Tina4::Log.info("Created migration: #{filename}")
+        return filepath
+      end
 
-      Tina4::Log.info("Created migration: #{filename}")
-      filepath
+      # Default: SQL
+      up_filename = "#{timestamp}_#{safe_name}.sql"
+      down_filename = "#{timestamp}_#{safe_name}.down.sql"
+      up_path = File.join(@migrations_dir, up_filename)
+      down_path = File.join(@migrations_dir, down_filename)
+
+      File.write(up_path, "-- Migration: #{description}\n-- Created: #{created_at}\n\n")
+      File.write(down_path, "-- Rollback: #{description}\n-- Created: #{created_at}\n\n")
+
+      Tina4::Log.info("Created migration: #{up_filename}")
+      up_path
+    end
+
+    # Insert a record into the migration tracking table.
+    #
+    # @param name  [String]  Migration filename (e.g. "20240101000000_create_users.sql")
+    # @param batch [Integer] Batch number this migration belongs to
+    # @param passed [Integer] 1 if successful (default), 0 if failed
+    def record_migration(name, batch, passed: 1)
+      _record_migration(name, batch, passed: passed)
+    end
+
+    # Delete a migration record from the tracking table by filename.
+    #
+    # @param name [String] Migration filename to remove
+    def remove_migration_record(name)
+      _remove_migration_record(name)
+    end
+
+    # Create a migration file — static helper for parity with Python/Node.
+    # @param description [String] Human-readable migration name
+    # @param migrations_dir [String] Directory for migration files (default: 'migrations')
+    # @param kind [String] File kind: 'sql' or 'ruby' (default: 'sql')
+    def self.create_migration(description, migrations_dir: "migrations", kind: "sql")
+      new(nil, migrations_dir: migrations_dir).create(description, kind)
     end
 
     # Get list of applied migration records (public alias for completed_migrations)
     def get_applied
       completed_migrations
+    end
+
+    # Alias for get_applied — parity with PHP/Node
+    def get_applied_migrations
+      get_applied
     end
 
     # Get list of pending migration filenames (public alias for pending_migrations)
@@ -119,6 +169,7 @@ module Tina4
     end
 
     def ensure_tracking_table
+      return unless @db
       unless @db.table_exists?(TRACKING_TABLE)
         if firebird?
           # Firebird: no AUTOINCREMENT, no TEXT type, use generator for IDs
@@ -201,11 +252,11 @@ module Tina4
         else
           execute_sql_file(file)
         end
-        record_migration(name, batch, passed: 1)
+        _record_migration(name, batch, passed: 1)
         { name: name, status: "success" }
       rescue => e
         Tina4::Log.error("Migration failed: #{name} - #{e.message}")
-        record_migration(name, batch, passed: 0)
+        _record_migration(name, batch, passed: 0)
         { name: name, status: "failed", error: e.message }
       end
     end
@@ -224,7 +275,7 @@ module Tina4
             Tina4::Log.warning("No rollback file for: #{name}")
           end
         end
-        remove_migration_record(name)
+        _remove_migration_record(name)
         { name: name, status: "rolled_back" }
       rescue => e
         Tina4::Log.error("Rollback failed: #{name} - #{e.message}")
@@ -345,7 +396,7 @@ module Tina4
       end
     end
 
-    def record_migration(name, batch, passed: 1)
+    def _record_migration(name, batch, passed: 1)
       # Extract description from filename (strip numeric prefix and extension)
       stem = File.basename(name, File.extname(name))
       desc = stem.sub(/\A\d+_/, "").tr("_", " ")
@@ -367,7 +418,7 @@ module Tina4
       end
     end
 
-    def remove_migration_record(name)
+    def _remove_migration_record(name)
       @db.delete(TRACKING_TABLE, { migration_name: name })
     end
 

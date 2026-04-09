@@ -114,7 +114,7 @@ module Tina4
       end
 
       # Match route
-      result = Tina4::Router.find_route(clean_path, method.upcase)
+      result = Tina4::Router.match(method.upcase, clean_path)
 
       unless result
         return TestResponse.new([404, { "content-type" => "application/json" }, ['{"error":"Not found"}']])

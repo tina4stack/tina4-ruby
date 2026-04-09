@@ -21,10 +21,9 @@ module Tina4
 
     # Re-queue this message with incremented attempts.
     # Uses the stored queue reference (set at construction time).
-    # Accepts an optional queue: keyword for backwards compatibility.
-    def retry(delay_seconds: 0, queue: nil)
-      q = queue || @queue
-      raise ArgumentError, "No queue reference — pass queue: or set at construction" unless q
+    def retry(delay_seconds: 0)
+      q = @queue
+      raise ArgumentError, "No queue reference — set at construction" unless q
 
       @attempts += 1
       @status = :pending

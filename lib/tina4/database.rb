@@ -82,6 +82,25 @@ module Tina4
       "odbc" => "Tina4::Drivers::OdbcDriver"
     }.freeze
 
+    # Static factory — cross-framework consistency: Database.create(url)
+    def self.create(url, username: "", password: "", pool: 0)
+      new(url, username: username.empty? ? nil : username,
+               password: password.empty? ? nil : password,
+               pool: pool)
+    end
+
+    # Construct a Database from environment variables.
+    # Returns nil if the named env var is not set.
+    def self.from_env(env_key: "DATABASE_URL", pool: 0)
+      url = ENV[env_key]
+      return nil if url.nil? || url.strip.empty?
+
+      new(url,
+          username: ENV["DATABASE_USERNAME"],
+          password: ENV["DATABASE_PASSWORD"],
+          pool: pool)
+    end
+
     def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: 0)
       @connection_string = connection_string || ENV["DATABASE_URL"]
       @username = username || ENV["DATABASE_USERNAME"]
@@ -241,9 +260,18 @@ module Tina4
       { success: true, last_id: drv.last_insert_id }
     end
 
-    def update(table, data, filter = {})
+    def update(table, data, filter = {}, params = nil)
       cache_invalidate if @cache_enabled
       drv = current_driver
+
+      # String filter with explicit params array
+      if filter.is_a?(String) && !params.nil?
+        set_parts = data.keys.map { |k| "#{k} = #{drv.placeholder}" }
+        sql = "UPDATE #{table} SET #{set_parts.join(', ')}"
+        sql += " WHERE #{filter}" unless filter.empty?
+        drv.execute(sql, data.values + Array(params))
+        return { success: true }
+      end
 
       set_parts = data.keys.map { |k| "#{k} = #{drv.placeholder}" }
       where_parts = filter.keys.map { |k| "#{k} = #{drv.placeholder}" }
@@ -254,7 +282,7 @@ module Tina4
       { success: true }
     end
 
-    def delete(table, filter = {})
+    def delete(table, filter = {}, params = nil)
       cache_invalidate if @cache_enabled
       drv = current_driver
 
@@ -264,11 +292,11 @@ module Tina4
         return { success: true }
       end
 
-      # String filter — raw WHERE clause
+      # String filter — raw WHERE clause with optional params
       if filter.is_a?(String)
         sql = "DELETE FROM #{table}"
         sql += " WHERE #{filter}" unless filter.empty?
-        drv.execute(sql)
+        drv.execute(sql, Array(params))
         return { success: true }
       end
 
@@ -386,6 +414,40 @@ module Tina4
     # @param pk_column [String] Primary key column name (default: "id")
     # @param generator_name [String, nil] Override for sequence/generator name
     # @return [Integer] The next available ID
+    # Returns the underlying driver object (pool's current driver or single driver).
+    def get_adapter
+      current_driver
+    end
+
+    # Returns the configured pool size, or 1 for single-connection mode.
+    def pool_size
+      @pool_size > 0 ? @pool_size : 1
+    end
+
+    # Number of connections currently created (lazy pool connections counted).
+    def active_count
+      if @pool
+        @pool.active_count
+      else
+        @connected ? 1 : 0
+      end
+    end
+
+    # Check out a driver from the pool (or return the single driver).
+    def checkout
+      current_driver
+    end
+
+    # Return a driver to the pool. No-op for round-robin pool or single connection.
+    def checkin(_driver)
+      # no-op
+    end
+
+    # Close all pooled connections (or the single connection).
+    def close_all
+      close
+    end
+
     def get_next_id(table, pk_column: "id", generator_name: nil)
       drv = current_driver
 

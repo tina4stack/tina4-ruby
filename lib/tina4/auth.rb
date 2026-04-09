@@ -89,7 +89,7 @@ module Tina4
 
       # ── Token API (auto-selects HS256 or RS256) ─────────────────
 
-      def get_token(payload, expires_in: 60)
+      def get_token(payload, expires_in: 60, secret: nil)
         now = Time.now.to_i
         claims = payload.merge(
           "iat" => now,
@@ -97,7 +97,9 @@ module Tina4
           "nbf" => now
         )
 
-        if use_hmac?
+        if secret
+          hmac_encode(claims, secret)
+        elsif use_hmac?
           hmac_encode(claims, hmac_secret)
         else
           ensure_keys
@@ -182,7 +184,7 @@ module Tina4
         get_token(payload, expires_in: expires_in)
       end
 
-      def authenticate_request(headers)
+      def authenticate_request(headers, secret: nil, algorithm: "HS256")
         auth_header = headers["HTTP_AUTHORIZATION"] || headers["Authorization"] || ""
         return nil unless auth_header =~ /\ABearer\s+(.+)\z/i
 
@@ -192,6 +194,12 @@ module Tina4
         api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
         if api_key && !api_key.empty? && token == api_key
           return { "api_key" => true }
+        end
+
+        # If a custom secret is provided, validate against it directly
+        if secret
+          payload = hmac_decode(token, secret)
+          return payload ? payload : nil
         end
 
         valid_token(token) ? get_payload(token) : nil

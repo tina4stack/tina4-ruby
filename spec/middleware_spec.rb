@@ -41,34 +41,34 @@ RSpec.describe Tina4::Middleware do
     it "runs matching before handlers" do
       called = false
       Tina4::Middleware.before { |_req, _res| called = true }
-      Tina4::Middleware.run_before(request, response)
+      Tina4::Middleware.run_before([], request, response)
       expect(called).to be true
     end
 
     it "halts on false return" do
       Tina4::Middleware.before { |_req, _res| false }
-      result = Tina4::Middleware.run_before(request, response)
+      result = Tina4::Middleware.run_before([], request, response)
       expect(result).to be false
     end
 
     it "skips non-matching patterns" do
       called = false
       Tina4::Middleware.before("/admin") { |_req, _res| called = true }
-      Tina4::Middleware.run_before(request, response)
+      Tina4::Middleware.run_before([], request, response)
       expect(called).to be false
     end
 
     it "matches string prefix patterns" do
       called = false
       Tina4::Middleware.before("/api") { |_req, _res| called = true }
-      Tina4::Middleware.run_before(request, response)
+      Tina4::Middleware.run_before([], request, response)
       expect(called).to be true
     end
 
     it "matches regexp patterns" do
       called = false
       Tina4::Middleware.before(/\/api\/.*/) { |_req, _res| called = true }
-      Tina4::Middleware.run_before(request, response)
+      Tina4::Middleware.run_before([], request, response)
       expect(called).to be true
     end
   end
@@ -77,7 +77,7 @@ RSpec.describe Tina4::Middleware do
     it "runs matching after handlers" do
       called = false
       Tina4::Middleware.after { |_req, _res| called = true }
-      Tina4::Middleware.run_after(request, response)
+      Tina4::Middleware.run_after([], request, response)
       expect(called).to be true
     end
   end

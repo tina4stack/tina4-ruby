@@ -53,7 +53,7 @@ module Tina4
         example_body = build_example(model_class)
 
         # GET /api/{table} -- list all with pagination, filtering, sorting
-        Tina4::Router.add_route("GET", "#{prefix}/#{table}", proc { |req, res|
+        Tina4::Router.add("GET", "#{prefix}/#{table}", proc { |req, res|
           begin
             per_page = (req.query["per_page"] || req.query["limit"] || 10).to_i
             page     = (req.query["page"] || 1).to_i
@@ -94,7 +94,7 @@ module Tina4
         }, swagger_meta: { summary: "List all #{pretty_name}", tags: [table.to_s] })
 
         # GET /api/{table}/{id} -- get single record
-        Tina4::Router.add_route("GET", "#{prefix}/#{table}/{id}", proc { |req, res|
+        Tina4::Router.add("GET", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             record = model_class.find_by_id(id.to_i)
@@ -109,7 +109,7 @@ module Tina4
         }, swagger_meta: { summary: "Get #{pretty_name} by ID", tags: [table.to_s] })
 
         # POST /api/{table} -- create record
-        Tina4::Router.add_route("POST", "#{prefix}/#{table}", proc { |req, res|
+        Tina4::Router.add("POST", "#{prefix}/#{table}", proc { |req, res|
           begin
             attributes = req.body_parsed
             record = model_class.create(attributes)
@@ -137,7 +137,7 @@ module Tina4
         })
 
         # PUT /api/{table}/{id} -- update record
-        Tina4::Router.add_route("PUT", "#{prefix}/#{table}/{id}", proc { |req, res|
+        Tina4::Router.add("PUT", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             record = model_class.find_by_id(id.to_i)
@@ -175,7 +175,7 @@ module Tina4
         })
 
         # DELETE /api/{table}/{id} -- delete record
-        Tina4::Router.add_route("DELETE", "#{prefix}/#{table}/{id}", proc { |req, res|
+        Tina4::Router.add("DELETE", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             record = model_class.find_by_id(id.to_i)

@@ -3,7 +3,7 @@
 module Tina4
   class Route
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta,
-                :path_regex, :param_names, :middleware, :template
+                :path_regex, :param_names, :template
     attr_accessor :auth_required, :cached
 
     def initialize(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
@@ -41,6 +41,19 @@ module Tina4
     # Returns self for chaining: Router.get("/path") { ... }.cache
     def cache
       @cached = true
+      self
+    end
+
+    # Dual-mode: getter (no args) returns the middleware array;
+    # setter (with args) appends middleware and returns self for chaining.
+    # Router.post("/api") { ... }.middleware(AuthMiddleware)
+    def middleware(*middleware_classes)
+      return @middleware if middleware_classes.empty?
+
+      @middleware = @middleware.dup + middleware_classes
+      # Custom middleware means developer handles auth — disable built-in gate
+      # unless .secure was explicitly called.
+      @auth_required = false unless @auth_required
       self
     end
 
@@ -245,7 +258,7 @@ module Tina4
         @method_index ||= Hash.new { |h, k| h[k] = [] }
       end
 
-      def add_route(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
+      def add(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
         route = Route.new(method, path, handler,
                           auth_handler: auth_handler,
                           swagger_meta: swagger_meta,
@@ -256,33 +269,32 @@ module Tina4
         Tina4::Log.debug("Route registered: #{method.upcase} #{path}")
         route
       end
-
-      # Convenience registration methods matching tina4-python pattern
+      # Convenience registration methods
       def get(path, middleware: [], swagger_meta: {}, template: nil, &block)
-        add_route("GET", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+        add("GET", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
       def post(path, middleware: [], swagger_meta: {}, template: nil, &block)
-        add_route("POST", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+        add("POST", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
       def put(path, middleware: [], swagger_meta: {}, template: nil, &block)
-        add_route("PUT", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+        add("PUT", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
       def patch(path, middleware: [], swagger_meta: {}, template: nil, &block)
-        add_route("PATCH", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+        add("PATCH", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
       def delete(path, middleware: [], swagger_meta: {}, template: nil, &block)
-        add_route("DELETE", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+        add("DELETE", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
       def any(path, middleware: [], swagger_meta: {}, template: nil, &block)
-        add_route("ANY", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+        add("ANY", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
-      def find_route(path, method)
+      def find_route(method, path)
         normalized_method = method.upcase
         # Normalize path once (not per-route)
         normalized_path = path.gsub("\\", "/")
@@ -298,9 +310,10 @@ module Tina4
         nil
       end
 
-      # Alias for find_route().
-      def match(path, method)
-        find_route(path, method)
+      # Find a route matching method + path. Returns [route, params] or nil.
+      # match(method, path) — consistent with Python, PHP, and Node.
+      def match(method, path)
+        find_route(method, path)
       end
 
       # Register a class-based middleware globally.
@@ -324,6 +337,7 @@ module Tina4
         @method_index = Hash.new { |h, k| h[k] = [] }
         @ws_routes = []
       end
+      alias clear clear!
 
       def group(prefix, auth_handler: nil, middleware: [], &block)
         GroupContext.new(prefix, auth_handler, middleware).instance_eval(&block)
@@ -354,7 +368,7 @@ module Tina4
         define_method(m) do |path, middleware: [], swagger_meta: {}, template: nil, &handler|
           full_path = "#{@prefix}#{path}"
           combined_middleware = @middleware + middleware
-          Tina4::Router.add_route(m, full_path, handler,
+          Tina4::Router.add(m, full_path, handler,
                                   auth_handler: @auth_handler,
                                   swagger_meta: swagger_meta,
                                   middleware: combined_middleware,

@@ -8,7 +8,7 @@ module Tina4
 
     class << self
       def register!
-        Tina4::Router.add_route("GET", "/health", method(:handle))
+        Tina4::Router.add("GET", "/health", method(:handle))
       end
 
       def handle(_request, response)

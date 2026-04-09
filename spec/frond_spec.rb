@@ -1692,4 +1692,37 @@ RSpec.describe Tina4::Frond do
       expect(engine.render_string("{% if n is positive %}yes{% endif %}", { "n" => -1 })).to eq("")
     end
   end
+
+  describe "Frond.set_form_token_session_id" do
+    it "sets the form token session id" do
+      Tina4::Frond.set_form_token_session_id("abc123")
+      expect(Tina4::Frond.form_token_session_id).to eq("abc123")
+    end
+
+    it "resets to empty string when called with empty string" do
+      Tina4::Frond.set_form_token_session_id("to-be-cleared")
+      Tina4::Frond.set_form_token_session_id("")
+      expect(Tina4::Frond.form_token_session_id).to eq("")
+    end
+  end
+
+  describe "Frond.render_dump" do
+    it "returns empty string when TINA4_DEBUG is not set" do
+      old = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = nil
+      result = Tina4::Frond.render_dump({ key: "value" })
+      expect(result).to eq("")
+    ensure
+      ENV["TINA4_DEBUG"] = old
+    end
+
+    it "returns HTML with pre tag when TINA4_DEBUG is true" do
+      old = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "true"
+      result = Tina4::Frond.render_dump({ key: "value" })
+      expect(result).to include("<pre>")
+    ensure
+      ENV["TINA4_DEBUG"] = old
+    end
+  end
 end

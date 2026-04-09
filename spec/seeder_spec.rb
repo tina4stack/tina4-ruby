@@ -489,22 +489,22 @@ end
 # Auto-Discovery Tests
 # ===================================================================
 
-RSpec.describe "Tina4.seed (auto-discovery)" do
+RSpec.describe "Tina4.seed_dir (auto-discovery)" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_seed_discovery") }
 
   after(:each) { FileUtils.rm_rf(tmp_dir) }
 
   it "handles non-existent folder gracefully" do
-    expect { Tina4.seed(seed_folder: "/tmp/nonexistent_seeds_999") }.not_to raise_error
+    expect { Tina4.seed_dir(seed_folder: "/tmp/nonexistent_seeds_999") }.not_to raise_error
   end
 
   it "handles empty folder gracefully" do
-    expect { Tina4.seed(seed_folder: tmp_dir) }.not_to raise_error
+    expect { Tina4.seed_dir(seed_folder: tmp_dir) }.not_to raise_error
   end
 
   it "skips files starting with _" do
     File.write(File.join(tmp_dir, "_helper.rb"), 'raise "Should not be loaded"')
-    expect { Tina4.seed(seed_folder: tmp_dir) }.not_to raise_error
+    expect { Tina4.seed_dir(seed_folder: tmp_dir) }.not_to raise_error
   end
 
   it "runs files in sorted order" do
@@ -516,7 +516,7 @@ RSpec.describe "Tina4.seed (auto-discovery)" do
       RUBY
     end
 
-    Tina4.seed(seed_folder: tmp_dir)
+    Tina4.seed_dir(seed_folder: tmp_dir)
 
     order = File.read(tracker).strip.split("\n")
     expect(order).to eq(%w[001_first 002_second 003_third])
@@ -524,7 +524,7 @@ RSpec.describe "Tina4.seed (auto-discovery)" do
 
   it "catches errors in seed files" do
     File.write(File.join(tmp_dir, "001_broken.rb"), 'raise "test error"')
-    expect { Tina4.seed(seed_folder: tmp_dir) }.not_to raise_error
+    expect { Tina4.seed_dir(seed_folder: tmp_dir) }.not_to raise_error
   end
 end
 

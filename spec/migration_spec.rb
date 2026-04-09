@@ -178,4 +178,84 @@ RSpec.describe Tina4::Migration do
       expect(db.table_exists?("commented")).to be true
     end
   end
+
+  describe "#get_applied / #get_applied_migrations" do
+    it "returns empty array when no migrations have run" do
+      expect(migration.get_applied).to eq([])
+      expect(migration.get_applied_migrations).to eq([])
+    end
+
+    it "returns applied migration filenames after running" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_create_foo.sql"),
+                 "CREATE TABLE foo (id INTEGER PRIMARY KEY)")
+      migration.run
+      expect(migration.get_applied).to include("000001_create_foo.sql")
+      expect(migration.get_applied_migrations).to include("000001_create_foo.sql")
+    end
+
+    it "get_applied and get_applied_migrations return identical results" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_alias_test.sql"),
+                 "CREATE TABLE alias_test (id INTEGER PRIMARY KEY)")
+      migration.run
+      expect(migration.get_applied).to eq(migration.get_applied_migrations)
+    end
+  end
+
+  describe "#get_pending" do
+    it "returns empty array when no migration files exist" do
+      expect(migration.get_pending).to eq([])
+    end
+
+    it "lists pending migration filenames" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_pending_a.sql"),
+                 "CREATE TABLE pending_a (id INTEGER PRIMARY KEY)")
+      File.write(File.join(mig_dir, "000002_pending_b.sql"),
+                 "CREATE TABLE pending_b (id INTEGER PRIMARY KEY)")
+      expect(migration.get_pending).to include("000001_pending_a.sql", "000002_pending_b.sql")
+    end
+
+    it "does not list already-applied migrations" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_applied.sql"),
+                 "CREATE TABLE applied_check (id INTEGER PRIMARY KEY)")
+      File.write(File.join(mig_dir, "000002_still_pending.sql"),
+                 "CREATE TABLE still_pending (id INTEGER PRIMARY KEY)")
+      migration.run # applies both
+      expect(migration.get_pending).to eq([])
+    end
+  end
+
+  describe "#get_files" do
+    it "returns empty array when migrations directory is empty" do
+      FileUtils.mkdir_p(mig_dir)
+      expect(migration.get_files).to eq([])
+    end
+
+    it "lists all migration files (excluding .down.sql)" do
+      FileUtils.mkdir_p(mig_dir)
+      File.write(File.join(mig_dir, "000001_up.sql"), "SELECT 1")
+      File.write(File.join(mig_dir, "000001_up.down.sql"), "SELECT 1")
+      File.write(File.join(mig_dir, "000002_other.sql"), "SELECT 1")
+      files = migration.get_files
+      expect(files).to include("000001_up.sql", "000002_other.sql")
+      expect(files).not_to include("000001_up.down.sql")
+    end
+  end
+
+  describe ".create_migration" do
+    it "creates a sql migration via class method" do
+      path = Tina4::Migration.create_migration("add orders table", migrations_dir: mig_dir, kind: "sql")
+      expect(File.exist?(path)).to be true
+      expect(File.basename(path)).to match(/\d{14}_add_orders_table\.sql/)
+    end
+
+    it "creates a ruby migration via class method" do
+      path = Tina4::Migration.create_migration("add orders table", migrations_dir: mig_dir, kind: "ruby")
+      expect(File.exist?(path)).to be true
+      expect(File.basename(path)).to match(/\d{14}_add_orders_table\.rb/)
+    end
+  end
 end

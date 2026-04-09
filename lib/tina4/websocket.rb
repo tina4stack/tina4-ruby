@@ -30,6 +30,71 @@ module Tina4
       upgrade.downcase == "websocket"
     end
 
+    def get_clients
+      @connections
+    end
+
+    def start(host: "0.0.0.0", port: 7147)
+      require "socket"
+      @server_socket = TCPServer.new(host, port)
+      @running = true
+      @server_thread = Thread.new do
+        while @running
+          begin
+            client = @server_socket.accept
+            env = {}
+            handle_upgrade(env, client)
+          rescue => e
+            break unless @running
+          end
+        end
+      end
+      self
+    end
+
+    def stop
+      @running = false
+      @server_socket&.close rescue nil
+      @server_thread&.join(1)
+      @connections.each_value { |conn| conn.close rescue nil }
+      @connections.clear
+    end
+
+    def broadcast(message, exclude: nil, path: nil)
+      @connections.each do |id, conn|
+        next if exclude && id == exclude
+        next if path && conn.path != path
+        conn.send_text(message)
+      end
+    end
+
+    # ── Rooms ──────────────────────────────────────────────────
+
+    def join_room_for(conn_id, room_name)
+      @rooms[room_name] ||= Set.new
+      @rooms[room_name].add(conn_id)
+    end
+
+    def leave_room_for(conn_id, room_name)
+      @rooms[room_name]&.delete(conn_id)
+    end
+
+    def room_count(room_name)
+      (@rooms[room_name] || Set.new).size
+    end
+
+    def get_room_connections(room_name)
+      ids = @rooms[room_name] || Set.new
+      ids.filter_map { |id| @connections[id] }
+    end
+
+    def broadcast_to_room(room_name, message, exclude: nil)
+      (get_room_connections(room_name)).each do |conn|
+        next if exclude && conn.id == exclude
+        conn.send_text(message)
+      end
+    end
+
     def handle_upgrade(env, socket)
       key = env["HTTP_SEC_WEBSOCKET_KEY"]
       return unless key
@@ -77,43 +142,6 @@ module Tina4
         end
       end
     end
-
-    def broadcast(message, exclude: nil, path: nil)
-      @connections.each do |id, conn|
-        next if exclude && id == exclude
-        next if path && conn.path != path
-        conn.send_text(message)
-      end
-    end
-
-    # ── Rooms ──────────────────────────────────────────────────
-
-    def join_room_for(conn_id, room_name)
-      @rooms[room_name] ||= Set.new
-      @rooms[room_name].add(conn_id)
-    end
-
-    def leave_room_for(conn_id, room_name)
-      @rooms[room_name]&.delete(conn_id)
-    end
-
-    def room_count(room_name)
-      (@rooms[room_name] || Set.new).size
-    end
-
-    def get_room_connections(room_name)
-      ids = @rooms[room_name] || Set.new
-      ids.filter_map { |id| @connections[id] }
-    end
-
-    def broadcast_to_room(room_name, message, exclude: nil)
-      (get_room_connections(room_name)).each do |conn|
-        next if exclude && conn.id == exclude
-        conn.send_text(message)
-      end
-    end
-
-    private
 
     def emit(event, *args)
       @handlers[event]&.each { |h| h.call(*args) }
@@ -217,8 +245,6 @@ module Tina4
     rescue IOError, EOFError
       nil
     end
-
-    private
 
     def build_frame(opcode, data)
       frame = [0x80 | opcode].pack("C")

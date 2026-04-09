@@ -94,13 +94,13 @@ RSpec.describe Tina4::GraphQLSchema do
 
   describe "#add_query" do
     it "registers a query field" do
-      schema.add_query("hello", type: "String", args: {}) { |_r, _a, _c| "world" }
+      schema.add_query("hello", {}, "String") { |_r, _a, _c| "world" }
       expect(schema.queries).to have_key("hello")
       expect(schema.queries["hello"][:type]).to eq("String")
     end
 
     it "stores the resolver block" do
-      schema.add_query("greet", type: "String") { |_r, _a, _c| "hi" }
+      schema.add_query("greet", {}, "String") { |_r, _a, _c| "hi" }
       result = schema.queries["greet"][:resolve].call(nil, {}, {})
       expect(result).to eq("hi")
     end
@@ -108,7 +108,7 @@ RSpec.describe Tina4::GraphQLSchema do
 
   describe "#add_mutation" do
     it "registers a mutation field" do
-      schema.add_mutation("createUser", type: "User", args: { "name" => { type: "String!" } }) { |_r, a, _c| a }
+      schema.add_mutation("createUser", { "name" => { type: "String!" } }, "User") { |_r, a, _c| a }
       expect(schema.mutations).to have_key("createUser")
     end
   end
@@ -228,11 +228,11 @@ RSpec.describe Tina4::GraphQL do
       { "id" => "2", "name" => "Bob", "email" => "bob@test.com" },
     ]
 
-    gql.schema.add_query("user", type: "User", args: { "id" => { type: "ID!" } }) do |_root, args, _ctx|
+    gql.schema.add_query("user", { "id" => { type: "ID!" } }, "User") do |_root, args, _ctx|
       users.find { |u| u["id"] == args["id"] }
     end
 
-    gql.schema.add_query("users", type: "[User]") do |_root, _args, _ctx|
+    gql.schema.add_query("users", {}, "[User]") do |_root, _args, _ctx|
       users
     end
   end
@@ -277,13 +277,13 @@ RSpec.describe Tina4::GraphQL do
     end
 
     it "applies variable defaults" do
-      gql.schema.add_query("greeting", type: "String") { |_r, args, _c| "Hello, #{args['name']}!" }
+      gql.schema.add_query("greeting", {}, "String") { |_r, args, _c| "Hello, #{args['name']}!" }
       result = gql.execute('query Greet($name: String = "World") { greeting(name: $name) }')
       expect(result["data"]["greeting"]).to eq("Hello, World!")
     end
 
     it "handles resolver errors gracefully" do
-      gql.schema.add_query("broken", type: "String") { |_r, _a, _c| raise "boom" }
+      gql.schema.add_query("broken", {}, "String") { |_r, _a, _c| raise "boom" }
       result = gql.execute('{ broken }')
       expect(result["errors"]).not_to be_nil
       expect(result["errors"].first["message"]).to eq("boom")
@@ -306,7 +306,7 @@ RSpec.describe Tina4::GraphQL do
   describe "#execute with mutations" do
     it "executes a mutation" do
       created = nil
-      gql.schema.add_mutation("createUser", type: "User", args: { "name" => { type: "String!" } }) do |_r, args, _c|
+      gql.schema.add_mutation("createUser", { "name" => { type: "String!" } }, "User") do |_r, args, _c|
         created = { "id" => "3", "name" => args["name"] }
         created
       end
@@ -319,7 +319,7 @@ RSpec.describe Tina4::GraphQL do
 
   describe "#execute with nested objects" do
     it "resolves nested selection sets" do
-      gql.schema.add_query("author", type: "Author", args: { "id" => { type: "ID!" } }) do |_r, args, _c|
+      gql.schema.add_query("author", { "id" => { type: "ID!" } }, "Author") do |_r, args, _c|
         {
           "id" => args["id"],
           "name" => "Jane",
@@ -339,7 +339,7 @@ RSpec.describe Tina4::GraphQL do
 
   describe "#execute with integer args" do
     it "parses integer arguments correctly" do
-      gql.schema.add_query("add", type: "Int", args: { "x" => { type: "Int" } }) do |_r, args, _c|
+      gql.schema.add_query("add", { "x" => { type: "Int" } }, "Int") do |_r, args, _c|
         args["x"].to_i + 20
       end
 
@@ -351,7 +351,7 @@ RSpec.describe Tina4::GraphQL do
 
   describe "#handle_request" do
     it "handles a JSON request body" do
-      gql.schema.add_query("ping", type: "String") { |_r, _a, _c| "pong" }
+      gql.schema.add_query("ping", {}, "String") { |_r, _a, _c| "pong" }
       body = JSON.generate({ "query" => "{ ping }" })
       result = gql.handle_request(body)
       expect(result["data"]["ping"]).to eq("pong")

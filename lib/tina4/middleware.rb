@@ -16,6 +16,11 @@ module Tina4
         @global_middleware ||= []
       end
 
+      # Parity alias matching Python/PHP/Node orchestrators.
+      def get_global
+        global_middleware.dup
+      end
+
       def before(pattern = nil, &block)
         before_handlers << { pattern: pattern, handler: block }
       end
@@ -37,9 +42,13 @@ module Tina4
       end
 
       # Run all "before" hooks: block-based handlers, then class-based before_* methods.
+      #
+      # Signature matches Python/PHP/Node orchestrators: pass the list of
+      # middleware classes explicitly.
+      #
       # Returns [request, response] on success, or false to halt the request.
-      def run_before(request, response)
-        # 1. Block-based before handlers (backward compat)
+      def run_before(middleware_classes, request, response)
+        # 1. Block-based before handlers (pattern-matched)
         before_handlers.each do |entry|
           next unless matches_pattern?(request.path, entry[:pattern])
           result = entry[:handler].call(request, response)
@@ -47,7 +56,7 @@ module Tina4
         end
 
         # 2. Class-based middleware: call every before_* method
-        global_middleware.each do |klass|
+        middleware_classes.each do |klass|
           before_methods_for(klass).each do |method_name|
             result = klass.send(method_name, request, response)
             # Support returning [request, response] (Python convention) or false to halt
@@ -65,15 +74,18 @@ module Tina4
       end
 
       # Run all "after" hooks: block-based handlers, then class-based after_* methods.
-      def run_after(request, response)
-        # 1. Block-based after handlers (backward compat)
+      #
+      # Signature matches Python/PHP/Node orchestrators: pass the list of
+      # middleware classes explicitly.
+      def run_after(middleware_classes, request, response)
+        # 1. Block-based after handlers (pattern-matched)
         after_handlers.each do |entry|
           next unless matches_pattern?(request.path, entry[:pattern])
           entry[:handler].call(request, response)
         end
 
         # 2. Class-based middleware: call every after_* method
-        global_middleware.each do |klass|
+        middleware_classes.each do |klass|
           after_methods_for(klass).each do |method_name|
             result = klass.send(method_name, request, response)
             if result.is_a?(Array) && result.length == 2

@@ -64,6 +64,27 @@ module Tina4
         value
       end
 
+      def set_locale(locale)
+        self.current_locale = locale.to_s
+      end
+
+      def get_locale
+        current_locale
+      end
+
+      def translate(key, params: nil, locale: nil)
+        t(key, locale: locale, **(params || {}))
+      end
+
+      def load_translations(locale)
+        load(Dir.pwd) if translations.empty?
+        translations[locale.to_s] || {}
+      end
+
+      def add_translation(locale, key, value)
+        add(locale, key, value)
+      end
+
       def add(locale, key, value)
         translations[locale.to_s] ||= {}
         keys = key.to_s.split(".")

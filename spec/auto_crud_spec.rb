@@ -46,35 +46,35 @@ RSpec.describe Tina4::AutoCrud do
     end
 
     it "creates GET list route" do
-      route, _ = Tina4::Router.find_route("/api/cruditems", "GET")
+      route, _ = Tina4::Router.match("GET", "/api/cruditems")
       expect(route).not_to be_nil
     end
 
     it "creates GET single route" do
-      route, params = Tina4::Router.find_route("/api/cruditems/1", "GET")
+      route, params = Tina4::Router.match("GET", "/api/cruditems/1")
       expect(route).not_to be_nil
       expect(params[:id]).to eq("1")
     end
 
     it "creates POST route" do
-      route, _ = Tina4::Router.find_route("/api/cruditems", "POST")
+      route, _ = Tina4::Router.match("POST", "/api/cruditems")
       expect(route).not_to be_nil
     end
 
     it "creates PUT route" do
-      route, _ = Tina4::Router.find_route("/api/cruditems/1", "PUT")
+      route, _ = Tina4::Router.match("PUT", "/api/cruditems/1")
       expect(route).not_to be_nil
     end
 
     it "creates DELETE route" do
-      route, _ = Tina4::Router.find_route("/api/cruditems/1", "DELETE")
+      route, _ = Tina4::Router.match("DELETE", "/api/cruditems/1")
       expect(route).not_to be_nil
     end
 
     it "supports custom prefix" do
       Tina4::Router.clear!
       Tina4::AutoCrud.generate_routes_for(CrudItem, prefix: "/v2/api")
-      route, _ = Tina4::Router.find_route("/v2/api/cruditems", "GET")
+      route, _ = Tina4::Router.match("GET", "/v2/api/cruditems")
       expect(route).not_to be_nil
     end
   end
@@ -88,7 +88,7 @@ RSpec.describe Tina4::AutoCrud do
     end
 
     it "list endpoint returns records" do
-      route, params = Tina4::Router.find_route("/api/cruditems", "GET")
+      route, params = Tina4::Router.match("GET", "/api/cruditems")
       env = {
         "REQUEST_METHOD" => "GET",
         "PATH_INFO" => "/api/cruditems",
@@ -107,7 +107,7 @@ RSpec.describe Tina4::AutoCrud do
 
     it "single endpoint returns one record" do
       item = CrudItem.all.first
-      route, params = Tina4::Router.find_route("/api/cruditems/#{item.id}", "GET")
+      route, params = Tina4::Router.match("GET", "/api/cruditems/#{item.id}")
       env = {
         "REQUEST_METHOD" => "GET",
         "PATH_INFO" => "/api/cruditems/#{item.id}",
@@ -124,7 +124,7 @@ RSpec.describe Tina4::AutoCrud do
     end
 
     it "single endpoint returns 404 for missing record" do
-      route, params = Tina4::Router.find_route("/api/cruditems/9999", "GET")
+      route, params = Tina4::Router.match("GET", "/api/cruditems/9999")
       env = {
         "REQUEST_METHOD" => "GET",
         "PATH_INFO" => "/api/cruditems/9999",
@@ -140,7 +140,7 @@ RSpec.describe Tina4::AutoCrud do
     end
 
     it "create endpoint inserts a record" do
-      route, params = Tina4::Router.find_route("/api/cruditems", "POST")
+      route, params = Tina4::Router.match("POST", "/api/cruditems")
       json_body = '{"name":"NewItem","price":300}'
       env = {
         "REQUEST_METHOD" => "POST",
@@ -160,7 +160,7 @@ RSpec.describe Tina4::AutoCrud do
 
     it "delete endpoint removes a record" do
       item = CrudItem.all.first
-      route, params = Tina4::Router.find_route("/api/cruditems/#{item.id}", "DELETE")
+      route, params = Tina4::Router.match("DELETE", "/api/cruditems/#{item.id}")
       env = {
         "REQUEST_METHOD" => "DELETE",
         "PATH_INFO" => "/api/cruditems/#{item.id}",
@@ -182,7 +182,7 @@ RSpec.describe Tina4::AutoCrud do
     it "generates routes for all registered models" do
       Tina4::AutoCrud.register(CrudItem)
       Tina4::AutoCrud.generate_routes
-      route, _ = Tina4::Router.find_route("/api/cruditems", "GET")
+      route, _ = Tina4::Router.match("GET", "/api/cruditems")
       expect(route).not_to be_nil
     end
   end

@@ -108,10 +108,44 @@ module Tina4
       @id
     end
 
+    # Start or resume a session. If session_id is given, load that session;
+    # otherwise generate a new ID. Returns the session ID string.
+    def start(session_id = nil)
+      if session_id
+        @id = session_id
+        @data = load_session
+      else
+        @id = SecureRandom.hex(32)
+        @data = {}
+      end
+      @modified = false
+      @id
+    end
+
+    # Returns the current session ID string.
+    def get_session_id
+      @id
+    end
+
+    # Reads raw session data for a given session ID from backend storage.
+    # Returns the data hash or nil.
+    def read(session_id)
+      @handler.read(session_id)
+    end
+
+    # Writes raw session data for a given session ID to backend storage.
+    def write(session_id, data, ttl = nil)
+      if ttl
+        @handler.write(session_id, data, ttl)
+      else
+        @handler.write(session_id, data)
+      end
+    end
+
     # Garbage collection: remove expired sessions from the handler
-    def gc(max_age = nil)
-      max_age ||= @options[:max_age]
-      @handler.gc(max_age) if @handler.respond_to?(:gc)
+    def gc(max_lifetime = nil)
+      max_lifetime ||= @options[:max_age]
+      @handler.gc(max_lifetime) if @handler.respond_to?(:gc)
     end
 
     def cookie_header(cookie_name = nil)
@@ -219,9 +253,29 @@ module Tina4
       @session.regenerate
     end
 
-    def gc(max_age = nil)
+    def gc(max_lifetime = nil)
       ensure_loaded
-      @session.gc(max_age)
+      @session.gc(max_lifetime)
+    end
+
+    def start(session_id = nil)
+      ensure_loaded
+      @session.start(session_id)
+    end
+
+    def get_session_id
+      ensure_loaded
+      @session.get_session_id
+    end
+
+    def read(session_id)
+      ensure_loaded
+      @session.read(session_id)
+    end
+
+    def write(session_id, data, ttl = nil)
+      ensure_loaded
+      @session.write(session_id, data, ttl)
     end
 
     def cookie_header(cookie_name = nil)

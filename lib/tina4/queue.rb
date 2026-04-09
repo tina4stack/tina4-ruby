@@ -67,34 +67,37 @@ module Tina4
       @backend.failed(@topic, max_retries: @max_retries)
     end
 
-    # Retry failed jobs on this queue's topic. Returns true if re-queued.
-    def retry(delay_seconds = 0) # -> bool
+    # Retry a specific failed job by ID, or all dead-letter jobs if no id given.
+    # Returns true if re-queued.
+    def retry(job_id = nil, delay_seconds: 0) # -> bool
       return false unless @backend.respond_to?(:retry_job)
-      @backend.retry_job(@topic, delay_seconds: delay_seconds)
+      @backend.retry_job(@topic, job_id: job_id, delay_seconds: delay_seconds)
     end
 
     # Get dead letter jobs — messages that exceeded max retries.
-    def dead_letters # -> list[dict]
+    # Pass max_retries to override the queue's default.
+    def dead_letters(max_retries: nil) # -> list[dict]
       return [] unless @backend.respond_to?(:dead_letters)
-      @backend.dead_letters(@topic, max_retries: @max_retries)
+      @backend.dead_letters(@topic, max_retries: max_retries || @max_retries)
     end
 
     # Delete messages by status (completed, failed, dead).
-    def purge(status) # -> int
+    def purge(status, max_retries: nil) # -> int
       return 0 unless @backend.respond_to?(:purge)
       @backend.purge(@topic, status)
     end
 
     # Re-queue failed messages (under max_retries) back to pending.
     # Returns the number of jobs re-queued.
-    def retry_failed # -> int
+    def retry_failed(max_retries: nil) # -> int
       return 0 unless @backend.respond_to?(:retry_failed)
-      @backend.retry_failed(@topic, max_retries: @max_retries)
+      @backend.retry_failed(@topic, max_retries: max_retries || @max_retries)
     end
 
     # Produce a message onto a topic. Convenience wrapper around push().
-    def produce(topic, payload, priority = 0)
-      message = Job.new(topic: topic, payload: payload, priority: priority, queue: self)
+    def produce(topic, payload, priority: 0, delay_seconds: 0)
+      available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
+      message = Job.new(topic: topic, payload: payload, priority: priority, available_at: available_at, queue: self)
       @backend.enqueue(message)
       message
     end
