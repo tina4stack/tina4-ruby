@@ -178,6 +178,35 @@ module Tina4
       end
     end
 
+    # Get the topic name this queue was constructed with.
+    def get_topic
+      @topic
+    end
+
+    # Consume all available jobs and pass each to handler, then stop.
+    #
+    # Simpler alternative to consume() for drain-and-exit use cases.
+    #
+    #   queue.process { |job| handle(job); job.complete }
+    #   queue.process(topic: "emails", max_jobs: 10) { |job| ... }
+    #
+    def process(topic: nil, max_jobs: nil, &handler)
+      raise ArgumentError, "block required" unless block_given?
+      drain_topic = topic || @topic
+      processed = 0
+      loop do
+        break if max_jobs && processed >= max_jobs
+        job = @backend.dequeue(drain_topic)
+        break if job.nil?
+        begin
+          handler.call(job)
+        rescue => e
+          job.fail(e.message)
+        end
+        processed += 1
+      end
+    end
+
     # Get the underlying backend instance.
     def backend
       @backend

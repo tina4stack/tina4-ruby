@@ -209,6 +209,11 @@ module Tina4
         @ws_routes ||= []
       end
 
+      # Parity alias — returns all registered WebSocket routes.
+      def get_web_socket_routes
+        ws_routes
+      end
+
       # Register a WebSocket route.
       # The handler block receives (connection, event, data) where:
       #   connection — WebSocketConnection with #send, #broadcast, #close, #params
