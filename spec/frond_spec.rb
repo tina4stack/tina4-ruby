@@ -338,9 +338,52 @@ RSpec.describe Tina4::Frond do
       expect(engine.render_string("{{ name | default('Guest') }}", { "name" => "Alice" })).to eq("Alice")
     end
 
-    it "dump" do
-      result = engine.render_string("{{ val | dump | raw }}", { "val" => 42 })
-      expect(result).to eq("42")
+    it "dump (debug mode)" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "true"
+      begin
+        result = engine.render_string("{{ val | dump | raw }}", { "val" => 42 })
+        expect(result).to eq("<pre>42</pre>")
+      ensure
+        ENV["TINA4_DEBUG"] = prev
+      end
+    end
+
+    it "dump (production mode suppresses output)" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "false"
+      begin
+        result = engine.render_string("{{ val | dump | raw }}", { "val" => { "secret" => "hunter2" } })
+        expect(result).to eq("")
+      ensure
+        ENV["TINA4_DEBUG"] = prev
+      end
+    end
+
+    it "dump() function form matches filter form (debug mode)" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "true"
+      begin
+        data = { "val" => { "a" => 1, "b" => "hi" } }
+        filter_out = engine.render_string("{{ val | dump | raw }}", data)
+        fn_out = engine.render_string("{{ dump(val) | raw }}", data)
+        expect(fn_out).to eq(filter_out)
+        expect(fn_out).to include("<pre>")
+        expect(fn_out).to include("&quot;a&quot;")
+      ensure
+        ENV["TINA4_DEBUG"] = prev
+      end
+    end
+
+    it "dump() function silent in production" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "false"
+      begin
+        result = engine.render_string("{{ dump(val) | raw }}", { "val" => { "secret" => "x" } })
+        expect(result).to eq("")
+      ensure
+        ENV["TINA4_DEBUG"] = prev
+      end
     end
 
     it "string" do

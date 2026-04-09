@@ -1842,7 +1842,10 @@ module Tina4
 
         # -- Utility --
         "default"  => ->(v, *a) { (v.nil? || v.to_s.empty?) ? (a[0] || "") : v },
-        "dump"     => ->(v, *_a) { v.inspect },
+        # dump filter — gated on TINA4_DEBUG=true via Frond.render_dump.
+        # Both the |dump filter and the dump() global delegate to the same
+        # helper so they produce identical output and obey the same gating.
+        "dump"     => ->(v, *_a) { Frond.render_dump(v) },
         "string"   => ->(v, *_a) { v.to_s },
         "truncate" => ->(v, *a) {
           len = a[0] ? a[0].to_i : 50
@@ -1886,6 +1889,32 @@ module Tina4
       @globals["form_token"] = ->(descriptor = "") { Frond.generate_form_token(descriptor.to_s) }
       @globals["formTokenValue"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
       @globals["form_token_value"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
+
+      # Debug helper: {{ dump(x) }} — gated on TINA4_DEBUG=true.
+      # Both this global and the |dump filter call Frond.render_dump which
+      # returns an empty SafeString in production so dump never leaks state.
+      @globals["dump"] = ->(value = nil) { Frond.render_dump(value) }
+    end
+
+    # Render a value as a pre-formatted inspect() wrapped in <pre> tags.
+    #
+    # Gated on TINA4_DEBUG=true. In production (TINA4_DEBUG unset or false)
+    # this returns an empty SafeString to avoid leaking internal state,
+    # object shapes, or sensitive values into rendered HTML.
+    #
+    # Shared by the {{ value|dump }} filter and the {{ dump(value) }}
+    # global function so both produce identical output and obey the same
+    # gating.
+    def self.render_dump(value)
+      return SafeString.new("") unless ENV.fetch("TINA4_DEBUG", "").downcase == "true"
+
+      dumped = value.inspect
+      escaped = dumped
+        .gsub("&", "&amp;")
+        .gsub("<", "&lt;")
+        .gsub(">", "&gt;")
+        .gsub('"', "&quot;")
+      SafeString.new("<pre>#{escaped}</pre>")
     end
 
     # Generate a JWT form token and return a hidden input element.
