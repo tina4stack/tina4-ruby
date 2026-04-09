@@ -61,18 +61,18 @@ module Tina4
     end
 
     # Create a new migration file
-    def create(name)
+    def create(description)
       FileUtils.mkdir_p(@migrations_dir)
       timestamp = Time.now.strftime("%Y%m%d%H%M%S")
-      filename = "#{timestamp}_#{name.gsub(/\s+/, '_')}.rb"
+      filename = "#{timestamp}_#{description.gsub(/\s+/, '_')}.rb"
       filepath = File.join(@migrations_dir, filename)
 
       File.write(filepath, <<~RUBY)
         # frozen_string_literal: true
-        # Migration: #{name}
+        # Migration: #{description}
         # Created: #{Time.now}
 
-        class #{classify(name)} < Tina4::MigrationBase
+        class #{classify(description)} < Tina4::MigrationBase
           def up(db)
             # db.exec("CREATE TABLE ...")
           end
