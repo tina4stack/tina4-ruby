@@ -65,7 +65,7 @@ module Tina4
     # kind="ruby"   — creates {timestamp}_{description}.rb with MigrationBase subclass (default)
     # kind="sql"    — creates {timestamp}_{description}.sql + .down.sql
     # kind="python" — alias for "ruby" (class-based scaffold for cross-framework parity)
-    def create(description, kind = "ruby")
+    def create(description, kind = "sql")
       FileUtils.mkdir_p(@migrations_dir)
       timestamp = Time.now.strftime("%Y%m%d%H%M%S")
       created_at = Time.now.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -81,11 +81,11 @@ module Tina4
           # Created: #{created_at}
 
           class #{classify(description)} < Tina4::MigrationBase
-            def up(db)
+            def up(db = nil)
               # db.execute("CREATE TABLE ...")
             end
 
-            def down(db)
+            def down(db = nil)
               # db.execute("DROP TABLE IF EXISTS ...")
             end
           end
@@ -440,11 +440,11 @@ module Tina4
 
   # Base class for Ruby migrations
   class MigrationBase
-    def up(db)
+    def up(db = nil)
       raise NotImplementedError, "Implement #up in your migration"
     end
 
-    def down(db)
+    def down(db = nil)
       raise NotImplementedError, "Implement #down in your migration"
     end
   end

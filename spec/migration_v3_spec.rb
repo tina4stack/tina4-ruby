@@ -191,19 +191,20 @@ RSpec.describe "Migration v3 features" do
 
   describe "#create" do
     it "creates a Ruby migration file" do
-      filepath = migration.create("add_users_table")
+      filepath = migration.create("add_users_table", "ruby")
       expect(File.exist?(filepath)).to be true
       content = File.read(filepath)
       expect(content).to include("class AddUsersTable")
       expect(content).to include("< Tina4::MigrationBase")
-      expect(content).to include("def up(db)")
-      expect(content).to include("def down(db)")
+      expect(content).to include("def up(db = nil)")
+      expect(content).to include("def down(db = nil)")
     end
 
     it "uses timestamp in filename" do
       filepath = migration.create("test_migration")
       basename = File.basename(filepath)
-      expect(basename).to match(/\A\d{14}_test_migration\.rb\z/)
+      # Default kind is "sql" (parity with Python/PHP/Node)
+      expect(basename).to match(/\A\d{14}_test_migration\.sql\z/)
     end
   end
 
