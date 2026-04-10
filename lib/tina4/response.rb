@@ -152,20 +152,10 @@ module Tina4
     # Build a standard error envelope hash (class method).
     #
     # Usage:
-    #   response.json(Tina4::Response.error_envelope("NOT_FOUND", "Resource not found", 404), status: 404)
+    #   response.json(Tina4::Response.error_response("NOT_FOUND", "Resource not found", 404), status: 404)
     #
-    def self.error_envelope(code, message, status = 400)
-      { error: true, code: code, message: message, status: status }
-    end
-
-    # Static error response builder matching Python/PHP/Node API.
     def self.error_response(code, message, status = 400)
-      error_envelope(code, message, status)
-    end
-
-    # Alias for render — matches PHP/Node naming.
-    def template(template_path, data = {}, status: 200, template_dir: nil)
-      render(template_path, data, status: status, template_dir: template_dir)
+      { error: true, code: code, message: message, status: status }
     end
 
     # Chainable header setter

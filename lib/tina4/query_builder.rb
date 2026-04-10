@@ -5,7 +5,7 @@ module Tina4
   #
   # Usage:
   #   # Standalone
-  #   result = Tina4::QueryBuilder.from("users", db: db)
+  #   result = Tina4::QueryBuilder.from_table("users", db: db)
   #     .select("id", "name")
   #     .where("active = ?", [1])
   #     .order_by("name ASC")
@@ -39,7 +39,7 @@ module Tina4
     # @param table_name [String] The database table name.
     # @param db [Object, nil] Optional database connection.
     # @return [QueryBuilder]
-    def self.from(table_name, db: nil)
+    def self.from_table(table_name, db: nil)
       new(table_name, db: db)
     end
 

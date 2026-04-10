@@ -33,10 +33,6 @@ module Tina4
         File.exist?(File.join(File.expand_path(root), tool[:context_file]))
       end
 
-      def is_installed(root, tool)
-        installed?(root, tool)
-      end
-
       # Print the numbered menu and return user input.
       #
       # @param root [String] project root directory (default: ".")

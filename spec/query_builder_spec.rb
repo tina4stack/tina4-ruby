@@ -68,14 +68,14 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   # 1. .from() creates a QueryBuilder
   # ---------------------------------------------------------------------------
-  describe ".from" do
+  describe ".from_table" do
     it "returns a QueryBuilder instance" do
-      qb = Tina4::QueryBuilder.from("users", db: @db_shared)
+      qb = Tina4::QueryBuilder.from_table("users", db: @db_shared)
       expect(qb).to be_a(Tina4::QueryBuilder)
     end
 
     it "accepts a table name" do
-      qb = Tina4::QueryBuilder.from("users", db: @db_shared)
+      qb = Tina4::QueryBuilder.from_table("users", db: @db_shared)
       expect(qb.to_sql).to include("FROM users")
     end
   end
@@ -85,17 +85,17 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#select" do
     it "defaults to * when no columns specified" do
-      sql = Tina4::QueryBuilder.from("users").to_sql
+      sql = Tina4::QueryBuilder.from_table("users").to_sql
       expect(sql).to eq("SELECT * FROM users")
     end
 
     it "sets specific columns" do
-      sql = Tina4::QueryBuilder.from("users").select("id", "name").to_sql
+      sql = Tina4::QueryBuilder.from_table("users").select("id", "name").to_sql
       expect(sql).to eq("SELECT id, name FROM users")
     end
 
     it "keeps * when called with no arguments" do
-      sql = Tina4::QueryBuilder.from("users").select.to_sql
+      sql = Tina4::QueryBuilder.from_table("users").select.to_sql
       expect(sql).to eq("SELECT * FROM users")
     end
   end
@@ -105,12 +105,12 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#where" do
     it "adds a single WHERE condition" do
-      sql = Tina4::QueryBuilder.from("users").where("active = ?", [1]).to_sql
+      sql = Tina4::QueryBuilder.from_table("users").where("active = ?", [1]).to_sql
       expect(sql).to eq("SELECT * FROM users WHERE active = ?")
     end
 
     it "chains multiple WHERE conditions with AND" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .where("active = ?", [1])
               .where("age > ?", [18])
               .to_sql
@@ -123,7 +123,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#or_where" do
     it "adds an OR condition after a WHERE" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .where("active = ?", [1])
               .or_where("age < ?", [25])
               .to_sql
@@ -131,7 +131,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "uses OR as the first condition connector (first connector ignored)" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .or_where("name = ?", ["Alice"])
               .to_sql
       # First condition drops the connector
@@ -144,7 +144,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#join" do
     it "adds an INNER JOIN clause" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .join("orders", "orders.user_id = users.id")
               .to_sql
       expect(sql).to include("INNER JOIN orders ON orders.user_id = users.id")
@@ -156,7 +156,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#left_join" do
     it "adds a LEFT JOIN clause" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .left_join("orders", "orders.user_id = users.id")
               .to_sql
       expect(sql).to include("LEFT JOIN orders ON orders.user_id = users.id")
@@ -168,7 +168,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#group_by" do
     it "adds a GROUP BY clause" do
-      sql = Tina4::QueryBuilder.from("orders")
+      sql = Tina4::QueryBuilder.from_table("orders")
               .select("user_id", "COUNT(*) as order_count")
               .group_by("user_id")
               .to_sql
@@ -176,7 +176,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "supports multiple group_by calls" do
-      sql = Tina4::QueryBuilder.from("orders")
+      sql = Tina4::QueryBuilder.from_table("orders")
               .group_by("user_id")
               .group_by("status")
               .to_sql
@@ -189,7 +189,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#having" do
     it "adds a HAVING clause" do
-      sql = Tina4::QueryBuilder.from("orders")
+      sql = Tina4::QueryBuilder.from_table("orders")
               .select("user_id", "SUM(amount) as total")
               .group_by("user_id")
               .having("SUM(amount) > ?", [100])
@@ -198,7 +198,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "chains multiple HAVING clauses with AND" do
-      sql = Tina4::QueryBuilder.from("orders")
+      sql = Tina4::QueryBuilder.from_table("orders")
               .select("user_id", "SUM(amount) as total", "COUNT(*) as cnt")
               .group_by("user_id")
               .having("SUM(amount) > ?", [50])
@@ -213,12 +213,12 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#order_by" do
     it "adds an ORDER BY clause" do
-      sql = Tina4::QueryBuilder.from("users").order_by("name ASC").to_sql
+      sql = Tina4::QueryBuilder.from_table("users").order_by("name ASC").to_sql
       expect(sql).to include("ORDER BY name ASC")
     end
 
     it "supports multiple order_by calls" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .order_by("age DESC")
               .order_by("name ASC")
               .to_sql
@@ -231,13 +231,13 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#limit" do
     it "stores the limit value (used by get, not in to_sql)" do
-      qb = Tina4::QueryBuilder.from("users", db: @db_shared).limit(2)
+      qb = Tina4::QueryBuilder.from_table("users", db: @db_shared).limit(2)
       result = qb.get
       expect(result.records.length).to be <= 2
     end
 
     it "stores the offset value" do
-      qb = Tina4::QueryBuilder.from("users", db: @db_shared)
+      qb = Tina4::QueryBuilder.from_table("users", db: @db_shared)
              .order_by("id ASC")
              .limit(2, 1)
       result = qb.get
@@ -253,12 +253,12 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#to_sql" do
     it "generates a basic SELECT" do
-      sql = Tina4::QueryBuilder.from("users").to_sql
+      sql = Tina4::QueryBuilder.from_table("users").to_sql
       expect(sql).to eq("SELECT * FROM users")
     end
 
     it "generates SQL with all clauses combined" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .select("users.id", "users.name")
               .join("orders", "orders.user_id = users.id")
               .where("users.active = ?", [1])
@@ -276,7 +276,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "preserves clause ordering (JOIN, WHERE, GROUP BY, HAVING, ORDER BY)" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .join("orders", "orders.user_id = users.id")
               .where("active = ?", [1])
               .group_by("users.id")
@@ -302,52 +302,52 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "method chaining" do
     it "returns self from select" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.select("id")).to be(qb)
     end
 
     it "returns self from where" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.where("id = ?", [1])).to be(qb)
     end
 
     it "returns self from or_where" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.or_where("id = ?", [1])).to be(qb)
     end
 
     it "returns self from join" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.join("orders", "orders.user_id = users.id")).to be(qb)
     end
 
     it "returns self from left_join" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.left_join("orders", "orders.user_id = users.id")).to be(qb)
     end
 
     it "returns self from group_by" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.group_by("id")).to be(qb)
     end
 
     it "returns self from having" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.having("COUNT(*) > ?", [1])).to be(qb)
     end
 
     it "returns self from order_by" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.order_by("id")).to be(qb)
     end
 
     it "returns self from limit" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
       expect(qb.limit(10)).to be(qb)
     end
 
     it "supports full chained queries" do
-      qb = Tina4::QueryBuilder.from("users")
+      qb = Tina4::QueryBuilder.from_table("users")
              .select("id", "name")
              .where("active = ?", [1])
              .or_where("age > ?", [30])
@@ -366,24 +366,24 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#get" do
     it "returns a DatabaseResult" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared).get
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared).get
       expect(result).to be_a(Tina4::DatabaseResult)
     end
 
     it "returns all rows when no conditions" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared).get
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared).get
       expect(result.records.length).to eq(5)
     end
 
     it "filters rows with where" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .where("active = ?", [1])
                  .get
       expect(result.records.length).to eq(4)
     end
 
     it "respects select columns" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .select("name")
                  .limit(1)
                  .get
@@ -394,7 +394,7 @@ RSpec.describe Tina4::QueryBuilder do
 
     it "defaults limit to 100 when not set" do
       # With only 5 rows this just verifies no error
-      result = Tina4::QueryBuilder.from("users", db: @db_shared).get
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared).get
       expect(result.records.length).to eq(5)
     end
   end
@@ -404,7 +404,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#first" do
     it "returns a hash for an existing row" do
-      row = Tina4::QueryBuilder.from("users", db: @db_shared)
+      row = Tina4::QueryBuilder.from_table("users", db: @db_shared)
               .where("name = ?", ["Alice"])
               .first
       expect(row).to be_a(Hash)
@@ -412,7 +412,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "returns nil when no rows match" do
-      row = Tina4::QueryBuilder.from("users", db: @db_shared)
+      row = Tina4::QueryBuilder.from_table("users", db: @db_shared)
               .where("name = ?", ["NonExistent"])
               .first
       expect(row).to be_nil
@@ -424,24 +424,24 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#count" do
     it "returns the total count of rows" do
-      cnt = Tina4::QueryBuilder.from("users", db: @db_shared).count
+      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared).count
       expect(cnt).to eq(5)
     end
 
     it "returns count with where filter" do
-      cnt = Tina4::QueryBuilder.from("users", db: @db_shared)
+      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared)
               .where("active = ?", [0])
               .count
       expect(cnt).to eq(1)
     end
 
     it "returns an integer" do
-      cnt = Tina4::QueryBuilder.from("users", db: @db_shared).count
+      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared).count
       expect(cnt).to be_a(Integer)
     end
 
     it "returns 0 when no rows match" do
-      cnt = Tina4::QueryBuilder.from("users", db: @db_shared)
+      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared)
               .where("age > ?", [999])
               .count
       expect(cnt).to eq(0)
@@ -453,21 +453,21 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "#exists?" do
     it "returns true when rows match" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .where("name = ?", ["Alice"])
                  .exists?
       expect(result).to be true
     end
 
     it "returns false when no rows match" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .where("name = ?", ["Nobody"])
                  .exists?
       expect(result).to be false
     end
 
     it "returns a boolean value" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared).exists?
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared).exists?
       expect(result).to be(true).or be(false)
     end
   end
@@ -478,31 +478,31 @@ RSpec.describe Tina4::QueryBuilder do
   describe "no database connection" do
     it "raises an error on get without db" do
       expect {
-        Tina4::QueryBuilder.from("users").get
+        Tina4::QueryBuilder.from_table("users").get
       }.to raise_error(RuntimeError, /No database connection/)
     end
 
     it "raises an error on first without db" do
       expect {
-        Tina4::QueryBuilder.from("users").first
+        Tina4::QueryBuilder.from_table("users").first
       }.to raise_error(RuntimeError, /No database connection/)
     end
 
     it "raises an error on count without db" do
       expect {
-        Tina4::QueryBuilder.from("users").count
+        Tina4::QueryBuilder.from_table("users").count
       }.to raise_error(RuntimeError, /No database connection/)
     end
 
     it "raises an error on exists? without db" do
       expect {
-        Tina4::QueryBuilder.from("users").exists?
+        Tina4::QueryBuilder.from_table("users").exists?
       }.to raise_error(RuntimeError, /No database connection/)
     end
 
     it "does not raise on to_sql without db" do
       expect {
-        Tina4::QueryBuilder.from("users").to_sql
+        Tina4::QueryBuilder.from_table("users").to_sql
       }.not_to raise_error
     end
   end
@@ -512,7 +512,7 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "complex multi-clause query" do
     it "executes a query with join, where, group_by, having, and order_by" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .select("users.name", "SUM(orders.amount) as total_spent")
                  .join("orders", "orders.user_id = users.id")
                  .where("users.active = ?", [1])
@@ -531,7 +531,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "combines where and or_where correctly" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .where("age > ?", [30])
                  .or_where("name = ?", ["Eve"])
                  .get
@@ -543,7 +543,7 @@ RSpec.describe Tina4::QueryBuilder do
     end
 
     it "builds correct SQL for left join with all clauses" do
-      sql = Tina4::QueryBuilder.from("users")
+      sql = Tina4::QueryBuilder.from_table("users")
               .select("users.id", "users.name", "COUNT(orders.id) as order_count")
               .left_join("orders", "orders.user_id = users.id")
               .where("users.active = ?", [1])
@@ -570,28 +570,28 @@ RSpec.describe Tina4::QueryBuilder do
   # ---------------------------------------------------------------------------
   describe "empty results" do
     it "returns empty records from get when nothing matches" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .where("age > ?", [999])
                  .get
       expect(result.records).to be_empty
     end
 
     it "returns nil from first when nothing matches" do
-      row = Tina4::QueryBuilder.from("users", db: @db_shared)
+      row = Tina4::QueryBuilder.from_table("users", db: @db_shared)
               .where("age > ?", [999])
               .first
       expect(row).to be_nil
     end
 
     it "returns 0 from count when nothing matches" do
-      cnt = Tina4::QueryBuilder.from("users", db: @db_shared)
+      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared)
               .where("age > ?", [999])
               .count
       expect(cnt).to eq(0)
     end
 
     it "returns false from exists? when nothing matches" do
-      result = Tina4::QueryBuilder.from("users", db: @db_shared)
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
                  .where("age > ?", [999])
                  .exists?
       expect(result).to be false
@@ -599,7 +599,7 @@ RSpec.describe Tina4::QueryBuilder do
 
     it "returns empty for a table with no rows" do
       @db_shared.execute("CREATE TABLE IF NOT EXISTS empty_table (id INTEGER PRIMARY KEY)")
-      result = Tina4::QueryBuilder.from("empty_table", db: @db_shared).get
+      result = Tina4::QueryBuilder.from_table("empty_table", db: @db_shared).get
       expect(result.records).to be_empty
     end
   end

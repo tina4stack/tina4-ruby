@@ -124,7 +124,7 @@ module Tina4
       #
       # @return [Tina4::QueryBuilder]
       def query # -> QueryBuilder
-        QueryBuilder.from(table_name, db: db)
+        QueryBuilder.from_table(table_name, db: db)
       end
 
       # Find records by filter dict. Always returns an array.
