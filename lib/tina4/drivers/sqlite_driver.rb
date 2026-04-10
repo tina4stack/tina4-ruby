@@ -8,6 +8,10 @@ module Tina4
       def connect(connection_string, username: nil, password: nil)
         require "sqlite3"
         db_path = connection_string.sub(/^sqlite:\/\//, "").sub(/^sqlite:/, "")
+        # Windows: sqlite:///C:/Users/app.db → /C:/Users/app.db after stripping scheme.
+        # The leading / before the drive letter must be removed.
+        db_path = db_path[1..] if db_path.match?(/^\/[A-Za-z]:/)
+
         @connection = SQLite3::Database.new(db_path)
         @connection.results_as_hash = true
         @connection.execute("PRAGMA journal_mode=WAL")
