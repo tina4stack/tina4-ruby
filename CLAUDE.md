@@ -456,13 +456,13 @@ Tina4::Container.clear!                # remove all (useful in tests)
 
 ```ruby
 # Render a rich, syntax-highlighted HTML error page (Catppuccin Mocha theme)
-html = Tina4::ErrorOverlay.render(exception, request: rack_env)
+html = Tina4::ErrorOverlay.render_error_overlay(exception, request: rack_env)
 
 # Render a safe, generic error page for production
-html = Tina4::ErrorOverlay.render_production(status_code: 500, message: "Internal Server Error")
+html = Tina4::ErrorOverlay.render_production_error(status_code: 500, message: "Internal Server Error")
 
 # Check if the overlay should be shown (TINA4_DEBUG = true)
-Tina4::ErrorOverlay.debug_mode?  # -> Boolean
+Tina4::ErrorOverlay.is_debug_mode  # -> Boolean
 ```
 
 ### HtmlElement — Programmatic HTML builder
