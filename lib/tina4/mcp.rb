@@ -215,7 +215,7 @@ module Tina4
     end
 
     # Register HTTP routes for this MCP server on the Tina4 router.
-    def register_routes
+    def register_routes(router = nil)
       server   = self
       msg_path = "#{@path}/message"
       sse_path = "#{@path}/sse"

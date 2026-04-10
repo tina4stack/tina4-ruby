@@ -158,6 +158,16 @@ module Tina4
       { error: true, code: code, message: message, status: status }
     end
 
+    # Static error response builder matching Python/PHP/Node API.
+    def self.error_response(code, message, status = 400)
+      error_envelope(code, message, status)
+    end
+
+    # Alias for render — matches PHP/Node naming.
+    def template(template_path, data = {}, status: 200, template_dir: nil)
+      render(template_path, data, status: status, template_dir: template_dir)
+    end
+
     # Chainable header setter
     def header(name, value = nil)
       if value.nil?
@@ -231,8 +241,17 @@ module Tina4
       self
     end
 
-    # Flush / finalize -- alias for to_rack for semantic clarity
-    def send
+    # Finalize and return the response — matches Python/Node API.
+    def send(data = nil, status_code: nil, content_type: nil)
+      if data
+        if data.is_a?(Hash) || data.is_a?(Array)
+          return json(data, status_code || 200)
+        end
+        @headers["content-type"] = content_type if content_type
+        @body = data.to_s
+        @status_code = status_code if status_code
+        return self
+      end
       to_rack
     end
 

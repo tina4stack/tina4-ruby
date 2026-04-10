@@ -59,6 +59,14 @@ module Tina4
         @mutex.synchronize { @request_id }
       end
 
+      def configure(root_dir = Dir.pwd)
+        setup(root_dir)
+      end
+
+      def get_request_id
+        request_id
+      end
+
       def json_mode?
         @json_mode
       end

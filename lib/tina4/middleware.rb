@@ -156,6 +156,12 @@ module Tina4
         }
       end
 
+      def is_preflight(request)
+        request.method&.upcase == "OPTIONS" &&
+          request.headers["origin"] &&
+          request.headers["access-control-request-method"]
+      end
+
       def resolve_origin(request, config)
         request_origin = request.headers["origin"] || request.headers["referer"]
 
@@ -217,6 +223,28 @@ module Tina4
         end
 
         [request, response]
+      end
+
+      def check(ip)
+        limit  = (ENV["TINA4_RATE_LIMIT"]  || 100).to_i
+        window = (ENV["TINA4_RATE_WINDOW"] || 60).to_i
+        now = Time.now
+
+        @mutex.synchronize do
+          @store[ip] ||= []
+          entries = @store[ip]
+          entries.reject! { |t| t < now - window }
+
+          remaining = [limit - entries.length, 0].max
+          reset_at  = entries.empty? ? window : (entries.first + window - now).ceil
+
+          if entries.length >= limit
+            return [false, { limit: limit, remaining: 0, reset: reset_at, window: window }]
+          end
+
+          entries << now
+          [true, { limit: limit, remaining: remaining - 1, reset: window, window: window }]
+        end
       end
 
       # Allow resetting state (useful in tests)
