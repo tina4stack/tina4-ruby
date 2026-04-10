@@ -5,7 +5,7 @@ require "spec_helper"
 RSpec.describe Tina4::RateLimiter do
   let(:limiter) { Tina4::RateLimiter.new(limit: 5, window: 10) }
 
-  after { limiter.reset! }
+  after { limiter.reset }
 
   describe "#check" do
     it "allows requests under the limit" do
@@ -80,10 +80,10 @@ RSpec.describe Tina4::RateLimiter do
     end
   end
 
-  describe "#reset!" do
+  describe "#reset" do
     it "resets tracking for a specific IP" do
       5.times { limiter.check("10.0.0.1") }
-      limiter.reset!("10.0.0.1")
+      limiter.reset("10.0.0.1")
 
       result = limiter.check("10.0.0.1")
       expect(result[:allowed]).to be true
@@ -93,7 +93,7 @@ RSpec.describe Tina4::RateLimiter do
     it "resets all tracking when called without args" do
       3.times { limiter.check("10.0.0.1") }
       3.times { limiter.check("10.0.0.2") }
-      limiter.reset!
+      limiter.reset
 
       expect(limiter.entry_count).to eq(0)
     end

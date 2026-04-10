@@ -120,7 +120,7 @@ module Tina4
       color = is_tty ? "\e[31m" : ""
       reset = is_tty ? "\e[0m" : ""
 
-      is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+      is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
       log_level = (ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]").upcase
       display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
 
@@ -161,7 +161,7 @@ module Tina4
       Tina4::Env.load_env(root_dir)
 
       # Setup debug logging
-      Tina4::Log.setup(root_dir)
+      Tina4::Log.configure(root_dir)
       Tina4::Log.info("Tina4 Ruby v#{VERSION} initializing...")
 
       # Setup auth keys
@@ -240,7 +240,7 @@ module Tina4
       url = "http://#{display_host}:#{port}"
 
       app = Tina4::RackApp.new(root_dir: root_dir)
-      is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+      is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
       # Try Puma first (production-grade), fall back to WEBrick
       if !is_debug
@@ -390,7 +390,7 @@ module Tina4
       Tina4::Container.singleton(name, &block)
     end
 
-    def get(name)
+    def resolve(name)
       Tina4::Container.get(name)
     end
 

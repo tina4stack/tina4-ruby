@@ -198,6 +198,87 @@ RSpec.describe Tina4::RequestInspector do
   end
 end
 
+RSpec.describe Tina4::ErrorTracker do
+  subject(:tracker) { Tina4::ErrorTracker.new }
+
+  after(:each) { tracker.reset! }
+
+  describe "#capture and #get" do
+    it "records an error" do
+      tracker.capture(error_type: "RuntimeError", message: "crash")
+      entries = tracker.get
+      expect(entries.size).to eq(1)
+      expect(entries.first[:error_type]).to eq("RuntimeError")
+    end
+
+    it "deduplicates same error" do
+      tracker.capture(error_type: "RuntimeError", message: "crash", file: "app.rb", line: 10)
+      tracker.capture(error_type: "RuntimeError", message: "crash", file: "app.rb", line: 10)
+      entries = tracker.get
+      expect(entries.size).to eq(1)
+      expect(entries.first[:count]).to eq(2)
+    end
+  end
+
+  describe "#resolve" do
+    it "marks an error as resolved" do
+      tracker.capture(error_type: "Error", message: "bug")
+      id = tracker.get.first[:id]
+      expect(tracker.resolve(id)).to be true
+      expect(tracker.get.first[:resolved]).to be true
+    end
+
+    it "returns false for nonexistent id" do
+      expect(tracker.resolve("nonexistent")).to be false
+    end
+  end
+
+  describe "#health" do
+    it "returns healthy when empty" do
+      h = tracker.health
+      expect(h[:healthy]).to be true
+      expect(h[:total]).to eq(0)
+    end
+
+    it "returns unhealthy with unresolved errors" do
+      tracker.capture(error_type: "Error", message: "one")
+      h = tracker.health
+      expect(h[:healthy]).to be false
+      expect(h[:unresolved]).to eq(1)
+    end
+  end
+
+  describe "#unresolved_count" do
+    it "counts unresolved errors" do
+      tracker.capture(error_type: "Error", message: "one", file: "a.rb", line: 1)
+      tracker.capture(error_type: "Error", message: "two", file: "b.rb", line: 2)
+      id = tracker.get.first[:id]
+      tracker.resolve(id)
+      expect(tracker.unresolved_count).to eq(1)
+    end
+  end
+
+  describe "#clear_all" do
+    it "removes all errors" do
+      tracker.capture(error_type: "Error", message: "one")
+      tracker.clear_all
+      expect(tracker.get).to be_empty
+    end
+  end
+
+  describe "#register" do
+    it "can be called without error" do
+      expect { tracker.register }.not_to raise_error
+    end
+
+    it "is safe to call multiple times" do
+      tracker.register
+      tracker.register
+      # No error raised
+    end
+  end
+end
+
 RSpec.describe Tina4::DevAdmin do
   before(:each) do
     # Reset singleton state

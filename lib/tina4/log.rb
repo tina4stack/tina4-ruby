@@ -30,7 +30,7 @@ module Tina4
     class << self
       attr_reader :log_dir
 
-      def setup(root_dir = Dir.pwd)
+      def configure(root_dir = Dir.pwd)
         @log_dir = File.join(root_dir, "logs")
         FileUtils.mkdir_p(@log_dir)
 
@@ -55,7 +55,7 @@ module Tina4
         @mutex.synchronize { @request_id = nil }
       end
 
-      def request_id
+      def get_request_id
         @mutex.synchronize { @request_id }
       end
 
@@ -87,7 +87,7 @@ module Tina4
       end
 
       def log(level, message, context = {})
-        setup unless @initialized
+        configure unless @initialized
         @current_context = context.is_a?(Hash) ? context : {}
 
         formatted = format_line(level, message)
@@ -135,7 +135,7 @@ module Tina4
       def format_line(level, message)
         level_str = severity_to_level(level)
         ts = utc_timestamp
-        rid = request_id
+        rid = get_request_id
         rid_str = rid ? " [#{rid}]" : ""
         ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
         "#{ts} [#{level_str.ljust(7)}]#{rid_str} #{message}#{ctx}"
@@ -148,7 +148,7 @@ module Tina4
           level: level_str,
           message: message
         }
-        rid = request_id
+        rid = get_request_id
         entry[:request_id] = rid if rid
         entry[:context] = @current_context if @current_context && !@current_context.empty?
         JSON.generate(entry)

@@ -194,6 +194,31 @@ module Tina4
       []
     end
 
+    # Mark a message as read (set \Seen flag).
+    #
+    # @param uid [String, Integer] message UID
+    # @param folder [String] IMAP folder name
+    def mark_read(uid, folder: "INBOX")
+      imap_connect do |imap|
+        imap.select(folder)
+        imap.uid_store(uid.to_i, "+FLAGS", [:Seen])
+      end
+    rescue => e
+      Tina4::Log.error("IMAP mark_read failed: #{e.message}")
+    end
+
+    # Test IMAP connectivity without reading messages.
+    #
+    # @return [Hash] { success: Boolean, message: String }
+    def test_imap_connection
+      imap_connect do |_imap|
+        # Connection succeeded
+      end
+      { success: true, message: "Connected to #{@imap_host}:#{@imap_port}" }
+    rescue => e
+      { success: false, message: "IMAP connection failed: #{e.message}" }
+    end
+
     private
 
     # ── SMTP helpers ─────────────────────────────────────────────────────
@@ -515,7 +540,7 @@ module Tina4
   # Factory: returns a DevMailbox-intercepting messenger in dev mode,
   # or a real Messenger in production.
   def self.create_messenger(**options)
-    dev_mode = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+    dev_mode = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
     smtp_configured = (ENV["TINA4_MAIL_HOST"] && !ENV["TINA4_MAIL_HOST"].empty?) ||
                       (ENV["SMTP_HOST"] && !ENV["SMTP_HOST"].empty?)

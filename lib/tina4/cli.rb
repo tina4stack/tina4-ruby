@@ -204,7 +204,7 @@ module Tina4
 
       app = Tina4::RackApp.new(root_dir: root_dir)
 
-      is_debug = Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+      is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
       # Use Puma only when explicitly requested via --production flag
       # WEBrick is used for development (supports dev toolbar/reload)

@@ -6,7 +6,37 @@ module Tina4
     SCSS_DIRS = %w[src/scss scss src/styles styles].freeze
     CSS_OUTPUT = "public/css"
 
+    # Module-level state for import paths and variables
+    @import_paths = []
+    @variables = {}
+
     class << self
+      # Add a search path for @import resolution.
+      def add_import_path(path)
+        @import_paths ||= []
+        @import_paths << path
+      end
+
+      # Set a variable that will be available during compilation.
+      def set_variable(name, value)
+        @variables ||= {}
+        name = name.sub(/^\$/, "")
+        @variables[name] = value
+      end
+
+      # Compile an SCSS string to CSS.
+      def compile(source)
+        @variables ||= {}
+        @import_paths ||= []
+        # Inject preset variables
+        unless @variables.empty?
+          var_block = @variables.map { |k, v| "$#{k}: #{v};" }.join("\n")
+          source = "#{var_block}\n#{source}"
+        end
+        basic_compile(source, @import_paths.first || Dir.pwd)
+      end
+
+      # Compile all .scss files from known directories.
       def compile_all(root_dir = Dir.pwd)
         output_dir = File.join(root_dir, CSS_OUTPUT)
         FileUtils.mkdir_p(output_dir)
@@ -22,20 +52,28 @@ module Tina4
         end
       end
 
-      def compile_file(scss_file, output_dir, base_dir)
-        relative = scss_file.sub(base_dir, "").sub(/\.scss$/, ".css")
-        css_file = File.join(output_dir, relative)
-        FileUtils.mkdir_p(File.dirname(css_file))
-
+      # Compile a single SCSS file. If output_dir is provided, writes CSS there.
+      # Always returns the compiled CSS string.
+      def compile_file(scss_file, output_dir = nil, base_dir = nil)
+        base_dir ||= File.dirname(scss_file)
         scss_content = File.read(scss_file)
         css_content = compile_scss(scss_content, File.dirname(scss_file))
-        File.write(css_file, css_content)
 
-        Tina4::Log.debug("Compiled SCSS: #{scss_file} -> #{css_file}")
+        if output_dir
+          relative = scss_file.sub(base_dir, "").sub(/\.scss$/, ".css")
+          css_file = File.join(output_dir, relative)
+          FileUtils.mkdir_p(File.dirname(css_file))
+          File.write(css_file, css_content)
+          Tina4::Log.debug("Compiled SCSS: #{scss_file} -> #{css_file}")
+        end
+
+        css_content
       rescue => e
         Tina4::Log.error("SCSS compilation failed: #{scss_file} - #{e.message}")
+        ""
       end
 
+      # Compile an SCSS content string with a base directory for import resolution.
       def compile_scss(content, base_dir)
         # Try sassc gem first
         begin
@@ -84,6 +122,12 @@ module Tina4
             File.join(base_dir, "_#{import_path}.scss"),
             File.join(base_dir, import_path)
           ]
+          # Also search additional import paths
+          (@import_paths || []).each do |search_path|
+            candidates << File.join(search_path, "#{import_path}.scss")
+            candidates << File.join(search_path, "_#{import_path}.scss")
+            candidates << File.join(search_path, import_path)
+          end
           found = candidates.find { |c| File.exist?(c) }
           if found
             imported = File.read(found)

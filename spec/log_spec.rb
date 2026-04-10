@@ -9,19 +9,19 @@ RSpec.describe Tina4::Log do
 
   describe ".setup" do
     it "creates the logs directory" do
-      Tina4::Log.setup(tmpdir)
+      Tina4::Log.configure(tmpdir)
       expect(Dir.exist?(File.join(tmpdir, "logs"))).to be true
     end
 
     it "creates tina4.log file" do
-      Tina4::Log.setup(tmpdir)
+      Tina4::Log.configure(tmpdir)
       Tina4::Log.info("test message")
       expect(File.exist?(File.join(tmpdir, "logs", "tina4.log"))).to be true
     end
   end
 
   describe "logging methods" do
-    before { Tina4::Log.setup(tmpdir) }
+    before { Tina4::Log.configure(tmpdir) }
 
     it "responds to .info" do
       expect(Tina4::Log).to respond_to(:info)
@@ -48,18 +48,18 @@ RSpec.describe Tina4::Log do
   end
 
   describe "request ID support" do
-    before { Tina4::Log.setup(tmpdir) }
+    before { Tina4::Log.configure(tmpdir) }
     after { Tina4::Log.clear_request_id }
 
     it "sets and retrieves request_id" do
       Tina4::Log.set_request_id("req-abc-123")
-      expect(Tina4::Log.request_id).to eq("req-abc-123")
+      expect(Tina4::Log.get_request_id).to eq("req-abc-123")
     end
 
     it "clears request_id" do
       Tina4::Log.set_request_id("req-abc-123")
       Tina4::Log.clear_request_id
-      expect(Tina4::Log.request_id).to be_nil
+      expect(Tina4::Log.get_request_id).to be_nil
     end
 
     it "includes request_id in log file output" do
@@ -74,7 +74,7 @@ RSpec.describe Tina4::Log do
   describe "JSON mode" do
     before do
       ENV["TINA4_ENV"] = "production"
-      Tina4::Log.setup(tmpdir)
+      Tina4::Log.configure(tmpdir)
     end
 
     after do
@@ -97,7 +97,7 @@ RSpec.describe Tina4::Log do
   describe "text mode (development)" do
     before do
       ENV.delete("TINA4_ENV")
-      Tina4::Log.setup(tmpdir)
+      Tina4::Log.configure(tmpdir)
     end
 
     it "does not activate JSON mode in development" do
@@ -114,7 +114,7 @@ RSpec.describe Tina4::Log do
       rotated = File.join(log_dir, "tina4.log.1")
       File.write(rotated, "old log data\n" * 100)
 
-      Tina4::Log.setup(tmpdir)
+      Tina4::Log.configure(tmpdir)
 
       # The rotated file should still exist (compression not implemented)
       expect(File.exist?(rotated)).to be true
@@ -124,7 +124,7 @@ RSpec.describe Tina4::Log do
   # ── Log Level Filtering Tests ──────────────────────────────────
 
   describe "log level filtering" do
-    before { Tina4::Log.setup(tmpdir) }
+    before { Tina4::Log.configure(tmpdir) }
 
     it "info level is higher than debug" do
       # Info messages should always be logged
@@ -155,7 +155,7 @@ RSpec.describe Tina4::Log do
   # ── Log File Content Tests ─────────────────────────────────────
 
   describe "log file content" do
-    before { Tina4::Log.setup(tmpdir) }
+    before { Tina4::Log.configure(tmpdir) }
 
     it "includes timestamp in log entries" do
       Tina4::Log.info("timestamp test")
@@ -183,7 +183,7 @@ RSpec.describe Tina4::Log do
   # ── Context Data Tests ─────────────────────────────────────────
 
   describe "context data in logs" do
-    before { Tina4::Log.setup(tmpdir) }
+    before { Tina4::Log.configure(tmpdir) }
     after { Tina4::Log.clear_request_id }
 
     it "logs with request_id context" do
@@ -215,13 +215,13 @@ RSpec.describe Tina4::Log do
     it "creates nested log directories" do
       nested_dir = File.join(tmpdir, "deep", "nested")
       FileUtils.mkdir_p(nested_dir)
-      Tina4::Log.setup(nested_dir)
+      Tina4::Log.configure(nested_dir)
       expect(Dir.exist?(File.join(nested_dir, "logs"))).to be true
     end
 
     it "does not raise on repeated setup" do
-      Tina4::Log.setup(tmpdir)
-      expect { Tina4::Log.setup(tmpdir) }.not_to raise_error
+      Tina4::Log.configure(tmpdir)
+      expect { Tina4::Log.configure(tmpdir) }.not_to raise_error
     end
 
     it "handles logging before setup without crashing" do

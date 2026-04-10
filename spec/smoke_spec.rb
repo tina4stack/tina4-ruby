@@ -508,12 +508,12 @@ RSpec.describe "Tina4 Smoke Test" do
   # 18. AI Detection
   # ────────────────────────────────────────────────────────────────────────
   describe "AI Detection" do
-    it "returns tool list and installed? works for an empty directory" do
+    it "returns tool list and is_installed works for an empty directory" do
       tmpdir = Dir.mktmpdir("tina4_ai")
       expect(Tina4::AI::AI_TOOLS).to be_an(Array)
       expect(Tina4::AI::AI_TOOLS).not_to be_empty
       # No AI tools should be installed in an empty dir
-      none_installed = Tina4::AI::AI_TOOLS.none? { |t| Tina4::AI.installed?(tmpdir, t) }
+      none_installed = Tina4::AI::AI_TOOLS.none? { |t| Tina4::AI.is_installed(tmpdir, t) }
       expect(none_installed).to be true
       FileUtils.rm_rf(tmpdir)
     end

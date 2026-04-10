@@ -186,37 +186,37 @@ RSpec.describe Tina4::Env do
 
   # ── truthy? Tests ────────────────────────────────────────────────
 
-  describe ".truthy?" do
+  describe ".is_truthy" do
     it "returns true for 'true'" do
-      expect(Tina4::Env.truthy?("true")).to be true
+      expect(Tina4::Env.is_truthy("true")).to be true
     end
 
     it "returns true for '1'" do
-      expect(Tina4::Env.truthy?("1")).to be true
+      expect(Tina4::Env.is_truthy("1")).to be true
     end
 
     it "returns true for 'yes'" do
-      expect(Tina4::Env.truthy?("yes")).to be true
+      expect(Tina4::Env.is_truthy("yes")).to be true
     end
 
     it "returns true for 'on'" do
-      expect(Tina4::Env.truthy?("on")).to be true
+      expect(Tina4::Env.is_truthy("on")).to be true
     end
 
     it "returns false for 'false'" do
-      expect(Tina4::Env.truthy?("false")).to be false
+      expect(Tina4::Env.is_truthy("false")).to be false
     end
 
     it "returns false for '0'" do
-      expect(Tina4::Env.truthy?("0")).to be false
+      expect(Tina4::Env.is_truthy("0")).to be false
     end
 
     it "returns false for empty string" do
-      expect(Tina4::Env.truthy?("")).to be false
+      expect(Tina4::Env.is_truthy("")).to be false
     end
 
     it "returns false for nil" do
-      expect(Tina4::Env.truthy?(nil)).to be false
+      expect(Tina4::Env.is_truthy(nil)).to be false
     end
   end
 end

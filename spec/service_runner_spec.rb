@@ -181,7 +181,7 @@ RSpec.describe Tina4::ServiceRunner do
       }
       described_class.start("looper")
       sleep(0.05) # let thread spin up
-      expect(described_class.running?("looper")).to be true
+      expect(described_class.is_running("looper")).to be true
       described_class.stop("looper")
     end
 
@@ -193,7 +193,7 @@ RSpec.describe Tina4::ServiceRunner do
       sleep(0.05)
       described_class.stop("stopper")
       sleep(0.1)
-      expect(described_class.running?("stopper")).to be false
+      expect(described_class.is_running("stopper")).to be false
     end
 
     it "raises KeyError when starting an unregistered service" do
@@ -212,16 +212,16 @@ RSpec.describe Tina4::ServiceRunner do
     end
   end
 
-  # ── running? ───────────────────────────────────────────────────────
+  # ── is_running ───────────────────────────────────────────────────────
 
-  describe ".running?" do
+  describe ".is_running" do
     it "returns false for unregistered service" do
-      expect(described_class.running?("ghost")).to be false
+      expect(described_class.is_running("ghost")).to be false
     end
 
     it "returns false for registered but not started service" do
       described_class.register("registered_only") { |ctx| }
-      expect(described_class.running?("registered_only")).to be false
+      expect(described_class.is_running("registered_only")).to be false
     end
   end
 
@@ -306,7 +306,7 @@ RSpec.describe Tina4::ServiceRunner do
       }
       described_class.start("doomed")
       sleep(0.3)
-      expect(described_class.running?("doomed")).to be false
+      expect(described_class.is_running("doomed")).to be false
     end
   end
 

@@ -24,22 +24,22 @@ RSpec.describe Tina4::AI do
     end
   end
 
-  describe ".installed?" do
+  describe ".is_installed" do
     it "returns false when context file does not exist" do
       tool = Tina4::AI::AI_TOOLS.find { |t| t[:name] == "cursor" }
-      expect(Tina4::AI.installed?(tmp_dir, tool)).to be false
+      expect(Tina4::AI.is_installed(tmp_dir, tool)).to be false
     end
 
     it "returns true when context file exists" do
       tool = Tina4::AI::AI_TOOLS.find { |t| t[:name] == "claude-code" }
       FileUtils.touch(File.join(tmp_dir, tool[:context_file]))
-      expect(Tina4::AI.installed?(tmp_dir, tool)).to be true
+      expect(Tina4::AI.is_installed(tmp_dir, tool)).to be true
     end
 
     it "returns false for copilot when only .github dir exists without the file" do
       tool = Tina4::AI::AI_TOOLS.find { |t| t[:name] == "copilot" }
       FileUtils.mkdir_p(File.join(tmp_dir, ".github"))
-      expect(Tina4::AI.installed?(tmp_dir, tool)).to be false
+      expect(Tina4::AI.is_installed(tmp_dir, tool)).to be false
     end
   end
 

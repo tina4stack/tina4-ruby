@@ -133,7 +133,7 @@ module Tina4
       end
 
       # Check if a specific service is currently running.
-      def running?(name)
+      def is_running(name)
         ctx = @contexts[name.to_s]
         ctx&.running == true && @threads[name.to_s]&.alive? == true
       end

@@ -194,9 +194,36 @@ module Tina4
         }, swagger_meta: { summary: "Delete #{pretty_name}", tags: [table.to_s] })
       end
 
+      # Discover ORM model classes from a directory and register them.
+      #
+      # @param models_dir [String] directory to scan (default "src/orm")
+      # @param prefix [String] URL prefix for generated routes (default "/api")
+      # @return [Array<String>] list of discovered model class names
+      def discover(models_dir = "src/orm", prefix: "/api")
+        discovered = []
+        return discovered unless Dir.exist?(models_dir)
+
+        Dir.glob(File.join(models_dir, "*.rb")).each do |file|
+          require_relative File.expand_path(file)
+        end
+
+        # Find all ORM subclasses that have a table_name
+        ObjectSpace.each_object(Class).select { |c| c < Tina4::ORM rescue false }.each do |klass|
+          next unless klass.respond_to?(:table_name) && klass.table_name
+          register(klass)
+          discovered << klass.name
+        end
+
+        generate_routes(prefix: prefix) unless discovered.empty?
+        discovered
+      end
+
       def clear!
         @models = []
       end
+
+      # Alias for parity with other frameworks
+      alias_method :clear, :clear!
 
       private
 

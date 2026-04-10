@@ -15,6 +15,7 @@ module Tina4
 
       def reset!
         @suites = []
+        @inline_registry = []
         @results = { passed: 0, failed: 0, errors: 0, tests: [] }
       end
 
@@ -24,43 +25,159 @@ module Tina4
         suites << suite
       end
 
-      def run_all
+      def run_all(quiet: false, failfast: false)
         reset_results
         suites.each do |suite|
-          run_suite(suite)
+          run_suite(suite, quiet: quiet, failfast: failfast)
+          break if failfast && results[:failed] > 0
         end
-        print_results
+        # Run inline-registered tests
+        inline_registry.each do |entry|
+          run_inline_entry(entry, quiet: quiet)
+          break if failfast && results[:failed] > 0
+        end
+        print_results unless quiet
         results
       end
 
+      # ── Inline testing (parity with Python/PHP/Node decorator pattern) ──
+
+      # Assertion builder: assert_equal(args, expected)
+      def assert_equal(args, expected)
+        { type: :equal, args: args, expected: expected }
+      end
+
+      # Assertion builder: assert_raises(exception_class, args)
+      def assert_raises(exception_class, args)
+        { type: :raises, exception: exception_class, args: args }
+      end
+
+      # Assertion builder: assert_true(args)
+      def assert_true(args)
+        { type: :true, args: args }
+      end
+
+      # Assertion builder: assert_false(args)
+      def assert_false(args)
+        { type: :false, args: args }
+      end
+
+      # Register a callable with inline assertions (mirrors Python's @tests decorator).
+      #
+      #   Tina4::Testing.tests(
+      #     Tina4::Testing.assert_equal([5, 3], 8),
+      #     Tina4::Testing.assert_raises(ArgumentError, [nil]),
+      #   ) { |a, b| raise ArgumentError, "b required" if b.nil?; a + b }
+      #
+      def tests(*assertions, name: nil, &block)
+        raise ArgumentError, "tests requires a block" unless block_given?
+        inline_registry << {
+          fn: block,
+          name: name || "anonymous",
+          assertions: assertions
+        }
+        block
+      end
+
+      def inline_registry
+        @inline_registry ||= []
+      end
+
       private
+
+      def run_inline_entry(entry, quiet: false)
+        fn = entry[:fn]
+        name = entry[:name]
+        puts "\n  #{name}" unless entry[:assertions].empty? || quiet
+
+        entry[:assertions].each do |assertion|
+          args = assertion[:args]
+          case assertion[:type]
+          when :equal
+            begin
+              result = fn.call(*args)
+              if result == assertion[:expected]
+                results[:passed] += 1
+                puts "    \e[32m✓\e[0m #{name}(#{args.inspect}) == #{assertion[:expected].inspect}" unless quiet
+              else
+                results[:failed] += 1
+                puts "    \e[31m✗\e[0m #{name}(#{args.inspect}) expected #{assertion[:expected].inspect}, got #{result.inspect}" unless quiet
+              end
+            rescue => e
+              results[:errors] += 1
+              puts "    \e[33m!\e[0m #{name}(#{args.inspect}) raised #{e.class}: #{e.message}" unless quiet
+            end
+          when :raises
+            begin
+              fn.call(*args)
+              results[:failed] += 1
+              puts "    \e[31m✗\e[0m #{name}(#{args.inspect}) expected #{assertion[:exception]} but none raised" unless quiet
+            rescue assertion[:exception]
+              results[:passed] += 1
+              puts "    \e[32m✓\e[0m #{name}(#{args.inspect}) raises #{assertion[:exception]}" unless quiet
+            rescue => e
+              results[:failed] += 1
+              puts "    \e[31m✗\e[0m #{name}(#{args.inspect}) expected #{assertion[:exception]}, got #{e.class}" unless quiet
+            end
+          when :true
+            begin
+              result = fn.call(*args)
+              if result
+                results[:passed] += 1
+                puts "    \e[32m✓\e[0m #{name}(#{args.inspect}) is truthy" unless quiet
+              else
+                results[:failed] += 1
+                puts "    \e[31m✗\e[0m #{name}(#{args.inspect}) expected truthy, got #{result.inspect}" unless quiet
+              end
+            rescue => e
+              results[:errors] += 1
+              puts "    \e[33m!\e[0m #{name}(#{args.inspect}) raised #{e.class}: #{e.message}" unless quiet
+            end
+          when :false
+            begin
+              result = fn.call(*args)
+              if !result
+                results[:passed] += 1
+                puts "    \e[32m✓\e[0m #{name}(#{args.inspect}) is falsy" unless quiet
+              else
+                results[:failed] += 1
+                puts "    \e[31m✗\e[0m #{name}(#{args.inspect}) expected falsy, got #{result.inspect}" unless quiet
+              end
+            rescue => e
+              results[:errors] += 1
+              puts "    \e[33m!\e[0m #{name}(#{args.inspect}) raised #{e.class}: #{e.message}" unless quiet
+            end
+          end
+        end
+      end
 
       def reset_results
         @results = { passed: 0, failed: 0, errors: 0, tests: [] }
       end
 
-      def run_suite(suite)
-        puts "\n  #{suite.name}"
+      def run_suite(suite, quiet: false, failfast: false)
+        puts "\n  #{suite.name}" unless quiet
         suite.tests.each do |test|
-          run_test(suite, test)
+          run_test(suite, test, quiet: quiet)
+          break if failfast && results[:failed] > 0
         end
       end
 
-      def run_test(suite, test)
+      def run_test(suite, test, quiet: false)
         suite.run_before_each
         context = TestContext.new
         context.instance_eval(&test[:block])
         results[:passed] += 1
         results[:tests] << { name: test[:name], status: :passed, suite: suite.name }
-        puts "    \e[32m✓\e[0m #{test[:name]}"
+        puts "    \e[32m✓\e[0m #{test[:name]}" unless quiet
       rescue TestFailure => e
         results[:failed] += 1
         results[:tests] << { name: test[:name], status: :failed, suite: suite.name, message: e.message }
-        puts "    \e[31m✗\e[0m #{test[:name]}: #{e.message}"
+        puts "    \e[31m✗\e[0m #{test[:name]}: #{e.message}" unless quiet
       rescue => e
         results[:errors] += 1
         results[:tests] << { name: test[:name], status: :error, suite: suite.name, message: e.message }
-        puts "    \e[33m!\e[0m #{test[:name]}: #{e.message}"
+        puts "    \e[33m!\e[0m #{test[:name]}: #{e.message}" unless quiet
       ensure
         suite.run_after_each
       end
@@ -141,6 +258,16 @@ module Tina4
         raise TestFailure, message || "Expected #{exception_class} to be raised"
       rescue exception_class
         true
+      end
+
+      def assert_true(value, message = nil)
+        msg = message || "Expected truthy, got #{value.inspect}"
+        raise TestFailure, msg unless value
+      end
+
+      def assert_false(value, message = nil)
+        msg = message || "Expected falsy, got #{value.inspect}"
+        raise TestFailure, msg if value
       end
 
       def assert_match(pattern, string, message = nil)

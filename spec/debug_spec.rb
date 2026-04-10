@@ -12,6 +12,6 @@ RSpec.describe "Tina4::Debug backward compatibility" do
     expect(Tina4::Debug).to respond_to(:debug)
     expect(Tina4::Debug).to respond_to(:warning)
     expect(Tina4::Debug).to respond_to(:error)
-    expect(Tina4::Debug).to respond_to(:setup)
+    expect(Tina4::Debug).to respond_to(:configure)
   end
 end

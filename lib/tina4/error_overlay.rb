@@ -8,11 +8,11 @@
 #   begin
 #     handler.call(request, response)
 #   rescue => e
-#     Tina4::ErrorOverlay.render(e, request: env)
+#     Tina4::ErrorOverlay.render_error_overlay(e, request: env)
 #   end
 #
 # Only activate when TINA4_DEBUG is true.
-# In production, call Tina4::ErrorOverlay.render_production instead.
+# In production, call Tina4::ErrorOverlay.render_production_error instead.
 
 module Tina4
   module ErrorOverlay
@@ -38,7 +38,7 @@ module Tina4
       # @param exception [Exception] the caught exception
       # @param request [Hash, nil] optional request details (Rack env or custom hash)
       # @return [String] complete HTML page
-      def render(exception, request: nil)
+      def render_error_overlay(exception, request: nil)
         exc_type = exception.class.name
         exc_msg  = exception.message
 
@@ -113,7 +113,7 @@ module Tina4
       end
 
       # Render a safe, generic error page for production.
-      def render_production(status_code: 500, message: "Internal Server Error", path: "")
+      def render_production_error(status_code: 500, message: "Internal Server Error", path: "")
         # Determine color based on status code
         code_color = case status_code
                      when 403 then "#f59e0b"
@@ -155,8 +155,8 @@ module Tina4
       end
 
       # Return true if TINA4_DEBUG is enabled.
-      def debug_mode?
-        Tina4::Env.truthy?(ENV.fetch("TINA4_DEBUG", ""))
+      def is_debug_mode
+        Tina4::Env.is_truthy(ENV.fetch("TINA4_DEBUG", ""))
       end
 
       private

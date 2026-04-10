@@ -122,6 +122,7 @@ module Tina4
     def initialize
       @mutex  = Mutex.new
       @errors = nil  # lazy-loaded
+      @registered = false
       @store_path = File.join(
         Dir.tmpdir,
         "tina4_dev_errors_#{Digest::MD5.hexdigest(Dir.pwd)}.json"
@@ -232,10 +233,26 @@ module Tina4
       end
     end
 
+    # Register Ruby error handlers to feed the tracker.
+    # Installs an at_exit hook that captures unhandled exceptions.
+    # Safe to call multiple times — only registers once.
+    def register
+      return if @registered
+
+      @registered = true
+      tracker = self
+      at_exit do
+        if (exc = $!) && !exc.is_a?(SystemExit)
+          tracker.capture_exception(exc)
+        end
+      end
+    end
+
     # Reset (for testing).
     def reset!
       @mutex.synchronize do
         @errors = {}
+        @registered = false
         File.delete(@store_path) if File.exist?(@store_path)
       end
     end
@@ -294,7 +311,7 @@ module Tina4
       end
 
       def enabled?
-        Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+        Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
       end
 
       # Handle a /__dev request; returns [status, headers, body] or nil if not a dev path

@@ -79,8 +79,8 @@ RSpec.describe Tina4::Container do
 
     it "can be resolved via Tina4 DSL" do
       Tina4.singleton(:db) { Object.new }
-      first = Tina4.get(:db)
-      second = Tina4.get(:db)
+      first = Tina4.resolve(:db)
+      second = Tina4.resolve(:db)
       expect(first).to equal(second)
     end
   end
@@ -109,14 +109,14 @@ RSpec.describe Tina4::Container do
   describe "Tina4 DSL shortcuts" do
     it "delegates register and get to Container" do
       Tina4.register(:greeter, "hello")
-      expect(Tina4.get(:greeter)).to eq("hello")
+      expect(Tina4.resolve(:greeter)).to eq("hello")
     end
 
     it "works with transient factories via DSL" do
       call_count = 0
       Tina4.register(:counter) { call_count += 1; Object.new }
-      first = Tina4.get(:counter)
-      second = Tina4.get(:counter)
+      first = Tina4.resolve(:counter)
+      second = Tina4.resolve(:counter)
       expect(first).not_to equal(second)
       expect(call_count).to eq(2)
     end
@@ -128,11 +128,11 @@ RSpec.describe Tina4::Container do
       fake_service = "test mailer"
 
       Tina4.register(:mailer, real_service)
-      expect(Tina4.get(:mailer)).to eq("production mailer")
+      expect(Tina4.resolve(:mailer)).to eq("production mailer")
 
       # Swap for testing
       Tina4.register(:mailer, fake_service)
-      expect(Tina4.get(:mailer)).to eq("test mailer")
+      expect(Tina4.resolve(:mailer)).to eq("test mailer")
     end
   end
 end

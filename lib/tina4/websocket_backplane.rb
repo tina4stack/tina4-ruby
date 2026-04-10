@@ -11,7 +11,7 @@
 #   TINA4_WS_BACKPLANE_URL — Connection string (default: redis://localhost:6379)
 #
 # Usage:
-#   backplane = Tina4::WebSocketBackplane.create
+#   backplane = Tina4::WebSocketBackplane.create_backplane
 #   if backplane
 #     backplane.subscribe("chat") { |msg| relay_to_local(msg) }
 #     backplane.publish("chat", '{"user":"A","text":"hello"}')
@@ -49,7 +49,7 @@ module Tina4
     #
     # This keeps backplane usage entirely optional — callers simply check
     # +if backplane+ before publishing.
-    def self.create(url: nil)
+    def self.create_backplane(url: nil)
       backend = ENV.fetch("TINA4_WS_BACKPLANE", "").strip.downcase
 
       case backend

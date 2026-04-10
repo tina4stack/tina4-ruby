@@ -352,6 +352,51 @@ RSpec.describe Tina4::ScssCompiler do
     end
   end
 
+  # ── compile / set_variable / add_import_path Tests ──────────────
+
+  describe ".compile" do
+    before { Tina4::ScssCompiler.instance_variable_set(:@variables, {}) }
+    before { Tina4::ScssCompiler.instance_variable_set(:@import_paths, []) }
+
+    it "compiles an SCSS string to CSS" do
+      css = Tina4::ScssCompiler.compile("$color: red;\n.box { color: $color; }")
+      expect(css).to include("red")
+      expect(css).not_to include("$color")
+    end
+  end
+
+  describe ".set_variable" do
+    before { Tina4::ScssCompiler.instance_variable_set(:@variables, {}) }
+    before { Tina4::ScssCompiler.instance_variable_set(:@import_paths, []) }
+
+    it "injects a variable for compilation" do
+      Tina4::ScssCompiler.set_variable("$primary", "#ff0000")
+      css = Tina4::ScssCompiler.compile(".btn { color: $primary; }")
+      expect(css).to include("#ff0000")
+    end
+
+    it "strips leading $ from variable name" do
+      Tina4::ScssCompiler.set_variable("accent", "blue")
+      css = Tina4::ScssCompiler.compile(".link { color: $accent; }")
+      expect(css).to include("blue")
+    end
+  end
+
+  describe ".add_import_path" do
+    before { Tina4::ScssCompiler.instance_variable_set(:@variables, {}) }
+    before { Tina4::ScssCompiler.instance_variable_set(:@import_paths, []) }
+
+    it "resolves imports from added paths" do
+      lib_dir = File.join(tmp_dir, "lib")
+      FileUtils.mkdir_p(lib_dir)
+      File.write(File.join(lib_dir, "_colors.scss"), "$red: #f00;")
+
+      Tina4::ScssCompiler.add_import_path(lib_dir)
+      css = Tina4::ScssCompiler.compile("@import 'colors';\n.x { color: $red; }")
+      expect(css).to include("#f00")
+    end
+  end
+
   # ── Edge Cases ─────────────────────────────────────────────────
 
   describe "edge cases" do

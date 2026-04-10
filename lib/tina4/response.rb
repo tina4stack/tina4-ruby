@@ -3,6 +3,37 @@ require "json"
 require "uri"
 
 module Tina4
+  # ---------------------------------------------------------------------------
+  # Global Frond template engine registry
+  # ---------------------------------------------------------------------------
+  @_global_frond = nil
+  @_framework_frond = nil
+
+  # Return the global Frond engine, creating a default if needed.
+  def self.get_frond
+    @_global_frond ||= Tina4::Frond.new(template_dir: "src/templates")
+  end
+
+  # Return the singleton Frond engine for built-in framework templates.
+  def self.get_framework_frond
+    framework_dir = ::File.join(::File.dirname(__FILE__), "templates")
+    if @_framework_frond.nil? && ::File.directory?(framework_dir)
+      @_framework_frond = Tina4::Frond.new(template_dir: framework_dir)
+    end
+    # Sync custom filters/globals from the user engine
+    if @_framework_frond
+      user_engine = get_frond
+      @_framework_frond.instance_variable_get(:@filters).merge!(user_engine.instance_variable_get(:@filters))
+      @_framework_frond.instance_variable_get(:@globals).merge!(user_engine.instance_variable_get(:@globals))
+    end
+    @_framework_frond
+  end
+
+  # Register a pre-configured Frond engine for response.render().
+  def self.set_frond(engine)
+    @_global_frond = engine
+  end
+
   class Response
     MIME_TYPES = {
       ".html" => "text/html", ".htm" => "text/html",
@@ -123,12 +154,38 @@ module Tina4
     def render(template_path, data = {}, status: 200, template_dir: nil)
       @status_code = status
       @headers["content-type"] = HTML_CONTENT_TYPE
-      if template_dir
-        frond = Tina4::Frond.new(template_dir: template_dir)
-        @body = frond.render(template_path, data)
-      else
-        @body = Tina4::Template.render(template_path, data)
+
+      engine = template_dir ? Tina4::Frond.new(template_dir: template_dir) : Tina4.get_frond
+
+      # Try user templates first
+      begin
+        @body = engine.render(template_path, data)
+        return self
+      rescue Errno::ENOENT
+        # Not found in user templates — try framework templates
+      rescue => e
+        @body = "<pre>Template error: #{e.message}</pre>"
+        @status_code = 500
+        return self
       end
+
+      # Fallback: framework templates
+      fw_engine = Tina4.get_framework_frond
+      if fw_engine
+        begin
+          @body = fw_engine.render(template_path, data)
+          return self
+        rescue Errno::ENOENT
+          # Not found in framework templates either
+        rescue => e
+          @body = "<pre>Template error: #{e.message}</pre>"
+          @status_code = 500
+          return self
+        end
+      end
+
+      @body = "<pre>Template not found: #{template_path}</pre>"
+      @status_code = 404
       self
     end
 

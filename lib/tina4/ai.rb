@@ -29,7 +29,7 @@ module Tina4
       # @param root [String] project root directory
       # @param tool [Hash] tool entry from AI_TOOLS
       # @return [Boolean]
-      def installed?(root, tool)
+      def is_installed(root, tool)
         File.exist?(File.join(File.expand_path(root), tool[:context_file]))
       end
 
@@ -44,7 +44,7 @@ module Tina4
 
         puts "\n  Tina4 AI Context Installer\n"
         AI_TOOLS.each_with_index do |tool, i|
-          marker = installed?(root, tool) ? "  #{green}[installed]#{reset}" : ""
+          marker = is_installed(root, tool) ? "  #{green}[installed]#{reset}" : ""
           puts format("  %d. %-20s %s%s", i + 1, tool[:description], tool[:context_file], marker)
         end
 

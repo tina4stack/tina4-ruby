@@ -732,7 +732,7 @@ module Tina4
 
     # ── Imperative relationship methods (ad-hoc, like Python/PHP/Node) ──
 
-    def query_has_one(related_class, foreign_key: nil)
+    def has_one(related_class, foreign_key: nil)
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       return nil unless pk_value
@@ -744,7 +744,7 @@ module Tina4
       result ? related_class.from_hash(result) : nil
     end
 
-    def query_has_many(related_class, foreign_key: nil, limit: 100, offset: 0)
+    def has_many(related_class, foreign_key: nil, limit: 100, offset: 0)
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       return [] unless pk_value
@@ -757,18 +757,12 @@ module Tina4
       results.map { |row| related_class.from_hash(row) }
     end
 
-    def query_belongs_to(related_class, foreign_key: nil)
+    def belongs_to(related_class, foreign_key: nil)
       fk = foreign_key || "#{related_class.name.split('::').last.downcase}_id"
       fk_value = respond_to?(fk.to_sym) ? __send__(fk.to_sym) : nil
       return nil unless fk_value
 
       related_class.find_by_id(fk_value)
     end
-
-    # Instance-level aliases matching Python/PHP/Node.js naming
-    # These are imperative relationship queries (not class-level declarations)
-    alias imperative_has_one query_has_one
-    alias imperative_has_many query_has_many
-    alias imperative_belongs_to query_belongs_to
   end
 end

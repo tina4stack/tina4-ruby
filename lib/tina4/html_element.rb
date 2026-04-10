@@ -145,4 +145,26 @@ module Tina4
   def self.html_helpers
     HtmlHelpers
   end
+
+  # Inject _div(), _p(), _a(), etc. helper methods into the given namespace (hash or object).
+  #
+  # Usage:
+  #   h = {}
+  #   Tina4.add_html_helpers(h)
+  #   h[:_div].call({ class: "card" }, h[:_p].call("Hello"))
+  #
+  def self.add_html_helpers(namespace)
+    helper = Object.new.extend(HtmlHelpers)
+
+    HtmlElement::HTML_TAGS.each do |tag|
+      name = "_#{tag}"
+      fn = helper.method(name.to_sym)
+
+      if namespace.is_a?(Hash)
+        namespace[name.to_sym] = fn
+      else
+        namespace.define_singleton_method(name.to_sym, &fn)
+      end
+    end
+  end
 end

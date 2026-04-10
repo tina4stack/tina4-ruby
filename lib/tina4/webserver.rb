@@ -276,5 +276,16 @@ module Tina4
       @ai_thread&.join(5)
       @server&.shutdown
     end
+
+    # Dispatch a Rack-style env through the Tina4 app and return [status, headers, body].
+    #
+    # Useful for testing and embedding — does not require a running server.
+    # Cross-framework parity with Python and Node.js.
+    #
+    # @param env [Hash] A Rack environment hash
+    # @return [Array] Rack-style response triple [status, headers, body]
+    def handle(env)
+      @app.call(env)
+    end
   end
 end

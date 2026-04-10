@@ -4,9 +4,10 @@ require "json"
 module Tina4
   module Swagger
     class << self
-      def generate
+      def generate(routes = [])
         spec = base_spec
-        Tina4::Router.routes.each do |route|
+        route_list = routes.empty? ? Tina4::Router.routes : routes
+        route_list.each do |route|
           add_route_to_spec(spec, route)
         end
         spec

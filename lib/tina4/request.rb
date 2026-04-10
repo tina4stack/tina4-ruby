@@ -126,8 +126,8 @@ module Tina4
     end
 
     # Look up a param by symbol or string key (indifferent access shortcut).
-    def param(key)
-      params[key.to_s] || params[key.to_sym]
+    def param(key, default = nil)
+      params[key.to_s] || params[key.to_sym] || default
     end
 
     def [](key)

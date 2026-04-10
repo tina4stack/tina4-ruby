@@ -589,7 +589,7 @@ module Tina4
       Tina4::Log.error(error.backtrace&.first(10)&.join("\n"))
       if dev_mode?
         # Rich error overlay with stack trace, source context, and line numbers
-        body = Tina4::ErrorOverlay.render(error, request: env)
+        body = Tina4::ErrorOverlay.render_error_overlay(error, request: env)
       else
         body = Tina4::Template.render_error(500, {
           "error_message" => "#{error.message}\n#{error.backtrace&.first(10)&.join("\n")}",
@@ -600,7 +600,7 @@ module Tina4
     end
 
     def dev_mode?
-      Tina4::Env.truthy?(ENV["TINA4_DEBUG"])
+      Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
     end
 
     def websocket_upgrade?(env)
@@ -652,7 +652,7 @@ module Tina4
       method = request_info[:method]
       path = request_info[:path]
       matched_pattern = request_info[:matched_pattern]
-      request_id = Tina4::Log.request_id || "-"
+      request_id = Tina4::Log.get_request_id || "-"
       route_count = Tina4::Router.routes.length
 
       ai_badge = ai_port ? '<span style="background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:bold;">AI PORT</span>' : ""

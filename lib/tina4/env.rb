@@ -16,7 +16,7 @@ module Tina4
     #
     # Accepts: "true", "True", "TRUE", "1", "yes", "Yes", "YES", "on", "On", "ON".
     # Everything else is falsy (including empty string, nil, not set).
-    def self.truthy?(val)
+    def self.is_truthy(val)
       %w[true 1 yes on].include?(val.to_s.strip.downcase)
     end
 

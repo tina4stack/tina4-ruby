@@ -124,4 +124,29 @@ RSpec.describe Tina4::HtmlHelpers do
     html = _div({ class: "nav" }, _a({ href: "/" }, "Home"))
     expect(html.to_s).to eq('<div class="nav"><a href="/">Home</a></div>')
   end
+
+  # -- add_html_helpers --------------------------------------------------------
+
+  it "injects helpers into a hash" do
+    h = {}
+    Tina4.add_html_helpers(h)
+    expect(h).to have_key(:_div)
+    expect(h).to have_key(:_p)
+    expect(h).to have_key(:_span)
+  end
+
+  it "hash helpers produce correct HTML" do
+    h = {}
+    Tina4.add_html_helpers(h)
+    el = h[:_div].call({ class: "card" }, h[:_p].call("Hello"))
+    expect(el.to_s).to eq('<div class="card"><p>Hello</p></div>')
+  end
+
+  it "injects helpers into an object" do
+    obj = Object.new
+    Tina4.add_html_helpers(obj)
+    expect(obj).to respond_to(:_div)
+    el = obj._div({ class: "test" }, "Hi")
+    expect(el.to_s).to eq('<div class="test">Hi</div>')
+  end
 end

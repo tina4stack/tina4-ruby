@@ -5,8 +5,32 @@ require "base64"
 require "set"
 
 module Tina4
+  WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-5AB5DC11AD37"
+
+  # Compute Sec-WebSocket-Accept from Sec-WebSocket-Key per RFC 6455.
+  def self.compute_accept_key(key)
+    Base64.strict_encode64(Digest::SHA1.digest("#{key}#{WEBSOCKET_GUID}"))
+  end
+
+  # Build a WebSocket frame (server→client, never masked).
+  def self.build_frame(opcode, data, fin: true)
+    first_byte = (fin ? 0x80 : 0x00) | opcode
+    frame = [first_byte].pack("C")
+    length = data.bytesize
+
+    if length < 126
+      frame += [length].pack("C")
+    elsif length < 65536
+      frame += [126, length].pack("Cn")
+    else
+      frame += [127, length].pack("CQ>")
+    end
+
+    frame + data
+  end
+
   class WebSocket
-    GUID = "258EAFA5-E914-47DA-95CA-5AB5DC11AD37"
+    GUID = WEBSOCKET_GUID
 
     attr_reader :connections
 
@@ -68,6 +92,16 @@ module Tina4
       end
     end
 
+    def send_to(conn_id, message)
+      conn = @connections[conn_id]
+      conn&.send_text(message)
+    end
+
+    def close(conn_id, code: 1000, reason: "")
+      conn = @connections[conn_id]
+      conn&.close(code: code, reason: reason)
+    end
+
     # ── Rooms ──────────────────────────────────────────────────
 
     def join_room_for(conn_id, room_name)
@@ -99,9 +133,7 @@ module Tina4
       key = env["HTTP_SEC_WEBSOCKET_KEY"]
       return unless key
 
-      accept = Base64.strict_encode64(
-        Digest::SHA1.digest("#{key}#{GUID}")
-      )
+      accept = Tina4.compute_accept_key(key)
 
       response = "HTTP/1.1 101 Switching Protocols\r\n" \
                  "Upgrade: websocket\r\n" \
@@ -247,18 +279,7 @@ module Tina4
     end
 
     def build_frame(opcode, data)
-      frame = [0x80 | opcode].pack("C")
-      length = data.bytesize
-
-      if length < 126
-        frame += [length].pack("C")
-      elsif length < 65536
-        frame += [126, length].pack("Cn")
-      else
-        frame += [127, length].pack("CQ>")
-      end
-
-      frame + data
+      Tina4.build_frame(opcode, data)
     end
   end
 end

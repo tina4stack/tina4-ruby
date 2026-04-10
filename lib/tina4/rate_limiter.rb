@@ -86,8 +86,15 @@ module Tina4
       true
     end
 
+    # Standardized middleware hook — enforces rate limiting before the route handler.
+    def before_rate_limit(request, response)
+      ip = request.respond_to?(:ip) ? request.ip : "unknown"
+      apply(ip, response)
+      [request, response]
+    end
+
     # Reset tracking for a specific IP (useful for testing)
-    def reset!(ip = nil)
+    def reset(ip = nil)
       @mutex.synchronize do
         if ip
           @store.delete(ip)

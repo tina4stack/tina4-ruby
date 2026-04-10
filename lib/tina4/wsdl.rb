@@ -155,7 +155,8 @@ module Tina4
 
     # ── WSDL generation ──────────────────────────────────────────────────
 
-    def generate_wsdl
+    def generate_wsdl(endpoint_url = "")
+      @service_url = endpoint_url unless endpoint_url.empty?
       service_name = self.class.name ? self.class.name.split("::").last : "AnonymousService"
       tns = "urn:#{service_name}"
 
