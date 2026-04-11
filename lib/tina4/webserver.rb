@@ -54,6 +54,26 @@ module Tina4
     end
 
     def start
+      unless ENV['TINA4_CLI'] == 'true' || ENV['TINA4_OVERRIDE_CLIENT'] == 'true'
+        puts
+        puts '=' * 60
+        puts
+        puts '  Tina4 must be started with the tina4 CLI:'
+        puts
+        puts '    tina4 serve              (development)'
+        puts '    tina4 serve --production (production)'
+        puts
+        puts '  Install: cargo install tina4'
+        puts '  Docs:    https://tina4.com'
+        puts
+        puts '  To run directly, add to .env:'
+        puts '    TINA4_OVERRIDE_CLIENT=true'
+        puts
+        puts '=' * 60
+        puts
+        exit 1
+      end
+
       require "webrick"
       require "stringio"
       require "socket"

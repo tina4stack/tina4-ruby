@@ -129,6 +129,36 @@ module Tina4
       end
     end
 
+    # Register a WebSocket handler for a path (class method, matching Python's
+    # WebSocketServer.route). The block receives a WebSocketConnection and should
+    # call conn.on_message / conn.on_close to wire up event callbacks.
+    #
+    # Registers on the Router so routes work in integrated (Rack) mode.
+    #
+    #   Tina4::WebSocket.route("/chat") do |conn|
+    #     conn.on_message { |data| conn.send(data) }
+    #     conn.on_close   { puts "bye" }
+    #   end
+    #
+    def self.route(path, &block)
+      @route_handlers ||= {}
+      @route_handlers[path] = block
+
+      # Adapt to Router's (conn, event, data) style
+      adapter = proc do |conn, event, data|
+        case event
+        when :open
+          block.call(conn)
+        when :message
+          conn.on_message_handler&.call(data)
+        when :close
+          conn.on_close_handler&.call
+        end
+      end
+
+      Tina4::Router.websocket(path, &adapter)
+    end
+
     def handle_upgrade(env, socket)
       key = env["HTTP_SEC_WEBSOCKET_KEY"]
       return unless key
@@ -186,7 +216,7 @@ module Tina4
 
   class WebSocketConnection
     attr_reader :id, :rooms
-    attr_accessor :params, :path
+    attr_accessor :params, :path, :on_message_handler, :on_close_handler, :on_error_handler
 
     def initialize(id, socket, ws_server: nil, path: "/")
       @id = id
@@ -195,6 +225,19 @@ module Tina4
       @ws_server = ws_server
       @path = path
       @rooms = Set.new
+      @on_message_handler = nil
+      @on_close_handler = nil
+      @on_error_handler = nil
+    end
+
+    # Register a message handler (decorator style, matching Python).
+    def on_message(&block)
+      @on_message_handler = block
+    end
+
+    # Register a close handler (decorator style, matching Python).
+    def on_close(&block)
+      @on_close_handler = block
     end
 
     def join_room(room_name)
