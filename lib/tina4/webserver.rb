@@ -54,7 +54,8 @@ module Tina4
     end
 
     def start
-      unless ENV['TINA4_CLI'] == 'true' || ENV['TINA4_OVERRIDE_CLIENT'] == 'true'
+      is_managed = ARGV.include?('--managed')
+      unless is_managed || ENV['TINA4_OVERRIDE_CLIENT'] == 'true'
         puts
         puts '=' * 60
         puts
