@@ -171,6 +171,50 @@ RSpec.describe Tina4::Template do
         child = "{% extends 'base.twig' %}{% block title %}Custom{% endblock %}"
         expect(render(child)).to eq("<h1>Custom</h1>")
       end
+
+      it "supports multi-level template inheritance (A extends B extends C)" do
+        # Grandparent (C) — root template
+        File.write(File.join(tmp_dir, "grandparent.twig"),
+          "<html>{% block head %}DEFAULT HEAD{% endblock %} {% block body %}DEFAULT BODY{% endblock %}</html>")
+
+        # Parent (B) — extends grandparent, overrides head
+        File.write(File.join(tmp_dir, "parent.twig"),
+          "{% extends 'grandparent.twig' %}{% block head %}PARENT HEAD{% endblock %}")
+
+        # Child (A) — extends parent, overrides body
+        child = "{% extends 'parent.twig' %}{% block body %}CHILD BODY{% endblock %}"
+        result = render(child)
+        expect(result).to eq("<html>PARENT HEAD CHILD BODY</html>")
+      end
+
+      it "child overrides parent block in multi-level inheritance" do
+        File.write(File.join(tmp_dir, "root.twig"),
+          "{% block title %}ROOT{% endblock %}|{% block content %}ROOT CONTENT{% endblock %}")
+        File.write(File.join(tmp_dir, "middle.twig"),
+          "{% extends 'root.twig' %}{% block title %}MIDDLE{% endblock %}{% block content %}MIDDLE CONTENT{% endblock %}")
+        child = "{% extends 'middle.twig' %}{% block title %}CHILD{% endblock %}"
+        result = render(child)
+        expect(result).to eq("CHILD|MIDDLE CONTENT")
+      end
+
+      it "supports three-level inheritance with all blocks overridden at leaf" do
+        File.write(File.join(tmp_dir, "l1.twig"),
+          "[{% block a %}A1{% endblock %}][{% block b %}B1{% endblock %}]")
+        File.write(File.join(tmp_dir, "l2.twig"),
+          "{% extends 'l1.twig' %}{% block a %}A2{% endblock %}")
+        child = "{% extends 'l2.twig' %}{% block a %}A3{% endblock %}{% block b %}B3{% endblock %}"
+        result = render(child)
+        expect(result).to eq("[A3][B3]")
+      end
+
+      it "handles nested block tags correctly with depth counting" do
+        # Parent has a block that contains a nested block
+        File.write(File.join(tmp_dir, "outer_base.twig"),
+          "{% block outer %}OUTER{% block inner %}INNER{% endblock %}{% endblock %}")
+        child = "{% extends 'outer_base.twig' %}{% block inner %}REPLACED{% endblock %}"
+        result = render(child)
+        expect(result).to include("REPLACED")
+      end
     end
 
     describe "includes" do

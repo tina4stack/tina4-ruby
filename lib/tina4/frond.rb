@@ -655,6 +655,7 @@ module Tina4
     def find_outside_quotes(expr, needle)
       in_q = nil
       depth = 0
+      bracket_depth = 0
       i = 0
       nlen = needle.length
       while i <= expr.length - nlen
@@ -676,8 +677,12 @@ module Tina4
           depth += 1
         elsif ch == ")"
           depth -= 1
+        elsif ch == "["
+          bracket_depth += 1
+        elsif ch == "]"
+          bracket_depth -= 1
         end
-        if depth == 0 && expr[i, nlen] == needle
+        if depth == 0 && bracket_depth == 0 && expr[i, nlen] == needle
           return i
         end
         i += 1
@@ -1172,8 +1177,30 @@ module Tina4
         part = part.strip.gsub(RESOLVE_STRIP_RE, "") # strip quotes from bracket access
         if value.is_a?(Hash) || value.is_a?(LoopContext)
           value = value[part] || value[part.to_sym]
-        elsif value.is_a?(Array) && part =~ DIGIT_RE
-          value = value[part.to_i]
+        elsif value.is_a?(Array)
+          # Slice syntax: value[1:5], value[:10], value[start:end]
+          if part.include?(":") && !(part.start_with?('"') || part.start_with?("'"))
+            slice_parts = part.split(":", 2)
+            s_start = slice_parts[0].strip.empty? ? nil : eval_expr(slice_parts[0].strip, context).to_i
+            s_end = slice_parts[1].strip.empty? ? nil : eval_expr(slice_parts[1].strip, context).to_i
+            if s_start && s_end
+              value = value[s_start...s_end]
+            elsif s_start
+              value = value[s_start..]
+            elsif s_end
+              value = value[0...s_end]
+            else
+              value = value.dup
+            end
+            next
+          end
+          idx = if part =~ DIGIT_RE
+                  part.to_i
+                else
+                  eval_expr(part, context)
+                end
+          idx = idx.to_i if idx.is_a?(Numeric)
+          value = idx.is_a?(Integer) ? value[idx] : nil
         elsif value.respond_to?(part.to_sym)
           value = value.send(part.to_sym)
         else

@@ -10,6 +10,12 @@ module Tina4
         @translations ||= {}
       end
 
+      # Flat alias map: { locale => { leaf_key => value } }
+      # First-wins on conflict — later duplicates are ignored.
+      def flat_aliases
+        @flat_aliases ||= {}
+      end
+
       def current_locale
         @current_locale || ENV["TINA4_LOCALE"] || "en"
       end
@@ -19,8 +25,11 @@ module Tina4
       end
 
       def load(root_dir = Dir.pwd)
-        LOCALE_DIRS.each do |dir|
-          locale_dir = File.join(root_dir, dir)
+        locale_dir_override = ENV["TINA4_LOCALE_DIR"]
+        search_dirs = locale_dir_override && !locale_dir_override.empty? ? [locale_dir_override] : LOCALE_DIRS
+
+        search_dirs.each do |dir|
+          locale_dir = File.expand_path(dir, root_dir)
           next unless Dir.exist?(locale_dir)
 
           Dir.glob(File.join(locale_dir, "*.json")).each do |file|
@@ -28,6 +37,8 @@ module Tina4
             data = JSON.parse(File.read(file))
             translations[locale] ||= {}
             translations[locale].merge!(data)
+            # Build leaf-key aliases from the loaded data
+            build_leaf_aliases(locale, data)
             Tina4::Log.debug("Loaded locale: #{locale} from #{file}")
           end
 
@@ -37,8 +48,11 @@ module Tina4
               require "yaml"
               locale = File.basename(file, File.extname(file))
               data = YAML.safe_load(File.read(file))
-              translations[locale] ||= {}
-              translations[locale].merge!(data) if data.is_a?(Hash)
+              if data.is_a?(Hash)
+                translations[locale] ||= {}
+                translations[locale].merge!(data)
+                build_leaf_aliases(locale, data)
+              end
             rescue LoadError
               Tina4::Log.warning("YAML support requires the 'yaml' gem")
             end
@@ -94,6 +108,13 @@ module Tina4
           hash = hash[k]
         end
         hash[keys.last] = value
+
+        # Register leaf-key alias (first-wins)
+        leaf = keys.last
+        if value.is_a?(String)
+          flat_aliases[locale.to_s] ||= {}
+          flat_aliases[locale.to_s][leaf] ||= value
+        end
       end
 
       def available_locales
@@ -102,19 +123,45 @@ module Tina4
 
       private
 
+      # Recursively walk a nested hash and register leaf-key aliases.
+      # First-wins: if a leaf key already exists, it is NOT overwritten.
+      def build_leaf_aliases(locale, hash, prefix = nil)
+        flat_aliases[locale.to_s] ||= {}
+        hash.each do |key, value|
+          full_key = prefix ? "#{prefix}.#{key}" : key.to_s
+          if value.is_a?(Hash)
+            build_leaf_aliases(locale, value, full_key)
+          else
+            # Store the leaf key as an alias (first-wins)
+            flat_aliases[locale.to_s][key.to_s] ||= value
+          end
+        end
+      end
+
       def lookup(locale, key)
         keys = key.to_s.split(".")
         result = translations[locale]
         return nil unless result
 
+        # Try dot-path traversal first
+        dot_result = result
         keys.each do |k|
-          if result.is_a?(Hash)
-            result = result[k] || result[k.to_sym]
+          if dot_result.is_a?(Hash)
+            dot_result = dot_result[k] || dot_result[k.to_sym]
           else
-            return nil
+            dot_result = nil
+            break
           end
         end
-        result.is_a?(String) ? result : nil
+        return dot_result if dot_result.is_a?(String)
+
+        # Fall back to leaf-key alias (only for simple keys without dots)
+        if flat_aliases[locale]
+          alias_val = flat_aliases[locale][key.to_s]
+          return alias_val if alias_val.is_a?(String)
+        end
+
+        nil
       end
     end
   end

@@ -6,6 +6,7 @@ RSpec.describe Tina4::Localization do
   before(:each) do
     # Reset translations state between tests
     Tina4::Localization.instance_variable_set(:@translations, {})
+    Tina4::Localization.instance_variable_set(:@flat_aliases, {})
     Tina4::Localization.instance_variable_set(:@current_locale, nil)
   end
 
@@ -166,6 +167,147 @@ RSpec.describe Tina4::Localization do
       Tina4::Localization.add("en", "a.b.c", "deep value")
       # Looking up "a.b" resolves to a Hash, not a String, so returns nil then falls back
       expect(Tina4::Localization.t("a.b")).to eq("a.b")
+    end
+  end
+
+  describe "leaf-key aliasing" do
+    it "resolves a leaf key from nested JSON" do
+      locale_dir = Dir.mktmpdir
+      locales_path = File.join(locale_dir, "locales")
+      FileUtils.mkdir_p(locales_path)
+      File.write(File.join(locales_path, "en.json"), '{"nav": {"home": "Home", "about": "About"}}')
+
+      Tina4::Localization.load(locale_dir)
+
+      # Leaf key works
+      expect(Tina4::Localization.t("home")).to eq("Home")
+      expect(Tina4::Localization.t("about")).to eq("About")
+
+      FileUtils.remove_entry(locale_dir)
+    end
+
+    it "still resolves dot-path keys" do
+      locale_dir = Dir.mktmpdir
+      locales_path = File.join(locale_dir, "locales")
+      FileUtils.mkdir_p(locales_path)
+      File.write(File.join(locales_path, "en.json"), '{"nav": {"home": "Home"}}')
+
+      Tina4::Localization.load(locale_dir)
+
+      # Dot-path still works
+      expect(Tina4::Localization.t("nav.home")).to eq("Home")
+
+      FileUtils.remove_entry(locale_dir)
+    end
+
+    it "dot-path takes priority over leaf alias" do
+      # Add a top-level "home" and a nested "nav.home"
+      Tina4::Localization.add("en", "home", "Top-level Home")
+      Tina4::Localization.add("en", "nav.home", "Nav Home")
+
+      # "home" resolves via dot-path to the top-level value
+      expect(Tina4::Localization.t("home")).to eq("Top-level Home")
+      # "nav.home" resolves via dot-path
+      expect(Tina4::Localization.t("nav.home")).to eq("Nav Home")
+    end
+
+    it "first-wins on leaf key conflict" do
+      locale_dir = Dir.mktmpdir
+      locales_path = File.join(locale_dir, "locales")
+      FileUtils.mkdir_p(locales_path)
+      # Two nested structures with the same leaf key "title"
+      File.write(File.join(locales_path, "en.json"), '{"nav": {"title": "Nav Title"}, "page": {"title": "Page Title"}}')
+
+      Tina4::Localization.load(locale_dir)
+
+      # "title" alias should be the first one encountered (nav.title)
+      expect(Tina4::Localization.t("title")).to eq("Nav Title")
+      # But dot-paths still resolve correctly
+      expect(Tina4::Localization.t("page.title")).to eq("Page Title")
+
+      FileUtils.remove_entry(locale_dir)
+    end
+
+    it "handles mixed flat and nested keys" do
+      locale_dir = Dir.mktmpdir
+      locales_path = File.join(locale_dir, "locales")
+      FileUtils.mkdir_p(locales_path)
+      File.write(File.join(locales_path, "en.json"), '{"greeting": "Hello", "nav": {"home": "Home"}}')
+
+      Tina4::Localization.load(locale_dir)
+
+      # Flat key
+      expect(Tina4::Localization.t("greeting")).to eq("Hello")
+      # Nested dot-path
+      expect(Tina4::Localization.t("nav.home")).to eq("Home")
+      # Leaf alias
+      expect(Tina4::Localization.t("home")).to eq("Home")
+
+      FileUtils.remove_entry(locale_dir)
+    end
+
+    it "leaf alias works when added via add()" do
+      Tina4::Localization.add("en", "messages.welcome", "Welcome!")
+
+      # Dot-path works
+      expect(Tina4::Localization.t("messages.welcome")).to eq("Welcome!")
+      # Leaf alias works
+      expect(Tina4::Localization.t("welcome")).to eq("Welcome!")
+    end
+  end
+
+  describe "TINA4_LOCALE_DIR env var" do
+    it "loads from custom locale directory" do
+      locale_dir = Dir.mktmpdir
+      FileUtils.mkdir_p(locale_dir)
+      File.write(File.join(locale_dir, "en.json"), '{"custom": "Custom Value"}')
+
+      original = ENV["TINA4_LOCALE_DIR"]
+      ENV["TINA4_LOCALE_DIR"] = locale_dir
+
+      Tina4::Localization.load("/nonexistent")
+
+      expect(Tina4::Localization.t("custom")).to eq("Custom Value")
+
+      ENV["TINA4_LOCALE_DIR"] = original
+      FileUtils.remove_entry(locale_dir)
+    end
+  end
+
+  describe "auto-wire i18n template global" do
+    before(:each) do
+      # Reset template globals
+      Tina4::Template.instance_variable_set(:@globals, {})
+    end
+
+    it "registers t() when locales exist" do
+      Tina4::Localization.add("en", "hello", "Hello")
+
+      # Simulate the auto-wire logic
+      Tina4.send(:autowire_i18n_template_global)
+
+      expect(Tina4::Template.globals).to have_key("t")
+      expect(Tina4::Template.globals["t"]).to respond_to(:call)
+      expect(Tina4::Template.globals["t"].call("hello")).to eq("Hello")
+    end
+
+    it "does nothing when no locales are loaded" do
+      # translations is empty (reset in before(:each))
+      Tina4.send(:autowire_i18n_template_global)
+
+      expect(Tina4::Template.globals).not_to have_key("t")
+    end
+
+    it "does not overwrite user-registered t()" do
+      Tina4::Localization.add("en", "hello", "Hello")
+      custom_t = ->(key) { "custom: #{key}" }
+      Tina4::Template.add_global("t", custom_t)
+
+      Tina4.send(:autowire_i18n_template_global)
+
+      # Should still be the user's custom t()
+      expect(Tina4::Template.globals["t"]).to eq(custom_t)
+      expect(Tina4::Template.globals["t"].call("hello")).to eq("custom: hello")
     end
   end
 end

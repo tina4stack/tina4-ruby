@@ -170,6 +170,9 @@ module Tina4
       # Load translations
       Tina4::Localization.load(root_dir)
 
+      # Auto-wire t() into template globals if locales were loaded
+      autowire_i18n_template_global
+
       # Connect database if configured
       setup_database
 
@@ -410,6 +413,17 @@ module Tina4
       else
         auth  # Custom auth handler (proc/lambda)
       end
+    end
+
+    def autowire_i18n_template_global
+      # Only register if translations were actually loaded
+      return if Tina4::Localization.translations.empty?
+
+      # Don't overwrite a user-registered t() global
+      return if Tina4::Template.globals.key?("t")
+
+      Tina4::Template.add_global("t", ->(key, **opts) { Tina4::Localization.t(key, **opts) })
+      Tina4::Log.debug("Auto-wired i18n t() as template global")
     end
 
     def setup_database

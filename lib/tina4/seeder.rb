@@ -527,6 +527,13 @@ module Tina4
   # Run all seed files in the given folder.
   #
   # @param seed_folder [String] path to seed files (default: "seeds")
+  def self.seed(seed_folder: "seeds", clear: false)
+    seed_dir(seed_folder: seed_folder, clear: clear)
+  end
+
+  # Run all seed files in the given folder.
+  #
+  # @param seed_folder [String] path to seed files (default: "seeds")
   def self.seed_dir(seed_folder: "seeds", clear: false)
     unless Dir.exist?(seed_folder)
       Tina4::Log.info("Seeder: No seeds folder found at #{seed_folder}")

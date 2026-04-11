@@ -4,7 +4,7 @@ require "json"
 module Tina4
   # Convert a snake_case name to camelCase.
   def self.snake_to_camel(name)
-    parts = name.to_s.split("_")
+    parts = name.to_s.downcase.split("_")
     parts[0] + parts[1..].map(&:capitalize).join
   end
 

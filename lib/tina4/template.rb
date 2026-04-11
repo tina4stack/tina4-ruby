@@ -230,14 +230,110 @@ module Tina4
           parent_path = Regexp.last_match(1)
           full_parent = resolve_template(parent_path)
           if full_parent && File.exist?(full_parent)
-            @parent_template = File.read(full_parent)
-            content.scan(/\{%\s*block\s+(\w+)\s*%\}(.*?)\{%\s*endblock\s*%\}/m) do |name, body|
-              @blocks[name] = body
-            end
-            content = @parent_template
+            parent_source = File.read(full_parent)
+            child_blocks = extract_blocks(content)
+            @blocks.merge!(child_blocks)
+            content = render_with_blocks(parent_source, @blocks)
           end
         end
         content
+      end
+
+      # Extract {% block name %}...{% endblock %} pairs using depth counting
+      # so that nested blocks are handled correctly (non-greedy regex fails
+      # when blocks are nested inside other blocks).
+      def extract_blocks(source)
+        blocks = {}
+        block_open = /\{%[-\s]*block\s+(\w+)\s*-?%\}/
+        block_close = /\{%[-\s]*endblock\s*-?%\}/
+
+        pos = 0
+        while pos < source.length
+          m_open = block_open.match(source, pos)
+          break unless m_open
+
+          name = m_open[1]
+          content_start = m_open.end(0)
+          depth = 1
+          scan = content_start
+
+          while depth > 0 && scan < source.length
+            next_open = block_open.match(source, scan)
+            next_close = block_close.match(source, scan)
+
+            break unless next_close # malformed — no matching endblock
+
+            if next_open && next_open.begin(0) < next_close.begin(0)
+              depth += 1
+              scan = next_open.end(0)
+            else
+              depth -= 1
+              if depth == 0
+                blocks[name] = source[content_start...next_close.begin(0)]
+                pos = next_close.end(0)
+                break
+              end
+              scan = next_close.end(0)
+            end
+          end
+
+          # If we didn't break out via depth==0, skip forward to avoid infinite loop
+          pos = content_start if depth > 0
+        end
+
+        blocks
+      end
+
+      # Render a parent template replacing blocks with child overrides.
+      # Supports multi-level inheritance: if the parent itself extends a
+      # grandparent, blocks are merged (child overrides parent) and the
+      # chain is followed recursively.
+      def render_with_blocks(parent_source, child_blocks)
+        extends_re = /\A\s*\{%\s*extends\s+["'](.+?)["']\s*%\}/
+
+        # Multi-level: if the parent itself extends another template, recurse
+        if parent_source =~ extends_re
+          grandparent_name = Regexp.last_match(1)
+          full_grandparent = resolve_template(grandparent_name)
+          if full_grandparent && File.exist?(full_grandparent)
+            grandparent_source = File.read(full_grandparent)
+
+            # Extract block defaults defined in the parent template
+            parent_blocks = extract_blocks(parent_source)
+
+            # Child blocks override parent blocks at the same name
+            merged_blocks = parent_blocks.merge(child_blocks)
+
+            # Resolve nested blocks: if a block value contains {% block inner %}
+            # tags, replace them with merged_blocks values too
+            block_re = /\{%[-\s]*block\s+(\w+)\s*-?%\}(.*?)\{%[-\s]*endblock\s*-?%\}/m
+            changed = true
+            while changed
+              changed = false
+              merged_blocks.each do |bname, bsource|
+                resolved = bsource.gsub(block_re) do
+                  inner_name = Regexp.last_match(1)
+                  inner_default = Regexp.last_match(2)
+                  merged_blocks[inner_name] || inner_default
+                end
+                if resolved != bsource
+                  merged_blocks[bname] = resolved
+                  changed = true
+                end
+              end
+            end
+
+            # Recurse up the chain (handles 3+, 4+, ... levels)
+            return render_with_blocks(grandparent_source, merged_blocks)
+          end
+        end
+
+        # Leaf parent (no extends) — resolve blocks and render
+        parent_source.gsub(/\{%[-\s]*block\s+(\w+)\s*-?%\}(.*?)\{%[-\s]*endblock\s*-?%\}/m) do
+          name = Regexp.last_match(1)
+          default_body = Regexp.last_match(2)
+          child_blocks[name] || default_body
+        end
       end
 
       def process_blocks(content)
