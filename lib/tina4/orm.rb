@@ -54,7 +54,7 @@ module Tina4
 
       # Auto-map flag (no-op in Ruby since snake_case is native)
       def auto_map
-        @auto_map || false
+        @auto_map.nil? ? true : @auto_map
       end
 
       def auto_map=(val)
@@ -599,7 +599,8 @@ module Tina4
 
     # Convert to hash using Ruby attribute names.
     # Optionally include relationships via the include keyword.
-    def to_h(include: nil) # -> dict
+    # case: 'snake' (default) returns snake_case keys, 'camel' returns camelCase keys.
+    def to_h(include: nil, case: 'snake') # -> dict
       hash = {}
       self.class.field_definitions.each_key do |name|
         hash[name] = __send__(name)
@@ -621,20 +622,41 @@ module Tina4
           if related.nil?
             hash[rel_name] = nil
           elsif related.is_a?(Array)
-            hash[rel_name] = related.map { |r| r.to_h(include: nested.empty? ? nil : nested) }
+            hash[rel_name] = related.map { |r| r.to_h(include: nested.empty? ? nil : nested, case: binding.local_variable_get(:case)) }
           else
-            hash[rel_name] = related.to_h(include: nested.empty? ? nil : nested)
+            hash[rel_name] = related.to_h(include: nested.empty? ? nil : nested, case: binding.local_variable_get(:case))
           end
         end
+      end
+
+      case_mode = binding.local_variable_get(:case)
+      if case_mode == 'camel'
+        camel_hash = {}
+        hash.each do |key, value|
+          camel_key = Tina4.snake_to_camel(key.to_s).to_sym
+          camel_hash[camel_key] = value
+        end
+        return camel_hash
       end
 
       hash
     end
 
-    alias to_hash to_h
-    alias to_dict to_h
-    alias to_assoc to_h
-    alias to_object to_h
+    def to_hash(include: nil, case: 'snake')
+      to_h(include: include, case: binding.local_variable_get(:case))
+    end
+
+    def to_dict(include: nil, case: 'snake')
+      to_h(include: include, case: binding.local_variable_get(:case))
+    end
+
+    def to_assoc(include: nil, case: 'snake')
+      to_h(include: include, case: binding.local_variable_get(:case))
+    end
+
+    def to_object(include: nil, case: 'snake')
+      to_h(include: include, case: binding.local_variable_get(:case))
+    end
 
     def to_array # -> list
       to_h.values

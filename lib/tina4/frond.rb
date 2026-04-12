@@ -43,7 +43,7 @@ module Tina4
     FLOAT_RE        = /\A-?\d+\.\d+\z/
     ARRAY_LIT_RE    = /\A\[(.+)\]\z/m
     HASH_LIT_RE     = /\A\{(.+)\}\z/m
-    HASH_PAIR_RE    = /\A\s*["']?(\w+)["']?\s*:\s*(.+)\z/
+    HASH_PAIR_RE    = /\A\s*(?:["']([^"']+)["']|(\w+))\s*:\s*(.+)\z/
     RANGE_LIT_RE    = /\A(\d+)\.\.(\d+)\z/
     ARITHMETIC_OPS  = [" + ", " - ", " * ", " // ", " / ", " % ", " ** "].freeze
     FUNC_CALL_RE    = /\A(\w+)\s*\((.*)\)\z/m
@@ -827,10 +827,10 @@ module Tina4
         elsif ch == '"' || ch == "'"
           in_quote = ch
           current << ch
-        elsif ch == "("
+        elsif ch == "(" || ch == "{" || ch == "["
           depth += 1
           current << ch
-        elsif ch == ")"
+        elsif ch == ")" || ch == "}" || ch == "]"
           depth -= 1
           current << ch
         elsif ch == "," && depth == 0
@@ -915,7 +915,8 @@ module Tina4
         hash = {}
         split_args_toplevel(inner).each do |pair|
           if pair =~ HASH_PAIR_RE
-            hash[Regexp.last_match(1)] = eval_expr(Regexp.last_match(2).strip, context)
+            key = Regexp.last_match(1) || Regexp.last_match(2)
+            hash[key] = eval_expr(Regexp.last_match(3).strip, context)
           end
         end
         return hash
@@ -1728,7 +1729,17 @@ module Tina4
         "trim"       => ->(v, *_a) { v.to_s.strip },
         "ltrim"      => ->(v, *_a) { v.to_s.lstrip },
         "rtrim"      => ->(v, *_a) { v.to_s.rstrip },
-        "replace"    => ->(v, *a)  { a.length >= 2 ? v.to_s.gsub(a[0].to_s, a[1].to_s) : v.to_s },
+        "replace"    => ->(v, *a) {
+          if a.length == 1 && a[0].is_a?(Hash)
+            result = v.to_s
+            a[0].each { |old, new_val| result = result.gsub(old.to_s, new_val.to_s) }
+            result
+          elsif a.length >= 2
+            v.to_s.gsub(a[0].to_s, a[1].to_s)
+          else
+            v.to_s
+          end
+        },
         "striptags"  => ->(v, *_a) { v.to_s.gsub(STRIPTAGS_RE, "") },
 
         # -- Encoding --
