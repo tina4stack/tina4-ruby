@@ -3,7 +3,7 @@ name: Publish to RubyGems
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]*.*.*'
 
 jobs:
   publish:
