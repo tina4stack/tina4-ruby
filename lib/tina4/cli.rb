@@ -197,9 +197,12 @@ module Tina4
       load_routes(root_dir)
 
       if options[:dev]
-        no_reload = %w[true 1 yes].include?(ENV.fetch("TINA4_NO_RELOAD", "").downcase)
+        # Skip internal file watcher when launched by the Rust CLI (--managed).
+        # The Rust CLI owns file watching, SCSS compilation, and browser reload.
+        is_managed = ARGV.include?("--managed")
+        no_reload = is_managed || %w[true 1 yes].include?(ENV.fetch("TINA4_NO_RELOAD", "").downcase)
         Tina4::DevReload.start(root_dir: root_dir) unless no_reload
-        Tina4::ScssCompiler.compile_all(root_dir)
+        Tina4::ScssCompiler.compile_all(root_dir) unless is_managed
       end
 
       app = Tina4::RackApp.new(root_dir: root_dir)
