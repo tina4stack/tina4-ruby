@@ -5,7 +5,7 @@ require "spec_helper"
 RSpec.describe Tina4::ScssCompiler do
   let(:tmp_dir) { Dir.mktmpdir("tina4_scss_test") }
   let(:scss_dir) { File.join(tmp_dir, "src", "scss") }
-  let(:css_dir) { File.join(tmp_dir, "public", "css") }
+  let(:css_dir) { File.join(tmp_dir, "src", "public", "css") }
 
   before do
     FileUtils.mkdir_p(scss_dir)
@@ -171,7 +171,7 @@ RSpec.describe Tina4::ScssCompiler do
 
       Tina4::ScssCompiler.compile_all(tmp_dir)
 
-      css_file = File.join(tmp_dir, "public", "css", "main.css")
+      css_file = File.join(tmp_dir, "src", "public", "css", "main.css")
       expect(File.exist?(css_file)).to be true
       content = File.read(css_file)
       expect(content).to include(".main")
@@ -187,11 +187,11 @@ RSpec.describe Tina4::ScssCompiler do
       Tina4::ScssCompiler.compile_all(tmp_dir)
 
       # _partial.scss should not generate its own CSS file
-      partial_css = File.join(tmp_dir, "public", "css", "_partial.css")
+      partial_css = File.join(tmp_dir, "src", "public", "css", "_partial.css")
       expect(File.exist?(partial_css)).to be false
 
       # app.css should include the imported content
-      app_css = File.join(tmp_dir, "public", "css", "app.css")
+      app_css = File.join(tmp_dir, "src", "public", "css", "app.css")
       expect(File.exist?(app_css)).to be true
       content = File.read(app_css)
       expect(content).to include(".app")
@@ -202,7 +202,7 @@ RSpec.describe Tina4::ScssCompiler do
       FileUtils.mkdir_p(src_scss)
       File.write(File.join(src_scss, "test.scss"), ".test { color: green; }")
 
-      css_output = File.join(tmp_dir, "public", "css")
+      css_output = File.join(tmp_dir, "src", "public", "css")
       expect(Dir.exist?(css_output)).to be false
 
       Tina4::ScssCompiler.compile_all(tmp_dir)

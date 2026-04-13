@@ -4,7 +4,7 @@ require "fileutils"
 module Tina4
   module ScssCompiler
     SCSS_DIRS = %w[src/scss scss src/styles styles].freeze
-    CSS_OUTPUT = "public/css"
+    CSS_OUTPUT = "src/public/css"
 
     # Module-level state for import paths and variables
     @import_paths = []
