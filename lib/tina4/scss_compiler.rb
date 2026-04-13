@@ -63,8 +63,11 @@ module Tina4
           relative = scss_file.sub(base_dir, "").sub(/\.scss$/, ".css")
           css_file = File.join(output_dir, relative)
           FileUtils.mkdir_p(File.dirname(css_file))
-          File.write(css_file, css_content)
-          Tina4::Log.debug("Compiled SCSS: #{scss_file} -> #{css_file}")
+          existing = File.exist?(css_file) ? File.read(css_file) : nil
+          if existing != css_content
+            File.write(css_file, css_content)
+            Tina4::Log.debug("Compiled SCSS: #{scss_file} -> #{css_file}")
+          end
         end
 
         css_content
