@@ -84,13 +84,19 @@ module Tina4
 
     # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
     def parse_flags(args)
+      # Boolean-only flags that never take a value argument
+      boolean_flags = %w[no-browser no-reload production managed all clear dev]
+
       flags = {}
       positional = []
       i = 0
       while i < args.length
         if args[i].start_with?("--")
           key = args[i][2..]
-          if i + 1 < args.length && !args[i + 1].start_with?("--")
+          if boolean_flags.include?(key)
+            flags[key] = true
+            i += 1
+          elsif i + 1 < args.length && !args[i + 1].start_with?("--")
             flags[key] = args[i + 1]
             i += 2
           else
