@@ -326,6 +326,15 @@ module Tina4
           serve_dashboard
         when ["GET", "/__dev/js/tina4-dev-admin.min.js"]
           serve_dev_js
+        when ["GET", "/__dev/api/mtime"]
+          json_response({ mtime: @reload_mtime || 0, file: @reload_file || "" })
+        when ["POST", "/__dev/api/reload"]
+          body = read_json_body(env) || {}
+          @reload_mtime = Time.now.to_i
+          @reload_file = body["file"] || ""
+          reload_type = body["type"] || "reload"
+          Tina4::Log.info("External reload trigger: #{reload_type}#{@reload_file.empty? ? '' : " (#{@reload_file})"}")
+          json_response({ ok: true, type: reload_type })
         when ["GET", "/__dev/api/status"]
           json_response(status_payload)
         when ["GET", "/__dev/api/routes"]
