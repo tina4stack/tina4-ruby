@@ -651,14 +651,29 @@ module Tina4
       field_name = selection[:name]
       output_name = selection[:alias] || field_name
 
+      # Check directives (@skip, @include, @auth, @role, @guest)
+      return unless check_directives(selection[:directives] || [], variables, context)
+
       # Resolve arguments (substitute variables)
       args = resolve_args(selection[:arguments], variables)
 
       field_def = fields[field_name]
 
+      # Input validation
+      if field_def && field_def[:args]
+        validation_errors = validate_args(args, field_def[:args], field_name)
+        if validation_errors.any?
+          errors.concat(validation_errors)
+          data[output_name] = nil
+          return
+        end
+      end
+
       begin
         if field_def && field_def[:resolve]
-          value = field_def[:resolve].call(parent, args, context)
+          # Inject sub-selections into context for DataLoader/eager-loading
+          ctx = context.merge("__selections" => (selection[:selection_set] || []))
+          value = field_def[:resolve].call(parent, args, ctx)
         elsif parent.is_a?(Hash)
           value = parent[field_name] || parent[field_name.to_sym]
         else
@@ -703,6 +718,81 @@ module Tina4
         result[ks] = { resolve: ->(_p, _a, _c) { hash[k] || hash[k.to_s] || hash[k.to_sym] } }
       end
       result
+    end
+
+    # Check directives: @skip, @include, @auth, @role, @guest.
+    # Returns true if the field should be included.
+    def check_directives(directives, variables, context = {})
+      directives.each do |d|
+        val = d[:arguments]&.dig("if")
+        val = variables[val[:name]] if val.is_a?(Hash) && val[:kind] == :variable
+
+        return false if d[:name] == "skip" && val
+        return false if d[:name] == "include" && !val
+
+        # Auth: @auth — requires authenticated user
+        return false if d[:name] == "auth" && !context["user"]
+
+        # Auth: @role(role: "admin") — requires specific role
+        if d[:name] == "role"
+          required = d[:arguments]&.dig("role")
+          user = context["user"]
+          actual = user.is_a?(Hash) ? (user["role"] || user[:role]) : nil
+          actual ||= context["role"]
+          return false if required.nil? || actual != required
+        end
+
+        # Auth: @guest — only for unauthenticated
+        return false if d[:name] == "guest" && context["user"]
+      end
+      true
+    end
+
+    # Validate resolved args against declared types.
+    def validate_args(args, arg_configs, field_name)
+      errors = []
+      arg_configs.each do |arg_name, declared_type|
+        value = args[arg_name]
+        is_non_null = declared_type.to_s.end_with?("!")
+        base_type = declared_type.to_s.gsub(/[!\[\]]/, "").strip
+
+        if is_non_null && (value.nil? || value == "")
+          errors << {
+            "message" => "Argument '#{arg_name}' on field '#{field_name}' is required (type: #{declared_type})",
+            "path" => [field_name]
+          }
+          next
+        end
+
+        next if value.nil?
+
+        if %w[Int Float Boolean String ID].include?(base_type)
+          unless coerce_check(value, base_type)
+            errors << {
+              "message" => "Argument '#{arg_name}' on field '#{field_name}' expected type #{base_type}, got #{value.class}",
+              "path" => [field_name]
+            }
+          end
+        end
+      end
+      errors
+    end
+
+    def coerce_check(value, type_name)
+      case type_name
+      when "String", "ID"
+        value.is_a?(String) || value.is_a?(Numeric) || value.is_a?(Symbol)
+      when "Int"
+        return false if value.is_a?(TrueClass) || value.is_a?(FalseClass)
+        value.is_a?(Integer) || (value.is_a?(String) && value.match?(/\A-?\d+\z/))
+      when "Float"
+        return false if value.is_a?(TrueClass) || value.is_a?(FalseClass)
+        value.is_a?(Numeric) || (value.is_a?(String) && value.match?(/\A-?\d+(\.\d+)?\z/))
+      when "Boolean"
+        value.is_a?(TrueClass) || value.is_a?(FalseClass) || [0, 1, "true", "false"].include?(value)
+      else
+        true
+      end
     end
 
     def resolve_args(args, variables)
