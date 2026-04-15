@@ -100,7 +100,6 @@ module Tina4
   autoload :WebSocketConnection, File.expand_path("tina4/websocket", __dir__)
   autoload :Testing,             File.expand_path("tina4/testing", __dir__)
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
-  autoload :DevReload,           File.expand_path("tina4/dev_reload", __dir__)
   autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)
   autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
   BANNER = <<~'BANNER'
