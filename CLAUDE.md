@@ -333,7 +333,7 @@ fake.for_field(field_def, column_name = nil) -> Object
 
 Tina4.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil) -> Integer
 Tina4.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil) -> Integer
-Tina4.seed(seed_folder: "seeds", clear: false)
+Tina4.run_seeds(seed_folder: "seeds", clear: false)
 ```
 
 ### Migration

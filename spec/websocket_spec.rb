@@ -845,4 +845,86 @@ RSpec.describe "WebSocket Rooms" do
       expect { ws_server.broadcast_to_room("ghost", "msg") }.not_to raise_error
     end
   end
+
+  # ── get_client_rooms ──────────────────────────────────────────
+
+  describe "Tina4::WebSocket#get_client_rooms" do
+    it "returns empty array when client has joined no rooms" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      expect(ws_server.get_client_rooms("a")).to eq([])
+    end
+
+    it "returns all rooms a client has joined" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.join_room("lobby")
+      rooms = ws_server.get_client_rooms("a")
+      expect(rooms).to contain_exactly("chat", "lobby")
+    end
+
+    it "does not include rooms the client has left" do
+      conn = make_connection("a")
+      ws_server.connections["a"] = conn
+      conn.join_room("chat")
+      conn.join_room("lobby")
+      conn.leave_room("chat")
+      expect(ws_server.get_client_rooms("a")).to eq(["lobby"])
+    end
+
+    it "returns empty array for unknown client id" do
+      expect(ws_server.get_client_rooms("nobody")).to eq([])
+    end
+
+    it "returns only rooms belonging to the given client" do
+      conn_a = make_connection("a")
+      conn_b = make_connection("b")
+      ws_server.connections["a"] = conn_a
+      ws_server.connections["b"] = conn_b
+      conn_a.join_room("chat")
+      conn_b.join_room("lobby")
+      expect(ws_server.get_client_rooms("a")).to eq(["chat"])
+      expect(ws_server.get_client_rooms("b")).to eq(["lobby"])
+    end
+  end
+end
+
+# ── send_json ───────────────────────────────────────────────────
+
+RSpec.describe "Tina4::WebSocketConnection#send_json" do
+  let(:socket) { StringIO.new }
+  let(:conn) { Tina4::WebSocketConnection.new("test-id", socket) }
+
+  def payload_from_frame(bytes)
+    # Simple path: assume < 126 byte payload (length in byte 1)
+    length = bytes[1] & 0x7F
+    bytes[2, length].pack("C*")
+  end
+
+  it "serializes a hash to JSON and sends as a text frame" do
+    conn.send_json({ type: "greet", msg: "hello" })
+    socket.rewind
+    bytes = socket.read.bytes
+    expect(bytes[0]).to eq(0x81)
+    decoded = JSON.parse(payload_from_frame(bytes))
+    expect(decoded).to eq({ "type" => "greet", "msg" => "hello" })
+  end
+
+  it "serializes an array to JSON and sends as a text frame" do
+    conn.send_json([1, 2, 3])
+    socket.rewind
+    bytes = socket.read.bytes
+    expect(bytes[0]).to eq(0x81)
+    expect(JSON.parse(payload_from_frame(bytes))).to eq([1, 2, 3])
+  end
+
+  it "serializes nested structures" do
+    conn.send_json({ items: [{ id: 1 }, { id: 2 }] })
+    socket.rewind
+    bytes = socket.read.bytes
+    decoded = JSON.parse(payload_from_frame(bytes))
+    expect(decoded["items"].length).to eq(2)
+    expect(decoded["items"][0]["id"]).to eq(1)
+  end
 end

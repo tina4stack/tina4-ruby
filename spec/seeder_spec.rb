@@ -571,3 +571,54 @@ RSpec.describe "FakeData edge cases" do
     end
   end
 end
+
+# ── run_seeds (folder runner, renamed from seed) ─────────────────
+
+RSpec.describe "Tina4.run_seeds" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_run_seeds_test") }
+  let(:seeds_dir) { File.join(tmp_dir, "seeds") }
+
+  before(:each) do
+    FileUtils.mkdir_p(seeds_dir)
+  end
+
+  after(:each) do
+    FileUtils.rm_rf(tmp_dir)
+  end
+
+  it "is defined as a class method on Tina4" do
+    expect(Tina4).to respond_to(:run_seeds)
+  end
+
+  it "no longer exposes Tina4.seed as the folder runner" do
+    # Tina4.seed as a folder-runner must be removed to avoid name collision
+    # with Python/PHP/Node's seed(n) PRNG-seed API. No alias allowed.
+    expect(Tina4).not_to respond_to(:seed)
+  end
+
+  it "logs info when seeds folder does not exist" do
+    missing = File.join(tmp_dir, "nope")
+    expect { Tina4.run_seeds(seed_folder: missing) }.not_to raise_error
+  end
+
+  it "loads and executes seed files in the folder" do
+    File.write(
+      File.join(seeds_dir, "001_flag.rb"),
+      "$tina4_run_seeds_flag = (($tina4_run_seeds_flag || 0) + 1)\n"
+    )
+    $tina4_run_seeds_flag = 0
+    Tina4.run_seeds(seed_folder: seeds_dir)
+    expect($tina4_run_seeds_flag).to eq(1)
+  end
+
+  it "skips files starting with underscore" do
+    File.write(File.join(seeds_dir, "_skip.rb"), "$tina4_skip_flag = true\n")
+    $tina4_skip_flag = false
+    Tina4.run_seeds(seed_folder: seeds_dir)
+    expect($tina4_skip_flag).to be false
+  end
+
+  it "accepts clear: keyword without raising" do
+    expect { Tina4.run_seeds(seed_folder: seeds_dir, clear: false) }.not_to raise_error
+  end
+end

@@ -526,8 +526,12 @@ module Tina4
 
   # Run all seed files in the given folder.
   #
+  # Parity: Python/PHP/Node use `seed(n)` to set the PRNG seed on FakeData.
+  # Ruby's FakeData.seed already does that — this folder-runner is named
+  # differently to avoid the collision.
+  #
   # @param seed_folder [String] path to seed files (default: "seeds")
-  def self.seed(seed_folder: "seeds", clear: false)
+  def self.run_seeds(seed_folder: "seeds", clear: false)
     seed_dir(seed_folder: seed_folder, clear: clear)
   end
 

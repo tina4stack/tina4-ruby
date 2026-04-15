@@ -2,6 +2,7 @@
 require "socket"
 require "digest"
 require "base64"
+require "json"
 require "set"
 
 module Tina4
@@ -115,6 +116,14 @@ module Tina4
 
     def room_count(room_name)
       (@rooms[room_name] || Set.new).size
+    end
+
+    # Return list of room names a given client/connection id belongs to.
+    # Matches PHP Tina4\WebSocket::getClientRooms($clientId).
+    def get_client_rooms(client_id)
+      @rooms.each_with_object([]) do |(name, members), acc|
+        acc << name if members.include?(client_id)
+      end
     end
 
     def get_room_connections(room_name)
@@ -277,6 +286,12 @@ module Tina4
     end
 
     alias_method :send_text, :send
+
+    # Serialize a Hash/Array (or any JSON-coercible value) and send as a text frame.
+    # Matches Python/PHP send_json.
+    def send_json(data)
+      send_text(JSON.generate(data))
+    end
 
     def send_pong(data)
       frame = build_frame(0xA, data || "")
