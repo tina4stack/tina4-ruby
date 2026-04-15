@@ -357,8 +357,41 @@ module Tina4
           json_response({ cleared: true })
         when ["GET", "/__dev/api/system"]
           json_response(system_payload)
+        when ["GET", "/__dev/api/queue/topics"]
+          queue_dir = File.join(Dir.pwd, "data", "queue")
+          topics = Dir.exist?(queue_dir) ? Dir.children(queue_dir).select { |d| File.directory?(File.join(queue_dir, d)) }.sort : []
+          topics = ["default"] if topics.empty?
+          json_response({ topics: topics })
+        when ["GET", "/__dev/api/queue/dead-letters"]
+          topic = query_param(env, "topic") || "default"
+          jobs = []
+          begin
+            queue = Tina4::Queue.new(backend: :file, topic: topic) if defined?(Tina4::Queue)
+            jobs = queue.respond_to?(:dead_letters) ? queue.dead_letters.map { |j| j.merge(status: "dead_letter") } : []
+          rescue StandardError => e
+            jobs = []
+          end
+          json_response({ jobs: jobs, count: jobs.size, topic: topic })
         when ["GET", "/__dev/api/queue"]
-          json_response({ jobs: [], stats: { pending: 0, completed: 0, failed: 0, reserved: 0 } })
+          topic = query_param(env, "topic") || "default"
+          stats = { pending: 0, completed: 0, failed: 0, reserved: 0 }
+          jobs = []
+          begin
+            if defined?(Tina4::Queue)
+              queue = Tina4::Queue.new(backend: :file, topic: topic)
+              stats = {
+                pending: queue.respond_to?(:size) ? queue.size("pending") : 0,
+                completed: queue.respond_to?(:size) ? queue.size("completed") : 0,
+                failed: queue.respond_to?(:size) ? queue.size("failed") : 0,
+                reserved: queue.respond_to?(:size) ? queue.size("reserved") : 0,
+              }
+              jobs.concat(queue.failed.map { |j| j.merge(status: "failed") }) if queue.respond_to?(:failed)
+              jobs.concat(queue.dead_letters.map { |j| j.merge(status: "dead_letter") }) if queue.respond_to?(:dead_letters)
+            end
+          rescue StandardError => e
+            # fall through to empty stats
+          end
+          json_response({ jobs: jobs, stats: stats })
         when ["GET", "/__dev/api/mailbox"]
           messages = mailbox.inbox
           json_response({ messages: messages, count: messages.size, unread: mailbox.unread_count })
