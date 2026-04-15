@@ -451,6 +451,73 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
+  # ── Hot-reload parity tests ────────────────────────────────────
+  # Mirrors tina4-php/tests/DevAdminTest.php, tina4-python/tests/test_dev_admin.py,
+  # tina4-nodejs/test/devAdmin.test.ts. The mtime counter must only
+  # advance when POST /__dev/api/reload is called. No filesystem scan.
+  describe "hot reload" do
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      Tina4::DevAdmin.instance_variable_set(:@reload_mtime, 0)
+      Tina4::DevAdmin.instance_variable_set(:@reload_file, "")
+    end
+
+    def mtime_get
+      env = { "PATH_INFO" => "/__dev/api/mtime", "REQUEST_METHOD" => "GET" }
+      _, _, body = Tina4::DevAdmin.handle_request(env)
+      JSON.parse(body.first)
+    end
+
+    def reload_post(body_hash = {})
+      env = {
+        "PATH_INFO" => "/__dev/api/reload",
+        "REQUEST_METHOD" => "POST",
+        "rack.input" => StringIO.new(body_hash.to_json)
+      }
+      Tina4::DevAdmin.handle_request(env)
+    end
+
+    it "mtime starts at 0" do
+      data = mtime_get
+      expect(data["mtime"]).to eq(0)
+      expect(data["file"]).to eq("")
+    end
+
+    it "POST /__dev/api/reload bumps the mtime counter" do
+      before_ts = Time.now.to_i
+      reload_post("file" => "lib/routes/home.rb", "type" => "reload")
+      after_ts = Time.now.to_i
+
+      data = mtime_get
+      expect(data["mtime"]).to be_between(before_ts, after_ts)
+      expect(data["file"]).to eq("lib/routes/home.rb")
+    end
+
+    it "does not create a sentinel file on disk" do
+      src_sentinel = File.join(Dir.pwd, "src", ".reload_sentinel")
+      tina_sentinel = File.join(Dir.pwd, ".tina4", ".reload_sentinel")
+      File.delete(src_sentinel) if File.exist?(src_sentinel)
+      File.delete(tina_sentinel) if File.exist?(tina_sentinel)
+
+      reload_post("file" => "whatever.rb")
+
+      expect(File.exist?(src_sentinel)).to be false
+      expect(File.exist?(tina_sentinel)).to be false
+    end
+
+    it "mtime is monotonic across successive reloads" do
+      reload_post("file" => "a.rb")
+      m1 = mtime_get["mtime"]
+      sleep 1
+      reload_post("file" => "b.rb")
+      m2 = mtime_get["mtime"]
+
+      expect(m2).to be > m1
+      expect(mtime_get["file"]).to eq("b.rb")
+    end
+  end
+
   describe "status API" do
     before do
       allow(ENV).to receive(:[]).and_call_original
