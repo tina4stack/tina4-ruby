@@ -109,8 +109,9 @@ module Tina4
           @param_names << { name: name.to_sym, type: "path" }
           '(.+)'
         elsif part == "*"
-          # Bare catch-all wildcard: captures everything after (unnamed)
-          @param_names << { name: :splat, type: "path" }
+          # Bare catch-all wildcard: captures everything after under the "*" key
+          # to match Python/PHP/Node parity (docs say `request.params["*"]`).
+          @param_names << { name: :"*", type: "path" }
           '(.+)'
         elsif part =~ /\A\{(\w+)(?::(\w+))?\}\z/
           # Tina4/Python-style brace params: {id} or {id:int}

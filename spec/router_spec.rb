@@ -121,6 +121,20 @@ RSpec.describe Tina4::Router do
       path_val = params["path"] || params[:path]
       expect(path_val).to eq("api/v1/users")
     end
+
+    it "matches a bare /* wildcard and exposes capture under '*' key (parity with Python/PHP/Node)" do
+      Tina4::Router.add("GET", "/docs/*", proc { "docs" })
+      route, params = Tina4::Router.match("GET", "/docs/getting-started")
+      expect(route).not_to be_nil
+      expect(params[:"*"] || params["*"]).to eq("getting-started")
+    end
+
+    it "matches a root /* catch-all" do
+      Tina4::Router.add("GET", "/*", proc { "fallback" })
+      route, params = Tina4::Router.match("GET", "/random/path")
+      expect(route).not_to be_nil
+      expect(params[:"*"] || params["*"]).to eq("random/path")
+    end
   end
 
   # ── Method Matching Tests ──────────────────────────────────────
