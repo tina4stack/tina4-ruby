@@ -98,6 +98,27 @@ module Tina4
       p
     end
 
+    # Supported typed-parameter constraints. Mirrored verbatim in
+    # tina4-python / tina4-php / tina4-nodejs for cross-framework parity.
+    #
+    # Any type name not in this table raises ``ArgumentError`` at route
+    # registration — we never silently fall through to the default matcher,
+    # because a typo like ``{id:inetger}`` would otherwise match anything
+    # and create a security footgun (see tina4-book#125).
+    PARAM_TYPE_PATTERNS = {
+      "string"  => "[^/]+",                                            # default, any non-slash segment
+      "int"     => '\d+',
+      "integer" => '\d+',
+      "float"   => '[\d.]+',
+      "number"  => '[\d.]+',
+      "alpha"   => "[A-Za-z]+",                                        # letters only
+      "alnum"   => "[A-Za-z0-9]+",                                     # letters + digits
+      "slug"    => "[a-z0-9-]+",                                       # URL slug
+      "uuid"    => "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+      "path"    => ".+",                                               # greedy
+      ".*"      => ".+",
+    }.freeze
+
     def compile_pattern(path)
       return Regexp.new("\\A/\\z") if path == "/"
 
@@ -113,23 +134,19 @@ module Tina4
           # to match Python/PHP/Node parity (docs say `request.params["*"]`).
           @param_names << { name: :"*", type: "path" }
           '(.+)'
-        elsif part =~ /\A\{(\w+)(?::(\w+))?\}\z/
+        elsif part =~ /\A\{(\w+)(?::([\w.*]+))?\}\z/
           # Tina4/Python-style brace params: {id} or {id:int}
           # This is the ONLY supported param syntax, matching Python exactly.
           # Do NOT add :id (colon) style params.
           name = Regexp.last_match(1)
           type = Regexp.last_match(2) || "string"
-          @param_names << { name: name.to_sym, type: type }
-          case type
-          when "int", "integer"
-            '(\d+)'
-          when "float", "number"
-            '([\d.]+)'
-          when "path"
-            '(.+)'
-          else
-            '([^/]+)'
+          unless PARAM_TYPE_PATTERNS.key?(type)
+            valid = PARAM_TYPE_PATTERNS.keys.reject { |k| k == ".*" }.sort.join(", ")
+            raise ArgumentError,
+                  "Unknown param type '#{type}' in route '#{path}'. Valid types: #{valid}."
           end
+          @param_names << { name: name.to_sym, type: type }
+          "(#{PARAM_TYPE_PATTERNS[type]})"
         else
           Regexp.escape(part)
         end

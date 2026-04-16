@@ -286,4 +286,69 @@ RSpec.describe Tina4::Route do
       expect(result).to be_a(Hash)
     end
   end
+
+  # ── Typed-parameter constraints (parity with tina4-python) ─────
+  # Fixes tina4-book#125. All 4 frameworks share the same type set:
+  #   string (default), int/integer, float/number, alpha, alnum, slug,
+  #   uuid, path (greedy). Unknown types raise at route registration.
+  describe "typed parameters" do
+    it "{id:int} rejects non-numeric input" do
+      route = Tina4::Route.new("GET", "/users/{id:int}", proc {})
+      expect(route.match?("/users/abc", "GET")).to be false
+      expect(route.match?("/users/123", "GET")).to be_a(Hash)
+    end
+
+    it "{name:alpha} matches letters only, rejects digits and hyphens" do
+      route = Tina4::Route.new("GET", "/users/{name:alpha}", proc {})
+      expect(route.match?("/users/Alice", "GET")).to be_a(Hash)
+      expect(route.match?("/users/alice123", "GET")).to be false
+      expect(route.match?("/users/alice-bob", "GET")).to be false
+    end
+
+    it "{code:alnum} matches letters+digits, rejects punctuation" do
+      route = Tina4::Route.new("GET", "/api/{code:alnum}", proc {})
+      expect(route.match?("/api/abc123", "GET")).to be_a(Hash)
+      expect(route.match?("/api/ABC", "GET")).to be_a(Hash)
+      expect(route.match?("/api/abc-123", "GET")).to be false
+    end
+
+    it "{slug:slug} matches URL-safe slugs, rejects uppercase/underscore" do
+      route = Tina4::Route.new("GET", "/posts/{slug:slug}", proc {})
+      expect(route.match?("/posts/hello-world", "GET")).to be_a(Hash)
+      expect(route.match?("/posts/post-123", "GET")).to be_a(Hash)
+      expect(route.match?("/posts/Hello-World", "GET")).to be false
+      expect(route.match?("/posts/hello_world", "GET")).to be false
+    end
+
+    it "{id:uuid} matches a UUID v4, rejects anything else" do
+      route = Tina4::Route.new("GET", "/api/{id:uuid}", proc {})
+      expect(route.match?("/api/550e8400-e29b-41d4-a716-446655440000", "GET")).to be_a(Hash)
+      expect(route.match?("/api/not-a-uuid", "GET")).to be false
+    end
+
+    it "{name:string} behaves identically to {name}" do
+      explicit = Tina4::Route.new("GET", "/a/{name:string}", proc {})
+      implicit = Tina4::Route.new("GET", "/b/{name}", proc {})
+      expect(explicit.match?("/a/alice", "GET")).to be_a(Hash)
+      expect(implicit.match?("/b/alice", "GET")).to be_a(Hash)
+    end
+
+    it "raises on unknown type names at registration (typo guard)" do
+      expect {
+        Tina4::Route.new("GET", "/api/{name:str}", proc {})
+      }.to raise_error(ArgumentError, /Unknown param type/)
+
+      expect {
+        Tina4::Route.new("GET", "/api/{name:inetger}", proc {})
+      }.to raise_error(ArgumentError, /Unknown param type/)
+    end
+
+    it "error message lists the valid types" do
+      expect {
+        Tina4::Route.new("GET", "/api/{name:word}", proc {})
+      }.to raise_error(ArgumentError) { |e|
+        %w[alpha alnum int slug uuid].each { |t| expect(e.message).to include(t) }
+      }
+    end
+  end
 end
