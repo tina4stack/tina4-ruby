@@ -370,4 +370,24 @@ RSpec.describe Tina4::ORM do
       expect(Tina4.camel_to_snake("myFieldName")).to eq("my_field_name")
     end
   end
+
+  # ── Parity contract: driver-native types on read path ──────────
+  #
+  # Mirrors tina4-python's TestFieldsNativeTypes suite. Guards against
+  # any future ORM read-path change that would accidentally re-coerce
+  # a value that's already the correct type (e.g. a native Time instance
+  # from the pg gem on PostgreSQL).
+  #
+  # See tina4-python/plan/orm-field-validate-native-types.md.
+  describe "datetime round-trip on read path" do
+    it "does not crash when reading a row containing a datetime column" do
+      db.execute("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, created_at TEXT)")
+      db.execute("INSERT INTO events (title, created_at) VALUES (?, ?)", ["launch", "2026-04-16 22:30:00"])
+
+      row = db.fetch_one("SELECT * FROM events WHERE id = 1")
+      expect(row).not_to be_nil
+      value = row["created_at"] || row[:created_at]
+      expect(value).to eq("2026-04-16 22:30:00")
+    end
+  end
 end
