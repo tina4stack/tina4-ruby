@@ -125,7 +125,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
   describe "column_info() types" do
     it "returns real column types from SQLite, not UNKNOWN" do
       db_path = File.join(Dir.tmpdir, "tina4_issue106_colinfo_#{$$}.db")
-      db = Tina4::Database.new("sqlite://#{db_path}")
+      db = Tina4::Database.new("sqlite:///" + db_path)
       db.execute("CREATE TABLE col_test (id INTEGER PRIMARY KEY, name TEXT, score REAL, active BOOLEAN)")
       db.execute("INSERT INTO col_test (id, name, score, active) VALUES (1, 'Alice', 9.5, 1)")
 
@@ -155,7 +155,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
   describe "Default fetch limit" do
     it "Database.fetch returns 100 rows with default limit" do
       db_path = File.join(Dir.tmpdir, "tina4_issue106_fetchlimit_#{$$}.db")
-      db = Tina4::Database.new("sqlite://#{db_path}")
+      db = Tina4::Database.new("sqlite:///" + db_path)
       db.execute("CREATE TABLE fetch_test (id INTEGER PRIMARY KEY, val TEXT)")
 
       # Insert 150 rows — more than both 20 and 100
@@ -171,7 +171,7 @@ RSpec.describe "Issue #106 equivalent bugs" do
 
     it "Database.fetch respects explicit limit of 100" do
       db_path = File.join(Dir.tmpdir, "tina4_issue106_fetchlimit2_#{$$}.db")
-      db = Tina4::Database.new("sqlite://#{db_path}")
+      db = Tina4::Database.new("sqlite:///" + db_path)
       db.execute("CREATE TABLE fetch_test2 (id INTEGER PRIMARY KEY, val TEXT)")
 
       150.times { |i| db.execute("INSERT INTO fetch_test2 (id, val) VALUES (?, ?)", [i + 1, "row_#{i + 1}"]) }

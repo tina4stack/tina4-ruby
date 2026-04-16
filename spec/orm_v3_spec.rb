@@ -49,7 +49,7 @@ end
 RSpec.describe "ORM v3 features" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_orm_v3") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db
@@ -123,7 +123,7 @@ RSpec.describe "ORM v3 features" do
     it "allows setting a per-model database" do
       other_dir = Dir.mktmpdir("tina4_orm_other")
       other_path = File.join(other_dir, "other.db")
-      other_db = Tina4::Database.new("sqlite://#{other_path}")
+      other_db = Tina4::Database.new("sqlite:///" + other_path)
       other_db.execute("CREATE TABLE IF NOT EXISTS softdeleteusers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT, is_deleted INTEGER DEFAULT 0)")
 
       begin

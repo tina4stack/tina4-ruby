@@ -14,12 +14,38 @@ module Tina4
 
       def connect(connection_string)
         require "sqlite3"
-        @db_path = connection_string.to_s.sub(/^sqlite3?:\/\//, "").sub(/^sqlite3?:/, "")
+        @db_path = self.class.resolve_path(connection_string)
         @connection = SQLite3::Database.new(@db_path)
         @connection.results_as_hash = true
         @connection.execute("PRAGMA journal_mode=WAL")
         @connection.execute("PRAGMA foreign_keys=ON")
         self
+      end
+
+      # Resolve a SQLite URL / path against the project root (cwd).
+      # Convention matches Tina4::Drivers::SqliteDriver.resolve_path —
+      # three slashes = relative, four = absolute, drive letter = Windows abs.
+      def self.resolve_path(connection_string)
+        return ":memory:" if connection_string == "sqlite::memory:" || connection_string == "sqlite:///:memory:"
+
+        raw = connection_string.to_s
+          .sub(/^sqlite3?:\/\/\//, "")
+          .sub(/^sqlite3?:\/\//, "")
+          .sub(/^sqlite3?:/, "")
+        return ":memory:" if raw == ":memory:"
+
+        is_windows_abs = raw.match?(/^[A-Za-z]:[\/\\]/)
+        is_unix_abs    = raw.start_with?("/")
+
+        if is_windows_abs || is_unix_abs
+          raw
+        else
+          resolved = File.join(Dir.pwd, raw)
+          parent = File.dirname(resolved)
+          require "fileutils"
+          FileUtils.mkdir_p(parent) unless File.directory?(parent)
+          resolved
+        end
       end
 
       def close

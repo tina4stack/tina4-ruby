@@ -6,12 +6,12 @@ require "tmpdir"
 RSpec.describe Tina4::QueryBuilder do
   let(:tmpdir) { Dir.mktmpdir }
   let(:db_path) { File.join(tmpdir, "query_builder_test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:all) do
     @tmpdir_shared = Dir.mktmpdir
     db_path_shared = File.join(@tmpdir_shared, "qb_shared.db")
-    @db_shared = Tina4::Database.new("sqlite://#{db_path_shared}")
+    @db_shared = Tina4::Database.new("sqlite:///" + db_path_shared)
 
     @db_shared.execute(<<~SQL)
       CREATE TABLE users (

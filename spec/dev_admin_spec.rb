@@ -536,7 +536,7 @@ RSpec.describe Tina4::DevAdmin do
 
   describe "multi-statement SQL execution" do
     let(:db_path) { File.join(Dir.tmpdir, "tina4_multi_test_#{Process.pid}.db") }
-    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+    let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     before do
       allow(ENV).to receive(:[]).and_call_original
@@ -645,7 +645,7 @@ RSpec.describe Tina4::DevAdmin do
 
   describe "SQLite LIMIT dedup" do
     let(:db_path) { File.join(Dir.tmpdir, "tina4_limit_test_#{Process.pid}.db") }
-    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+    let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     after do
       db.close rescue nil

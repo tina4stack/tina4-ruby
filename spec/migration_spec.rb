@@ -5,7 +5,7 @@ require "spec_helper"
 RSpec.describe Tina4::Migration do
   let(:tmp_dir) { Dir.mktmpdir("tina4_mig_test") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
   let(:mig_dir) { File.join(tmp_dir, "migrations") }
   let(:migration) { Tina4::Migration.new(db, migrations_dir: mig_dir) }
 

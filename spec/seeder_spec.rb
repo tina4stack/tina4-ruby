@@ -284,7 +284,7 @@ end
 RSpec.describe "Tina4.seed_orm" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_seeder_test") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db
@@ -384,7 +384,7 @@ end
 RSpec.describe "Tina4.seed_table" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_seeder_table_test") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db
@@ -429,7 +429,7 @@ end
 RSpec.describe "Tina4.seed_batch" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_seed_batch_test") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db
@@ -553,7 +553,7 @@ RSpec.describe "FakeData edge cases" do
   describe "large batch" do
     let(:tmp_dir) { Dir.mktmpdir("tina4_seeder_large") }
     let(:db_path) { File.join(tmp_dir, "test.db") }
-    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+    let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     before(:each) do
       Tina4.database = db

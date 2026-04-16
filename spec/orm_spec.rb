@@ -13,7 +13,7 @@ end
 RSpec.describe Tina4::ORM do
   let(:tmp_dir) { Dir.mktmpdir("tina4_orm_test") }
   let(:db_path) { File.join(tmp_dir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db

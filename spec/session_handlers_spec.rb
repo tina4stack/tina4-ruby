@@ -182,7 +182,7 @@ RSpec.describe "Session Handlers" do
   describe Tina4::SessionHandlers::DatabaseHandler do
     let(:tmp_dir) { Dir.mktmpdir("tina4_db_session") }
     let(:db_path) { File.join(tmp_dir, "session.db") }
-    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+    let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     after(:each) do
       db.close rescue nil

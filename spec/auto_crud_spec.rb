@@ -13,7 +13,7 @@ end
 RSpec.describe Tina4::AutoCrud do
   let(:tmp_dir) { Dir.mktmpdir("tina4_auto_crud") }
   let(:db_path) { File.join(tmp_dir, "crud.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db

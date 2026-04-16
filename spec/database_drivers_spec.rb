@@ -199,6 +199,56 @@ RSpec.describe "Database Driver Registration" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
       expect(result).to eq("SELECT * FROM users LIMIT 10 OFFSET 5")
     end
+
+    # ── SQLite URL path resolution (parity with tina4-python, tina4-php, tina4-nodejs)
+    #
+    # Convention:
+    #   sqlite:///X    → relative to cwd (three slashes)
+    #   sqlite:////X   → absolute (four slashes)
+    #   sqlite:///C:/  → Windows absolute (drive letter)
+    #   sqlite::memory: and sqlite:///:memory: → in-memory
+    describe ".resolve_path" do
+      it ":memory: short form passes through" do
+        expect(Tina4::Drivers::SqliteDriver.resolve_path("sqlite::memory:")).to eq(":memory:")
+      end
+
+      it ":memory: URL form passes through" do
+        expect(Tina4::Drivers::SqliteDriver.resolve_path("sqlite:///:memory:")).to eq(":memory:")
+      end
+
+      it "three-slash URL resolves relative to cwd" do
+        Dir.mktmpdir do |tmp|
+          Dir.chdir(tmp) do
+            # macOS symlinks /var/folders -> /private/var/folders, so compare
+            # against the resolved cwd rather than the tmp path.
+            resolved_cwd = Dir.pwd
+            expected = File.join(resolved_cwd, "data", "app.db")
+            expect(Tina4::Drivers::SqliteDriver.resolve_path("sqlite:///data/app.db")).to eq(expected)
+            expect(File.directory?(File.join(resolved_cwd, "data"))).to be true
+          end
+        end
+      end
+
+      it "four-slash URL is absolute" do
+        expect(Tina4::Drivers::SqliteDriver.resolve_path("sqlite:////var/data/app.db")).to eq("/var/data/app.db")
+      end
+
+      it "Windows drive-letter URL is absolute" do
+        expect(Tina4::Drivers::SqliteDriver.resolve_path("sqlite:///C:/Users/app.db")).to eq("C:/Users/app.db")
+      end
+
+      it "does not mkdir outside cwd for absolute paths (bruce regression)" do
+        Dir.mktmpdir do |tmp|
+          Dir.chdir(tmp) do
+            # Regression for the bruceproject crash that hit
+            # `Errno::EROFS: Read-only file system @ dir_s_mkdir - /data` on macOS.
+            # Absolute paths must NOT try to create parent dirs outside cwd.
+            Tina4::Drivers::SqliteDriver.resolve_path("sqlite:////does/not/exist/app.db")
+            expect(File.exist?("/does")).to be false
+          end
+        end
+      end
+    end
   end
 
   describe "MssqlDriver connection string parsing" do
@@ -389,7 +439,7 @@ RSpec.describe "Database Driver Registration" do
   describe "SQLite CRUD" do
     let(:tmp_dir) { Dir.mktmpdir("tina4_db_test") }
     let(:db_path) { File.join(tmp_dir, "crud_test.db") }
-    let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+    let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     before(:each) do
       db.execute("CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL DEFAULT 0.0, active INTEGER DEFAULT 1)")

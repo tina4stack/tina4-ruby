@@ -5,7 +5,7 @@ require "spec_helper"
 RSpec.describe Tina4::Adapters::Sqlite3Adapter do
   let(:tmp_dir) { Dir.mktmpdir("tina4_sqlite3_adapter") }
   let(:db_path) { File.join(tmp_dir, "test_adapter.db") }
-  let(:adapter) { Tina4::Adapters::Sqlite3Adapter.new("sqlite://#{db_path}") }
+  let(:adapter) { Tina4::Adapters::Sqlite3Adapter.new("sqlite:///" + db_path) }
 
   after(:each) do
     adapter.close if adapter.connected?

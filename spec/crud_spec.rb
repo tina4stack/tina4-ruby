@@ -13,7 +13,7 @@ end
 RSpec.describe Tina4::Crud do
   let(:tmp_dir) { Dir.mktmpdir("tina4_crud") }
   let(:db_path) { File.join(tmp_dir, "crud_test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
     Tina4.database = db

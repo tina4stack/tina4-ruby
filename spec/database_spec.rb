@@ -6,7 +6,7 @@ require "tmpdir"
 RSpec.describe Tina4::Database do
   let(:tmpdir) { Dir.mktmpdir }
   let(:db_path) { File.join(tmpdir, "test.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before do
     db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, age INTEGER)")

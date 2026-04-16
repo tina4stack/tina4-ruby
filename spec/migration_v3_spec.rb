@@ -5,7 +5,7 @@ require "spec_helper"
 RSpec.describe "Migration v3 features" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_migration_v3") }
   let(:db_path) { File.join(tmp_dir, "migration.db") }
-  let(:db) { Tina4::Database.new("sqlite://#{db_path}") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
   let(:migrations_dir) { File.join(tmp_dir, "migrations") }
   let(:migration) { Tina4::Migration.new(db, migrations_dir: migrations_dir) }
 
