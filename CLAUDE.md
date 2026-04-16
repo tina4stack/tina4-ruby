@@ -31,19 +31,20 @@ Version 3.11.0 — TINA4: The Intelligent Native Application 4ramework. Simple. 
 
 ## Development Mode (DevReload)
 
-Start with `--dev` flag to enable development features:
+Set `TINA4_DEBUG=true` in `.env` to enable development features:
 
-```bash
-tina4ruby serve --dev
-```
-
-Or set `TINA4_DEBUG=true` in `.env`:
-
-- **Auto-reload** — File watcher detects changes to `.rb`, `.twig`, `.html`, `.erb` files and reloads
-- **SCSS auto-compile** — `.scss` changes compiled automatically
+- **Auto-reload** — Browser auto-refreshes when `.rb`, `.twig`, `.html`, `.erb` files change
+- **SCSS auto-compile** — `.scss` changes compiled to `src/public/css/`
 - **Verbose logging** — Full debug output to console and `logs/debug.log`
 
-DevReload watches routes, templates, and scss directories via the `listen` gem.
+### How DevReload works
+
+The `tina4` Rust CLI is the sole file watcher for the Tina4 stack — there is no framework-side watcher (the `listen`-gem based `dev_reload.rb` was removed in 3.11.x). The flow is:
+
+1. `tina4 serve` (Rust CLI) watches `src/`, `migrations/`, `.env`. Noise is filtered (Access/Metadata events, `__pycache__`, `.git`, `node_modules`, `logs`, `.log`/`.db*`/`.swp` files) and a real mtime check defeats overlayfs spurious events.
+2. On a real change, the CLI POSTs `/__dev/api/reload` to the running Ruby server.
+3. `Tina4::DevAdmin` bumps its `@reload_mtime` counter and broadcasts `{type: 'reload'}` over WebSocket at `/__dev_reload`. `GET /__dev/api/mtime` returns the counter for the polling fallback.
+4. The browser's dev toolbar reloads the page (or swaps the stylesheet for CSS changes).
 
 ## Project Structure
 
@@ -56,7 +57,7 @@ lib/
     queue.rb, session.rb, graphql.rb, wsdl.rb, crud.rb,
     websocket.rb,        # WebSocket with backplane support localization.rb, middleware.rb, cli.rb,
     auth.rb, field_types.rb, rack_app.rb, scss_compiler.rb,
-    dev_reload.rb, log.rb, debug.rb (compat alias), env.rb,
+    log.rb, debug.rb (compat alias), env.rb,
     api.rb, version.rb,
     events.rb,          # Observer pattern event system
     ai.rb,              # AI coding-tool detection & context scaffolding
@@ -580,7 +581,7 @@ Tina4::DevAdmin.request_inspector.clear
 - SCSS compilation built-in
 - JWT auth via `jwt` gem
 - Password hashing via `bcrypt`
-- File watching via `listen`
+- File watching handled by the `tina4` Rust CLI (no framework-side watcher)
 - Event system (observer pattern) for decoupled module communication
 - DI container with lazy factories and memoization
 - In-memory response cache (GET only, TTL-based, thread-safe)
