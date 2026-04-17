@@ -200,6 +200,19 @@ module Tina4
         json_body
       elsif @content_type.include?("application/x-www-form-urlencoded")
         parse_query_to_hash(body)
+      elsif @content_type.include?("multipart/form-data")
+        # Extract form fields from Rack's parsed multipart data.
+        # Files are handled separately by extract_files.
+        result = {}
+        form_hash = @env["rack.request.form_hash"] rescue nil
+        if form_hash
+          form_hash.each do |key, value|
+            # Skip file entries (handled by extract_files)
+            next if value.is_a?(Hash) && value[:tempfile]
+            result[key] = value
+          end
+        end
+        result
       else
         {}
       end
