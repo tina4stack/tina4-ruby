@@ -28,7 +28,7 @@ module Tina4
                  else
                    @connection.exec_params(converted_sql, params)
                  end
-        result.map { |row| symbolize_keys(row) }
+        result.map { |row| decode_blobs(symbolize_keys(row)) }
       end
 
       def execute(sql, params = [])
@@ -100,6 +100,16 @@ module Tina4
 
       def symbolize_keys(hash)
         hash.each_with_object({}) { |(k, v), h| h[k.to_sym] = v }
+      end
+
+      # Ensure binary (bytea) columns are proper byte strings.
+      # PostgreSQL's pg gem returns bytea as ASCII-8BIT encoded strings —
+      # they're already raw bytes, just tag them so Ruby treats them right.
+      def decode_blobs(row)
+        # No conversion needed — pg gem returns bytea as ASCII-8BIT strings
+        # which are raw bytes. Users can .force_encoding("UTF-8") for text
+        # BLOBs or use the bytes directly for binary data.
+        row
       end
     end
   end

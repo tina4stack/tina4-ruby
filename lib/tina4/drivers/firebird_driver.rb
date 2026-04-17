@@ -34,11 +34,12 @@ module Tina4
       end
 
       def execute_query(sql, params = [])
-        if params.empty?
-          @connection.query(:hash, sql)
-        else
-          @connection.query(:hash, sql, *params)
-        end.map { |row| stringify_keys(row) }
+        rows = if params.empty?
+                 @connection.query(:hash, sql)
+               else
+                 @connection.query(:hash, sql, *params)
+               end
+        rows.map { |row| decode_blobs(stringify_keys(row)) }
       end
 
       def execute(sql, params = [])
@@ -104,6 +105,19 @@ module Tina4
 
       def stringify_keys(hash)
         hash.each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+      end
+
+      # Ensure Firebird BLOB columns are proper byte strings.
+      # The Fb gem may return BLOBs as resource handles or IO objects —
+      # read them into strings if needed.
+      def decode_blobs(row)
+        row.each do |key, value|
+          if value.respond_to?(:read)
+            row[key] = value.read
+            value.close if value.respond_to?(:close)
+          end
+        end
+        row
       end
     end
   end
