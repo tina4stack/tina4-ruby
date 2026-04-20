@@ -548,6 +548,20 @@ module Tina4
       value = eval_expr(var_name, context)
       filters.each do |fname, args|
         next if fname == "raw" || fname == "safe"
+
+        # Filter + property-access chain: `first.groupSummary` — apply
+        # the filter, then traverse the path on the result using a
+        # synthetic context so eval_expr's dotted resolution does the
+        # work. Parity with tina4-python + tina4-php.
+        real_fname, tail_path = split_filter_name_and_path(fname)
+        if !tail_path.empty? && @filters[real_fname]
+          evaluated_args = args.map { |a| eval_filter_arg(a, context) }
+          value = @filters[real_fname].call(value, *evaluated_args)
+          value = eval_expr("__frond_filter_tmp.#{tail_path}",
+                            { "__frond_filter_tmp" => value })
+          next
+        end
+
         fn = @filters[fname]
         if fn
           evaluated_args = args.map { |a| eval_filter_arg(a, context) }
@@ -608,6 +622,19 @@ module Tina4
 
         # Sandbox: check filter access
         if @sandbox && @allowed_filters && !@allowed_filters.include?(fname)
+          next
+        end
+
+        # Filter + property-access chain: `first.groupSummary` — apply
+        # the filter, then traverse the path on the result. Done BEFORE
+        # the inline fast-path so cases like `items|first.name` work
+        # regardless of whether `first` is an inline filter too.
+        real_fname, tail_path = split_filter_name_and_path(fname)
+        if !tail_path.empty? && @filters[real_fname]
+          evaluated_args = args.map { |a| eval_filter_arg(a, context) }
+          value = @filters[real_fname].call(value, *evaluated_args)
+          value = eval_expr("__frond_filter_tmp.#{tail_path}",
+                            { "__frond_filter_tmp" => value })
           next
         end
 
@@ -755,6 +782,41 @@ module Tina4
     # -----------------------------------------------------------------------
     # Filter chain parser
     # -----------------------------------------------------------------------
+
+    # Split "first.groupSummary" into ["first", "groupSummary"] so a
+    # filter segment followed by property access — `{{ x | first.name }}`
+    # — applies the filter then traverses the path on the result.
+    # Returns [fname, ""] when no structural dot is present.
+    #
+    # The split point must sit outside parens/brackets/braces and quotes
+    # so filter args like `round(1.5)` or `date("Y.m.d")` don't false-
+    # trigger. Parity with tina4-python and tina4-php.
+    def split_filter_name_and_path(fname)
+      depth = 0
+      in_q  = nil
+      i     = 0
+      n     = fname.length
+      while i < n
+        ch = fname[i]
+        if in_q
+          in_q = nil if ch == in_q && (i.zero? || fname[i - 1] != "\\")
+          i += 1
+          next
+        end
+        case ch
+        when '"', "'"
+          in_q = ch
+        when "(", "[", "{"
+          depth += 1
+        when ")", "]", "}"
+          depth -= 1
+        when "."
+          return [fname[0...i], fname[(i + 1)..]] if depth.zero?
+        end
+        i += 1
+      end
+      [fname, ""]
+    end
 
     def parse_filter_chain(expr)
       cached = @filter_chain_cache[expr]
