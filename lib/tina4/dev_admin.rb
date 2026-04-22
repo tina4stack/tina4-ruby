@@ -5,6 +5,8 @@ require "digest"
 require "tmpdir"
 require "net/http"
 require "uri"
+require "fileutils"
+require "shellwords"
 require_relative "metrics"
 
 module Tina4
@@ -494,6 +496,56 @@ module Tina4
         when ["GET", "/__dev/api/metrics/file"]
           file_path = (query_param(env, "path") || "").to_s
           json_response(Tina4::Metrics.file_detail(file_path))
+        when ["GET", "/__dev/api/thoughts"]
+          json_response(thoughts_payload)
+        when ["POST", "/__dev/api/supervise/create"]
+          body = read_json_body(env) || {}
+          json_response(proxy_supervisor("/supervise/create", method: "POST", body: body))
+        when ["GET", "/__dev/api/supervise/sessions"]
+          json_response(proxy_supervisor("/supervise/sessions", method: "GET", query: env["QUERY_STRING"]))
+        when ["GET", "/__dev/api/supervise/diff"]
+          json_response(proxy_supervisor("/supervise/diff", method: "GET", query: env["QUERY_STRING"]))
+        when ["POST", "/__dev/api/supervise/commit"]
+          body = read_json_body(env) || {}
+          json_response(proxy_supervisor("/supervise/commit", method: "POST", body: body))
+        when ["POST", "/__dev/api/supervise/cancel"]
+          body = read_json_body(env) || {}
+          json_response(proxy_supervisor("/supervise/cancel", method: "POST", body: body))
+        when ["POST", "/__dev/api/execute"]
+          body = read_json_body(env) || {}
+          execute_proxy(body)
+        when ["GET", "/__dev/api/files"]
+          json_response(files_list(env))
+        when ["GET", "/__dev/api/file"]
+          json_response(file_read_payload(query_param(env, "path")))
+        when ["GET", "/__dev/api/file/raw"]
+          file_raw_response(query_param(env, "path"))
+        when ["POST", "/__dev/api/file/save"]
+          body = read_json_body(env) || {}
+          json_response(file_save(body))
+        when ["POST", "/__dev/api/file/rename"]
+          body = read_json_body(env) || {}
+          json_response(file_rename(body))
+        when ["POST", "/__dev/api/file/delete"]
+          body = read_json_body(env) || {}
+          json_response(file_delete(body))
+        when ["GET", "/__dev/api/deps/search"]
+          json_response(deps_search(query_param(env, "q") || query_param(env, "query") || ""))
+        when ["POST", "/__dev/api/deps/install"]
+          body = read_json_body(env) || {}
+          json_response(deps_install(body))
+        when ["GET", "/__dev/api/git/status"]
+          json_response(git_status_payload)
+        when ["GET", "/__dev/api/mcp/tools"]
+          json_response(mcp_tools_list)
+        when ["POST", "/__dev/api/mcp/call"]
+          body = read_json_body(env) || {}
+          json_response(mcp_tool_call(body))
+        when ["GET", "/__dev/api/scaffold"]
+          json_response(scaffold_templates)
+        when ["POST", "/__dev/api/scaffold/run"]
+          body = read_json_body(env) || {}
+          json_response(scaffold_run(body))
         when ["GET", "/__dev/api/graphql/schema"]
           begin
             gql = Tina4::GraphQL.new
@@ -929,6 +981,308 @@ module Tina4
         end
 
         { deployed: name, files: copied }
+      end
+
+      # ── New dev-admin surface area (parity with Python/PHP) ────
+
+      def supervisor_base
+        base = ENV["TINA4_SUPERVISOR_URL"].to_s.strip
+        return base unless base.empty?
+        port = (ENV["TINA4_PORT"] || ENV["PORT"] || "7147").to_i + 2000
+        "http://127.0.0.1:#{port}"
+      end
+
+      def thoughts_payload
+        base = supervisor_base
+        begin
+          uri = URI.parse("#{base}/thoughts")
+          req = Net::HTTP::Get.new(uri)
+          resp = Net::HTTP.start(uri.host, uri.port, open_timeout: 2, read_timeout: 5) { |h| h.request(req) }
+          return JSON.parse(resp.body) if resp.is_a?(Net::HTTPSuccess)
+          { thoughts: [], error: "Supervisor returned #{resp.code}" }
+        rescue StandardError => e
+          { thoughts: [], error: e.message }
+        end
+      end
+
+      def proxy_supervisor(path, method: "GET", body: nil, query: nil)
+        base = supervisor_base
+        url = "#{base}#{path}"
+        url += "?#{query}" if query && !query.empty?
+        begin
+          uri = URI.parse(url)
+          req = case method.upcase
+                when "POST"
+                  r = Net::HTTP::Post.new(uri)
+                  r["Content-Type"] = "application/json"
+                  r.body = JSON.generate(body || {})
+                  r
+                else
+                  Net::HTTP::Get.new(uri)
+                end
+          resp = Net::HTTP.start(uri.host, uri.port, open_timeout: 2, read_timeout: 30) { |h| h.request(req) }
+          begin
+            JSON.parse(resp.body)
+          rescue JSON::ParserError
+            { body: resp.body, status: resp.code.to_i }
+          end
+        rescue StandardError => e
+          { error: e.message, supervisor: base }
+        end
+      end
+
+      def execute_proxy(body)
+        # Proxy POST /execute to the supervisor at framework_port + 2000.
+        # Pass through the response stream as-is (SSE or JSON).
+        base = supervisor_base
+        begin
+          uri = URI.parse("#{base}/execute")
+          req = Net::HTTP::Post.new(uri)
+          req["Content-Type"] = "application/json"
+          req["Accept"] = "text/event-stream"
+          req.body = JSON.generate(body || {})
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.open_timeout = 2
+          http.read_timeout = 300
+          resp = http.request(req)
+          ct = resp["content-type"] || "application/json; charset=utf-8"
+          [resp.code.to_i, { "content-type" => ct }, [resp.body.to_s]]
+        rescue StandardError => e
+          body_str = JSON.generate({ error: e.message, supervisor: base })
+          [502, { "content-type" => "application/json; charset=utf-8" }, [body_str]]
+        end
+      end
+
+      def safe_project_path(rel_path)
+        root = File.expand_path(Dir.pwd)
+        resolved = File.expand_path(rel_path.to_s, root)
+        raise ArgumentError, "path escapes project directory" unless resolved.start_with?(root)
+        resolved
+      end
+
+      def files_list(env)
+        rel = query_param(env, "path") || "."
+        begin
+          target = safe_project_path(rel)
+          return { error: "Not found" } unless File.exist?(target)
+          return { error: "Not a directory" } unless File.directory?(target)
+          entries = Dir.children(target).sort.map do |name|
+            full = File.join(target, name)
+            {
+              name: name,
+              type: File.directory?(full) ? "dir" : "file",
+              size: File.file?(full) ? File.size(full) : 0
+            }
+          end
+          { path: rel, entries: entries, count: entries.size }
+        rescue => e
+          { error: e.message }
+        end
+      end
+
+      def file_read_payload(rel)
+        return { error: "path required" } if rel.nil? || rel.empty?
+        begin
+          target = safe_project_path(rel)
+          return { error: "Not found" } unless File.exist?(target)
+          return { error: "Not a file" } unless File.file?(target)
+          content = File.read(target, encoding: "utf-8", invalid: :replace, undef: :replace)
+          { path: rel, content: content, bytes: File.size(target) }
+        rescue => e
+          { error: e.message }
+        end
+      end
+
+      def file_raw_response(rel)
+        return json_response({ error: "path required" }) if rel.nil? || rel.empty?
+        begin
+          target = safe_project_path(rel)
+          return json_response({ error: "Not found" }) unless File.file?(target)
+          content = File.binread(target)
+          ct = case File.extname(target).downcase
+               when ".css" then "text/css"
+               when ".js"  then "application/javascript"
+               when ".json" then "application/json"
+               when ".html", ".htm" then "text/html"
+               when ".png" then "image/png"
+               when ".jpg", ".jpeg" then "image/jpeg"
+               when ".gif" then "image/gif"
+               when ".svg" then "image/svg+xml"
+               else "text/plain; charset=utf-8"
+               end
+          [200, { "content-type" => ct }, [content]]
+        rescue => e
+          json_response({ error: e.message })
+        end
+      end
+
+      def file_save(body)
+        rel     = body["path"].to_s
+        content = body["content"].to_s
+        return { error: "path required" } if rel.empty?
+        begin
+          target = safe_project_path(rel)
+          existed = File.exist?(target)
+          FileUtils.mkdir_p(File.dirname(target))
+          File.write(target, content, encoding: "utf-8")
+          Tina4::Plan.record_action(existed ? "patched" : "created", rel) if defined?(Tina4::Plan)
+          { saved: rel, bytes: content.bytesize }
+        rescue => e
+          { error: e.message }
+        end
+      end
+
+      def file_rename(body)
+        from = body["from"].to_s
+        to   = body["to"].to_s
+        return { error: "from/to required" } if from.empty? || to.empty?
+        begin
+          src = safe_project_path(from)
+          dst = safe_project_path(to)
+          return { error: "Source not found" } unless File.exist?(src)
+          FileUtils.mkdir_p(File.dirname(dst))
+          File.rename(src, dst)
+          { renamed: { from: from, to: to } }
+        rescue => e
+          { error: e.message }
+        end
+      end
+
+      def file_delete(body)
+        rel = body["path"].to_s
+        return { error: "path required" } if rel.empty?
+        begin
+          target = safe_project_path(rel)
+          return { error: "Not found" } unless File.exist?(target)
+          if File.directory?(target)
+            FileUtils.rm_rf(target)
+          else
+            File.delete(target)
+          end
+          { deleted: rel }
+        rescue => e
+          { error: e.message }
+        end
+      end
+
+      def deps_search(query)
+        return { results: [], count: 0, error: "query required" } if query.to_s.strip.empty?
+        begin
+          uri = URI.parse("https://rubygems.org/api/v1/search.json?query=#{URI.encode_www_form_component(query)}")
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.use_ssl = true
+          http.open_timeout = 5
+          http.read_timeout = 8
+          resp = http.request(Net::HTTP::Get.new(uri))
+          if resp.is_a?(Net::HTTPSuccess)
+            gems = JSON.parse(resp.body)
+            results = gems.first(20).map do |g|
+              { name: g["name"], version: g["version"], info: g["info"].to_s[0, 200] }
+            end
+            { results: results, count: results.size }
+          else
+            { results: [], count: 0, error: "rubygems returned #{resp.code}" }
+          end
+        rescue => e
+          { results: [], count: 0, error: e.message }
+        end
+      end
+
+      def deps_install(body)
+        name = body["name"].to_s.strip
+        return { ok: false, error: "name required" } if name.empty?
+        # Append to Gemfile if not present — do NOT actually bundle install.
+        gemfile = File.join(Dir.pwd, "Gemfile")
+        return { ok: false, error: "No Gemfile at project root" } unless File.exist?(gemfile)
+        content = File.read(gemfile)
+        if content.include?("gem \"#{name}\"") || content.include?("gem '#{name}'")
+          return { ok: true, gem: name, note: "already in Gemfile" }
+        end
+        File.open(gemfile, "a") { |f| f.write("\ngem \"#{name}\"\n") }
+        { ok: true, gem: name, note: "added to Gemfile; run `bundle install`" }
+      end
+
+      def git_status_payload
+        begin
+          inside = `cd #{Shellwords.escape(Dir.pwd)} && git rev-parse --is-inside-work-tree 2>/dev/null`.strip
+          return { error: "Not a git repository" } if inside != "true"
+          branch = `cd #{Shellwords.escape(Dir.pwd)} && git branch --show-current 2>/dev/null`.strip
+          status = `cd #{Shellwords.escape(Dir.pwd)} && git status --porcelain 2>/dev/null`.strip.split("\n").reject(&:empty?)
+          recent = `cd #{Shellwords.escape(Dir.pwd)} && git log --oneline -5 2>/dev/null`.strip.split("\n").reject(&:empty?)
+          { branch: branch, status: status, recent_commits: recent }
+        rescue => e
+          { error: "git unavailable: #{e.message}" }
+        end
+      end
+
+      def mcp_tools_list
+        return { tools: [], count: 0 } unless defined?(Tina4::McpServer)
+        server = Tina4._default_mcp_server
+        list = server.tools.values.map do |t|
+          { name: t["name"], description: t["description"], schema: t["inputSchema"] }
+        end
+        { tools: list, count: list.size }
+      end
+
+      def mcp_tool_call(body)
+        tool_name = body["name"].to_s
+        args      = body["arguments"] || {}
+        return { error: "tool name required" } if tool_name.empty?
+        return { error: "MCP not loaded" } unless defined?(Tina4::McpServer)
+        server = Tina4._default_mcp_server
+        payload = JSON.generate({
+          "jsonrpc" => "2.0",
+          "id"      => 1,
+          "method"  => "tools/call",
+          "params"  => { "name" => tool_name, "arguments" => args }
+        })
+        raw = server.handle_message(payload)
+        return {} if raw.nil? || raw.empty?
+        JSON.parse(raw)
+      end
+
+      def scaffold_templates
+        # Expose built-in scaffold targets for the dev-admin UI.
+        { templates: [
+          { id: "route",      label: "Route file",           target: "src/routes" },
+          { id: "model",      label: "ORM model",            target: "src/orm" },
+          { id: "migration",  label: "SQL migration",        target: "migrations" },
+          { id: "middleware", label: "Middleware class",     target: "src/app" }
+        ] }
+      end
+
+      def scaffold_run(body)
+        kind = body["kind"].to_s
+        name = body["name"].to_s.strip
+        return { ok: false, error: "kind + name required" } if kind.empty? || name.empty?
+        project = Dir.pwd
+        case kind
+        when "route"
+          target = File.join(project, "src", "routes", "#{name}.rb")
+          FileUtils.mkdir_p(File.dirname(target))
+          File.write(target, "# #{name} routes\nTina4::Router.get(\"/api/#{name}\") do |req, res|\n  res.call({ hello: \"#{name}\" })\nend\n") unless File.exist?(target)
+          { ok: true, created: target.sub("#{project}/", "") }
+        when "model"
+          target = File.join(project, "src", "orm", "#{name}.rb")
+          FileUtils.mkdir_p(File.dirname(target))
+          cls = name.to_s.split(/[_-]/).map(&:capitalize).join
+          File.write(target, "class #{cls} < Tina4::ORM\n  integer_field :id, primary_key: true, auto_increment: true\n  string_field :name\nend\n") unless File.exist?(target)
+          { ok: true, created: target.sub("#{project}/", "") }
+        when "migration"
+          ts = Time.now.strftime("%Y%m%d%H%M%S")
+          target = File.join(project, "migrations", "#{ts}_#{name}.sql")
+          FileUtils.mkdir_p(File.dirname(target))
+          File.write(target, "-- migration: #{name}\n")
+          { ok: true, created: target.sub("#{project}/", "") }
+        when "middleware"
+          target = File.join(project, "src", "app", "#{name}.rb")
+          FileUtils.mkdir_p(File.dirname(target))
+          cls = name.to_s.split(/[_-]/).map(&:capitalize).join
+          File.write(target, "class #{cls}\n  def self.before_check(req, res); [req, res]; end\nend\n") unless File.exist?(target)
+          { ok: true, created: target.sub("#{project}/", "") }
+        else
+          { ok: false, error: "unknown kind: #{kind}" }
+        end
       end
     end
   end

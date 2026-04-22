@@ -680,6 +680,181 @@ module Tina4
         end
       }, "Seed a table with fake data")
 
+      # ── File patch ────────────────────────────────────
+      server.register_tool("file_patch", lambda { |path:, old_string:, new_string:, count: 1|
+        p = safe_path.call(path)
+        return { "error" => "File not found: #{path}" } unless File.file?(p)
+        original = File.read(p, encoding: "utf-8")
+        occurrences = original.scan(old_string).size
+        return { "error" => "old_string not found in #{path}" } if occurrences.zero?
+        if occurrences != count.to_i
+          return { "error" => "old_string appears #{occurrences} times, expected #{count}. Expand old_string to make it unique, or set count explicitly." }
+        end
+        updated = original.sub(old_string, new_string)
+        # Ruby String#sub replaces first; if count > 1, do N replacements
+        if count.to_i > 1
+          updated = original.dup
+          count.to_i.times { updated.sub!(old_string, new_string) }
+        end
+        File.write(p, updated, encoding: "utf-8")
+        rel = p.sub("#{project_root}/", "")
+        Tina4::Plan.record_action("patched", rel) if defined?(Tina4::Plan)
+        { "patched" => rel, "replacements" => count.to_i, "bytes" => updated.bytesize }
+      }, "Targeted edit: replace old_string with new_string in a file")
+
+      # ── Docs tools ────────────────────────────────────
+      framework_doc_paths = lambda do
+        gem_root = File.expand_path("..", File.dirname(__FILE__))
+        candidates = [
+          File.join(gem_root, "..", "CLAUDE.md"),
+          File.join(gem_root, "..", "AGENTS.md"),
+          File.join(gem_root, "..", "CONVENTIONS.md"),
+          File.join(gem_root, "..", "README.md"),
+          File.join(Dir.pwd, "CLAUDE.md")
+        ]
+        candidates.map { |p| File.expand_path(p) }.uniq.select { |p| File.file?(p) }
+      end
+
+      server.register_tool("docs_list", lambda {
+        framework_doc_paths.call.map { |p| { "name" => File.basename(p), "bytes" => File.size(p) } }
+      }, "List framework documentation files")
+
+      server.register_tool("docs_search", lambda { |query:, limit: 5, context_lines: 4|
+        return { "error" => "query must be at least 2 characters" } if query.to_s.length < 2
+        needle = query.to_s.downcase
+        hits = []
+        framework_doc_paths.call.each do |p|
+          begin
+            lines = File.read(p, encoding: "utf-8", invalid: :replace, undef: :replace).split("\n")
+          rescue StandardError
+            next
+          end
+          lines.each_with_index do |line, i|
+            next unless line.downcase.include?(needle)
+            start_i = [0, i - context_lines.to_i].max
+            end_i   = [lines.size, i + context_lines.to_i + 1].min
+            score = 1
+            score += 1 if line.include?(query.to_s)
+            score += 2 if line.lstrip.start_with?("#")
+            hits << {
+              "file" => File.basename(p),
+              "line" => i + 1,
+              "score" => score,
+              "snippet" => lines[start_i...end_i].join("\n")
+            }
+          end
+        end
+        hits.sort_by! { |h| -h["score"] }
+        hits.first([1, limit.to_i].max)
+      }, "Search Tina4 framework docs for a query string")
+
+      server.register_tool("docs_section", lambda { |file:, heading:|
+        match = framework_doc_paths.call.find { |p| File.basename(p) == file }
+        return { "error" => "Unknown doc file: #{file}. Try docs_list() first." } unless match
+        text = File.read(match, encoding: "utf-8", invalid: :replace, undef: :replace)
+        lines = text.split("\n")
+        heading_lc = heading.to_s.downcase.strip
+        start_i = -1
+        start_level = 0
+        lines.each_with_index do |line, i|
+          stripped = line.lstrip
+          next unless stripped.start_with?("#")
+          level = stripped.length - stripped.sub(/\A#+/, "").length
+          title = stripped[level..].to_s.strip.downcase
+          if title.include?(heading_lc)
+            start_i = i
+            start_level = level
+            break
+          end
+        end
+        return { "error" => "Heading '#{heading}' not found in #{file}" } if start_i < 0
+        end_i = lines.size
+        (start_i + 1).upto(lines.size - 1) do |j|
+          stripped = lines[j].lstrip
+          next unless stripped.start_with?("#")
+          level = stripped.length - stripped.sub(/\A#+/, "").length
+          if level <= start_level
+            end_i = j
+            break
+          end
+        end
+        { "file" => file, "heading" => lines[start_i].strip, "body" => lines[start_i...end_i].join("\n") }
+      }, "Return a full markdown section from a framework doc file")
+
+      # ── Git / deps / project ──────────────────────────
+      server.register_tool("git_status", lambda {
+        Tina4::DevAdmin.send(:git_status_payload)
+      }, "Show git branch, modified/untracked files, recent commits")
+
+      server.register_tool("deps_list", lambda {
+        gemfile = File.join(Dir.pwd, "Gemfile")
+        return { "error" => "No Gemfile at project root" } unless File.file?(gemfile)
+        deps = File.read(gemfile).scan(/^\s*gem\s+["']([^"']+)["']/).flatten
+        { "name" => File.basename(Dir.pwd), "dependencies" => deps }
+      }, "List this project's declared Ruby dependencies")
+
+      server.register_tool("project_overview", lambda {
+        { "system" => { "framework" => "tina4-ruby", "version" => (defined?(Tina4::VERSION) ? Tina4::VERSION : "unknown"), "ruby" => RUBY_DESCRIPTION, "cwd" => project_root } }
+      }, "One-shot snapshot: system + project info")
+
+      # ── Project index ─────────────────────────────────
+      server.register_tool("index_rebuild", lambda {
+        Tina4::ProjectIndex.refresh
+      }, "Refresh the persistent project index (lazy, mtime-based)")
+
+      server.register_tool("index_search", lambda { |query:, limit: 20|
+        Tina4::ProjectIndex.search(query, limit.to_i)
+      }, "Find files by path, symbol, route, or summary")
+
+      server.register_tool("index_file", lambda { |path:|
+        Tina4::ProjectIndex.file_entry(path)
+      }, "Full index entry for one file")
+
+      server.register_tool("index_overview", lambda {
+        Tina4::ProjectIndex.overview
+      }, "Project shape: files by language, routes, models, recent edits")
+
+      # ── Plan management ───────────────────────────────
+      server.register_tool("plan_current", lambda {
+        Tina4::Plan.current
+      }, "The active plan: title, steps (done/not), next step, progress")
+
+      server.register_tool("plan_list", lambda {
+        Tina4::Plan.list_plans
+      }, "All plans in plan/ with progress and which one is active")
+
+      server.register_tool("plan_create", lambda { |title:, goal: "", steps: nil, make_current: true|
+        Tina4::Plan.create(title, goal: goal, steps: steps, make_current: make_current)
+      }, "Create a new markdown plan in plan/ and make it active")
+
+      server.register_tool("plan_switch_to", lambda { |name:|
+        Tina4::Plan.set_current(name)
+      }, "Make a different plan the active one")
+
+      server.register_tool("plan_complete_step", lambda { |index:|
+        Tina4::Plan.complete_step(index.to_i)
+      }, "Tick a step as done (call the moment the step finishes)")
+
+      server.register_tool("plan_add_step", lambda { |text:|
+        Tina4::Plan.add_step(text)
+      }, "Append a new unchecked step to the current plan")
+
+      server.register_tool("plan_note", lambda { |text:|
+        Tina4::Plan.append_note(text)
+      }, "Append a timestamped note/breadcrumb to the current plan")
+
+      server.register_tool("plan_archive", lambda { |name: ""|
+        Tina4::Plan.archive(name)
+      }, "Move a finished plan to plan/done/")
+
+      server.register_tool("plan_read", lambda { |name:|
+        Tina4::Plan.read(name)
+      }, "Full structured view of any plan by filename")
+
+      server.register_tool("plan_flesh", lambda { |name: "", prompt: ""|
+        Tina4::Plan.flesh(name, prompt)
+      }, "Auto-generate concrete build steps via AI and append them to an existing plan")
+
       # ── System Tools ──────────────────────────────────
       server.register_tool("system_info", lambda {
         {
