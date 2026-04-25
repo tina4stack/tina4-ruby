@@ -316,9 +316,55 @@ module Tina4
         Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
       end
 
+      # Write `.tina4/mcp.json` so MCP-aware tools (Claude Code, Cursor) can
+      # auto-discover this project's live docs server. Idempotent — no-op if
+      # the file already matches the desired contents. Also appends `.tina4/`
+      # to the project's `.gitignore` if a git repo is present.
+      def auto_discover_mcp!(project_root: Dir.pwd)
+        return if @_mcp_auto_discovered
+        @_mcp_auto_discovered = true
+        return unless enabled?
+
+        port = ENV["TINA4_PORT"] || ENV["PORT"] || "7147"
+        url  = "http://localhost:#{port}/__dev/api/mcp"
+        target_dir = File.join(project_root, ".tina4")
+        target = File.join(target_dir, "mcp.json")
+        payload = {
+          "mcpServers" => {
+            "tina4-live-docs" => {
+              "url" => url,
+              "description" => "Live API docs for this Tina4 project (framework + user code)",
+            },
+          },
+        }
+        begin
+          FileUtils.mkdir_p(target_dir)
+          existing = if File.file?(target)
+                       (JSON.parse(File.read(target)) rescue {})
+                     else
+                       {}
+                     end
+          if existing != payload
+            File.write(target, JSON.pretty_generate(payload))
+          end
+
+          gitignore = File.join(project_root, ".gitignore")
+          if File.directory?(File.join(project_root, ".git"))
+            current = File.file?(gitignore) ? File.read(gitignore) : ""
+            unless current.lines.map(&:strip).include?(".tina4/") || current.lines.map(&:strip).include?(".tina4")
+              prefix = (!current.empty? && !current.end_with?("\n")) ? "\n" : ""
+              File.write(gitignore, "#{current}#{prefix}.tina4/\n")
+            end
+          end
+        rescue StandardError => e
+          Tina4::Log.warning("auto_discover_mcp! failed: #{e.message}") if defined?(Tina4::Log)
+        end
+      end
+
       # Handle a /__dev request; returns [status, headers, body] or nil if not a dev path
       def handle_request(env)
         return nil unless enabled?
+        auto_discover_mcp!
 
         path = env["PATH_INFO"] || "/"
         method = env["REQUEST_METHOD"]
@@ -548,6 +594,16 @@ module Tina4
         when ["POST", "/__dev/api/scaffold/run"]
           body = read_json_body(env) || {}
           json_response(scaffold_run(body))
+        when ["GET", "/__dev/api/docs/search"]
+          json_response(docs_search_payload(env))
+        when ["GET", "/__dev/api/docs/class"]
+          json_response(docs_class_payload(query_param(env, "name")))
+        when ["GET", "/__dev/api/docs/method"]
+          json_response(docs_method_payload(query_param(env, "class"), query_param(env, "name")))
+        when ["GET", "/__dev/api/docs/index"]
+          json_response(docs_index_payload(query_param(env, "source")))
+        when ["GET", "/__dev/api/docs/.well-known.json"]
+          json_response(docs_well_known_payload)
         when ["GET", "/__dev/api/graphql/schema"]
           begin
             gql = Tina4::GraphQL.new
@@ -1285,6 +1341,56 @@ module Tina4
         else
           { ok: false, error: "unknown kind: #{kind}" }
         end
+      end
+
+      # ── Live Docs (Live API RAG) ─────────────────────────────────
+
+      def docs_search_payload(env)
+        q = (query_param(env, "q") || "").to_s
+        k = (query_param(env, "k") || "5").to_i
+        source = (query_param(env, "source") || "all").to_s
+        include_private = %w[1 true yes].include?((query_param(env, "include_private") || "").to_s.downcase)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        results = Tina4::Docs.cached(Dir.pwd).search(
+          q, k: k, source: source, include_private: include_private
+        )
+        took_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000.0).round(2)
+        { ok: true, query: q, results: results, took_ms: took_ms }
+      end
+
+      def docs_class_payload(name)
+        spec = Tina4::Docs.cached(Dir.pwd).class_spec(name.to_s)
+        return { ok: false, error: "class not found: #{name}" } if spec.nil?
+        { ok: true, class: spec }
+      end
+
+      def docs_method_payload(class_fqn, name)
+        spec = Tina4::Docs.cached(Dir.pwd).method_spec(class_fqn.to_s, name.to_s)
+        return { ok: false, error: "method not found: #{class_fqn}##{name}" } if spec.nil?
+        { ok: true, method: spec }
+      end
+
+      def docs_index_payload(source)
+        idx = Tina4::Docs.cached(Dir.pwd).index
+        idx = idx.select { |e| e[:source] == source } if source && %w[framework user vendor].include?(source.to_s)
+        { ok: true, count: idx.size, entries: idx }
+      end
+
+      def docs_well_known_payload
+        {
+          ok: true,
+          service: "tina4-live-docs",
+          version: Tina4::VERSION,
+          framework: "tina4-ruby",
+          endpoints: {
+            search: "/__dev/api/docs/search?q=<query>&k=<int>&source=<framework|user|all>&include_private=<bool>",
+            class:  "/__dev/api/docs/class?name=<fqn>",
+            method: "/__dev/api/docs/method?class=<fqn>&name=<method>",
+            index:  "/__dev/api/docs/index?source=<framework|user|all>",
+          },
+          mcp: { url: "/__dev/api/mcp", tools: %w[api_search api_class api_method] },
+          spec: "https://tina4.com — Live API RAG plan/v3/22-LIVE-API-RAG.md",
+        }
       end
     end
   end

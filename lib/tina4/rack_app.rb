@@ -714,9 +714,54 @@ module Tina4
             <span style="color:#ffeb3b;">req:#{request_id}</span>
             <span style="color:#90caf9;">#{route_count} routes</span>
             <span style="color:#888;">Ruby #{RUBY_VERSION}</span>
-            <a href="#" onclick="(function(e){e.preventDefault();var p=document.getElementById('tina4-dev-panel');if(p){p.style.display=p.style.display==='none'?'block':'none';return;}var c=document.createElement('div');c.id='tina4-dev-panel';c.style.cssText='position:fixed;top:3rem;left:0;right:0;bottom:2rem;z-index:99998;transition:all 0.2s';var f=document.createElement('iframe');f.src='/__dev';f.style.cssText='width:100%;height:100%;border:1px solid #CC342D;border-radius:0.5rem;box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#0f172a';c.appendChild(f);document.body.appendChild(c);})(event)" style="color:#ef9a9a;margin-left:auto;text-decoration:none;cursor:pointer;">Dashboard &#8599;</a>
+            <a href="#" onclick="window.__tina4ToggleOverlay(event)" style="color:#ef9a9a;margin-left:auto;text-decoration:none;cursor:pointer;">Dashboard &#8599;</a>
             <span onclick="this.parentElement.style.display='none'" style="cursor:pointer;color:#888;margin-left:8px;">&#10005;</span>
         </div>
+        <script>
+        // Overlay open/toggle helper + auto-restore. Persist the dev-admin
+        // iframe's open/closed state across parent reloads so saving a
+        // file doesn't lose the user's dev-admin context. Cross-framework
+        // parity with PHP / Python / Node — same localStorage key.
+        (function(){
+            var STATE_KEY = 'tina4_dev_overlay_open';
+            function buildOverlay() {
+                var c = document.createElement('div');
+                c.id = 'tina4-dev-panel';
+                c.style.cssText = 'position:fixed;top:3rem;left:0;right:0;bottom:2rem;z-index:99998;transition:all 0.2s';
+                var f = document.createElement('iframe');
+                f.src = '/__dev';
+                f.style.cssText = 'width:100%;height:100%;border:1px solid #CC342D;border-radius:0.5rem;box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#0f172a';
+                c.appendChild(f);
+                document.body.appendChild(c);
+                return c;
+            }
+            window.__tina4ToggleOverlay = function(e) {
+                if (e) e.preventDefault();
+                var p = document.getElementById('tina4-dev-panel');
+                if (p) {
+                    var hide = p.style.display !== 'none';
+                    p.style.display = hide ? 'none' : 'block';
+                    try { localStorage.setItem(STATE_KEY, hide ? '0' : '1'); } catch (_) {}
+                    return;
+                }
+                buildOverlay();
+                try { localStorage.setItem(STATE_KEY, '1'); } catch (_) {}
+            };
+            function restoreIfOpen() {
+                try {
+                    if (location.pathname.indexOf('/__dev') === 0) return;
+                    if (localStorage.getItem(STATE_KEY) === '1' && !document.getElementById('tina4-dev-panel')) {
+                        buildOverlay();
+                    }
+                } catch (_) {}
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', restoreIfOpen);
+            } else {
+                restoreIfOpen();
+            }
+        })();
+        </script>
         <script>
         function tina4VersionModal(){
             var m=document.getElementById('tina4-ver-modal');

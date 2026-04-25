@@ -42,3 +42,4 @@ spec/integration/
 # Benchmark
 benchmark/
 *.gem
+.tina4/

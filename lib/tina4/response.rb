@@ -151,6 +151,9 @@ module Tina4
       self
     end
 
+    # Render a Frond/Twig template file with data and return self. Tries
+    # the user template directory first, falling back to the framework's
+    # built-in templates. Sets the response body to the rendered HTML.
     def render(template_path, data = {}, status: 200, template_dir: nil)
       @status_code = status
       @headers["content-type"] = HTML_CONTENT_TYPE

@@ -102,8 +102,8 @@ Tina4.put(path, swagger_meta: {}, &handler)
 Tina4.patch(path, swagger_meta: {}, &handler)
 Tina4.delete(path, swagger_meta: {}, &handler)
 Tina4.any(path, swagger_meta: {}, &handler)
-Tina4.secure_get(path, &handler)
-Tina4.secure_post(path, &handler)
+Tina4.secure_get(path, auth: nil, swagger_meta: {}, &handler)
+Tina4.secure_post(path, auth: nil, swagger_meta: {}, &handler)
 Tina4.group(prefix, auth_handler: nil, &block)
 
 # Direct Router class methods (preferred in v3)
@@ -113,7 +113,7 @@ Tina4::Router.put(path, middleware: [], swagger_meta: {}, template: nil, &block)
 Tina4::Router.patch(path, middleware: [], swagger_meta: {}, template: nil, &block)
 Tina4::Router.delete(path, middleware: [], swagger_meta: {}, template: nil, &block)
 Tina4::Router.any(path, middleware: [], swagger_meta: {}, template: nil, &block)
-Tina4::Router.add_route(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
+Tina4::Router.add(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
 Tina4::Router.find_route(path, method)
 Tina4::Router.group(prefix, auth_handler: nil, middleware: [], &block)
 Tina4::Router.clear!
@@ -198,9 +198,9 @@ model.to_h(include: nil) -> Hash      # Ruby idiom (aliases: to_hash, to_dict, t
 model.to_json(include: nil) -> String
 model.to_array -> Array              # List of values
 model.to_list -> Array               # Alias for to_array
-model.query_has_one(related_class, foreign_key: nil) -> MyModel | nil
-model.query_has_many(related_class, foreign_key: nil, limit: 100, offset: 0) -> Array
-model.query_belongs_to(related_class, foreign_key: nil) -> MyModel | nil
+model.has_one(related_class, foreign_key: nil) -> MyModel | nil
+model.has_many(related_class, foreign_key: nil, limit: 100, offset: 0) -> Array
+model.belongs_to(related_class, foreign_key: nil) -> MyModel | nil
 
 # Class methods
 MyModel.find(id) -> MyModel | nil
@@ -401,21 +401,27 @@ Tina4::Events.clear                  # remove all listeners for all events
 ### AI — AI tool detection & context scaffolding
 
 ```ruby
-# Detect AI coding tools present in a project directory
-tools = Tina4::AI.detect_ai("/path/to/project")
-# -> [{ name: "claude-code", description: "Claude Code (Anthropic CLI)",
-#        config_file: "CLAUDE.md", status: "detected" }, ...]
+# Check whether a single tool's context file already exists in `root`.
+# `tool` is one entry from Tina4::AI::AI_TOOLS (has :name, :context_file).
+Tina4::AI.is_installed("/path/to/project", tool) # -> Boolean
 
-names = Tina4::AI.detect_ai_names("/path/to/project")  # -> ["claude-code", "cursor"]
+# Print the numbered tool menu (with [installed] markers) and read a
+# comma-separated selection (or "all") from STDIN. Returns the raw line.
+Tina4::AI.show_menu("/path/to/project") # -> String
 
-# Install Tina4 context files for detected tools (or specific ones)
-files = Tina4::AI.install_ai_context(".", tools: ["claude-code"], force: false)
+# Install context files for the tools listed in `selection` ("1,3,5" or "all").
+# Returns relative paths of created/updated files.
+files = Tina4::AI.install_selected(".", "1,2") # -> Array<String>
 
-# Install context for ALL known AI tools
-files = Tina4::AI.install_all(".", force: true)
+# Install context files for ALL known AI tools (non-interactive).
+files = Tina4::AI.install_all(".") # -> Array<String>
 
-# Human-readable status report
-puts Tina4::AI.status_report(".")
+# Generate the tool-specific Tina4 context body (used by install_selected).
+body = Tina4::AI.generate_context("claude-code") # -> String
+
+# Re-rendering the menu shows [installed] markers per tool — that's the
+# human-readable status surface.
+Tina4::AI.show_menu(".")
 ```
 
 Supported tools: claude-code, cursor, copilot, windsurf, aider, cline, codex.

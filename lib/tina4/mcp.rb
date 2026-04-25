@@ -855,6 +855,21 @@ module Tina4
         Tina4::Plan.flesh(name, prompt)
       }, "Auto-generate concrete build steps via AI and append them to an existing plan")
 
+      # ── Live API Docs (Live API RAG) ──────────────────
+      server.register_tool("api_search", lambda { |query:, k: 5, source: "all", include_private: false|
+        Tina4::Docs.cached(project_root).search(
+          query.to_s, k: k.to_i, source: source.to_s, include_private: include_private == true || include_private.to_s == "true"
+        )
+      }, "Search the live API index (framework + user code) for ranked hits")
+
+      server.register_tool("api_class", lambda { |name:|
+        Tina4::Docs.cached(project_root).class_spec(name.to_s)
+      }, "Full class reflection (methods, file, line) from the live API index")
+
+      server.register_tool("api_method", lambda { |class_name:, name:|
+        Tina4::Docs.cached(project_root).method_spec(class_name.to_s, name.to_s)
+      }, "Single method spec (signature, summary, file, line) from the live API index")
+
       # ── System Tools ──────────────────────────────────
       server.register_tool("system_info", lambda {
         {
