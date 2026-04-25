@@ -407,7 +407,9 @@ module Tina4
           resolved = id ? error_tracker.resolve(id) : false
           json_response({ resolved: resolved, id: id })
         when ["POST", "/__dev/api/broken/clear"]
-          error_tracker.clear_resolved
+          # "Clear All" button — flush every tracked error, not only the
+          # ones individually marked resolved. Matches PHP/Python.
+          error_tracker.clear_all
           json_response({ cleared: true })
         when ["GET", "/__dev/api/websockets"]
           json_response({ connections: [], count: 0 })
