@@ -35,6 +35,7 @@ require_relative "tina4/cors"
 require_relative "tina4/rate_limiter"
 require_relative "tina4/health"
 require_relative "tina4/shutdown"
+require_relative "tina4/background"
 require_relative "tina4/localization"
 require_relative "tina4/container"
 require_relative "tina4/queue"
@@ -383,6 +384,16 @@ module Tina4
     # Service runner DSL
     def service(name, options = {}, &block)
       Tina4::ServiceRunner.register(name, nil, options, &block)
+    end
+
+    # Register a periodic background task.
+    # Mirrors Python's tina4_python.core.server.background(fn, interval) and
+    # PHP's $app->background($callback, $interval).
+    #
+    #   Tina4.background(interval: 5.0) { drain_queue }
+    #   Tina4.background(method(:health_check), interval: 30.0)
+    def background(callback = nil, interval: 1.0, &block)
+      Tina4::Background.register(callback, interval: interval, &block)
     end
 
     # DI container shortcuts

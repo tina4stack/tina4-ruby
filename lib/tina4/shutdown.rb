@@ -53,6 +53,16 @@ module Tina4
           end
         end
 
+        # Stop background tasks
+        if defined?(Tina4::Background)
+          begin
+            Tina4::Background.stop_all
+            Tina4::Log.info("Background tasks stopped")
+          rescue => e
+            Tina4::Log.error("Error stopping background tasks: #{e.message}")
+          end
+        end
+
         # Close database connections
         if Tina4.database
           begin
