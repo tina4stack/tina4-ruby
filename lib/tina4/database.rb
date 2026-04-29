@@ -109,6 +109,15 @@ module Tina4
       @pool_size = pool  # 0 = single connection, N>0 = N pooled connections
       @connected = false
 
+      # Per-instance thread-local key for the transaction adapter pin.
+      # Without this pin, every Database method call rotates to a different
+      # pooled connection. Inside a transaction this silently breaks atomicity:
+      # start_transaction begins on adapter A, executes autocommit on B/C, and
+      # commit/rollback land on D — a no-op. start_transaction sets the pin,
+      # commit/rollback clear it. While pinned, current_driver returns the same
+      # driver for every call so the whole transaction runs on one connection.
+      @tx_pin_key = :"tina4_pinned_adapter_#{object_id}"
+
       # Query cache — off by default, opt-in via TINA4_DB_CACHE=true
       @cache_enabled = truthy?(ENV["TINA4_DB_CACHE"])
       @cache_ttl = (ENV["TINA4_DB_CACHE_TTL"] || "30").to_i
@@ -161,7 +170,14 @@ module Tina4
     end
 
     # Get the current driver — from pool (round-robin) or single connection.
+    #
+    # Inside a transaction, all calls must land on the SAME driver — otherwise
+    # start_transaction, execute, and commit each rotate to a different pooled
+    # connection and the transaction is meaningless. start_transaction pins
+    # the driver to the calling thread; commit/rollback release it.
     def current_driver
+      pinned = Thread.current[@tx_pin_key]
+      return pinned if pinned
       if @pool
         @pool.checkout
       else
@@ -355,27 +371,38 @@ module Tina4
 
     def transaction
       drv = current_driver
+      Thread.current[@tx_pin_key] = drv
       drv.begin_transaction
       yield self
       drv.commit
     rescue => e
-      drv.rollback
+      drv.rollback if drv
       raise e
+    ensure
+      Thread.current[@tx_pin_key] = nil
     end
 
     # Begin a transaction without a block — matches PHP/Python/Node API.
+    # Pins the driver to this thread for the whole transaction so executes
+    # and the final commit/rollback all run on the same connection.
     def start_transaction
-      current_driver.begin_transaction
+      drv = current_driver
+      Thread.current[@tx_pin_key] = drv
+      drv.begin_transaction
     end
 
-    # Commit the current transaction — matches PHP/Python/Node API.
+    # Commit the current transaction and release the driver pin.
     def commit
       current_driver.commit
+    ensure
+      Thread.current[@tx_pin_key] = nil
     end
 
-    # Roll back the current transaction — matches PHP/Python/Node API.
+    # Roll back the current transaction and release the driver pin.
     def rollback
       current_driver.rollback
+    ensure
+      Thread.current[@tx_pin_key] = nil
     end
 
     def tables
