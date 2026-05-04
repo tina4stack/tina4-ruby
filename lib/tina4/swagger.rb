@@ -19,9 +19,9 @@ module Tina4
         {
           "openapi" => "3.0.3",
           "info" => {
-            "title" => ENV["SWAGGER_TITLE"] || ENV["PROJECT_NAME"] || "Tina4 API",
-            "version" => ENV["VERSION"] || Tina4::VERSION,
-            "description" => "Auto-generated API documentation"
+            "title" => ENV["TINA4_SWAGGER_TITLE"] || ENV["PROJECT_NAME"] || "Tina4 API",
+            "version" => ENV["TINA4_SWAGGER_VERSION"] || Tina4::VERSION,
+            "description" => ENV["TINA4_SWAGGER_DESCRIPTION"] || "Auto-generated API documentation"
           },
           "servers" => [
             { "url" => "/" }

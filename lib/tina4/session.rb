@@ -16,7 +16,7 @@ module Tina4
 
     def initialize(env, options = {})
       @options = DEFAULT_OPTIONS.merge(options)
-      @options[:secret] ||= ENV["SECRET"] || "tina4-default-secret"
+      @options[:secret] ||= ENV["TINA4_SECRET"] || "tina4-default-secret"
       @handler = create_handler
       @id = extract_session_id(env) || SecureRandom.hex(32)
       @data = load_session

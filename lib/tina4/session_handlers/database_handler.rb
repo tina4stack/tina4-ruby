@@ -17,7 +17,7 @@ module Tina4
 
       def initialize(options = {})
         @ttl = options[:ttl] || 86400
-        @db = options[:db] || Tina4::Database.new(ENV["DATABASE_URL"])
+        @db = options[:db] || Tina4::Database.new(ENV["TINA4_DATABASE_URL"])
         ensure_table
       end
 

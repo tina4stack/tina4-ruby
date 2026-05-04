@@ -333,32 +333,32 @@ RSpec.describe "Tina4 MCP" do
 
   describe "Tina4.is_localhost?" do
     around(:each) do |example|
-      old = ENV["HOST_NAME"]
+      old = ENV["TINA4_HOST_NAME"]
       example.run
       if old.nil?
-        ENV.delete("HOST_NAME")
+        ENV.delete("TINA4_HOST_NAME")
       else
-        ENV["HOST_NAME"] = old
+        ENV["TINA4_HOST_NAME"] = old
       end
     end
 
     it "returns true for localhost" do
-      ENV["HOST_NAME"] = "localhost:7145"
+      ENV["TINA4_HOST_NAME"] = "localhost:7145"
       expect(Tina4.is_localhost?).to be true
     end
 
     it "returns true for 127.0.0.1" do
-      ENV["HOST_NAME"] = "127.0.0.1:7145"
+      ENV["TINA4_HOST_NAME"] = "127.0.0.1:7145"
       expect(Tina4.is_localhost?).to be true
     end
 
     it "returns true for 0.0.0.0" do
-      ENV["HOST_NAME"] = "0.0.0.0:7145"
+      ENV["TINA4_HOST_NAME"] = "0.0.0.0:7145"
       expect(Tina4.is_localhost?).to be true
     end
 
     it "returns false for remote host" do
-      ENV["HOST_NAME"] = "myserver.example.com:7145"
+      ENV["TINA4_HOST_NAME"] = "myserver.example.com:7145"
       expect(Tina4.is_localhost?).to be false
     end
   end

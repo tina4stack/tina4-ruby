@@ -91,20 +91,20 @@ module Tina4
 
     # Construct a Database from environment variables.
     # Returns nil if the named env var is not set.
-    def self.from_env(env_key: "DATABASE_URL", pool: 0)
+    def self.from_env(env_key: "TINA4_DATABASE_URL", pool: 0)
       url = ENV[env_key]
       return nil if url.nil? || url.strip.empty?
 
       new(url,
-          username: ENV["DATABASE_USERNAME"],
-          password: ENV["DATABASE_PASSWORD"],
+          username: ENV["TINA4_DATABASE_USERNAME"],
+          password: ENV["TINA4_DATABASE_PASSWORD"],
           pool: pool)
     end
 
     def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: 0)
-      @connection_string = connection_string || ENV["DATABASE_URL"]
-      @username = username || ENV["DATABASE_USERNAME"]
-      @password = password || ENV["DATABASE_PASSWORD"]
+      @connection_string = connection_string || ENV["TINA4_DATABASE_URL"]
+      @username = username || ENV["TINA4_DATABASE_USERNAME"]
+      @password = password || ENV["TINA4_DATABASE_PASSWORD"]
       @driver_name = driver_name || detect_driver(@connection_string)
       @pool_size = pool  # 0 = single connection, N>0 = N pooled connections
       @connected = false

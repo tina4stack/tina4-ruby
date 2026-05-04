@@ -694,7 +694,7 @@ module Tina4
           platform: RUBY_PLATFORM,
           debug: ENV["TINA4_DEBUG"] || "false",
           log_level: ENV["TINA4_LOG_LEVEL"] || "ERROR",
-          database: ENV["DATABASE_URL"] || "not configured",
+          database: ENV["TINA4_DATABASE_URL"] || "not configured",
           db_tables: db_table_count,
           uptime: (Time.now - (defined?(@boot_time) && @boot_time ? @boot_time : (@boot_time = Time.now))).round(1),
           route_count: Tina4::Router.routes.size,

@@ -17,7 +17,7 @@ RSpec.describe "RackApp auth check (header / body / session)" do
 
   before(:each) do
     Tina4::Router.clear!
-    ENV["SECRET"] = "auth-check-test-secret"
+    ENV["TINA4_SECRET"] = "auth-check-test-secret"
     # Force HMAC mode — clear any RSA key state
     Tina4::Auth.instance_variable_set(:@private_key, nil)
     Tina4::Auth.instance_variable_set(:@public_key, nil)
@@ -36,9 +36,8 @@ RSpec.describe "RackApp auth check (header / body / session)" do
 
   after(:each) do
     Tina4::Router.clear!
-    ENV.delete("SECRET")
+    ENV.delete("TINA4_SECRET")
     ENV.delete("TINA4_API_KEY")
-    ENV.delete("API_KEY")
     FileUtils.rm_rf(tmp_dir)
   end
 

@@ -19,7 +19,7 @@ module Tina4
 
       # Returns true when SECRET env var is set and no RSA keys exist in .keys/
       def use_hmac?
-        secret = ENV["SECRET"]
+        secret = ENV["TINA4_SECRET"]
         return false if secret.nil? || secret.empty?
 
         # If RSA keys already exist on disk, prefer RS256 for backward compat
@@ -29,7 +29,7 @@ module Tina4
       end
 
       def hmac_secret
-        ENV["SECRET"]
+        ENV["TINA4_SECRET"]
       end
 
       # Base64url-encode without padding (JWT spec)
@@ -191,7 +191,7 @@ module Tina4
         token = Regexp.last_match(1)
 
         # API_KEY bypass — matches tina4_python behavior
-        api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+        api_key = ENV["TINA4_API_KEY"]
         if api_key && !api_key.empty? && token == api_key
           return { "api_key" => true }
         end
@@ -206,7 +206,7 @@ module Tina4
       end
 
       def validate_api_key(provided, expected: nil)
-        expected ||= ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+        expected ||= ENV["TINA4_API_KEY"]
         return false if expected.nil? || expected.empty?
         return false if provided.nil? || provided.empty?
         return false if provided.length != expected.length
@@ -230,7 +230,7 @@ module Tina4
           token = Regexp.last_match(1)
 
           # API_KEY bypass — matches tina4_python behavior
-          api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+          api_key = ENV["TINA4_API_KEY"]
           if api_key && !api_key.empty? && token == api_key
             env["tina4.auth"] = { "api_key" => true }
             return true

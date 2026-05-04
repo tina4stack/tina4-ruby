@@ -21,7 +21,7 @@ module Tina4
         else
           base = self.name.split("::").last.downcase
           # Pluralize by default (add "s") unless ORM_PLURAL_TABLE_NAMES is explicitly disabled
-          unless ENV.fetch("ORM_PLURAL_TABLE_NAMES", "").match?(/\A(false|0|no)\z/i)
+          unless ENV.fetch("TINA4_ORM_PLURAL_TABLE_NAMES", "").match?(/\A(false|0|no)\z/i)
             base += "s" unless base.end_with?("s")
           end
           @table_name || base

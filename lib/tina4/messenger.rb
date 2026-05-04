@@ -18,7 +18,7 @@ module Tina4
   # Tina4 Messenger — Email sending (SMTP) and reading (IMAP).
   #
   # Unified .env-driven configuration with constructor override.
-  # Priority: constructor params > .env (TINA4_MAIL_* with SMTP_* fallback) > sensible defaults
+  # Priority: constructor params > .env (TINA4_MAIL_*) > sensible defaults
   #
   #   # .env
   #   TINA4_MAIL_HOST=smtp.gmail.com
@@ -39,19 +39,19 @@ module Tina4
                 :imap_host, :imap_port, :use_tls, :encryption
 
     # Initialize with SMTP config.
-    # Priority: constructor params > ENV (TINA4_MAIL_* with SMTP_* fallback) > sensible defaults
+    # Priority: constructor params > ENV (TINA4_MAIL_*) > sensible defaults
     def initialize(host: nil, port: nil, username: nil, password: nil,
                    from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
                    imap_host: nil, imap_port: nil)
-      @host         = host         || ENV["TINA4_MAIL_HOST"]     || ENV["SMTP_HOST"]     || "localhost"
-      @port         = (port        || ENV["TINA4_MAIL_PORT"]     || ENV["SMTP_PORT"]     || 587).to_i
-      @username     = username     || ENV["TINA4_MAIL_USERNAME"] || ENV["SMTP_USERNAME"]
-      @password     = password     || ENV["TINA4_MAIL_PASSWORD"] || ENV["SMTP_PASSWORD"]
+      @host         = host         || ENV["TINA4_MAIL_HOST"]     || "localhost"
+      @port         = (port        || ENV["TINA4_MAIL_PORT"]     || 587).to_i
+      @username     = username     || ENV["TINA4_MAIL_USERNAME"]
+      @password     = password     || ENV["TINA4_MAIL_PASSWORD"]
 
-      resolved_from = from_address || ENV["TINA4_MAIL_FROM"]     || ENV["SMTP_FROM"]
+      resolved_from = from_address || ENV["TINA4_MAIL_FROM"]
       @from_address = resolved_from || @username || "noreply@localhost"
 
-      @from_name    = from_name    || ENV["TINA4_MAIL_FROM_NAME"] || ENV["SMTP_FROM_NAME"] || ""
+      @from_name    = from_name    || ENV["TINA4_MAIL_FROM_NAME"] || ""
 
       # Encryption: constructor > .env > backward-compat use_tls > default "tls"
       env_encryption = encryption  || ENV["TINA4_MAIL_ENCRYPTION"]
@@ -64,8 +64,8 @@ module Tina4
       end
       @use_tls = %w[tls starttls].include?(@encryption)
 
-      @imap_host    = imap_host    || ENV["TINA4_MAIL_IMAP_HOST"] || ENV["IMAP_HOST"] || @host
-      @imap_port    = (imap_port   || ENV["TINA4_MAIL_IMAP_PORT"] || ENV["IMAP_PORT"] || 993).to_i
+      @imap_host    = imap_host    || ENV["TINA4_MAIL_IMAP_HOST"] || @host
+      @imap_port    = (imap_port   || ENV["TINA4_MAIL_IMAP_PORT"] || 993).to_i
     end
 
     # Send email using Ruby's Net::SMTP
@@ -542,8 +542,7 @@ module Tina4
   def self.create_messenger(**options)
     dev_mode = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
-    smtp_configured = (ENV["TINA4_MAIL_HOST"] && !ENV["TINA4_MAIL_HOST"].empty?) ||
-                      (ENV["SMTP_HOST"] && !ENV["SMTP_HOST"].empty?)
+    smtp_configured = ENV["TINA4_MAIL_HOST"] && !ENV["TINA4_MAIL_HOST"].empty?
 
     if dev_mode && !smtp_configured
       mailbox_dir = options.delete(:mailbox_dir) || ENV["TINA4_MAILBOX_DIR"]
@@ -560,8 +559,8 @@ module Tina4
 
     def initialize(mailbox, **options)
       @mailbox = mailbox
-      @from_address = options[:from_address] || ENV["TINA4_MAIL_FROM"] || ENV["SMTP_FROM"] || "dev@localhost"
-      @from_name    = options[:from_name]    || ENV["TINA4_MAIL_FROM_NAME"] || ENV["SMTP_FROM_NAME"] || "Dev Mailer"
+      @from_address = options[:from_address] || ENV["TINA4_MAIL_FROM"] || "dev@localhost"
+      @from_name    = options[:from_name]    || ENV["TINA4_MAIL_FROM_NAME"] || "Dev Mailer"
     end
 
     def send(to:, subject:, body:, html: false, cc: [], bcc: [],

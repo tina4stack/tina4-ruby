@@ -132,7 +132,7 @@ module Tina4
 
   # Check if the server is running on localhost.
   def self.is_localhost?
-    host = ENV.fetch("HOST_NAME", "localhost:7145").split(":").first
+    host = ENV.fetch("TINA4_HOST_NAME", "localhost:7145").split(":").first
     ["localhost", "127.0.0.1", "0.0.0.0", "::1", ""].include?(host)
   end
 

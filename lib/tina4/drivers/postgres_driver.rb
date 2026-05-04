@@ -41,10 +41,44 @@ module Tina4
       end
 
       def last_insert_id
-        result = @connection.exec("SELECT lastval()")
-        result.first["lastval"].to_i
-      rescue PG::Error
-        nil
+        # Issue #38: ``SELECT lastval()`` raises on tables with no sequence
+        # (UUID, ULID, hash PKs etc.). The exception itself isn't fatal,
+        # but the pg gem marks the whole transaction as aborted, so every
+        # subsequent statement on this connection fails with
+        # ``PG::InFailedSqlTransaction`` — far away from the real cause.
+        #
+        # Fix: wrap the probe in a SAVEPOINT. If ``lastval()`` raises, we
+        # ROLLBACK TO SAVEPOINT and the outer transaction stays usable;
+        # ``last_insert_id`` just returns ``nil`` (same as before for
+        # tables without a sequence). On success we RELEASE SAVEPOINT.
+        begin
+          @connection.exec("SAVEPOINT _t4_lastval_probe")
+        rescue PG::Error
+          # No active transaction (autocommit/idle) — fall back to a plain
+          # probe; psycopg2-style transaction abort can't happen here.
+          begin
+            result = @connection.exec("SELECT lastval()")
+            return result.first["lastval"].to_i
+          rescue PG::Error
+            return nil
+          end
+        end
+
+        begin
+          result = @connection.exec("SELECT lastval()")
+          @connection.exec("RELEASE SAVEPOINT _t4_lastval_probe")
+          result.first["lastval"].to_i
+        rescue PG::Error
+          begin
+            @connection.exec("ROLLBACK TO SAVEPOINT _t4_lastval_probe")
+            @connection.exec("RELEASE SAVEPOINT _t4_lastval_probe")
+          rescue PG::Error
+            # If even the rollback fails, there's nothing we can do — the
+            # connection is in a state we can't recover. Surface nil so
+            # callers don't get a half-set last_id.
+          end
+          nil
+        end
       end
 
       def placeholder

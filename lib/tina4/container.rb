@@ -4,7 +4,7 @@ module Tina4
   # Lightweight dependency injection container.
   #
   #   Tina4::Container.register(:mailer) { MailService.new } # transient — new instance each get
-  #   Tina4::Container.singleton(:db) { Database.new(ENV["DB_URL"]) } # singleton — memoised
+  #   Tina4::Container.singleton(:db) { Database.new(ENV["TINA4_DATABASE_URL"]) } # singleton — memoised
   #   Tina4::Container.register(:cache, RedisCacheInstance)  # concrete instance (always same)
   #   Tina4::Container.get(:db)                              # => Database instance
   #

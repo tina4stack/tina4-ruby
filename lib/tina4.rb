@@ -440,7 +440,7 @@ module Tina4
     end
 
     def setup_database
-      db_url = ENV["DATABASE_URL"] || ENV["DB_URL"]
+      db_url = ENV["TINA4_DATABASE_URL"]
       if db_url && !db_url.empty?
         begin
           @database = Tina4::Database.new(db_url)

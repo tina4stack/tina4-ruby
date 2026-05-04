@@ -54,6 +54,9 @@ module Tina4
     end
 
     def start
+      # Refuse to boot with v3.11 / v2 era un-prefixed env vars set.
+      Tina4.check_legacy_env_vars!
+
       is_managed = ARGV.include?('--managed')
       unless is_managed || ENV['TINA4_OVERRIDE_CLIENT'] == 'true'
         puts

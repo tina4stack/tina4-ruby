@@ -16,7 +16,7 @@ RSpec.describe "Router auth payload integration" do
 
   before(:each) do
     Tina4::Router.clear!
-    ENV["SECRET"] = "test-router-auth-secret"
+    ENV["TINA4_SECRET"] = "test-router-auth-secret"
     # Use HMAC mode (SECRET env var) — reset RSA key state so we don't
     # accidentally pick up keys from a previous spec run.
     Tina4::Auth.instance_variable_set(:@private_key, nil)
@@ -26,7 +26,7 @@ RSpec.describe "Router auth payload integration" do
 
   after(:each) do
     Tina4::Router.clear!
-    ENV.delete("SECRET")
+    ENV.delete("TINA4_SECRET")
     FileUtils.rm_rf(tmp_dir)
   end
 

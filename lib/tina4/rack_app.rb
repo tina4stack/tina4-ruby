@@ -200,7 +200,7 @@ module Tina4
         end
 
         # API_KEY bypass — matches tina4_python behavior
-        api_key = ENV["TINA4_API_KEY"] || ENV["API_KEY"]
+        api_key = ENV["TINA4_API_KEY"]
         if api_key && !api_key.empty? && token == api_key
           env["tina4.auth_payload"] = { "api_key" => true }
         elsif token
@@ -330,16 +330,26 @@ module Tina4
     end
 
     def handle_404(path)
-      # Try serving a template file (e.g. /hello -> src/templates/hello.twig or hello.html)
+      # Try serving a template file (e.g. /hello -> src/templates/pages/hello.twig)
       template_response = try_serve_template(path)
       return template_response if template_response
 
-      # Show landing page for GET "/"
-      return render_landing_page if path == "/"
+      # Show landing page for GET "/" — but ONLY in dev mode.
+      # Production never shows it, so the framework version, dev-admin link,
+      # and gallery never leak to real users. Symmetric with /__dev/* gating.
+      return render_landing_page if path == "/" && dev_mode?
 
       Tina4::Log.warning("404 Not Found: #{path}")
       body = Tina4::Template.render_error(404, { "path" => path }) rescue "404 Not Found"
       [404, { "content-type" => "text/html" }, [body]]
+    end
+
+    # Honour TINA4_TEMPLATE_ROUTING=off|false|0|no|disabled as an explicit
+    # kill switch. Default: enabled. Drop a file in src/templates/pages/ and
+    # it serves at the matching URL — the zero-config Tina4 convention.
+    def template_auto_routing_enabled?
+      val = ENV.fetch("TINA4_TEMPLATE_ROUTING", "on").to_s.strip.downcase
+      !%w[off false 0 no disabled].include?(val)
     end
 
     def should_show_landing_page?
@@ -357,19 +367,39 @@ module Tina4
       [200, { "content-type" => "text/html" }, [body]]
     end
 
-    # Resolve a URL path to a template file.
+    # Resolve a URL path to a template file in src/templates/pages/.
+    #
+    # Only files inside ``src/templates/pages/`` auto-route from a URL.
+    # Anything in ``src/templates/`` outside ``pages/`` (partials, layouts,
+    # base.twig, errors, components) is never served standalone — those
+    # remain renderable via {% include %} / {% extends %} / explicit render
+    # calls but never auto-serve from a URL.
+    #
+    # Files starting with ``_`` (e.g. pages/_helper.twig) are always skipped
+    # even within pages/ — Hugo/Jekyll convention for private partials.
+    #
     # Dev mode: checks filesystem every time for live changes.
     # Production: uses a cached lookup built once at startup.
+    #
+    # The whole feature can be turned off with ``TINA4_TEMPLATE_ROUTING=off``.
     def resolve_template(path)
+      return nil unless template_auto_routing_enabled?
+
       clean_path = path.sub(%r{^/}, "")
       clean_path = "index" if clean_path.empty?
+
+      # Skip underscore-prefixed segments — private files even within pages/.
+      return nil if clean_path.split("/").any? { |seg| seg.start_with?("_") }
+
       is_dev = %w[true 1 yes].include?(ENV.fetch("TINA4_DEBUG", "false").downcase)
 
       if is_dev
-        templates_dir = File.join(@root_dir, "src", "templates")
+        pages_dir = File.join(@root_dir, "src", "templates", "pages")
         %w[.twig .html].each do |ext|
-          candidate = clean_path + ext
-          return candidate if File.file?(File.join(templates_dir, candidate))
+          candidate_inside_pages = clean_path + ext
+          if File.file?(File.join(pages_dir, candidate_inside_pages))
+            return File.join("pages", candidate_inside_pages)
+          end
         end
         return nil
       end
@@ -379,15 +409,22 @@ module Tina4
       @template_cache[clean_path]
     end
 
+    # Scan src/templates/pages/ once and build url_path -> template_file lookup.
+    # Only files under pages/ are eligible — partials, layouts, base.twig,
+    # errors etc. remain renderable via explicit render calls but never
+    # auto-serve from a URL.
     def build_template_cache
       cache = {}
-      templates_dir = File.join(@root_dir, "src", "templates")
-      return cache unless File.directory?(templates_dir)
+      pages_dir = File.join(@root_dir, "src", "templates", "pages")
+      return cache unless File.directory?(pages_dir)
 
-      Dir.glob(File.join(templates_dir, "**", "*.{twig,html}")).each do |f|
-        rel = f.sub(templates_dir + File::SEPARATOR, "").tr("\\", "/")
-        url_path = rel.sub(/\.(twig|html)$/, "")
-        cache[url_path] ||= rel
+      Dir.glob(File.join(pages_dir, "**", "*.{twig,html}")).each do |f|
+        rel_inside_pages = f.sub(pages_dir + File::SEPARATOR, "").tr("\\", "/")
+        # Skip private files even within pages/ (e.g. pages/_helper.twig)
+        next if rel_inside_pages.split("/").any? { |seg| seg.start_with?("_") }
+        url_path = rel_inside_pages.sub(/\.(twig|html)$/, "")
+        rel_from_templates = "pages/#{rel_inside_pages}"
+        cache[url_path] ||= rel_from_templates
       end
       cache
     end

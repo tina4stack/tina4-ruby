@@ -372,6 +372,34 @@ module Tina4
         select_one(sql, [id])
       end
 
+      # Clear the relationship cache on all loaded instances (class-level helper).
+      # Useful after bulk operations when you want to force relationship re-loads.
+      def clear_rel_cache # -> nil
+        @_rel_cache = {}
+        nil
+      end
+
+      # Return the database connection used by this model.
+      def get_db # -> Database
+        db
+      end
+
+      # Map a Ruby property name to its database column name using field_mapping.
+      # Returns the column name as a symbol.
+      def get_db_column(property) # -> Symbol
+        col = field_mapping[property.to_s] || property
+        col.to_sym
+      end
+
+      private
+
+      def auto_discover_db
+        url = ENV["TINA4_DATABASE_URL"]
+        return nil unless url
+        Tina4.database = Tina4::Database.new(url, username: ENV.fetch("TINA4_DATABASE_USERNAME", ""), password: ENV.fetch("TINA4_DATABASE_PASSWORD", ""))
+        Tina4.database
+      end
+
       def find_by_filter(filter)
         where_parts = filter.keys.map { |k| "#{k} = ?" }
         sql = "SELECT * FROM #{table_name} WHERE #{where_parts.join(' AND ')}"
