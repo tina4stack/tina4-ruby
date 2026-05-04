@@ -4,7 +4,7 @@ require "json"
 module Tina4
   # Convert a snake_case name to camelCase.
   def self.snake_to_camel(name)
-    parts = name.to_s.downcase.split("_")
+    parts = name.to_s.split("_")
     parts[0] + parts[1..].map(&:capitalize).join
   end
 
@@ -18,7 +18,7 @@ module Tina4
 
     class << self
       def db
-        @db || Tina4.database || auto_discover_db
+        @db || Tina4.database
       end
 
       # Per-model database binding
@@ -54,23 +54,11 @@ module Tina4
 
       # Auto-map flag (no-op in Ruby since snake_case is native)
       def auto_map
-        @auto_map.nil? ? true : @auto_map
+        @auto_map || false
       end
 
       def auto_map=(val)
         @auto_map = val
-      end
-
-      # Auto-CRUD flag: when set to true, registers this model for CRUD route generation
-      def auto_crud
-        @auto_crud || false
-      end
-
-      def auto_crud=(val)
-        @auto_crud = val
-        if val
-          Tina4::AutoCrud.register(self) if defined?(Tina4::AutoCrud)
-        end
       end
 
       # Relationship definitions
@@ -79,7 +67,7 @@ module Tina4
       end
 
       # has_one :profile, class_name: "Profile", foreign_key: "user_id"
-      def has_one(name, class_name: nil, foreign_key: nil) # -> nil
+      def has_one(name, class_name: nil, foreign_key: nil)
         relationship_definitions[name] = {
           type: :has_one,
           class_name: class_name || name.to_s.split("_").map(&:capitalize).join,
@@ -92,7 +80,7 @@ module Tina4
       end
 
       # has_many :posts, class_name: "Post", foreign_key: "user_id"
-      def has_many(name, class_name: nil, foreign_key: nil) # -> nil
+      def has_many(name, class_name: nil, foreign_key: nil)
         relationship_definitions[name] = {
           type: :has_many,
           class_name: class_name || name.to_s.sub(/s$/, "").split("_").map(&:capitalize).join,
@@ -105,7 +93,7 @@ module Tina4
       end
 
       # belongs_to :user, class_name: "User", foreign_key: "user_id"
-      def belongs_to(name, class_name: nil, foreign_key: nil) # -> nil
+      def belongs_to(name, class_name: nil, foreign_key: nil)
         relationship_definitions[name] = {
           type: :belongs_to,
           class_name: class_name || name.to_s.split("_").map(&:capitalize).join,
@@ -123,46 +111,31 @@ module Tina4
       #   results = User.query.where("active = ?", [1]).order_by("name").get
       #
       # @return [Tina4::QueryBuilder]
-      def query # -> QueryBuilder
-        QueryBuilder.from_table(table_name, db: db)
+      def query
+        QueryBuilder.from(table_name, db: db)
       end
 
-      # Find records by filter dict. Always returns an array.
-      #
-      # Usage:
-      #   User.find(name: "Alice")                  → [User, ...]
-      #   User.find({age: 18}, limit: 10)           → [User, ...]
-      #   User.find(order_by: "name ASC")            → [User, ...]
-      #   User.find                                  → all records
-      #
-      # Use find_by_id(id) for single-record primary key lookup.
-      def find(filter = {}, limit: 100, offset: 0, order_by: nil, include: nil, **extra_filter) # -> list[Self]
-        # Integer or string-digit argument → primary key lookup (returns single record or nil)
-        return find_by_id(filter) if filter.is_a?(Integer)
+      def find(id_or_filter = nil, filter = nil, **kwargs)
+        include_list = kwargs.delete(:include)
 
-        # Merge keyword-style filters: find(name: "Alice") and find({name: "Alice"}) both work
-        filter = filter.merge(extra_filter) unless extra_filter.empty?
-        conditions = []
-        params = []
-
-        filter.each do |key, value|
-          col = field_mapping[key.to_s] || key
-          conditions << "#{col} = ?"
-          params << value
+        # find(id) — find by primary key
+        # find(filter_hash) — find by criteria
+        # find(name: "Alice") — keyword args as filter hash
+        result = if id_or_filter.is_a?(Hash)
+          find_by_filter(id_or_filter)
+        elsif filter.is_a?(Hash)
+          find_by_filter(filter)
+        elsif !kwargs.empty?
+          find_by_filter(kwargs)
+        else
+          find_by_id(id_or_filter)
         end
 
-        if soft_delete
-          conditions << "(#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
+        if include_list && result
+          instances = result.is_a?(Array) ? result : [result]
+          eager_load(instances, include_list)
         end
-
-        sql = "SELECT * FROM #{table_name}"
-        sql += " WHERE #{conditions.join(' AND ')}" unless conditions.empty?
-        sql += " ORDER BY #{order_by}" if order_by
-
-        results = db.fetch(sql, params, limit: limit, offset: offset)
-        instances = results.map { |row| from_hash(row) }
-        eager_load(instances, include) if include
-        instances
+        result
       end
 
       # Eager load relationships for a collection of instances (prevents N+1).
@@ -243,20 +216,20 @@ module Tina4
         end
       end
 
-      def where(conditions, params = [], limit: 20, offset: 0, include: nil) # -> list[Self]
+      def where(conditions, params = [], include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0) AND (#{conditions})"
         else
           sql += " WHERE #{conditions}"
         end
-        results = db.fetch(sql, params, limit: limit, offset: offset)
+        results = db.fetch(sql, params)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
       end
 
-      def all(limit: nil, offset: nil, order_by: nil, include: nil) # -> list[Self]
+      def all(limit: nil, offset: nil, order_by: nil, include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE #{soft_delete_field} IS NULL OR #{soft_delete_field} = 0"
@@ -268,19 +241,19 @@ module Tina4
         instances
       end
 
-      def select(sql, params = [], limit: nil, offset: nil, include: nil) # -> list[Self]
+      def select(sql, params = [], limit: nil, offset: nil, include: nil)
         results = db.fetch(sql, params, limit: limit, offset: offset)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
       end
 
-      def select_one(sql, params = [], include: nil) # -> Self | nil
+      def select_one(sql, params = [], include: nil)
         results = select(sql, params, limit: 1, include: include)
         results.first
       end
 
-      def count(conditions = nil, params = []) # -> int
+      def count(conditions = nil, params = [])
         sql = "SELECT COUNT(*) as cnt FROM #{table_name}"
         where_parts = []
         if soft_delete
@@ -292,48 +265,25 @@ module Tina4
         result[:cnt].to_i
       end
 
-      def create(attributes = {}) # -> Self
+      def create(attributes = {})
         instance = new(attributes)
         instance.save
         instance
       end
 
-      def find_or_fail(id) # -> Self
+      def find_or_fail(id)
         result = find(id)
         raise "#{name} with #{primary_key_field || :id}=#{id} not found" if result.nil?
         result
       end
 
-      # Return true if a record with the given primary key exists.
-      def exists(pk_value) # -> bool
-        find(pk_value) != nil
-      end
-
-      # SQL query with in-memory result caching.
-      # Results are cached by (class, sql, params, limit, offset) for +ttl+ seconds.
-      def cached(sql, params = [], ttl: 60, limit: 20, offset: 0, include: nil) # -> list[Self]
-        @_query_cache ||= Tina4::QueryCache.new(default_ttl: ttl, max_size: 500)
-        cache_key = Tina4::QueryCache.query_key("#{name}:#{sql}", params + [limit, offset])
-        hit = @_query_cache.get(cache_key)
-        return hit unless hit.nil?
-
-        results = select(sql, params, limit: limit, offset: offset, include: include)
-        @_query_cache.set(cache_key, results, ttl: ttl, tags: [name])
-        results
-      end
-
-      # Clear all cached query results for this model.
-      def clear_cache # -> nil
-        @_query_cache&.clear_tag(name)
-      end
-
-      def with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0) # -> list[Self]
+      def with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0)
         sql = "SELECT * FROM #{table_name} WHERE #{conditions}"
         results = db.fetch(sql, params, limit: limit, offset: offset)
         results.map { |row| from_hash(row) }
       end
 
-      def create_table # -> bool
+      def create_table
         return true if db.table_exists?(table_name)
 
         type_map = {
@@ -374,7 +324,7 @@ module Tina4
         true
       end
 
-      def scope(name, filter_sql, params = []) # -> nil
+      def scope(name, filter_sql, params = [])
         define_singleton_method(name) do |limit: 20, offset: 0|
           where(filter_sql, params)
         end
@@ -393,42 +343,15 @@ module Tina4
         instance
       end
 
-      # Find a single record by primary key. Returns instance or nil.
-      def find_by_id(id, include: nil) # -> Self | nil
+      private
+
+      def find_by_id(id)
         pk = primary_key_field || :id
         sql = "SELECT * FROM #{table_name} WHERE #{pk} = ?"
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
         end
-        select_one(sql, [id], include: include)
-      end
-
-      # Clear the relationship cache on all loaded instances (class-level helper).
-      # Useful after bulk operations when you want to force relationship re-loads.
-      def clear_rel_cache # -> nil
-        @_rel_cache = {}
-        nil
-      end
-
-      # Return the database connection used by this model.
-      def get_db # -> Database
-        db
-      end
-
-      # Map a Ruby property name to its database column name using field_mapping.
-      # Returns the column name as a symbol.
-      def get_db_column(property) # -> Symbol
-        col = field_mapping[property.to_s] || property
-        col.to_sym
-      end
-
-      private
-
-      def auto_discover_db
-        url = ENV["DATABASE_URL"]
-        return nil unless url
-        Tina4.database = Tina4::Database.new(url, username: ENV.fetch("DATABASE_USERNAME", ""), password: ENV.fetch("DATABASE_PASSWORD", ""))
-        Tina4.database
+        select_one(sql, [id])
       end
 
       def find_by_filter(filter)
@@ -458,7 +381,7 @@ module Tina4
       end
     end
 
-    def save # -> Self | bool
+    def save
       @errors = []
       @relationship_cache = {} # Clear relationship cache on save
       validate_fields
@@ -490,7 +413,7 @@ module Tina4
       false
     end
 
-    def delete # -> bool
+    def delete
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       return false unless pk_value
@@ -510,7 +433,7 @@ module Tina4
       true
     end
 
-    def force_delete # -> bool
+    def force_delete
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       raise "Cannot delete: no primary key value" unless pk_value
@@ -522,7 +445,7 @@ module Tina4
       true
     end
 
-    def restore # -> bool
+    def restore
       raise "Model does not support soft delete" unless self.class.soft_delete
 
       pk = self.class.primary_key_field || :id
@@ -540,7 +463,7 @@ module Tina4
       true
     end
 
-    def validate # -> list[str]
+    def validate
       errors = []
       self.class.field_definitions.each do |name, opts|
         value = __send__(name)
@@ -551,36 +474,19 @@ module Tina4
       errors
     end
 
-    # Load a record into this instance via select_one.
-    # Returns true if found and loaded, false otherwise.
-    # Load a record into this instance.
-    #
-    # Usage:
-    #   orm.id = 1; orm.load          — uses PK already set
-    #   orm.load("id = ?", [1])       — filter with params
-    #   orm.load("id = 1")            — filter string
-    #
-    # Returns true if a record was found, false otherwise.
-    def load(filter = nil, params = [], include: nil) # -> bool
-      @relationship_cache = {}
-      table = self.class.table_name
+    def load(id = nil)
+      pk = self.class.primary_key_field || :id
+      id ||= __send__(pk)
+      return false unless id
+      @relationship_cache = {} # Clear relationship cache on reload
 
-      if filter.nil?
-        pk = self.class.primary_key
-        pk_col = self.class.field_mapping[pk.to_s] || pk
-        pk_value = __send__(pk)
-        return false if pk_value.nil?
-        sql = "SELECT * FROM #{table} WHERE #{pk_col} = ?"
-        params = [pk_value]
-      else
-        sql = "SELECT * FROM #{table} WHERE #{filter}"
-      end
-
-      result = self.class.select_one(sql, params, include: include)
+      result = self.class.db.fetch_one(
+        "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?", [id]
+      )
       return false unless result
 
       mapping_reverse = self.class.field_mapping.invert
-      result.to_h.each do |key, value|
+      result.each do |key, value|
         attr_name = mapping_reverse[key.to_s] || key
         setter = "#{attr_name}="
         __send__(setter, value) if respond_to?(setter)
@@ -599,8 +505,7 @@ module Tina4
 
     # Convert to hash using Ruby attribute names.
     # Optionally include relationships via the include keyword.
-    # case: 'snake' (default) returns snake_case keys, 'camel' returns camelCase keys.
-    def to_h(include: nil, case: 'snake') # -> dict
+    def to_h(include: nil)
       hash = {}
       self.class.field_definitions.each_key do |name|
         hash[name] = __send__(name)
@@ -622,49 +527,27 @@ module Tina4
           if related.nil?
             hash[rel_name] = nil
           elsif related.is_a?(Array)
-            hash[rel_name] = related.map { |r| r.to_h(include: nested.empty? ? nil : nested, case: binding.local_variable_get(:case)) }
+            hash[rel_name] = related.map { |r| r.to_h(include: nested.empty? ? nil : nested) }
           else
-            hash[rel_name] = related.to_h(include: nested.empty? ? nil : nested, case: binding.local_variable_get(:case))
+            hash[rel_name] = related.to_h(include: nested.empty? ? nil : nested)
           end
         end
-      end
-
-      case_mode = binding.local_variable_get(:case)
-      if case_mode == 'camel'
-        camel_hash = {}
-        hash.each do |key, value|
-          camel_key = Tina4.snake_to_camel(key.to_s).to_sym
-          camel_hash[camel_key] = value
-        end
-        return camel_hash
       end
 
       hash
     end
 
-    def to_hash(include: nil, case: 'snake')
-      to_h(include: include, case: binding.local_variable_get(:case))
-    end
+    alias to_hash to_h
+    alias to_dict to_h
+    alias to_object to_h
 
-    def to_dict(include: nil, case: 'snake')
-      to_h(include: include, case: binding.local_variable_get(:case))
-    end
-
-    def to_assoc(include: nil, case: 'snake')
-      to_h(include: include, case: binding.local_variable_get(:case))
-    end
-
-    def to_object(include: nil, case: 'snake')
-      to_h(include: include, case: binding.local_variable_get(:case))
-    end
-
-    def to_array # -> list
+    def to_array
       to_h.values
     end
 
     alias to_list to_array
 
-    def to_json(include: nil, **_args) # -> str
+    def to_json(include: nil, **_args)
       JSON.generate(to_h(include: include))
     end
 
@@ -747,44 +630,7 @@ module Tina4
       fk_value = __send__(fk.to_sym) if respond_to?(fk.to_sym)
       return nil unless fk_value
 
-      @relationship_cache[name] = klass.find_by_id(fk_value)
-    end
-
-    public
-
-    # ── Imperative relationship methods (ad-hoc, like Python/PHP/Node) ──
-
-    def has_one(related_class, foreign_key: nil)
-      pk = self.class.primary_key_field || :id
-      pk_value = __send__(pk)
-      return nil unless pk_value
-
-      fk = foreign_key || "#{self.class.name.split('::').last.downcase}_id"
-      result = related_class.db.fetch_one(
-        "SELECT * FROM #{related_class.table_name} WHERE #{fk} = ?", [pk_value]
-      )
-      result ? related_class.from_hash(result) : nil
-    end
-
-    def has_many(related_class, foreign_key: nil, limit: 100, offset: 0)
-      pk = self.class.primary_key_field || :id
-      pk_value = __send__(pk)
-      return [] unless pk_value
-
-      fk = foreign_key || "#{self.class.name.split('::').last.downcase}_id"
-      results = related_class.db.fetch(
-        "SELECT * FROM #{related_class.table_name} WHERE #{fk} = ?",
-        [pk_value], limit: limit, offset: offset
-      )
-      results.map { |row| related_class.from_hash(row) }
-    end
-
-    def belongs_to(related_class, foreign_key: nil)
-      fk = foreign_key || "#{related_class.name.split('::').last.downcase}_id"
-      fk_value = respond_to?(fk.to_sym) ? __send__(fk.to_sym) : nil
-      return nil unless fk_value
-
-      related_class.find_by_id(fk_value)
+      @relationship_cache[name] = klass.find(fk_value)
     end
   end
 end
