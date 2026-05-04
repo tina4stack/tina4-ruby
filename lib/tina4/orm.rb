@@ -52,13 +52,29 @@ module Tina4
         @field_mapping = map
       end
 
-      # Auto-map flag (no-op in Ruby since snake_case is native)
+      # Auto-map flag — defaults to TRUE for cross-framework parity (Python's
+      # ORM has auto_map=True by default). The instance variable is treated
+      # as "unset" when nil; only an explicit `false` disables it.
       def auto_map
-        @auto_map || false
+        defined?(@auto_map) && !@auto_map.nil? ? @auto_map : true
       end
 
       def auto_map=(val)
         @auto_map = val
+      end
+
+      # auto_crud flag — when set to true, the class registers itself with
+      # Tina4::AutoCrud which auto-generates REST endpoints from the model.
+      # Defaults to false. Cross-framework parity with Python's autoCrud.
+      def auto_crud
+        defined?(@auto_crud) && !@auto_crud.nil? ? @auto_crud : false
+      end
+
+      def auto_crud=(val)
+        @auto_crud = val
+        if val && defined?(::Tina4::AutoCrud)
+          ::Tina4::AutoCrud.models << self unless ::Tina4::AutoCrud.models.include?(self)
+        end
       end
 
       # Relationship definitions
@@ -343,8 +359,10 @@ module Tina4
         instance
       end
 
-      private
-
+      # find_by_id is PUBLIC — cross-framework parity with Python's
+      # MyModel.find_by_id(pk_value) and PHP's User::find($id). Spec at
+      # spec/orm_spec.rb:78 verifies public access. find_by_filter stays
+      # public for the same reason; both are part of the documented API.
       def find_by_id(id)
         pk = primary_key_field || :id
         sql = "SELECT * FROM #{table_name} WHERE #{pk} = ?"
@@ -474,15 +492,30 @@ module Tina4
       errors
     end
 
-    def load(id = nil)
-      pk = self.class.primary_key_field || :id
-      id ||= __send__(pk)
-      return false unless id
+    # load — populate this instance from the database.
+    #
+    # Three forms (parity with Python's model.load(sql, params, include)):
+    #   user.load                                   # reload by primary key from instance
+    #   user.load(123)                              # load by primary key value
+    #   user.load("email = ?", ["a@b.c"])           # load by filter SQL + params (selectOne)
+    #
+    # Returns true on hit, false on miss. Always clears the relationship cache.
+    def load(arg = nil, params = nil)
       @relationship_cache = {} # Clear relationship cache on reload
+      pk = self.class.primary_key_field || :id
 
-      result = self.class.db.fetch_one(
-        "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?", [id]
-      )
+      if arg.is_a?(String)
+        # Filter-SQL form: user.load("email = ?", ["a@b.c"])
+        sql = "SELECT * FROM #{self.class.table_name} WHERE #{arg} LIMIT 1"
+        result = self.class.db.fetch_one(sql, params || [])
+      else
+        # Primary-key form: user.load OR user.load(123)
+        id = arg || __send__(pk)
+        return false unless id
+        result = self.class.db.fetch_one(
+          "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?", [id]
+        )
+      end
       return false unless result
 
       mapping_reverse = self.class.field_mapping.invert
@@ -505,7 +538,10 @@ module Tina4
 
     # Convert to hash using Ruby attribute names.
     # Optionally include relationships via the include keyword.
-    def to_h(include: nil)
+    # case: "camel" converts snake_case keys to camelCase (parity with
+    # Python's to_dict(case='camel')). Default keeps native snake_case.
+    def to_h(include: nil, case: nil)
+      key_case = binding.local_variable_get(:case)  # :case is a reserved word
       hash = {}
       self.class.field_definitions.each_key do |name|
         hash[name] = __send__(name)
@@ -531,6 +567,15 @@ module Tina4
           else
             hash[rel_name] = related.to_h(include: nested.empty? ? nil : nested)
           end
+        end
+      end
+
+      if key_case == "camel" || key_case == :camel
+        # snake_case → camelCase: split on _, capitalize all but the first
+        hash = hash.each_with_object({}) do |(k, v), out|
+          parts = k.to_s.split("_")
+          camel = parts[0] + parts[1..].map(&:capitalize).join
+          out[camel.to_sym] = v
         end
       end
 

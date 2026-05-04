@@ -111,13 +111,13 @@ RSpec.describe Tina4::ORM do
       TestUser.new(name: "Alice", age: 25).save
       TestUser.new(name: "Bob", age: 30).save
 
-      result = TestUser.select_one("SELECT * FROM test_users WHERE name = ?", ["Alice"])
+      result = TestUser.select_one("SELECT * FROM testusers WHERE name = ?", ["Alice"])
       expect(result).to be_a(TestUser)
       expect(result.name).to eq("Alice")
     end
 
     it "returns nil when no rows match" do
-      result = TestUser.select_one("SELECT * FROM test_users WHERE name = ?", ["Nonexistent"])
+      result = TestUser.select_one("SELECT * FROM testusers WHERE name = ?", ["Nonexistent"])
       expect(result).to be_nil
     end
   end

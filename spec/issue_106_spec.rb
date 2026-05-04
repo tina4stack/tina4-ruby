@@ -8,12 +8,17 @@ RSpec.describe "Issue #106 equivalent bugs" do
   describe "Wildcard param key" do
     before { Tina4::Router.clear! }
 
-    it "uses :splat as the key for a bare * wildcard" do
+    it 'uses :"*" (matching Python/PHP/Node parity) as the key for a bare * wildcard' do
+      # Tina4 uses the literal "*" key for bare-wildcard captures across all
+      # four frameworks — Python/PHP/Node docs say `request.params["*"]`.
+      # Ruby uses the symbol form :"*" to match that contract. NOT :splat
+      # (Sinatra's convention) — that would diverge from the cross-framework
+      # API surface.
       Tina4::Router.get("/docs/*") { |req, res| res.text("docs") }
       route, params = Tina4::Router.match("GET", "/docs/some/deep/path")
       expect(route).not_to be_nil
-      expect(params).to have_key(:splat)
-      expect(params[:splat]).to eq("some/deep/path")
+      expect(params).to have_key(:"*")
+      expect(params[:"*"]).to eq("some/deep/path")
     end
 
     it "uses the named key for *name wildcard" do
