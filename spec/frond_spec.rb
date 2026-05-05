@@ -1725,4 +1725,53 @@ RSpec.describe Tina4::Frond do
       ENV["TINA4_DEBUG"] = old
     end
   end
+
+  # =========================================================================
+  # Filter + property chain (regression for tina4-php#113)
+  #
+  # Property access chained after a filter must resolve as
+  # (filter).property, never as a literal `filter.property` filter
+  # name. Silent nil here once cost a receipt template the entire
+  # invoice total — render shows R0.00.
+  # =========================================================================
+
+  describe "filter + property chain (issue #113)" do
+    it "resolves filter then single property" do
+      data = { "details" => [{ "groupSummary" => { "totalAmount" => 190 } }] }
+      out = engine.render_string("{{ details|first.groupSummary.totalAmount }}", data)
+      expect(out).to eq("190")
+    end
+
+    it "resolves filter then property inside {% set %}" do
+      data = { "details" => [{ "groupSummary" => { "totalAmount" => 190 } }] }
+      tpl  = "{% set summary = details|first.groupSummary %}{{ summary.totalAmount }}"
+      expect(engine.render_string(tpl, data)).to eq("190")
+    end
+
+    it "resolves filter then multi-level property chain" do
+      data = { "invoices" => [{ "customer" => { "address" => { "city" => "Cape Town" } } }] }
+      out = engine.render_string("{{ invoices|first.customer.address.city }}", data)
+      expect(out).to eq("Cape Town")
+    end
+
+    it "resolves last filter then property" do
+      data = { "rows" => [{ "sku" => "A1" }, { "sku" => "B2" }] }
+      out = engine.render_string("{{ rows|last.sku }}", data)
+      expect(out).to eq("B2")
+    end
+
+    it "preserves filter args (number_format)" do
+      out = engine.render_string("{{ price|number_format(2) }}", { "price" => 19.5 })
+      expect(out).to eq("19.50")
+    end
+
+    it "does not split on dots inside quoted filter args" do
+      # replace(".", "-") — dots inside quoted args must NOT be
+      # treated as a property-path split. If the parser split on the
+      # inner dot it would call replace as just `replace("` and miss
+      # the second arg, returning the input unchanged.
+      out = engine.render_string('{{ stamp|replace(".", "-") }}', { "stamp" => "2026.05.05" })
+      expect(out).to eq("2026-05-05")
+    end
+  end
 end
