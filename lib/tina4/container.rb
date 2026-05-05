@@ -61,7 +61,7 @@ module Tina4
       end
 
       # Check if a service is registered.
-      def has(name)
+      def has?(name)
         registry.key?(name.to_sym)
       end
 

@@ -105,12 +105,16 @@ module Tina4
 
     # ── Rooms ──────────────────────────────────────────────────
 
-    def join_room_for(conn_id, room_name)
+    # Internal: add connection ID to a room (called by WebSocketConnection#join_room).
+    # Mirrors Python's WebSocketManager._join_room — not part of the public API.
+    def _join_room(conn_id, room_name)
       @rooms[room_name] ||= Set.new
       @rooms[room_name].add(conn_id)
     end
 
-    def leave_room_for(conn_id, room_name)
+    # Internal: remove connection ID from a room (called by WebSocketConnection#leave_room).
+    # Mirrors Python's WebSocketManager._leave_room — not part of the public API.
+    def _leave_room(conn_id, room_name)
       @rooms[room_name]&.delete(conn_id)
     end
 
@@ -251,12 +255,12 @@ module Tina4
 
     def join_room(room_name)
       @rooms.add(room_name)
-      @ws_server&.join_room_for(@id, room_name)
+      @ws_server&._join_room(@id, room_name)
     end
 
     def leave_room(room_name)
       @rooms.delete(room_name)
-      @ws_server&.leave_room_for(@id, room_name)
+      @ws_server&._leave_room(@id, room_name)
     end
 
     def broadcast_to_room(room_name, message, exclude_self: false)

@@ -212,11 +212,18 @@ module Tina4
           next unless system("which #{cmd} > /dev/null 2>&1")
 
           result = `#{cmd} install --upgrade tina4-ai 2>&1`
+          # Subprocess output is ASCII-8BIT — force UTF-8 with byte replacement
+          # so non-ASCII content (often emitted by pip on locale mismatch)
+          # doesn't crash String#strip with Encoding::CompatibilityError.
+          safe_result = result.dup.force_encoding("UTF-8")
+          unless safe_result.valid_encoding?
+            safe_result = safe_result.encode("UTF-8", "UTF-8", invalid: :replace, undef: :replace, replace: "?")
+          end
           if $?.success?
             puts "  \e[32m✓\e[0m Installed tina4-ai (mdview)"
             return
           else
-            puts "  \e[33m!\e[0m #{cmd} failed: #{result.strip[0..100]}"
+            puts "  \e[33m!\e[0m #{cmd} failed: #{safe_result.strip[0..100]}"
           end
         end
         puts "  \e[33m!\e[0m Python/pip not available -- skip tina4-ai"

@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.12.2 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.12.3 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -319,6 +319,58 @@ Tina4::Template.globals -> Hash
 Tina4::Template.render_error(code) -> String
 ```
 
+### Frond — Twig-compatible template engine
+
+```ruby
+engine = Tina4::Frond.new(template_dir: "src/templates")
+engine.render(template, data = {}) -> String
+engine.render_string(source, data = {}) -> String
+engine.add_filter(name) { |value, *args| ... }
+engine.add_test(name) { |value, *args| ... }
+engine.add_global(name, value)
+engine.clear_cache
+```
+
+- **SafeString**: Custom filters can return a SafeString to bypass auto-HTML-escaping.
+- **Fragment caching**: `{% cache "key" 300 %}...{% endcache %}` caches rendered block content for TTL seconds.
+- **Raw blocks**: `{% raw %}...{% endraw %}` outputs literal template syntax without parsing.
+
+### QueryBuilder — Fluent query construction
+
+Use `QueryBuilder` for complex queries with JOINs, aggregates, GROUP BY. Prefer over raw `db.fetch` for multi-table reads.
+
+```ruby
+# JOINs
+orders = Tina4::QueryBuilder.from_table("orders o")
+  .select("o.*", "c.name AS customer_name")
+  .join("customers c", "o.customer_id = c.id")
+  .where("o.status = ?", ["pending"])
+  .order_by("o.created_at DESC")
+  .limit(20)
+  .get                       # -> DatabaseResult
+
+# LEFT JOIN
+products = Tina4::QueryBuilder.from_table("products p")
+  .select("p.*", "c.name AS category_name")
+  .left_join("categories c", "p.category_id = c.id")
+  .get
+
+# Aggregates
+total = Tina4::QueryBuilder.from_table("orders")
+  .select("coalesce(sum(total), 0) AS total")
+  .where("status != ?", ["cancelled"])
+  .first["total"]            # -> single row hash
+
+# From ORM model
+results = User.query.where("age > ?", [18]).order_by("name").get
+
+# Methods: from_table, select, where, or_where, join, left_join,
+#          group_by, having, order_by, limit, get, first, count,
+#          exists?, to_sql, to_mongo
+```
+
+NoSQL support: `to_mongo` generates MongoDB query documents from the same fluent API.
+
 ### FakeData — Fake data generation
 
 ```ruby
@@ -336,6 +388,78 @@ Tina4.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil) -> 
 Tina4.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil) -> Integer
 Tina4.run_seeds(seed_folder: "seeds", clear: false)
 ```
+
+### Api — External HTTP client
+
+```ruby
+api = Tina4::Api.new("https://api.example.com", headers: {}, timeout: 30)
+api.get(path, params: {}) -> ApiResponse
+api.post(path, body: nil, content_type: "application/json") -> ApiResponse
+api.put(path, body: nil, content_type: "application/json") -> ApiResponse
+api.patch(path, body: nil, content_type: "application/json") -> ApiResponse
+api.delete(path, body: nil) -> ApiResponse
+api.upload(path, file_path, field_name: "file", extra_fields: {}, headers: {}) -> ApiResponse
+api.send_request(method, path, body: nil, content_type: "application/json") -> ApiResponse
+api.set_basic_auth(username, password)
+api.set_bearer_token(token)
+api.add_headers(headers)
+
+# ApiResponse
+resp.status          # -> Integer (HTTP status code)
+resp.body            # -> String
+resp.headers         # -> Hash
+resp.error           # -> String | nil
+resp.success?        # -> Boolean (2xx)
+resp.json            # -> Hash | Array (parsed body)
+```
+
+### Queue — Pluggable job queue
+
+```ruby
+queue = Tina4::Queue.new(topic: "tasks", backend: nil, max_retries: 3)
+queue.push(payload, priority: 0, delay_seconds: 0) -> Integer  # job id
+queue.pop -> Job | nil
+queue.pop_batch(count) -> Array<Job>
+queue.pop_by_id(id) -> Job | nil
+queue.size(status: "pending") -> Integer
+queue.clear -> Integer
+queue.failed -> Array<Hash>
+queue.dead_letters(max_retries: nil) -> Array<Hash>
+queue.purge(status, max_retries: nil) -> Integer
+queue.retry(job_id = nil, delay_seconds: 0) -> Boolean
+queue.retry_failed(max_retries: nil) -> Integer
+queue.produce(topic, payload, priority: 0, delay_seconds: 0)
+queue.consume(topic = nil, id: nil, poll_interval: 1.0, iterations: 0, batch_size: 1) { |job| ... }
+queue.process(topic: nil, max_jobs: nil, batch_size: 1) { |job| ... }
+
+# Job methods
+job.complete                       # mark as completed
+job.fail(reason = "")              # mark as failed
+job.reject(reason = "")            # alias for fail
+job.retry(delay_seconds: 0)        # re-queue with optional delay
+job.to_hash
+job.to_json
+```
+
+Backends: lite (default file-based), rabbitmq, kafka, mongo. Configured via `TINA4_QUEUE_BACKEND` and backend-specific env vars.
+
+### Background Tasks — Periodic background work
+
+Register callbacks that run periodically in a dedicated thread. Tasks integrate with the server lifecycle and stop cleanly on shutdown.
+
+```ruby
+# Register a periodic task
+Tina4::Background.register(interval: 2.0) { process_orders(queue) }
+
+# Or pass an explicit callable
+task = Tina4::Background.register(->{ check_health }, interval: 30.0)
+
+Tina4::Background.tasks                 # -> Array of registered tasks
+Tina4::Background.stop_task(task, timeout: 2.0)
+Tina4::Background.stop_all(timeout: 2.0)
+```
+
+For long-running named services (cron, daemon, interval), use `Tina4::ServiceRunner` instead — it supports cron patterns, retries, and discovery from a `services/` folder.
 
 ### Migration
 
@@ -426,19 +550,23 @@ Tina4::AI.show_menu(".")
 
 Supported tools: claude-code, cursor, copilot, windsurf, aider, cline, codex.
 
-### ResponseCache — In-memory GET response cache
+### ResponseCache — GET response cache middleware
+
+Public surface mirrors Python's `tina4_python.cache`: middleware-only, plus
+module-level `Tina4.cache_stats` / `Tina4.clear_cache`. Internal lookup/store
+of GET responses is performed by middleware hooks and is NOT public.
 
 ```ruby
+# Use as middleware on a route
 cache = Tina4::ResponseCache.new(ttl: 60, max_entries: 1000, status_codes: [200])
-
 cache.enabled?                              # -> Boolean (ttl > 0)
-cache.cache_response("GET", "/api/users", 200, "application/json", body)
-hit = cache.get("GET", "/api/users")        # -> CacheEntry | nil
-  # hit.body, hit.content_type, hit.status_code, hit.expires_at
 
-cache.cache_stats                           # -> { size: N, keys: [...] }
-cache.sweep                                 # evict expired entries, returns count
-cache.clear_cache                           # remove all entries
+# Module-level API (parity with Python cache_stats() / clear_cache())
+Tina4.cache_stats                           # -> { hits:, misses:, size:, backend:, keys: }
+Tina4.clear_cache                           # flush all entries
+Tina4.cache_get(key)                        # KV get (parity with Python cache_get)
+Tina4.cache_set(key, value, ttl: 0)         # KV set (parity with Python cache_set)
+Tina4.cache_delete(key)                     # KV delete (parity with Python cache_delete)
 
 # Environment: TINA4_CACHE_TTL sets default TTL (0 = disabled)
 ```
@@ -453,10 +581,10 @@ Tina4::Container.register(:mailer, MailService.new)
 Tina4::Container.register(:db) { Tina4::Database.new(ENV["DB_URL"]) }
 
 # Resolve a service (raises KeyError if not registered)
-db = Tina4::Container.resolve(:db)
+db = Tina4::Container.get(:db)
 
-Tina4::Container.registered?(:mailer)  # -> Boolean
-Tina4::Container.clear!                # remove all (useful in tests)
+Tina4::Container.has?(:mailer)         # -> Boolean
+Tina4::Container.reset                  # remove all (useful in tests)
 ```
 
 ### ErrorOverlay — Rich HTML error page (dev mode)
@@ -622,7 +750,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
 - Tests: 1,578 passing
-- Version: 3.12.2
+- Version: 3.12.3
 
 ## Links
 

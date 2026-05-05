@@ -469,9 +469,11 @@ RSpec.describe "Tina4 Smoke Test" do
       cache = Tina4::ResponseCache.new(ttl: 60)
       expect(cache.enabled?).to be true
 
-      cache.cache_response("GET", "/cached", 200, "application/json", '{"ok":true}')
+      # Internal store/lookup are private — middleware-only public API.
+      # Use the @internal test seam to exercise the same code path.
+      cache._internal_store("GET", "/cached", 200, "application/json", '{"ok":true}')
 
-      hit = cache.get("GET", "/cached")
+      hit = cache._internal_lookup("GET", "/cached")
       expect(hit).not_to be_nil
       expect(hit.body).to eq('{"ok":true}')
       expect(hit.status_code).to eq(200)
@@ -479,8 +481,8 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "returns nil for non-GET" do
       cache = Tina4::ResponseCache.new(ttl: 60)
-      cache.cache_response("POST", "/cached", 200, "text/plain", "body")
-      expect(cache.get("POST", "/cached")).to be_nil
+      cache._internal_store("POST", "/cached", 200, "text/plain", "body")
+      expect(cache._internal_lookup("POST", "/cached")).to be_nil
     end
   end
 

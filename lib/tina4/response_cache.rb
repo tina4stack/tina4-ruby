@@ -3,6 +3,17 @@
 module Tina4
   # Multi-backend response cache for GET requests.
   #
+  # Public surface (parity with Python tina4_python.cache):
+  #   - Tina4::ResponseCache — middleware class
+  #   - Tina4.cache_stats     — module function returning cache stats
+  #   - Tina4.clear_cache     — module function flushing all cached entries
+  #   - Tina4.cache_get / cache_set / cache_delete — module-level KV API
+  #
+  # The internal lookup/store of GET responses is performed by the middleware
+  # hooks (before_cache, after_cache) and is NOT exposed publicly. Use the
+  # middleware by attaching ResponseCache to your route, not by calling
+  # the (private) internal_lookup / internal_store directly.
+  #
   # Backends are selected via the TINA4_CACHE_BACKEND env var:
   #   memory — in-process LRU cache (default, zero deps)
   #   redis  — Redis / Valkey (uses `redis` gem or raw RESP over TCP)
@@ -13,16 +24,6 @@ module Tina4
   #   TINA4_CACHE_URL           — redis://localhost:6379  (redis only)
   #   TINA4_CACHE_TTL           — default TTL in seconds  (default: 0 = disabled)
   #   TINA4_CACHE_MAX_ENTRIES   — maximum cache entries   (default: 1000)
-  #
-  # Usage:
-  #   cache = Tina4::ResponseCache.new(ttl: 60, max_entries: 1000)
-  #   cache.cache_response("GET", "/api/users", 200, "application/json", '{"users":[]}')
-  #   hit = cache.get("GET", "/api/users")
-  #
-  #   # Direct API (same across all 4 languages)
-  #   cache.cache_set("key", {"data" => "value"}, ttl: 120)
-  #   value = cache.cache_get("key")
-  #   cache.cache_delete("key")
   #
   class ResponseCache
     CacheEntry = Struct.new(:body, :content_type, :status_code, :expires_at)
@@ -57,94 +58,75 @@ module Tina4
       @ttl > 0
     end
 
-    # Build a cache key from method and URL.
-    #
-    # @param method [String]
-    # @param url [String]
-    # @return [String]
-    def cache_key(method, url)
-      "#{method}:#{url}"
-    end
+    # ── Middleware hooks ────────────────────────────────────────────
 
-    # Retrieve a cached response. Returns nil on miss or expired entry.
-    #
-    # @param method [String]
-    # @param url [String]
-    # @return [CacheEntry, nil]
-    def get(method, url)
-      return nil unless enabled?
-      return nil unless method == "GET"
+    # Middleware hook — checks for a cached entry before the route handler runs.
+    # If a cached entry exists for this GET request, short-circuits by replacing
+    # the response. Otherwise tags the request so after_cache can capture the
+    # response.
+    def before_cache(request, response)
+      return [request, response] unless enabled?
 
-      key = cache_key(method, url)
-      entry = backend_get(key)
+      method = (request.respond_to?(:method) ? request.method : "GET").to_s.upcase
+      return [request, response] unless method == "GET"
 
-      if entry.nil?
-        @mutex.synchronize { @misses += 1 }
-        return nil
+      url = request.respond_to?(:url) ? request.url : (request.respond_to?(:path) ? request.path : "/")
+      hit = internal_lookup(method, url)
+      if hit
+        if response.respond_to?(:call)
+          new_response = response.call(hit.body, hit.status_code, hit.content_type)
+          return [request, new_response]
+        end
       end
 
-      # For memory backend, entry is a CacheEntry; for others, reconstruct
-      if entry.is_a?(CacheEntry)
-        if Time.now.to_f > entry.expires_at
-          backend_delete(key)
-          @mutex.synchronize { @misses += 1 }
-          return nil
-        end
-        @mutex.synchronize { @hits += 1 }
-        entry
-      elsif entry.is_a?(Hash)
-        expires_at = entry["expires_at"] || entry[:expires_at] || 0
-        if Time.now.to_f > expires_at
-          backend_delete(key)
-          @mutex.synchronize { @misses += 1 }
-          return nil
-        end
-        @mutex.synchronize { @hits += 1 }
-        CacheEntry.new(
-          entry["body"] || entry[:body],
-          entry["content_type"] || entry[:content_type],
-          entry["status_code"] || entry[:status_code],
-          expires_at
-        )
-      end
-    end
-
-    # Store a response in the cache.
-    #
-    # @param method [String]
-    # @param url [String]
-    # @param status_code [Integer]
-    # @param content_type [String]
-    # @param body [String]
-    # @param ttl [Integer, nil] override default TTL
-    def cache_response(method, url, status_code, content_type, body, ttl: nil)
-      return unless enabled?
-      return unless method == "GET"
-      return unless @status_codes.include?(status_code)
-
-      effective_ttl = ttl || @ttl
-      key = cache_key(method, url)
-      expires_at = Time.now.to_f + effective_ttl
-
-      entry_data = {
-        "body" => body,
-        "content_type" => content_type,
-        "status_code" => status_code,
-        "expires_at" => expires_at
-      }
-
-      case @backend_name
-      when "memory"
-        @mutex.synchronize do
-          if @store.size >= @max_entries && !@store.key?(key)
-            oldest_key = @store.keys.first
-            @store.delete(oldest_key)
-          end
-          @store[key] = CacheEntry.new(body, content_type, status_code, expires_at)
-        end
+      # Tag for after_cache
+      if request.respond_to?(:[]=)
+        request[:_cache_method] = method
+        request[:_cache_url] = url
       else
-        backend_set(key, entry_data, effective_ttl)
+        request.instance_variable_set(:@_cache_method, method)
+        request.instance_variable_set(:@_cache_url, url)
       end
+      [request, response]
+    end
+
+    # Middleware hook — captures the response body and stores it after the
+    # route handler runs.
+    def after_cache(request, response)
+      return [request, response] unless enabled?
+
+      method = if request.respond_to?(:[])
+                 request[:_cache_method]
+               else
+                 request.instance_variable_get(:@_cache_method)
+               end
+      url = if request.respond_to?(:[])
+              request[:_cache_url]
+            else
+              request.instance_variable_get(:@_cache_url)
+            end
+      return [request, response] if method.nil? || url.nil?
+
+      status = if response.respond_to?(:status_code)
+                 response.status_code
+               elsif response.respond_to?(:status)
+                 response.status
+               else
+                 200
+               end
+      content_type = if response.respond_to?(:content_type)
+                       response.content_type
+                     else
+                       "application/json"
+                     end
+      body = if response.respond_to?(:body)
+               response.body.to_s
+             else
+               response.to_s
+             end
+
+      internal_store(method, url, status.to_i, content_type.to_s, body)
+      [request, response]
     end
 
     # ── Direct Cache API (same across all 4 languages) ──────────
@@ -297,7 +279,94 @@ module Tina4
       @backend_name
     end
 
+    # @internal Test seam — exercises the same path the middleware uses.
+    # Public for parity tests only; do not use in application code.
+    def _internal_lookup(method, url)
+      internal_lookup(method, url)
+    end
+
+    # @internal Test seam — exercises the same path the middleware uses.
+    # Public for parity tests only; do not use in application code.
+    def _internal_store(method, url, status_code, content_type, body, ttl: nil)
+      internal_store(method, url, status_code, content_type, body, ttl: ttl)
+    end
+
     private
+
+    # Build a cache key from method and URL.
+    def cache_key(method, url)
+      "#{method}:#{url}"
+    end
+
+    # Internal: retrieve a cached response. Used by middleware hooks only.
+    def internal_lookup(method, url)
+      return nil unless enabled?
+      return nil unless method == "GET"
+
+      key = cache_key(method, url)
+      entry = backend_get(key)
+
+      if entry.nil?
+        @mutex.synchronize { @misses += 1 }
+        return nil
+      end
+
+      # For memory backend, entry is a CacheEntry; for others, reconstruct
+      if entry.is_a?(CacheEntry)
+        if Time.now.to_f > entry.expires_at
+          backend_delete(key)
+          @mutex.synchronize { @misses += 1 }
+          return nil
+        end
+        @mutex.synchronize { @hits += 1 }
+        entry
+      elsif entry.is_a?(Hash)
+        expires_at = entry["expires_at"] || entry[:expires_at] || 0
+        if Time.now.to_f > expires_at
+          backend_delete(key)
+          @mutex.synchronize { @misses += 1 }
+          return nil
+        end
+        @mutex.synchronize { @hits += 1 }
+        CacheEntry.new(
+          entry["body"] || entry[:body],
+          entry["content_type"] || entry[:content_type],
+          entry["status_code"] || entry[:status_code],
+          expires_at
+        )
+      end
+    end
+
+    # Internal: store a response in the cache. Used by middleware hooks only.
+    def internal_store(method, url, status_code, content_type, body, ttl: nil)
+      return unless enabled?
+      return unless method == "GET"
+      return unless @status_codes.include?(status_code)
+
+      effective_ttl = ttl || @ttl
+      key = cache_key(method, url)
+      expires_at = Time.now.to_f + effective_ttl
+
+      entry_data = {
+        "body" => body,
+        "content_type" => content_type,
+        "status_code" => status_code,
+        "expires_at" => expires_at
+      }
+
+      case @backend_name
+      when "memory"
+        @mutex.synchronize do
+          if @store.size >= @max_entries && !@store.key?(key)
+            oldest_key = @store.keys.first
+            @store.delete(oldest_key)
+          end
+          @store[key] = CacheEntry.new(body, content_type, status_code, expires_at)
+        end
+      else
+        backend_set(key, entry_data, effective_ttl)
+      end
+    end
 
     # ── Backend initialization ─────────────────────────────────
 
@@ -519,15 +588,17 @@ module Tina4
     end
   end
 
-  # ── Module-level convenience (singleton) ───────────────────────
+  # ── Module-level convenience (singleton, parity with Python) ───
 
   @default_cache = nil
 
   class << self
+    # Lazy module-level singleton for cache_stats / clear_cache.
     def cache_instance
       @default_cache ||= ResponseCache.new(ttl: ENV["TINA4_CACHE_TTL"] ? ENV["TINA4_CACHE_TTL"].to_i : 60)
     end
 
+    # Module-level KV API (parity with Python tina4_python.cache).
     def cache_get(key)
       cache_instance.cache_get(key)
     end
@@ -540,12 +611,19 @@ module Tina4
       cache_instance.cache_delete(key)
     end
 
-    def cache_clear
+    # Module-level cache stats (parity with Python tina4_python.cache.cache_stats()).
+    def cache_stats
+      cache_instance.cache_stats
+    end
+
+    # Module-level cache clear (parity with Python tina4_python.cache.clear_cache()).
+    def clear_cache
       cache_instance.clear_cache
     end
 
-    def cache_stats
-      cache_instance.cache_stats
+    # Backward-compat alias for cache_clear (deprecated — use clear_cache).
+    def cache_clear
+      cache_instance.clear_cache
     end
   end
 end

@@ -4,6 +4,14 @@ require "spec_helper"
 require "tmpdir"
 require "fileutils"
 
+# Public surface (parity with Python tina4_python.cache):
+#   - Tina4::ResponseCache class — middleware-only public API
+#   - Tina4.cache_stats / Tina4.clear_cache / Tina4.cache_get/set/delete
+#
+# Internal lookup/store of GET responses is performed by middleware hooks
+# and is NOT public. Tests use the @internal `_internal_lookup` /
+# `_internal_store` test seams that exercise the same code paths.
+
 RSpec.describe Tina4::ResponseCache do
   # ── Construction & Defaults ──────────────────────────────────────
 
@@ -108,28 +116,17 @@ RSpec.describe Tina4::ResponseCache do
     end
   end
 
-  # ── Cache Key ────────────────────────────────────────────────────
+  # ── Internal store/lookup via @internal test seams ──────────────
+  # The cache lookup/store of GET responses is private (used by middleware
+  # only). These tests exercise the same code paths via _internal_store /
+  # _internal_lookup which are explicitly marked @internal.
 
-  describe "#cache_key" do
-    it "builds key from method and url" do
-      cache = described_class.new(ttl: 60)
-      expect(cache.cache_key("GET", "/api/items")).to eq("GET:/api/items")
-    end
-
-    it "includes method in the key" do
-      cache = described_class.new(ttl: 60)
-      expect(cache.cache_key("POST", "/api/items")).to eq("POST:/api/items")
-    end
-  end
-
-  # ── cache_response / get (hit & miss) ────────────────────────────
-
-  describe "#cache_response and #get" do
+  describe "internal store/lookup (middleware path)" do
     let(:cache) { described_class.new(ttl: 60) }
 
     it "stores and retrieves a response" do
-      cache.cache_response("GET", "/api/data", 200, "application/json", '{"ok": true}')
-      hit = cache.get("GET", "/api/data")
+      cache._internal_store("GET", "/api/data", 200, "application/json", '{"ok": true}')
+      hit = cache._internal_lookup("GET", "/api/data")
       expect(hit).not_to be_nil
       expect(hit.body).to eq('{"ok": true}')
       expect(hit.status_code).to eq(200)
@@ -137,34 +134,34 @@ RSpec.describe Tina4::ResponseCache do
     end
 
     it "returns nil on cache miss" do
-      hit = cache.get("GET", "/api/missing")
+      hit = cache._internal_lookup("GET", "/api/missing")
       expect(hit).to be_nil
     end
 
     it "only caches GET requests" do
-      cache.cache_response("POST", "/api/data", 200, "application/json", "{}")
-      hit = cache.get("POST", "/api/data")
+      cache._internal_store("POST", "/api/data", 200, "application/json", "{}")
+      hit = cache._internal_lookup("POST", "/api/data")
       expect(hit).to be_nil
     end
 
     it "only caches configured status codes" do
-      cache.cache_response("GET", "/api/404", 404, "text/html", "Not Found")
-      hit = cache.get("GET", "/api/404")
+      cache._internal_store("GET", "/api/404", 404, "text/html", "Not Found")
+      hit = cache._internal_lookup("GET", "/api/404")
       expect(hit).to be_nil
     end
 
     it "caches custom status codes when configured" do
       custom_cache = described_class.new(ttl: 60, status_codes: [200, 404])
-      custom_cache.cache_response("GET", "/api/404", 404, "text/html", "Not Found")
-      hit = custom_cache.get("GET", "/api/404")
+      custom_cache._internal_store("GET", "/api/404", 404, "text/html", "Not Found")
+      hit = custom_cache._internal_lookup("GET", "/api/404")
       expect(hit).not_to be_nil
       expect(hit.status_code).to eq(404)
     end
 
     it "does not cache when disabled (ttl=0)" do
       disabled = described_class.new(ttl: 0)
-      disabled.cache_response("GET", "/api/data", 200, "application/json", "{}")
-      hit = disabled.get("GET", "/api/data")
+      disabled._internal_store("GET", "/api/data", 200, "application/json", "{}")
+      hit = disabled._internal_lookup("GET", "/api/data")
       expect(hit).to be_nil
     end
   end
@@ -174,18 +171,18 @@ RSpec.describe Tina4::ResponseCache do
   describe "TTL expiry" do
     it "entry expires after TTL" do
       cache = described_class.new(ttl: 1)
-      cache.cache_response("GET", "/api/expire", 200, "text/plain", "temp")
-      expect(cache.get("GET", "/api/expire")).not_to be_nil
+      cache._internal_store("GET", "/api/expire", 200, "text/plain", "temp")
+      expect(cache._internal_lookup("GET", "/api/expire")).not_to be_nil
       sleep(1.1)
-      expect(cache.get("GET", "/api/expire")).to be_nil
+      expect(cache._internal_lookup("GET", "/api/expire")).to be_nil
     end
 
     it "supports per-entry TTL override" do
       cache = described_class.new(ttl: 300)
-      cache.cache_response("GET", "/api/short", 200, "text/plain", "short", ttl: 1)
-      expect(cache.get("GET", "/api/short")).not_to be_nil
+      cache._internal_store("GET", "/api/short", 200, "text/plain", "short", ttl: 1)
+      expect(cache._internal_lookup("GET", "/api/short")).not_to be_nil
       sleep(1.1)
-      expect(cache.get("GET", "/api/short")).to be_nil
+      expect(cache._internal_lookup("GET", "/api/short")).to be_nil
     end
   end
 
@@ -195,17 +192,17 @@ RSpec.describe Tina4::ResponseCache do
     it "evicts oldest when full" do
       cache = described_class.new(ttl: 60, max_entries: 2)
 
-      cache.cache_response("GET", "/api/item/0", 200, "text/plain", "item-0")
-      cache.cache_response("GET", "/api/item/1", 200, "text/plain", "item-1")
-      cache.cache_response("GET", "/api/item/2", 200, "text/plain", "item-2")
+      cache._internal_store("GET", "/api/item/0", 200, "text/plain", "item-0")
+      cache._internal_store("GET", "/api/item/1", 200, "text/plain", "item-1")
+      cache._internal_store("GET", "/api/item/2", 200, "text/plain", "item-2")
 
       stats = cache.cache_stats
       expect(stats[:size]).to eq(2)
 
       # First item should be evicted
-      expect(cache.get("GET", "/api/item/0")).to be_nil
+      expect(cache._internal_lookup("GET", "/api/item/0")).to be_nil
       # Third item should be cached
-      hit = cache.get("GET", "/api/item/2")
+      hit = cache._internal_lookup("GET", "/api/item/2")
       expect(hit).not_to be_nil
       expect(hit.body).to eq("item-2")
     end
@@ -225,24 +222,24 @@ RSpec.describe Tina4::ResponseCache do
 
     it "tracks misses" do
       cache = described_class.new(ttl: 60)
-      cache.get("GET", "/miss")
+      cache._internal_lookup("GET", "/miss")
       stats = cache.cache_stats
       expect(stats[:misses]).to eq(1)
     end
 
     it "tracks hits" do
       cache = described_class.new(ttl: 60)
-      cache.cache_response("GET", "/api/hit", 200, "text/plain", "data")
-      cache.get("GET", "/api/hit")  # hit
+      cache._internal_store("GET", "/api/hit", 200, "text/plain", "data")
+      cache._internal_lookup("GET", "/api/hit")  # hit
       stats = cache.cache_stats
       expect(stats[:hits]).to eq(1)
     end
 
     it "tracks hits and misses together" do
       cache = described_class.new(ttl: 60)
-      cache.cache_response("GET", "/api/stats", 200, "text/plain", "data")
-      cache.get("GET", "/api/stats")  # hit
-      cache.get("GET", "/api/missing")  # miss
+      cache._internal_store("GET", "/api/stats", 200, "text/plain", "data")
+      cache._internal_lookup("GET", "/api/stats")  # hit
+      cache._internal_lookup("GET", "/api/missing")  # miss
       stats = cache.cache_stats
       expect(stats[:hits]).to eq(1)
       expect(stats[:misses]).to eq(1)
@@ -255,9 +252,9 @@ RSpec.describe Tina4::ResponseCache do
   describe "#clear_cache" do
     it "resets store and stats" do
       cache = described_class.new(ttl: 60)
-      cache.cache_response("GET", "/api/clear", 200, "text/plain", "data")
-      cache.get("GET", "/api/clear")  # hit
-      cache.get("GET", "/api/miss")   # miss
+      cache._internal_store("GET", "/api/clear", 200, "text/plain", "data")
+      cache._internal_lookup("GET", "/api/clear")  # hit
+      cache._internal_lookup("GET", "/api/miss")   # miss
 
       cache.clear_cache
       stats = cache.cache_stats
@@ -272,7 +269,7 @@ RSpec.describe Tina4::ResponseCache do
   describe "#sweep" do
     it "removes expired entries" do
       cache = described_class.new(ttl: 1)
-      cache.cache_response("GET", "/api/sweep", 200, "text/plain", "temp")
+      cache._internal_store("GET", "/api/sweep", 200, "text/plain", "temp")
       expect(cache.cache_stats[:size]).to eq(1)
       sleep(1.1)
       removed = cache.sweep
@@ -282,7 +279,7 @@ RSpec.describe Tina4::ResponseCache do
 
     it "keeps non-expired entries" do
       cache = described_class.new(ttl: 300)
-      cache.cache_response("GET", "/api/keep", 200, "text/plain", "keep")
+      cache._internal_store("GET", "/api/keep", 200, "text/plain", "keep")
       removed = cache.sweep
       expect(removed).to eq(0)
       expect(cache.cache_stats[:size]).to eq(1)
@@ -355,24 +352,24 @@ RSpec.describe Tina4::ResponseCache do
 
     it "stores and retrieves responses" do
       cache = described_class.new(ttl: 60, backend: "file", cache_dir: cache_dir)
-      cache.cache_response("GET", "/api/file", 200, "text/plain", "file data")
-      hit = cache.get("GET", "/api/file")
+      cache._internal_store("GET", "/api/file", 200, "text/plain", "file data")
+      hit = cache._internal_lookup("GET", "/api/file")
       expect(hit).not_to be_nil
       expect(hit.body).to eq("file data")
     end
 
     it "returns nil for missing key" do
       cache = described_class.new(ttl: 60, backend: "file", cache_dir: cache_dir)
-      hit = cache.get("GET", "/api/nope")
+      hit = cache._internal_lookup("GET", "/api/nope")
       expect(hit).to be_nil
     end
 
     it "expires entries after TTL" do
       cache = described_class.new(ttl: 1, backend: "file", cache_dir: cache_dir)
-      cache.cache_response("GET", "/api/expire", 200, "text/plain", "temp")
-      expect(cache.get("GET", "/api/expire")).not_to be_nil
+      cache._internal_store("GET", "/api/expire", 200, "text/plain", "temp")
+      expect(cache._internal_lookup("GET", "/api/expire")).not_to be_nil
       sleep(1.1)
-      expect(cache.get("GET", "/api/expire")).to be_nil
+      expect(cache._internal_lookup("GET", "/api/expire")).to be_nil
     end
 
     it "deletes entries" do
@@ -400,7 +397,7 @@ RSpec.describe Tina4::ResponseCache do
 
     it "sweeps expired file entries" do
       cache = described_class.new(ttl: 1, backend: "file", cache_dir: cache_dir)
-      cache.cache_response("GET", "/api/sweep", 200, "text/plain", "temp")
+      cache._internal_store("GET", "/api/sweep", 200, "text/plain", "temp")
       sleep(1.1)
       removed = cache.sweep
       expect(removed).to eq(1)
@@ -430,9 +427,16 @@ RSpec.describe Tina4::ResponseCache do
       expect(Tina4.cache_get("mod_del")).to be_nil
     end
 
-    it "cache_clear works via singleton" do
+    it "Tina4.clear_cache works via singleton (parity with Python)" do
       Tina4.cache_set("mod_a", 1, ttl: 60)
       Tina4.cache_set("mod_b", 2, ttl: 60)
+      Tina4.clear_cache
+      stats = Tina4.cache_stats
+      expect(stats[:size]).to eq(0)
+    end
+
+    it "Tina4.cache_clear (legacy alias) works via singleton" do
+      Tina4.cache_set("mod_a", 1, ttl: 60)
       Tina4.cache_clear
       stats = Tina4.cache_stats
       expect(stats[:size]).to eq(0)
@@ -462,14 +466,14 @@ RSpec.describe Tina4::ResponseCache do
       20.times do |i|
         threads << Thread.new do
           begin
-            cache.cache_response("GET", "/api/thread/#{i}", 200, "text/plain", "val-#{i}")
+            cache._internal_store("GET", "/api/thread/#{i}", 200, "text/plain", "val-#{i}")
           rescue StandardError => e
             errors << e
           end
         end
         threads << Thread.new do
           begin
-            cache.get("GET", "/api/thread/#{i}")
+            cache._internal_lookup("GET", "/api/thread/#{i}")
           rescue StandardError => e
             errors << e
           end
@@ -488,8 +492,8 @@ RSpec.describe Tina4::ResponseCache do
     %w[POST PUT PATCH DELETE].each do |method|
       it "does not cache #{method} requests" do
         cache = described_class.new(ttl: 60)
-        cache.cache_response(method, "/api/write", 200, "text/plain", "data")
-        hit = cache.get(method, "/api/write")
+        cache._internal_store(method, "/api/write", 200, "text/plain", "data")
+        hit = cache._internal_lookup(method, "/api/write")
         expect(hit).to be_nil
       end
     end

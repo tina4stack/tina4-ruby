@@ -85,14 +85,14 @@ RSpec.describe Tina4::Container do
     end
   end
 
-  describe ".has" do
+  describe ".has?" do
     it "returns true for registered services" do
       described_class.register(:present, "here")
-      expect(described_class.has(:present)).to be true
+      expect(described_class.has?(:present)).to be true
     end
 
     it "returns false for unregistered services" do
-      expect(described_class.has(:absent)).to be false
+      expect(described_class.has?(:absent)).to be false
     end
   end
 
@@ -101,8 +101,8 @@ RSpec.describe Tina4::Container do
       described_class.register(:a, 1)
       described_class.register(:b, 2)
       described_class.reset
-      expect(described_class.has(:a)).to be false
-      expect(described_class.has(:b)).to be false
+      expect(described_class.has?(:a)).to be false
+      expect(described_class.has?(:b)).to be false
     end
   end
 
