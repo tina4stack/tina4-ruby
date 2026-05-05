@@ -62,7 +62,7 @@ module Tina4
     end
     lines.concat([
                    "",
-                   "Run `tina4 env-migrate` to rewrite your .env automatically,",
+                   "Run `tina4 env --migrate` to rewrite your .env automatically,",
                    "or rename manually. See https://tina4.com/release/3.12.0",
                    "Set TINA4_ALLOW_LEGACY_ENV=true to bypass during migration.",
                    sep, ""
