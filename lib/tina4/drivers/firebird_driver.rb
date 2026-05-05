@@ -19,20 +19,95 @@ module Tina4
         "broken pipe"
       ].freeze
 
+      # Detects a Windows drive-letter prefix like "C:/" or "C:\". The leading-slash
+      # variant ("/C:/...") shows up after URI.parse strips one slash off
+      # "firebird://host:port/C:/...".
+      WIN_DRIVE_RE = %r{\A/?[A-Za-z]:[/\\]}.freeze
+
+      # Turn the URL path component into a Firebird database identifier.
+      #
+      # Firebird is the awkward one — it needs either an absolute file path
+      # on the server, a Windows drive-letter path, or an alias name. The
+      # classic URI form uses a double-slash to keep the leading "/" of an
+      # absolute path through URI.parse:
+      #
+      #     firebird://host:port//firebird/data/app.fdb   →  /firebird/data/app.fdb
+      #
+      # But that double slash is unintuitive to anyone used to the way
+      # postgres / mysql / mssql encode the database name. We accept five
+      # equivalent forms and normalise all of them:
+      #
+      # * "//abs/path/db.fdb"    → "/abs/path/db.fdb"    (classic double-slash)
+      # * "/abs/path/db.fdb"     → "/abs/path/db.fdb"    (single-slash, what most people type)
+      # * "/C:/Data/db.fdb"      → "C:/Data/db.fdb"      (Windows, leading URL slash dropped)
+      # * "/C%3A/Data/db.fdb"    → "C:/Data/db.fdb"      (Windows with URL-encoded colon)
+      # * "/employee"            → "employee"            (alias — single token)
+      #
+      # Aliases are detected as the leftover case: a single token with no
+      # slashes. Anything path-like is kept as a path.
+      def self.normalize_db_identifier(raw_path)
+        require "uri"
+        return "" if raw_path.nil? || raw_path.empty?
+
+        decoded = URI.decode_www_form_component(raw_path)
+
+        # Classic double-slash form: //abs/path → /abs/path
+        decoded = decoded[1..] if decoded.start_with?("//")
+
+        # Windows drive-letter — drop the URL-introduced leading slash.
+        # /C:/Data/db.fdb → C:/Data/db.fdb
+        if WIN_DRIVE_RE.match?(decoded)
+          decoded = decoded[1..] if decoded.start_with?("/")
+          return decoded
+        end
+
+        # Look at the content after stripping the leading slash. If it's a
+        # single token with no separators, it's a Firebird alias — return
+        # WITHOUT the leading slash (the alias name itself is the identifier).
+        body = decoded.start_with?("/") ? decoded[1..] : decoded
+        if !body.empty? && !body.include?("/") && !body.include?("\\")
+          return body
+        end
+
+        # Otherwise it's a file path. If it already has a leading slash,
+        # keep it. If it's a relative-looking path (slash-separated but no
+        # leading "/") promote it to absolute — Firebird needs absolute paths
+        # and we don't know the server's CWD anyway.
+        decoded.start_with?("/") ? decoded : "/#{decoded}"
+      end
+
       def connect(connection_string, username: nil, password: nil)
         require "fb"
         require "uri"
         uri = URI.parse(connection_string)
         host = uri.host
         port = uri.port || 3050
-        db_path = uri.path&.sub(/^\//, "")
         db_user = username || uri.user
         db_pass = password || uri.password
+
+        # Firebird database identifier resolution — two layers:
+        #
+        # 1. TINA4_DATABASE_FIREBIRD_PATH env override wins if set.
+        #    Useful for Windows users with raw backslash paths (no URL
+        #    encoding required) and for ops setups that keep server URL
+        #    and DB location in separate config layers.
+        # 2. Otherwise normalise the URL path component — accepts every
+        #    sensible variant (single/double slash, drive letter, alias).
+        env_override = ENV["TINA4_DATABASE_FIREBIRD_PATH"].to_s
+        db_path = if !env_override.empty?
+                    env_override
+                  else
+                    self.class.normalize_db_identifier(uri.path.to_s)
+                  end
 
         database = if host
                      "#{host}/#{port}:#{db_path}"
                    else
-                     db_path || connection_string.sub(/^firebird:\/\//, "")
+                     # No host → fall back to the raw identifier (or, for
+                     # totally non-URL inputs, strip the scheme prefix).
+                     return_path = db_path
+                     return_path = connection_string.sub(/^firebird:\/\//, "") if return_path.empty?
+                     return_path
                    end
 
         # Cache for transparent reconnect — never logged, lives only in
