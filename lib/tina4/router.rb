@@ -328,6 +328,14 @@ module Tina4
         nil
       end
 
+      # When TINA4_TRAILING_SLASH_REDIRECT is truthy, the rack app uses this
+      # to detect whether the *original* (un-stripped) path differed from the
+      # canonical form so it can issue a 301 redirect. Default false — silent
+      # match keeps backward compatibility.
+      def trailing_slash_redirect?
+        %w[true 1 yes on].include?(ENV.fetch("TINA4_TRAILING_SLASH_REDIRECT", "").to_s.strip.downcase)
+      end
+
       # Find a route matching method + path. Returns [route, params] or nil.
       # match(method, path) — consistent with Python, PHP, and Node.
       def match(method, path)

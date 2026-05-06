@@ -845,6 +845,14 @@ module Tina4
   class GraphQL
     attr_reader :schema
 
+    # Class-level toggle for ORM auto-schema generation. Defaults to true,
+    # can be disabled via TINA4_GRAPHQL_AUTO_SCHEMA=false. Initializers and
+    # user app code can branch on this before calling `schema.from_orm(...)`.
+    def self.auto_schema_enabled?
+      val = ENV.fetch("TINA4_GRAPHQL_AUTO_SCHEMA", "true").to_s.strip.downcase
+      !%w[false 0 no off].include?(val)
+    end
+
     def initialize(schema = nil)
       @schema = schema || GraphQLSchema.new
       @executor = GraphQLExecutor.new(@schema)
@@ -916,7 +924,12 @@ module Tina4
     #   gql.register_route           # POST /graphql
     #   gql.register_route("/api/graphql")  # custom path
     #
-    def register_route(path = "/graphql")
+    def register_route(path = nil)
+      # TINA4_GRAPHQL_ENDPOINT — defaults to /graphql when caller doesn't override.
+      path ||= ENV.fetch("TINA4_GRAPHQL_ENDPOINT", "/graphql")
+      path = path.to_s
+      path = "/#{path}" unless path.start_with?("/")
+
       graphql = self
       Tina4.post path, auth: false do |request, response|
         body = request.body

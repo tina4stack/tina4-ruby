@@ -119,6 +119,9 @@ module Tina4
     attr_accessor :root_dir, :database
 
     def print_banner(host: "0.0.0.0", port: 7147, server_name: nil)
+      # TINA4_SUPPRESS — short-circuit ALL banner output for headless / CI runs.
+      return if Tina4::Env.is_truthy(ENV["TINA4_SUPPRESS"])
+
       is_tty = $stdout.respond_to?(:isatty) && $stdout.isatty
       color = is_tty ? "\e[31m" : ""
       reset = is_tty ? "\e[0m" : ""

@@ -36,13 +36,14 @@ module Tina4
   #
   class Messenger
     attr_reader :host, :port, :username, :from_address, :from_name,
-                :imap_host, :imap_port, :use_tls, :encryption
+                :imap_host, :imap_port, :use_tls, :encryption,
+                :imap_encryption, :imap_use_tls
 
     # Initialize with SMTP config.
     # Priority: constructor params > ENV (TINA4_MAIL_*) > sensible defaults
     def initialize(host: nil, port: nil, username: nil, password: nil,
                    from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
-                   imap_host: nil, imap_port: nil)
+                   imap_host: nil, imap_port: nil, imap_encryption: nil)
       @host         = host         || ENV["TINA4_MAIL_HOST"]     || "localhost"
       @port         = (port        || ENV["TINA4_MAIL_PORT"]     || 587).to_i
       @username     = username     || ENV["TINA4_MAIL_USERNAME"]
@@ -53,7 +54,7 @@ module Tina4
 
       @from_name    = from_name    || ENV["TINA4_MAIL_FROM_NAME"] || ""
 
-      # Encryption: constructor > .env > backward-compat use_tls > default "tls"
+      # SMTP encryption: constructor > .env > backward-compat use_tls > default "tls"
       env_encryption = encryption  || ENV["TINA4_MAIL_ENCRYPTION"]
       if env_encryption
         @encryption = env_encryption.downcase
@@ -66,6 +67,12 @@ module Tina4
 
       @imap_host    = imap_host    || ENV["TINA4_MAIL_IMAP_HOST"] || @host
       @imap_port    = (imap_port   || ENV["TINA4_MAIL_IMAP_PORT"] || 993).to_i
+
+      # IMAP encryption: dedicated env var TINA4_MAIL_IMAP_ENCRYPTION (tls/starttls/none).
+      # Defaults to "tls" — IMAPS over implicit TLS on port 993 is the safe industry norm.
+      env_imap_enc = imap_encryption || ENV["TINA4_MAIL_IMAP_ENCRYPTION"]
+      @imap_encryption = (env_imap_enc && !env_imap_enc.to_s.empty?) ? env_imap_enc.to_s.downcase : "tls"
+      @imap_use_tls    = %w[tls starttls ssl].include?(@imap_encryption)
     end
 
     # Send email using Ruby's Net::SMTP
@@ -387,7 +394,7 @@ module Tina4
     # ── IMAP helpers ─────────────────────────────────────────────────────
 
     def imap_connect(&block)
-      imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @use_tls)
+      imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
       imap.login(@username, @password)
       result = block.call(imap)
       imap.logout

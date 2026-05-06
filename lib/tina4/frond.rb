@@ -190,6 +190,11 @@ module Tina4
     end
 
     # Render a template file with data. Uses token caching for performance.
+    #
+    # Caching strategy:
+    #   * TINA4_DEBUG=true        — never cache (always re-read + re-tokenize).
+    #   * TINA4_TEMPLATE_CACHE_TTL > 0 — cache entries expire after N seconds.
+    #   * TINA4_TEMPLATE_CACHE_TTL == 0 (default in production) — permanent cache.
     def render(template, data = {})
       context = @globals.merge(stringify_keys(data))
 
@@ -197,11 +202,16 @@ module Tina4
       raise "Template not found: #{path}" unless File.exist?(path)
 
       debug_mode = ENV.fetch("TINA4_DEBUG", "").downcase == "true"
+      ttl = (ENV["TINA4_TEMPLATE_CACHE_TTL"] || "0").to_i
 
       unless debug_mode
-        # Production: use permanent cache (no filesystem checks)
         cached = @compiled[template]
-        return execute_cached(cached[0], context) if cached
+        if cached
+          # cached layout: [tokens, mtime, cached_at]
+          tokens, _mtime, cached_at = cached
+          fresh = ttl <= 0 || (Time.now.to_i - cached_at.to_i) < ttl
+          return execute_cached(tokens, context) if fresh
+        end
       end
       # Dev mode: skip cache entirely — always re-read and re-tokenize
       # so edits to partials and extended base templates are detected
@@ -210,7 +220,7 @@ module Tina4
       source = File.read(path, encoding: "utf-8")
       mtime = File.mtime(path)
       tokens = tokenize(source)
-      @compiled[template] = [tokens, mtime]
+      @compiled[template] = [tokens, mtime, Time.now.to_i]
       execute_with_tokens(source, tokens, context)
     end
 

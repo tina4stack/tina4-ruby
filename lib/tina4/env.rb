@@ -132,6 +132,12 @@ module Tina4
       private
 
       def resolve_env_file(root_dir)
+        # TINA4_ENV_FILE wins — explicit path or filename (resolved against root_dir).
+        explicit = ENV["TINA4_ENV_FILE"]
+        if explicit && !explicit.empty?
+          return File.absolute_path?(explicit) ? explicit : File.join(root_dir, explicit)
+        end
+
         environment = ENV["ENVIRONMENT"]
         if environment && !environment.empty?
           candidate = File.join(root_dir, ".env.#{environment}")

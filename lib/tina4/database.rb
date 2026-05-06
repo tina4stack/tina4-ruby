@@ -83,7 +83,7 @@ module Tina4
     }.freeze
 
     # Static factory — cross-framework consistency: Database.create(url)
-    def self.create(url, username: "", password: "", pool: 0)
+    def self.create(url, username: "", password: "", pool: nil)
       new(url, username: username.empty? ? nil : username,
                password: password.empty? ? nil : password,
                pool: pool)
@@ -91,7 +91,7 @@ module Tina4
 
     # Construct a Database from environment variables.
     # Returns nil if the named env var is not set.
-    def self.from_env(env_key: "TINA4_DATABASE_URL", pool: 0)
+    def self.from_env(env_key: "TINA4_DATABASE_URL", pool: nil)
       url = ENV[env_key]
       return nil if url.nil? || url.strip.empty?
 
@@ -101,12 +101,18 @@ module Tina4
           pool: pool)
     end
 
-    def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: 0)
+    def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: nil)
       @connection_string = connection_string || ENV["TINA4_DATABASE_URL"]
       @username = username || ENV["TINA4_DATABASE_USERNAME"]
       @password = password || ENV["TINA4_DATABASE_PASSWORD"]
       @driver_name = driver_name || detect_driver(@connection_string)
-      @pool_size = pool  # 0 = single connection, N>0 = N pooled connections
+      # TINA4_DB_POOL falls back when caller doesn't pass `pool:` explicitly.
+      # Default 0 = single connection, N>0 = N pooled connections (round-robin).
+      @pool_size = if pool.nil?
+                     (ENV["TINA4_DB_POOL"] || "0").to_i
+                   else
+                     pool
+                   end
       @connected = false
 
       # Per-instance thread-local key for the transaction adapter pin.

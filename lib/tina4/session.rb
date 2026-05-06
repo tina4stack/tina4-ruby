@@ -16,6 +16,11 @@ module Tina4
 
     def initialize(env, options = {})
       @options = DEFAULT_OPTIONS.merge(options)
+      # TINA4_SESSION_NAME — overrides cookie_name unless caller explicitly passed one.
+      env_name = ENV["TINA4_SESSION_NAME"]
+      if !options.key?(:cookie_name) && env_name && !env_name.empty?
+        @options[:cookie_name] = env_name
+      end
       @options[:secret] ||= ENV["TINA4_SECRET"] || "tina4-default-secret"
       @handler = create_handler
       @id = extract_session_id(env) || SecureRandom.hex(32)
@@ -151,7 +156,17 @@ module Tina4
     def cookie_header(cookie_name = nil)
       name = cookie_name || @options[:cookie_name]
       samesite = ENV["TINA4_SESSION_SAMESITE"] || "Lax"
-      "#{name}=#{@id}; Path=/; HttpOnly; SameSite=#{samesite}; Max-Age=#{@options[:max_age]}"
+      # HttpOnly defaults to true (existing behaviour); flip off only when explicitly false.
+      httponly = !%w[false 0 no off].include?((ENV["TINA4_SESSION_HTTPONLY"] || "true").to_s.strip.downcase)
+      # Secure defaults to false; flip on with truthy env var.
+      secure = %w[true 1 yes on].include?((ENV["TINA4_SESSION_SECURE"] || "false").to_s.strip.downcase)
+
+      parts = ["#{name}=#{@id}", "Path=/"]
+      parts << "HttpOnly" if httponly
+      parts << "Secure" if secure
+      parts << "SameSite=#{samesite}"
+      parts << "Max-Age=#{@options[:max_age]}"
+      parts.join("; ")
     end
 
     private

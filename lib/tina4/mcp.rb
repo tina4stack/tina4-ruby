@@ -136,6 +136,30 @@ module Tina4
     ["localhost", "127.0.0.1", "0.0.0.0", "::1", ""].include?(host)
   end
 
+  # Resolve whether the built-in MCP dev server should be active.
+  #
+  # Precedence:
+  #   * TINA4_MCP set explicitly → use that (truthy/falsey).
+  #   * Otherwise: enabled only when TINA4_DEBUG=true.
+  def self.mcp_enabled?
+    explicit = ENV["TINA4_MCP"]
+    if explicit && !explicit.empty?
+      return %w[true 1 yes on].include?(explicit.to_s.strip.downcase)
+    end
+    %w[true 1 yes on].include?(ENV.fetch("TINA4_DEBUG", "").to_s.strip.downcase)
+  end
+
+  # Resolve the dedicated MCP port. Defaults to (server port + 2000) — keeps
+  # MCP tooling reachable on a stable, predictable channel separate from the
+  # main HTTP port and the AI test port (port + 1000).
+  def self.mcp_port
+    explicit = ENV["TINA4_MCP_PORT"]
+    return explicit.to_i if explicit && !explicit.empty? && explicit.to_i > 0
+
+    base_port = (ENV["TINA4_PORT"] || ENV["PORT"] || "7147").to_i
+    base_port + 2000
+  end
+
   # ── McpServer ─────────────────────────────────────────────────────
   class McpServer
     attr_reader :path, :name, :version

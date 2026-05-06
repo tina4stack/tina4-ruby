@@ -2,10 +2,16 @@
 
 module Tina4
   class WebServer
-    def initialize(app, host: "0.0.0.0", port: 7147)
+    DEFAULT_HOST = "0.0.0.0"
+    DEFAULT_PORT = 7147
+
+    # TINA4_HOST overrides the bind address when caller doesn't pass `host:`.
+    def initialize(app, host: nil, port: nil)
       @app = app
-      @host = host
-      @port = port
+      env_host = ENV["TINA4_HOST"]
+      @host = host || (env_host && !env_host.empty? ? env_host : DEFAULT_HOST)
+      env_port = ENV["TINA4_PORT"] || ENV["PORT"]
+      @port = port || (env_port && !env_port.empty? ? env_port.to_i : DEFAULT_PORT)
     end
 
     # Kill whatever process is listening on *port*.

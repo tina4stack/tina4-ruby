@@ -13,16 +13,44 @@ module Tina4
         spec
       end
 
+      # TINA4_SWAGGER_ENABLED — defaults to TINA4_DEBUG. When false, callers
+      # can choose to skip mounting /swagger entirely in production.
+      def enabled?
+        explicit = ENV["TINA4_SWAGGER_ENABLED"]
+        if explicit && !explicit.empty?
+          return %w[true 1 yes on].include?(explicit.to_s.strip.downcase)
+        end
+        %w[true 1 yes on].include?(ENV.fetch("TINA4_DEBUG", "").to_s.strip.downcase)
+      end
+
       private
 
       def base_spec
+        info = {
+          "title" => ENV["TINA4_SWAGGER_TITLE"] || ENV["PROJECT_NAME"] || "Tina4 API",
+          "version" => ENV["TINA4_SWAGGER_VERSION"] || Tina4::VERSION,
+          "description" => ENV["TINA4_SWAGGER_DESCRIPTION"] || "Auto-generated API documentation"
+        }
+
+        # Optional contact block — only emitted when at least one field is set.
+        contact_email = ENV["TINA4_SWAGGER_CONTACT_EMAIL"]
+        contact_team  = ENV["TINA4_SWAGGER_CONTACT_TEAM"] || ENV["SWAGGER_CONTACT_TEAM"]
+        contact_url   = ENV["TINA4_SWAGGER_CONTACT_URL"]  || ENV["SWAGGER_CONTACT_URL"]
+        contact = {}
+        contact["email"] = contact_email if contact_email && !contact_email.empty?
+        contact["name"]  = contact_team  if contact_team  && !contact_team.empty?
+        contact["url"]   = contact_url   if contact_url   && !contact_url.empty?
+        info["contact"] = contact unless contact.empty?
+
+        # Optional license block — TINA4_SWAGGER_LICENSE is the SPDX name (e.g. "MIT").
+        license_name = ENV["TINA4_SWAGGER_LICENSE"]
+        if license_name && !license_name.empty?
+          info["license"] = { "name" => license_name }
+        end
+
         {
           "openapi" => "3.0.3",
-          "info" => {
-            "title" => ENV["TINA4_SWAGGER_TITLE"] || ENV["PROJECT_NAME"] || "Tina4 API",
-            "version" => ENV["TINA4_SWAGGER_VERSION"] || Tina4::VERSION,
-            "description" => ENV["TINA4_SWAGGER_DESCRIPTION"] || "Auto-generated API documentation"
-          },
+          "info" => info,
           "servers" => [
             { "url" => "/" }
           ],
