@@ -312,6 +312,25 @@ module Tina4
         add("ANY", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
       end
 
+      # Register an explicit HEAD route. By default the framework auto-handles
+      # HEAD by falling back to the GET route and stripping the body
+      # (RFC 9110 §9.3.2). Use this only when you need a HEAD handler that
+      # does something different from GET — e.g. cheaper existence-check
+      # logic, custom validator headers without the cost of building the body.
+      # The framework still strips the response body for you on the way out.
+      def head(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add("HEAD", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+      end
+
+      # Register an explicit OPTIONS route. By default the framework auto-
+      # handles OPTIONS by building an Allow header from every method
+      # registered for the path and returning 204 (RFC 9110 §9.3.7). Use
+      # this to take over that behaviour — e.g. to return a richer OPTIONS
+      # payload describing the resource.
+      def options(path, middleware: [], swagger_meta: {}, template: nil, &block)
+        add("OPTIONS", path, block, middleware: middleware, swagger_meta: swagger_meta, template: template)
+      end
+
       def find_route(method, path)
         normalized_method = method.upcase
         # Normalize path once (not per-route)
@@ -325,7 +344,57 @@ module Tina4
           params = route.match_path(normalized_path)
           return [route, params] if params
         end
+
+        # RFC 9110 §9.3.2: HEAD is identical to GET except for the absence
+        # of a response body. If no explicit HEAD route matched, fall back
+        # to the GET route — the dispatcher strips the body on the way out
+        # so the handler doesn't need to know HEAD even happened.
+        if normalized_method == "HEAD"
+          (method_index["GET"] || []).each do |route|
+            params = route.match_path(normalized_path)
+            return [route, params] if params
+          end
+        end
+
         nil
+      end
+
+      # Return the list of HTTP methods registered for ``path``, in the order
+      # GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS. Used by the
+      # dispatcher to build the ``Allow:`` header on 405 / OPTIONS responses
+      # (RFC 9110 §10.2.1, §9.3.7).
+      #
+      # If GET is registered for the path, HEAD is appended implicitly
+      # (HEAD auto-fallback). OPTIONS is appended whenever the path has any
+      # registered method (the framework auto-handles OPTIONS).
+      def methods_allowed_for_path(path)
+        normalized_path = path.gsub("\\", "/")
+        normalized_path = "/#{normalized_path}" unless normalized_path.start_with?("/")
+        normalized_path = normalized_path.chomp("/") unless normalized_path == "/"
+
+        method_order = %w[GET POST PUT PATCH DELETE HEAD OPTIONS]
+        seen = []
+        any_matched = false
+
+        method_index.each do |m, routes_for_method|
+          next if routes_for_method.empty?
+          matched = routes_for_method.any? { |r| r.match_path(normalized_path) }
+          next unless matched
+          if m == "ANY"
+            any_matched = true
+          elsif method_order.include?(m)
+            seen << m unless seen.include?(m)
+          end
+        end
+
+        seen = method_order.dup if any_matched
+
+        if !seen.empty?
+          seen << "HEAD" if seen.include?("GET") && !seen.include?("HEAD")
+          seen << "OPTIONS" unless seen.include?("OPTIONS")
+        end
+
+        method_order.select { |m| seen.include?(m) }
       end
 
       # When TINA4_TRAILING_SLASH_REDIRECT is truthy, the rack app uses this

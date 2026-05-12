@@ -43,8 +43,18 @@ module Tina4
       path = env["PATH_INFO"] || "/"
       request_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      # Fast-path: OPTIONS preflight
-      return Tina4::CorsMiddleware.preflight_response(env) if method == "OPTIONS"
+      # Fast-path: CORS preflight. Real CORS preflight requests carry an
+      # Origin header AND an Access-Control-Request-Method header — the
+      # browser is asking "may I send this method?" before the actual
+      # request. If neither is present, the OPTIONS is a plain protocol-
+      # introspection request (link checker, monitoring probe, RFC 9110
+      # §9.3.7 OPTIONS) and must fall through to the router's generic
+      # Allow-header response. Otherwise we'd shadow the framework's own
+      # OPTIONS support and force every operator to hand-register CORS
+      # exceptions for every introspection client.
+      if method == "OPTIONS" && (env["HTTP_ORIGIN"] || env["HTTP_ACCESS_CONTROL_REQUEST_METHOD"])
+        return Tina4::CorsMiddleware.preflight_response(env)
+      end
 
       # WebSocket upgrade — match against registered ws_routes
       if websocket_upgrade?(env)
@@ -87,8 +97,43 @@ module Tina4
         rack_response = handle_route(env, route, path_params)
         matched_pattern = route.path
       else
-        rack_response = handle_404(path)
-        matched_pattern = nil
+        # RFC 9110 conformance — before falling through to 404, check whether
+        # the PATH is known to the router under any OTHER method.
+        #   - OPTIONS request → 204 with Allow header (§9.3.7)
+        #   - Any other method (PUT on GET-only, TRACE, CONNECT, etc.)
+        #     → 405 with Allow header (§15.5.6 + §10.2.1)
+        allowed = Tina4::Router.methods_allowed_for_path(path)
+        if !allowed.empty?
+          allow_header = allowed.join(", ")
+          if method.to_s.upcase == "OPTIONS"
+            rack_response = [204, { "allow" => allow_header, "content-length" => "0" }, [""]]
+          else
+            body = %({"error":"Method Not Allowed","path":"#{path}","method":"#{method}","allow":[#{allowed.map { |m| %("#{m}") }.join(",")}],"status":405})
+            rack_response = [405, {
+              "allow" => allow_header,
+              "content-type" => "application/json",
+              "content-length" => body.bytesize.to_s
+            }, [body]]
+          end
+          matched_pattern = nil
+        else
+          rack_response = handle_404(path)
+          matched_pattern = nil
+        end
+      end
+
+      # RFC 9110 §9.3.2: a HEAD response MUST NOT include content. Strip
+      # the body unconditionally and record what Content-Length the GET
+      # would have sent. Cache validators / link checkers / monitoring
+      # probes use that header to estimate sizes.
+      if method.to_s.upcase == "HEAD"
+        status, headers, body_parts = rack_response
+        joined = body_parts.respond_to?(:join) ? body_parts.join : body_parts.to_s
+        unless joined.empty?
+          new_headers = headers.dup
+          new_headers["content-length"] = joined.bytesize.to_s
+          rack_response = [status, new_headers, [""]]
+        end
       end
 
       # Capture request for dev inspector
