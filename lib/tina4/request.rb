@@ -75,13 +75,17 @@ module Tina4
       @body_parsed = nil
     end
 
-    # Full URL reconstruction
+    # Full absolute URL — scheme://host[:port]/path[?query].
+    # Honours X-Forwarded-Proto / X-Forwarded-Host so apps behind a proxy
+    # still see the URL the client used. Matches Python/PHP/Node parity.
     def url
-      scheme = env["rack.url_scheme"] || "http"
-      host = env["HTTP_HOST"] || env["SERVER_NAME"] || "localhost"
+      scheme = env["HTTP_X_FORWARDED_PROTO"] || env["rack.url_scheme"] || "http"
+      host = env["HTTP_X_FORWARDED_HOST"] || env["HTTP_HOST"] || env["SERVER_NAME"] || "localhost"
       port = env["SERVER_PORT"]
       url_str = "#{scheme}://#{host}"
-      url_str += ":#{port}" if port && port != "80" && port != "443"
+      # Only append :port when the host doesn't already include one
+      # (HTTP_HOST often does) and it's not the default for the scheme.
+      url_str += ":#{port}" if port && !host.include?(":") && port.to_s != "80" && port.to_s != "443"
       url_str += @path
       url_str += "?#{@query_string}" unless @query_string.empty?
       url_str
