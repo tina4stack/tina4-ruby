@@ -382,6 +382,13 @@ module Tina4
           @reload_file = body["file"] || ""
           reload_type = body["type"] || "reload"
           Tina4::Log.info("External reload trigger: #{reload_type}#{@reload_file.empty? ? '' : " (#{@reload_file})"}")
+          # Re-discover so files dropped into src/routes/ register without
+          # a server restart. Idempotent — already-loaded files are skipped.
+          begin
+            Tina4::Router.rescan_routes!
+          rescue StandardError => e
+            Tina4::Log.error("Re-discover on reload failed: #{e.message}")
+          end
           json_response({ ok: true, type: reload_type })
         when ["GET", "/__dev/api/status"]
           json_response(status_payload)

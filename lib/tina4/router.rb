@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "fileutils"
+require "json"
+
 module Tina4
   class Route
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta,
@@ -438,17 +441,79 @@ module Tina4
         GroupContext.new(prefix, auth_handler, middleware).instance_eval(&block)
       end
 
-      # Load route files from a directory (file-based route discovery)
+      # Load route files from a directory (file-based route discovery).
+      #
+      # Idempotent: files already loaded by a previous call are skipped, so
+      # calling load_routes repeatedly (e.g. on /__dev/api/reload) only
+      # picks up NEW files. Records the directory so #rescan_routes! can
+      # re-run without re-passing it.
       def load_routes(directory)
         return unless Dir.exist?(directory)
-        Dir.glob(File.join(directory, "**/*.rb")).sort.each do |file|
+
+        @loaded_route_files ||= {}
+        @last_routes_dir = directory
+
+        files = Dir.glob(File.join(directory, "**/*.rb")).sort
+        total = files.length
+        files.each do |file|
+          next if @loaded_route_files[file]
           begin
             load file
+            @loaded_route_files[file] = true
             Tina4::Log.debug("Route loaded: #{file}")
-          rescue => e
+          rescue ScriptError, StandardError => e
+            # ScriptError catches SyntaxError, which is NOT a StandardError —
+            # a bare `rescue => e` would let a syntax-broken route file crash
+            # the whole discovery pass.
             Tina4::Log.error("Failed to load route #{file}: #{e.message}")
+            record_broken_route_import(file, e)
           end
         end
+
+        # Zero-routes warning — src/routes/ has .rb files but the router
+        # is still empty. Almost certainly the user forgot Tina4::Router.get.
+        if total > 0 && routes.empty?
+          Tina4::Log.warning(
+            "Auto-discover found #{total} .rb file(s) in #{directory} but no routes registered. " \
+            "Each route file must call Tina4::Router.get / .post / etc."
+          )
+        end
+      end
+
+      # Re-run the most recent load_routes — called by /__dev/api/reload so
+      # files dropped into src/routes/ after server boot get picked up
+      # without a restart. No-op if load_routes has never been called.
+      def rescan_routes!
+        return [] if @last_routes_dir.nil? || @last_routes_dir.empty?
+        before = routes.length
+        load_routes(@last_routes_dir)
+        added = routes.length - before
+        Tina4::Log.info("Re-discovered #{added} new route(s) on reload") if added.positive?
+        added
+      end
+
+      # Test-only helper — reset the loaded-files state so tests can scan
+      # the same directory multiple times with different file contents.
+      def reset_route_discovery!
+        @loaded_route_files = {}
+        @last_routes_dir = nil
+      end
+
+      # Write a .broken sentinel so /health and the dev dashboard surface
+      # auto-discover failures instead of swallowing them into a log line.
+      def record_broken_route_import(file, error)
+        broken_dir = File.join(Dir.pwd, "data", ".broken")
+        FileUtils.mkdir_p(broken_dir) unless Dir.exist?(broken_dir)
+        slug = file.gsub(%r{[/\\]}, "_")
+        payload = JSON.generate(
+          type: "auto_discover_failure",
+          file: file,
+          error: "#{error.class}: #{error.message}"
+        )
+        File.write(File.join(broken_dir, "discover_#{slug}.broken"), payload)
+      rescue StandardError
+        # If the .broken write itself fails, the original error is already
+        # in the log — nothing more to do.
       end
     end
 
