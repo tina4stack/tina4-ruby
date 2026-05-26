@@ -152,9 +152,9 @@ db = Tina4::Database.new("mssql://localhost:1433/mydb", username: "sa", password
 db = Tina4::Database.new("firebird://localhost:3050/mydb", username: "sysdba", password: "pass")
 
 # Or via environment variables:
-# DATABASE_URL=postgres://localhost:5432/mydb
-# DATABASE_USERNAME=user
-# DATABASE_PASSWORD=pass
+# TINA4_DATABASE_URL=postgres://localhost:5432/mydb
+# TINA4_DATABASE_USERNAME=user
+# TINA4_DATABASE_PASSWORD=pass
 db = Tina4::Database.new  # reads from ENV
 
 db.fetch(sql, params = [], limit: nil, offset: nil) -> DatabaseResult

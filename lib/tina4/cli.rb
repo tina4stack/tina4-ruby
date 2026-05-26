@@ -265,7 +265,7 @@ module Tina4
 
       db = Tina4.database
       unless db
-        puts "No database configured. Set DATABASE_URL in your .env file."
+        puts "No database configured. Set TINA4_DATABASE_URL in your .env file."
         return
       end
 
@@ -298,7 +298,7 @@ module Tina4
 
       db = Tina4.database
       unless db
-        puts "No database configured. Set DATABASE_URL in your .env file."
+        puts "No database configured. Set TINA4_DATABASE_URL in your .env file."
         return
       end
 
@@ -341,7 +341,7 @@ module Tina4
 
       db = Tina4.database
       unless db
-        puts "No database configured. Set DATABASE_URL in your .env file."
+        puts "No database configured. Set TINA4_DATABASE_URL in your .env file."
         return
       end
 

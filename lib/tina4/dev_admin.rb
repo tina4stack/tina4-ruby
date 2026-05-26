@@ -900,10 +900,13 @@ module Tina4
             key, val = line.split("=", 2)
             key = key.strip
             val = (val || "").strip.gsub(/\A["']|["']\z/, "")
+            # v3.12+ env vars are TINA4_-prefixed; the boot guard refuses to
+            # start with bare DATABASE_URL set, so the dashboard must read
+            # and write the prefixed names.
             case key
-            when "DATABASE_URL" then url = val
-            when "DATABASE_USERNAME" then username = val
-            when "DATABASE_PASSWORD" then password = val.empty? ? "" : "***"
+            when "TINA4_DATABASE_URL" then url = val
+            when "TINA4_DATABASE_USERNAME" then username = val
+            when "TINA4_DATABASE_PASSWORD" then password = val.empty? ? "" : "***"
             end
           end
         end
@@ -961,7 +964,13 @@ module Tina4
         begin
           env_path = File.join(Dir.pwd, ".env")
           lines = File.file?(env_path) ? File.readlines(env_path, chomp: true) : []
-          keys_found = { "DATABASE_URL" => false, "DATABASE_USERNAME" => false, "DATABASE_PASSWORD" => false }
+          # v3.12+ env vars are TINA4_-prefixed; saving bare DATABASE_URL
+          # would trip the framework's legacy-env boot guard on next start.
+          keys_found = {
+            "TINA4_DATABASE_URL" => false,
+            "TINA4_DATABASE_USERNAME" => false,
+            "TINA4_DATABASE_PASSWORD" => false,
+          }
           new_lines = []
           lines.each do |line|
             stripped = line.strip
@@ -971,20 +980,24 @@ module Tina4
             end
             key = stripped.split("=", 2).first.strip
             case key
-            when "DATABASE_URL"
-              new_lines << "DATABASE_URL=#{url}"
-              keys_found["DATABASE_URL"] = true
-            when "DATABASE_USERNAME"
-              new_lines << "DATABASE_USERNAME=#{username}"
-              keys_found["DATABASE_USERNAME"] = true
-            when "DATABASE_PASSWORD"
-              new_lines << "DATABASE_PASSWORD=#{password}"
-              keys_found["DATABASE_PASSWORD"] = true
+            when "TINA4_DATABASE_URL"
+              new_lines << "TINA4_DATABASE_URL=#{url}"
+              keys_found["TINA4_DATABASE_URL"] = true
+            when "TINA4_DATABASE_USERNAME"
+              new_lines << "TINA4_DATABASE_USERNAME=#{username}"
+              keys_found["TINA4_DATABASE_USERNAME"] = true
+            when "TINA4_DATABASE_PASSWORD"
+              new_lines << "TINA4_DATABASE_PASSWORD=#{password}"
+              keys_found["TINA4_DATABASE_PASSWORD"] = true
             else
               new_lines << line
             end
           end
-          values = { "DATABASE_URL" => url, "DATABASE_USERNAME" => username, "DATABASE_PASSWORD" => password }
+          values = {
+            "TINA4_DATABASE_URL" => url,
+            "TINA4_DATABASE_USERNAME" => username,
+            "TINA4_DATABASE_PASSWORD" => password,
+          }
           keys_found.each do |key, found|
             new_lines << "#{key}=#{values[key]}" unless found
           end
