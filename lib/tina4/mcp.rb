@@ -21,6 +21,7 @@
 require "json"
 require "socket"
 require "fileutils"
+require "open3"
 
 module Tina4
   # ── JSON-RPC 2.0 codec ────────────────────────────────────────────
@@ -569,6 +570,52 @@ module Tina4
         resolved
       end
 
+      # Try `ruby -c` on a freshly-written Ruby file to catch syntax
+      # errors BEFORE the next request hits the broken handler.
+      # Mirrors _verify_python_import() in tina4_python/mcp/tools.py.
+      #
+      # Returns nil on success (or when verification is skipped), or
+      # the captured error string on failure. Only checks files under
+      # src/ that end in .rb — skips spec_helper.rb, *_spec.rb, and
+      # test_*.rb because those have their own loading patterns
+      # (mirrors Python's skip of __init__.py / conftest.py / test_*.py).
+      #
+      # Why this matters: the AI coder repeatedly produces Ruby with
+      # unclosed blocks, missing `end`, dangling parens. Running
+      # `ruby -c` right after write catches it inline and surfaces
+      # the real Ruby error in the file_write response — the LLM
+      # sees the error on its next turn and can retry with context.
+      verify_ruby_syntax = lambda do |rel_path|
+        next nil unless rel_path.end_with?(".rb")
+        next nil unless rel_path.start_with?("src/")
+        base = File.basename(rel_path)
+        next nil if base == "spec_helper.rb"
+        next nil if base.end_with?("_spec.rb")
+        next nil if base.start_with?("test_")
+
+        abs_path = File.expand_path(rel_path, project_root)
+        begin
+          stdout, stderr, status = Open3.capture3("ruby", "-c", abs_path)
+        rescue StandardError => e
+          next "verification subprocess failed: #{e.message}"
+        end
+
+        next nil if status.success?
+
+        # Pull the first meaningful stderr line — ruby -c emits
+        # "<file>:<line>: syntax error, ...". Strip the absolute
+        # path prefix for readability.
+        err_lines = (stderr || "").strip.split("\n")
+        if err_lines.empty?
+          next "syntax check failed (exit #{status.exitstatus}, no stderr)"
+        end
+        line = err_lines.first.strip
+        # Strip the absolute project_root prefix so the error reads
+        # as "src/routes/foo.rb:3: syntax error, ..." instead of the
+        # full /Users/... path.
+        line.sub("#{project_root}/", "")
+      end
+
       redact_env = lambda do |key, value|
         sensitive = %w[secret password token key credential api_key]
         if sensitive.any? { |s| key.downcase.include?(s) }
@@ -690,6 +737,16 @@ module Tina4
 
         result = { "written" => rel, "bytes" => new_size }
         result["backup"] = backup_rel if backup_rel
+
+        # 6. Post-write syntax check — catch hallucinated Ruby
+        #    (missing `end`, unclosed parens, etc.) before the next
+        #    request hits the broken handler.
+        err = verify_ruby_syntax.call(rel)
+        if err
+          result["import_error"] = err
+          agent_log.call("write.import_failed", "#{rel}: #{err}")
+        end
+
         result
       }, "Write or update a project file (with backup, truncation guard, audit log)")
 
@@ -885,6 +942,14 @@ module Tina4
 
         result = { "patched" => rel, "replacements" => count.to_i, "bytes" => new_size }
         result["backup"] = backup_rel if backup_rel
+
+        # Post-patch syntax check — same rationale as file_write.
+        err = verify_ruby_syntax.call(rel)
+        if err
+          result["import_error"] = err
+          agent_log.call("patch.import_failed", "#{rel}: #{err}")
+        end
+
         result
       }, "Targeted edit: replace old_string with new_string in a file (with backup + audit log)")
 

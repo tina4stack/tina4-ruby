@@ -584,5 +584,102 @@ RSpec.describe "Tina4 MCP" do
         end
       end
     end
+
+    it "catches Ruby syntax errors via ruby -c" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-syntax", name: "Syntax Test")
+          Tina4::McpDevTools.register(server)
+
+          # Broken Ruby — missing closing paren AND `end` keyword.
+          broken = "def foo\n  bar(\n"
+          resp = call_tool(server, "file_write", {
+            "path"    => "src/routes/broken.rb",
+            "content" => broken
+          })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+
+          # The file was still written, but with an import_error attached.
+          expect(body["written"]).to eq("src/routes/broken.rb")
+          expect(body).to have_key("import_error")
+          expect(body["import_error"]).to match(/syntax error|unexpected/i)
+          # The absolute project_root prefix should be stripped so the
+          # error reads as src/routes/broken.rb:..., not /Users/...
+          expect(body["import_error"]).not_to include(tmp)
+
+          # Audit log records the import failure.
+          log_path = File.join(tmp, ".tina4", "agent.log")
+          expect(File.exist?(log_path)).to be true
+          expect(File.read(log_path)).to include("write.import_failed")
+          expect(File.read(log_path)).to include("src/routes/broken.rb")
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+
+    it "skips non-Ruby files" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-skip-ext", name: "Skip Ext Test")
+          Tina4::McpDevTools.register(server)
+
+          # Content that would be invalid Ruby — but the file is .twig,
+          # so ruby -c should never run against it.
+          resp = call_tool(server, "file_write", {
+            "path"    => "src/templates/foo.twig",
+            "content" => "def foo\n  bar(\n"
+          })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+          expect(body["written"]).to eq("src/templates/foo.twig")
+          expect(body).not_to have_key("import_error")
+
+          # No import_failed entry in the log.
+          log_path = File.join(tmp, ".tina4", "agent.log")
+          if File.exist?(log_path)
+            expect(File.read(log_path)).not_to include("write.import_failed")
+          end
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+
+    it "skips files outside src/" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-skip-dir", name: "Skip Dir Test")
+          Tina4::McpDevTools.register(server)
+
+          # tests/ is in the passthrough list, so the path won't be
+          # normalized to src/. Even though the content is broken
+          # Ruby, the syntax check only runs for files under src/.
+          resp = call_tool(server, "file_write", {
+            "path"    => "tests/foo.rb",
+            "content" => "def foo\n  bar(\n"
+          })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+          expect(body["written"]).to eq("tests/foo.rb")
+          expect(body).not_to have_key("import_error")
+
+          # No import_failed entry in the log.
+          log_path = File.join(tmp, ".tina4", "agent.log")
+          if File.exist?(log_path)
+            expect(File.read(log_path)).not_to include("write.import_failed")
+          end
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
   end
 end
