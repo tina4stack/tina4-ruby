@@ -75,6 +75,15 @@ module Tina4
         return dev_response if dev_response
       end
 
+      # Customer feedback widget routes (parity with Python's /__feedback/*
+      # surface — see tina4/feedback.rb). Always available — the master
+      # switch (TINA4_ENABLE_FEEDBACK) is enforced INSIDE handle_request
+      # so route shape stays stable across environments.
+      if path.start_with?("/__feedback")
+        fb_response = Tina4::Feedback.handle_request(env)
+        return fb_response if fb_response
+      end
+
       # Fast-path: API routes skip static file + swagger checks entirely
       unless path.start_with?("/api/")
         # Swagger
@@ -161,6 +170,33 @@ module Tina4
           overlay = inject_dev_overlay(joined, request_info, ai_port: env["tina4.ai_port"])
           rack_response = [status, headers, [overlay]]
         end
+      end
+
+      # Customer feedback widget injection — runs LAST so its <script>
+      # tag survives any earlier post-processing. No-op if disabled
+      # (TINA4_ENABLE_FEEDBACK off), the user isn't whitelisted, the
+      # path is /__dev or /__feedback, or the body isn't text/html with
+      # a closing </body> tag. Mirrors Python's server.py call site —
+      # see tina4_python/core/server.py around line 1543.
+      begin
+        status, headers, body_parts = rack_response
+        content_type = headers["content-type"] || ""
+        if content_type.include?("text/html") && body_parts.respond_to?(:join)
+          joined = body_parts.join
+          if joined.include?("</body>")
+            injected = Tina4::Feedback.inject_feedback_widget(
+              Struct.new(:path, :env).new(path, env),
+              joined
+            )
+            if injected != joined
+              new_headers = headers.dup
+              new_headers["content-length"] = injected.bytesize.to_s if new_headers["content-length"]
+              rack_response = [status, new_headers, [injected]]
+            end
+          end
+        end
+      rescue StandardError
+        # Injection is best-effort — never break the response.
       end
 
       # Save session and set cookie if session was used
