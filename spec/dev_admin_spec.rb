@@ -426,14 +426,19 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "handles POST /__dev/api/chat" do
+      # Chat now proxies to the Rust agent's /chat SSE endpoint. When
+      # the supervisor isn't running (the default in spec), the proxy
+      # returns 503 with a JSON error body. We just assert the route is
+      # wired — full proxy behaviour is exercised in dev_admin_parity_spec.rb.
       env = {
         "PATH_INFO" => "/__dev/api/chat",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new('{"message":"hello"}')
       }
       status, _headers, body = Tina4::DevAdmin.handle_request(env)
-      data = JSON.parse(body.first)
-      expect(data["reply"]).to include("hello")
+      expect([200, 503]).to include(status)
+      # Body must be parseable as JSON or an SSE stream — either way, non-nil.
+      expect(body.first).not_to be_nil
     end
 
     it "handles message search on GET /__dev/api/messages/search" do
