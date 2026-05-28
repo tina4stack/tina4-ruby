@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "tmpdir"
+require "fileutils"
 require_relative "../lib/tina4/env"
 require_relative "../lib/tina4/error_overlay"
 
@@ -87,6 +89,42 @@ RSpec.describe Tina4::ErrorOverlay do
       expect(html).to include("Stack Trace")
       expect(html).to include("<details")
       expect(html).to include("open")
+    end
+  end
+
+  describe "stale-overlay file-modified badge" do
+    # Build a synthetic exception whose backtrace points at a real file on disk
+    # we control, so we can manipulate its mtime relative to captured_at.
+    def synthetic_exception(file_path)
+      exc = RuntimeError.new("kaboom")
+      exc.set_backtrace(["#{file_path}:1:in `<top>'"])
+      exc
+    end
+
+    it "shows stale badge when file modified after capture" do
+      Dir.mktmpdir("tina4_stale") do |tmp|
+        src = File.join(tmp, "broken.rb")
+        File.write(src, "raise 'boom'\n")
+        # captured_at = now happens inside render_error_overlay; nudge the
+        # file's mtime to ~5s in the future so the badge condition fires.
+        future = Time.now + 5
+        File.utime(future, future, src)
+        html = described_class.render_error_overlay(synthetic_exception(src))
+        expect(html).to include("FILE MODIFIED @")
+        expect(html).to include("source may not match what failed")
+      end
+    end
+
+    it "omits stale badge when file unchanged" do
+      Dir.mktmpdir("tina4_fresh") do |tmp|
+        src = File.join(tmp, "ok.rb")
+        File.write(src, "puts 'ok'\n")
+        # Set mtime to 10 seconds in the past — well before captured_at.
+        past = Time.now - 10
+        File.utime(past, past, src)
+        html = described_class.render_error_overlay(synthetic_exception(src))
+        expect(html).not_to include("FILE MODIFIED")
+      end
     end
   end
 

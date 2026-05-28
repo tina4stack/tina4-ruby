@@ -42,12 +42,20 @@ module Tina4
         exc_type = exception.class.name
         exc_msg  = exception.message
 
+        # Stamp captured_at once when the overlay is generated. Each frame
+        # compares its source file's mtime to this single timestamp and
+        # flags itself stale if the file changed afterwards — protects
+        # against the "browser cached an old overlay, then the AI rewrote
+        # the file" confusion where the displayed source no longer matches
+        # what actually raised the error.
+        captured_at = Time.now.to_f
+
         # ── Stack trace ──
         frames_html = +""
         backtrace = exception.backtrace || []
         backtrace.each do |line|
           file, lineno, method = parse_backtrace_line(line)
-          frames_html << format_frame(file, lineno, method)
+          frames_html << format_frame(file, lineno, method, captured_at: captured_at)
         end
 
         # ── Request info ──
@@ -213,8 +221,9 @@ module Tina4
           "#{rows}</div>"
       end
 
-      def format_frame(filename, lineno, func_name)
+      def format_frame(filename, lineno, func_name, captured_at: 0.0)
         source = (filename && lineno.positive?) ? format_source_block(filename, lineno) : ""
+        stale_badge = stale_file_badge(filename, captured_at)
         "<div style=\"margin-bottom:16px;\">" \
           "<div style=\"margin-bottom:4px;\">" \
           "<span style=\"color:#{BLUE};\">#{esc(filename.to_s)}</span>" \
@@ -222,9 +231,30 @@ module Tina4
           "<span style=\"color:#{YELLOW};\">#{lineno}</span>" \
           "<span style=\"color:#{SUBTEXT};\"> in </span>" \
           "<span style=\"color:#{GREEN};\">#{esc(func_name.to_s)}</span>" \
+          "#{stale_badge}" \
           "</div>" \
           "#{source}" \
           "</div>"
+      end
+
+      # When the file on disk was modified AFTER the overlay was generated,
+      # emit a peach pill warning that the visible source may not match what
+      # actually failed. 0.5s margin to avoid filesystem-noise false positives.
+      def stale_file_badge(filename, captured_at)
+        return "" if captured_at.nil? || captured_at <= 0
+        return "" if filename.nil? || filename.to_s.empty?
+        return "" unless File.file?(filename)
+
+        mtime = File.mtime(filename).to_f
+        return "" if mtime <= captured_at + 0.5
+
+        mtime_str = Time.at(mtime).utc.strftime("%H:%M:%S")
+        "<span style=\"background:#{PEACH};color:#{BG};padding:1px 8px;" \
+          "border-radius:3px;font-size:11px;font-weight:700;margin-left:6px;\">" \
+          "FILE MODIFIED @ #{mtime_str} UTC &mdash; source may not match what failed" \
+          "</span>"
+      rescue StandardError
+        ""
       end
 
       def collapsible(title, content, open_by_default: false)

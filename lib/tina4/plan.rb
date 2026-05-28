@@ -125,23 +125,51 @@ module Tina4
 
       # ── Public API ─────────────────────────────────────────────
 
+      # All plan files — merged from `plan/` (user-curated) and
+      # `.tina4/plans/` (where the Rust supervisor's planner writes).
+      #
+      # Two directories exist because of a historic split: the framework
+      # treats `plan/` as the canonical project location, but the Rust
+      # agent's planner writes to `.tina4/plans/` (alongside other
+      # AI-state artefacts like chat history). Until those are unified we
+      # read both so plans created either way are discoverable. Dedup by
+      # filename — plan/ wins on collision. Sorted newest-first by
+      # filename (filenames start with unix timestamps).
       def list_plans
-        d = plan_dir
         cur = current_name || ""
+        # Order matters for dedup: user-curated plan/ first, then .tina4/plans/.
+        dirs = []
+        primary = File.join(project_root, PLAN_DIR)
+        dirs << primary if Dir.exist?(primary)
+        rust_plans = File.join(project_root, ".tina4", "plans")
+        dirs << rust_plans if Dir.exist?(rust_plans)
+
+        seen = {}
         out = []
-        Dir.glob(File.join(d, "*.md")).sort.each do |path|
-          name = File.basename(path)
-          parsed = parse(File.read(path, encoding: "utf-8"))
-          total = parsed["steps"].size
-          done  = parsed["steps"].count { |s| s["done"] }
-          out << {
-            "name"        => name,
-            "title"       => parsed["title"].to_s.empty? ? File.basename(name, ".md") : parsed["title"],
-            "steps_total" => total,
-            "steps_done"  => done,
-            "is_current"  => name == cur
-          }
+        dirs.each do |dir|
+          Dir.glob(File.join(dir, "*.md")).sort.each do |path|
+            name = File.basename(path)
+            next if seen.key?(name) # plan/ wins over .tina4/plans/ on name clash
+            seen[name] = true
+            parsed = parse(File.read(path, encoding: "utf-8"))
+            total = parsed["steps"].size
+            done  = parsed["steps"].count { |s| s["done"] }
+            out << {
+              "name"        => name,
+              "title"       => parsed["title"].to_s.empty? ? File.basename(name, ".md") : parsed["title"],
+              "steps_total" => total,
+              "steps_done"  => done,
+              "is_current"  => name == cur,
+              # Relative path from project root — lets the SPA open the
+              # right file in the editor regardless of which dir the
+              # plan came from.
+              "path"        => path.sub("#{project_root}/", "")
+            }
+          end
         end
+        # Newest first by name (filenames start with unix timestamps).
+        out.sort_by! { |x| x["name"] }
+        out.reverse!
         out
       end
 

@@ -137,4 +137,58 @@ RSpec.describe Tina4::Plan do
       expect(described_class.current).to eq({ "current" => nil })
     end
   end
+
+  describe ".list_plans merge across plan/ and .tina4/plans/" do
+    # The around-block at the top of this file already chdirs into a fresh
+    # tmpdir, so plan_dir and .tina4/plans/ both resolve under it.
+    def write_plan(dir, filename, body = "# Title\n\n## Steps\n\n- [ ] do thing\n")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, filename), body)
+    end
+
+    it "merges plans from both dirs" do
+      write_plan("plan", "foo.md")
+      write_plan(File.join(".tina4", "plans"), "bar.md")
+      names = described_class.list_plans.map { |p| p["name"] }
+      expect(names).to contain_exactly("foo.md", "bar.md")
+    end
+
+    it "dedups by filename, plan/ wins" do
+      write_plan("plan", "x.md", "# From plan dir\n\n## Steps\n\n- [x] done\n")
+      write_plan(File.join(".tina4", "plans"), "x.md", "# From tina4 dir\n\n## Steps\n\n- [ ] pending\n")
+      plans = described_class.list_plans
+      x = plans.find { |p| p["name"] == "x.md" }
+      expect(plans.size).to eq(1)
+      expect(x["title"]).to eq("From plan dir")
+      expect(x["steps_done"]).to eq(1)
+      expect(x["path"]).to eq("plan/x.md")
+    end
+
+    it "sorts newest-first by filename" do
+      write_plan("plan", "1779800000-a.md")
+      write_plan("plan", "1779900000-b.md")
+      names = described_class.list_plans.map { |p| p["name"] }
+      expect(names).to eq(["1779900000-b.md", "1779800000-a.md"])
+    end
+
+    it "includes path relative to project root" do
+      write_plan("plan", "user.md")
+      write_plan(File.join(".tina4", "plans"), "rust.md")
+      paths = described_class.list_plans.map { |p| p["path"] }
+      expect(paths).to contain_exactly("plan/user.md", ".tina4/plans/rust.md")
+    end
+
+    it "still returns plan/ entries when .tina4/plans/ is missing" do
+      write_plan("plan", "only.md")
+      # No .tina4/plans/ directory created.
+      plans = described_class.list_plans
+      expect(plans.map { |p| p["name"] }).to eq(["only.md"])
+    end
+
+    it "still returns .tina4/plans entries when plan/ is empty" do
+      write_plan(File.join(".tina4", "plans"), "rusty.md")
+      plans = described_class.list_plans
+      expect(plans.map { |p| p["name"] }).to include("rusty.md")
+    end
+  end
 end
