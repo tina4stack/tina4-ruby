@@ -457,7 +457,111 @@ module Tina4
       project_root = File.expand_path(Dir.pwd)
 
       # ── Helpers ────────────────────────────────────────
+      # Append a structured line to `.tina4/agent.log` AND echo to STDERR.
+      # Mirrors the Python `_agent_log` helper so a single log file
+      # captures every agent action regardless of which side of the
+      # stack performed it. Cheap — never blocks the caller on I/O
+      # failure.
+      agent_log = lambda do |category, message|
+        begin
+          log_dir = File.join(project_root, ".tina4")
+          FileUtils.mkdir_p(log_dir)
+          log_path = File.join(log_dir, "agent.log")
+          ts = Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+          File.open(log_path, "a") { |f| f.write("#{ts} [#{category}] #{message}\n") }
+        rescue
+          # logging must never fail the actual call
+        end
+        warn "  [agent #{category}] #{message}"
+      end
+
+      # Paths that look like prose rather than filesystem paths. AI
+      # agents occasionally pass natural language ("The plan requires
+      # implementing...") as `path` to file_write and produce folders
+      # with prose for names. Returns an error string on rejection,
+      # nil on acceptance.
+      sane_path_segment = /\A[A-Za-z0-9._\-]+\z/
+      looks_like_prose = lambda do |rel_path|
+        if rel_path.nil? || rel_path.strip.empty?
+          break "path is empty"
+        end
+        if rel_path.length > 300
+          break "path too long (#{rel_path.length} chars); use a real filename"
+        end
+        bad_sequences = ["`", "\n", "\t", "  ", " — ", " (", " [", "?", "*", "<", ">", "|"]
+        bad_hit = bad_sequences.find { |bad| rel_path.include?(bad) }
+        if bad_hit
+          break "path contains illegal character sequence #{bad_hit.inspect} — looks like prose, not a filename"
+        end
+        segment_error = nil
+        rel_path.split("/").each do |seg|
+          next if seg.empty? || seg == "." || seg == ".."
+          if seg.length > 80
+            segment_error = "path segment too long: #{seg[0, 60].inspect}… — use a short filename"
+            break
+          end
+          unless sane_path_segment.match?(seg)
+            segment_error = "path segment #{seg.inspect} contains disallowed characters — stick to [A-Za-z0-9._-]"
+            break
+          end
+        end
+        segment_error
+      end
+
+      # Rewrite bare top-level Tina4-conventional directories into
+      # their `src/<dir>/` canonical form. The framework's
+      # auto-discovery only scans `src/`, so a file at
+      # `templates/foo.twig` is dead weight — the framework never
+      # loads it. Mirrors normalize_coder_path() in the Python agent.
+      normalize_coder_path = lambda do |rel_path|
+        passthrough_prefixes = ["src/", "migrations/", "plan/", "tests/",
+                                "test/", ".tina4/"]
+        passthrough_files = %w[app.py app.ts app.rb index.php composer.json
+                               package.json Gemfile pyproject.toml
+                               requirements.txt .env .env.example]
+        if passthrough_prefixes.any? { |p| rel_path.start_with?(p) }
+          next rel_path
+        end
+        if passthrough_files.include?(rel_path)
+          next rel_path
+        end
+        %w[routes orm templates seeds controllers models middleware].each do |d|
+          if rel_path.start_with?("#{d}/")
+            rewritten = "src/#{rel_path}"
+            agent_log.call("write.path_normalized", "#{rel_path} → #{rewritten}")
+            return rewritten
+          end
+        end
+        rel_path
+      end
+
+      # Copy `target` into `.tina4/backups/` with a timestamped name.
+      # Returns the relative backup path on success, nil on failure.
+      agent_backup = lambda do |target|
+        begin
+          next nil unless File.file?(target)
+          backup_dir = File.join(project_root, ".tina4", "backups")
+          FileUtils.mkdir_p(backup_dir)
+          rel = if target.start_with?("#{project_root}/")
+                  target.sub("#{project_root}/", "")
+                else
+                  File.basename(target)
+                end
+          safe = rel.gsub("/", "__").gsub("\\", "__")
+          ts = Time.now.utc.strftime("%Y-%m-%dT%H-%M-%SZ")
+          backup_name = "#{safe}.#{ts}.bak"
+          backup_path = File.join(backup_dir, backup_name)
+          File.binwrite(backup_path, File.binread(target))
+          ".tina4/backups/#{backup_name}"
+        rescue => e
+          agent_log.call("write.backup_failed", "#{target}: #{e.message}")
+          nil
+        end
+      end
+
       safe_path = lambda do |rel_path|
+        err = looks_like_prose.call(rel_path)
+        raise ArgumentError, "Invalid path #{rel_path.inspect}: #{err}" if err
         resolved = File.expand_path(rel_path, project_root)
         unless resolved.start_with?(project_root)
           raise ArgumentError, "Path escapes project directory: #{rel_path}"
@@ -549,12 +653,45 @@ module Tina4
       }, "Read a project file")
 
       server.register_tool("file_write", lambda { |path:, content:|
+        # 1. Coder-path normalization — rewrite bare top-level Tina4
+        #    directories (templates/, routes/, orm/, ...) into their
+        #    src/ canonical form before resolving.
+        path = normalize_coder_path.call(path)
+        # 2. safe_path runs looks_like_prose then sandbox check.
         p = safe_path.call(path)
+
+        old_bytes = File.file?(p) ? File.binread(p) : ""
+        old_size = old_bytes.bytesize
+        old_lines = old_bytes.count("\n")
+        new_bytes = content.to_s
+        new_size = new_bytes.bytesize
+        new_lines = new_bytes.count("\n")
+        rel = p.start_with?("#{project_root}/") ? p.sub("#{project_root}/", "") : path
+
+        # 3. Truncation guard — refuse suspicious shrinkage on
+        #    non-trivial files (>200B → <30% of size).
+        if old_size > 200 && (new_size * 100) < (old_size * 30)
+          msg = "REFUSED #{rel} (would shrink #{old_size} → #{new_size} bytes / " \
+                "#{old_lines} → #{new_lines} lines, looks truncated)"
+          agent_log.call("write.refused", msg)
+          next { "error" => msg, "refused" => true, "old_bytes" => old_size, "new_bytes" => new_size }
+        end
+
+        # 4. Backup before overwrite.
+        backup_rel = old_size > 0 ? agent_backup.call(p) : nil
+
         FileUtils.mkdir_p(File.dirname(p))
-        File.write(p, content, encoding: "utf-8")
-        rel = p.sub("#{project_root}/", "")
-        { "written" => rel, "bytes" => content.bytesize }
-      }, "Write or update a project file")
+        File.write(p, new_bytes, encoding: "utf-8")
+
+        # 5. Audit log.
+        agent_log.call("write.ok",
+                       "#{rel} (#{old_size}B/#{old_lines}L → #{new_size}B/#{new_lines}L, " \
+                       "backup: #{backup_rel || '(no prior file)'})")
+
+        result = { "written" => rel, "bytes" => new_size }
+        result["backup"] = backup_rel if backup_rel
+        result
+      }, "Write or update a project file (with backup, truncation guard, audit log)")
 
       server.register_tool("file_list", lambda { |path: "."|
         p = safe_path.call(path)
@@ -706,25 +843,50 @@ module Tina4
 
       # ── File patch ────────────────────────────────────
       server.register_tool("file_patch", lambda { |path:, old_string:, new_string:, count: 1|
+        # 1. Normalize, 2. safe_path (which runs the prose check).
+        path = normalize_coder_path.call(path)
         p = safe_path.call(path)
-        return { "error" => "File not found: #{path}" } unless File.file?(p)
+
+        # 3. Existence check.
+        next { "error" => "File not found: #{path}" } unless File.file?(p)
+
         original = File.read(p, encoding: "utf-8")
         occurrences = original.scan(old_string).size
-        return { "error" => "old_string not found in #{path}" } if occurrences.zero?
+
+        # 4. Match-count guard (already-existing behaviour).
+        next { "error" => "old_string not found in #{path}" } if occurrences.zero?
         if occurrences != count.to_i
-          return { "error" => "old_string appears #{occurrences} times, expected #{count}. Expand old_string to make it unique, or set count explicitly." }
+          next({ "error" => "old_string appears #{occurrences} times, expected #{count}. Expand old_string to make it unique, or set count explicitly." })
         end
+
         updated = original.sub(old_string, new_string)
         # Ruby String#sub replaces first; if count > 1, do N replacements
         if count.to_i > 1
           updated = original.dup
           count.to_i.times { updated.sub!(old_string, new_string) }
         end
+
+        rel = p.start_with?("#{project_root}/") ? p.sub("#{project_root}/", "") : path
+
+        # 5. Backup before overwrite — same path layout as file_write
+        #    so recovery is uniform regardless of which tool touched
+        #    the file.
+        backup_rel = agent_backup.call(p)
+
         File.write(p, updated, encoding: "utf-8")
-        rel = p.sub("#{project_root}/", "")
+
         Tina4::Plan.record_action("patched", rel) if defined?(Tina4::Plan)
-        { "patched" => rel, "replacements" => count.to_i, "bytes" => updated.bytesize }
-      }, "Targeted edit: replace old_string with new_string in a file")
+
+        old_size = original.bytesize
+        new_size = updated.bytesize
+        agent_log.call("patch.ok",
+                       "#{rel} (replaced #{count.to_i}× old_string, " \
+                       "#{old_size}B → #{new_size}B, backup: #{backup_rel || '(none)'})")
+
+        result = { "patched" => rel, "replacements" => count.to_i, "bytes" => new_size }
+        result["backup"] = backup_rel if backup_rel
+        result
+      }, "Targeted edit: replace old_string with new_string in a file (with backup + audit log)")
 
       # ── Docs tools ────────────────────────────────────
       framework_doc_paths = lambda do

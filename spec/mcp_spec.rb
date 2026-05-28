@@ -428,4 +428,161 @@ RSpec.describe "Tina4 MCP" do
       end
     end
   end
+
+  # ── Defensive file_write / file_patch ─────────────────────────
+  #
+  # Five guards lifted from tina4_python/tina4_python/mcp/tools.py:
+  # prose-path rejection, coder-path normalization, agent_log,
+  # agent_backup, and the truncation guard. Mirrors the defensive
+  # parity push for Tier 1 of the AI agent surface.
+
+  describe "Defensive file_write" do
+    def call_tool(server, name, args)
+      resp = JSON.parse(server.handle_message({
+        "jsonrpc" => "2.0", "id" => 1, "method" => "tools/call",
+        "params"  => { "name" => name, "arguments" => args }
+      }))
+      resp
+    end
+
+    it "refuses prose paths in file_write" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-prose", name: "Prose Test")
+          Tina4::McpDevTools.register(server)
+
+          resp = call_tool(server, "file_write", {
+            "path"    => "The plan requires implementing a feature.txt",
+            "content" => "hello"
+          })
+          # safe_path raises ArgumentError → JSON-RPC top-level error.
+          expect(resp).to have_key("error")
+          expect(resp["error"]["message"]).to match(/Invalid path|prose|illegal character/)
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+
+    it "normalizes bare routes/ to src/routes/" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-norm", name: "Normalize Test")
+          Tina4::McpDevTools.register(server)
+
+          resp = call_tool(server, "file_write", {
+            "path"    => "routes/foo.rb",
+            "content" => "Tina4::Router.get('/foo') { }\n"
+          })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+          expect(body["written"]).to eq("src/routes/foo.rb")
+
+          # The file landed at src/routes/foo.rb, not routes/foo.rb.
+          expect(File.file?(File.join(tmp, "src", "routes", "foo.rb"))).to be true
+          expect(File.exist?(File.join(tmp, "routes", "foo.rb"))).to be false
+
+          # Agent log records the rewrite.
+          log_path = File.join(tmp, ".tina4", "agent.log")
+          expect(File.exist?(log_path)).to be true
+          expect(File.read(log_path)).to include("write.path_normalized")
+          expect(File.read(log_path)).to include("routes/foo.rb")
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+
+    it "backs up existing file before overwrite" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-backup", name: "Backup Test")
+          Tina4::McpDevTools.register(server)
+
+          # First write: creates the file (no backup expected).
+          call_tool(server, "file_write", { "path" => "src/notes.txt", "content" => "version one" })
+
+          # Second write: should produce a backup of the original.
+          resp = call_tool(server, "file_write", { "path" => "src/notes.txt", "content" => "version two" })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+          expect(body["backup"]).to be_a(String)
+          expect(body["backup"]).to start_with(".tina4/backups/")
+
+          backup_full = File.join(tmp, body["backup"])
+          expect(File.exist?(backup_full)).to be true
+          expect(File.read(backup_full)).to eq("version one")
+          expect(File.read(File.join(tmp, "src", "notes.txt"))).to eq("version two")
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+
+    it "refuses suspicious truncation" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-trunc", name: "Truncation Test")
+          Tina4::McpDevTools.register(server)
+
+          # Seed a 500-byte file.
+          big_content = "x" * 500
+          call_tool(server, "file_write", { "path" => "src/big.txt", "content" => big_content })
+
+          # Attempt to overwrite with a much smaller payload (~50 bytes).
+          tiny_content = "y" * 50
+          resp = call_tool(server, "file_write", { "path" => "src/big.txt", "content" => tiny_content })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+          expect(body["refused"]).to be true
+          expect(body["error"]).to include("REFUSED")
+
+          # Original file intact.
+          expect(File.read(File.join(tmp, "src", "big.txt"))).to eq(big_content)
+
+          # Audit log contains the refusal.
+          log_path = File.join(tmp, ".tina4", "agent.log")
+          expect(File.exist?(log_path)).to be true
+          expect(File.read(log_path)).to include("write.refused")
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+
+    it "lets canonical src/ paths pass through" do
+      Dir.mktmpdir do |tmp|
+        old_cwd = Dir.pwd
+        Dir.chdir(tmp)
+        begin
+          server = Tina4::McpServer.new("/test-passthrough", name: "Passthrough Test")
+          Tina4::McpDevTools.register(server)
+
+          resp = call_tool(server, "file_write", {
+            "path"    => "src/routes/foo.rb",
+            "content" => "Tina4::Router.get('/foo') { }\n"
+          })
+          expect(resp).to have_key("result")
+          body = JSON.parse(resp["result"]["content"][0]["text"])
+          expect(body["written"]).to eq("src/routes/foo.rb")
+
+          # No path_normalized log entry — canonical path bypasses rewrite.
+          log_path = File.join(tmp, ".tina4", "agent.log")
+          if File.exist?(log_path)
+            expect(File.read(log_path)).not_to include("write.path_normalized")
+          end
+        ensure
+          Dir.chdir(old_cwd)
+        end
+      end
+    end
+  end
 end
