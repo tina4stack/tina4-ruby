@@ -8,13 +8,33 @@ module Tina4
   class API
     attr_reader :base_url, :headers
 
-    def initialize(base_url, headers: {}, timeout: 30)
+    # 3.13.1: added ergonomic kwargs (bearer_token, username, password,
+    # verify_ssl) so callers no longer need three follow-up setter calls.
+    # Cross-framework parity with the Python tina4_python.api.Api kwargs.
+    #
+    #     api = Tina4::API.new("https://api.example.com", bearer_token: "sk-abc")
+    #     api = Tina4::API.new("https://api.example.com", username: "u", password: "p")
+    #     api = Tina4::API.new("https://api.example.com", headers: {"X-Tenant" => "acme"})
+    #     api = Tina4::API.new("https://self-signed.local", verify_ssl: false)
+    #
+    # Bearer wins over basic-auth when both are passed.
+    def initialize(base_url, headers: {}, timeout: 30,
+                   bearer_token: nil, username: nil, password: nil,
+                   verify_ssl: nil)
       @base_url = base_url.chomp("/")
       @headers = {
         "Content-Type" => "application/json",
         "Accept" => "application/json"
       }.merge(headers)
       @timeout = timeout
+      @verify_ssl = verify_ssl
+
+      # Bearer wins over basic-auth when both passed
+      if bearer_token
+        set_bearer_token(bearer_token)
+      elsif username && password
+        set_basic_auth(username, password)
+      end
     end
 
     def get(path, params: {})

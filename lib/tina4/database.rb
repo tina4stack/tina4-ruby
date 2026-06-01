@@ -101,6 +101,29 @@ module Tina4
           pool: pool)
     end
 
+    # Open a database connection — convention name matching SQLAlchemy
+    # engine.connect() and the cross-framework Database.get_connection()
+    # surface shipped in 3.13.x.
+    #
+    # The first argument may be either a URL (containing `://` or `sqlite:`)
+    # or an env-var name. Falls back to in-memory SQLite when no URL
+    # resolves — matches Python tina4_python's default behaviour.
+    #
+    #   db = Tina4::Database.get_connection                     # from TINA4_DATABASE_URL
+    #   db = Tina4::Database.get_connection("sqlite::memory:")  # explicit URL
+    #   db = Tina4::Database.get_connection("postgres://...", username: "u", password: "p")
+    def self.get_connection(url_or_env_key = "TINA4_DATABASE_URL", username: nil, password: nil, pool: nil)
+      if url_or_env_key.include?("://") || url_or_env_key.start_with?("sqlite:")
+        return new(url_or_env_key, username: username, password: password, pool: pool)
+      end
+
+      db = from_env(env_key: url_or_env_key, pool: pool)
+      return db if db
+
+      # Fallback: in-memory SQLite — matches Python parity.
+      new("sqlite::memory:", username: username, password: password, pool: pool)
+    end
+
     def initialize(connection_string = nil, username: nil, password: nil, driver_name: nil, pool: nil)
       @connection_string = connection_string || ENV["TINA4_DATABASE_URL"]
       @username = username || ENV["TINA4_DATABASE_USERNAME"]
@@ -211,6 +234,19 @@ module Tina4
         @cache_hits = 0
         @cache_misses = 0
       end
+    end
+
+    # Fetch rows and return the records array directly.
+    #
+    # Symmetric with fetch_one. Cross-framework parity with Python
+    # db.fetch_all() / PHP $db->fetchAll() / Node db.fetchAll().
+    #
+    #   rows = db.fetch_all("SELECT * FROM users WHERE active = ?", [1])
+    #   rows.each { |row| puts row["name"] }
+    #
+    # Returns [] (not nil) when no rows match.
+    def fetch_all(sql, params = [], limit: 100, offset: nil)
+      fetch(sql, params, limit: limit, offset: offset).records
     end
 
     def fetch(sql, params = [], limit: 100, offset: nil)
