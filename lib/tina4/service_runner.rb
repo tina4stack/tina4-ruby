@@ -48,6 +48,41 @@ module Tina4
         Tina4::Log.debug("Service registered: #{name}")
       end
 
+      # Register a class-based service (subclass of {Tina4::Service}) by name.
+      #
+      # Wraps the Service's #run method as the handler callable that
+      # ServiceRunner.start invokes. The service's #stop is also wired
+      # up so ServiceRunner.stop(name) shuts it down cleanly.
+      #
+      #   class EmailQueueWorker < Tina4::Service
+      #     def run
+      #       until should_stop?
+      #         # process work
+      #       end
+      #     end
+      #   end
+      #
+      #   Tina4::ServiceRunner.register_service("emails", EmailQueueWorker.new)
+      #   Tina4::ServiceRunner.start
+      #
+      # Default options set daemon: true because Service subclasses manage
+      # their own loop inside #run. Override via `options`.
+      def register_service(name, service, options = {})
+        raise ArgumentError, "service must be a Tina4::Service instance" unless service.is_a?(Tina4::Service)
+
+        options = { daemon: true }.merge(options)
+        callable = service.method(:run)
+
+        @mutex.synchronize do
+          @registry[name.to_s] = {
+            handler:  callable,
+            options:  options,
+            instance: service,
+          }
+        end
+        Tina4::Log.debug("Service registered (class-based): #{name}")
+      end
+
       # Auto-discover service files from a directory.
       # Each file should call Tina4.service or Tina4::ServiceRunner.register.
       def discover(service_dir = nil)

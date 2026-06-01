@@ -853,9 +853,103 @@ module Tina4
       !%w[false 0 no off].include?(val)
     end
 
+    # ── Class-level resolver registry — 3.13.1 ────────────────────────
+    #
+    # Resolvers registered via Tina4::GraphQL.resolve("Type", "field")
+    # accumulate here BEFORE any GraphQL instance exists. When `new` runs,
+    # the instance drains the registry into its schema. This is what makes
+    # the documented decorator-style pattern work at app-startup time:
+    # modules `Tina4::GraphQL.resolve(...)` at load time and register
+    # before the singleton is even constructed. Cross-framework parity
+    # with Python @GraphQL.resolve and PHP GraphQL::resolve.
+    @class_resolvers = {}
+    @default_instance = nil
+
+    class << self
+      attr_accessor :default_instance
+
+      def class_resolvers
+        @class_resolvers ||= {}
+      end
+
+      # Decorator-style resolver registration.
+      #
+      #     Tina4::GraphQL.resolve("Query", "products") do |root, args, ctx|
+      #       Product.all
+      #     end
+      #
+      #     Tina4::GraphQL.resolve("Mutation", "createProduct") do |root, args, ctx|
+      #       Product.create(args["input"])
+      #     end
+      #
+      #     Tina4::GraphQL.resolve("Product", "reviews") do |product, args, ctx|
+      #       Review.where("product_id = ?", [product["id"]])
+      #     end
+      #
+      # Resolvers registered before any GraphQL instance accumulate in a
+      # class-level registry. new GraphQL drains them into its schema.
+      # Resolvers registered after .default_instance is set wire into
+      # the live schema immediately.
+      def resolve(type_name, field_name, &block)
+        class_resolvers[type_name] ||= {}
+        class_resolvers[type_name][field_name] = block
+
+        # If a default instance is active, attach immediately so post-startup
+        # registrations take effect without re-instantiation.
+        if @default_instance
+          @default_instance.send(:attach_resolver, type_name, field_name, block)
+        end
+        block
+      end
+
+      # Test-only — clear the class-level registry. Used by parity tests
+      # to avoid bleed-over between cases.
+      def _clear_class_resolvers!
+        @class_resolvers = {}
+        @default_instance = nil
+      end
+    end
+
     def initialize(schema = nil)
       @schema = schema || GraphQLSchema.new
       @executor = GraphQLExecutor.new(@schema)
+      @field_resolvers = {}
+
+      # Drain any resolvers registered via the class-level GraphQL.resolve()
+      # BEFORE this instance was constructed.
+      self.class.class_resolvers.each do |type_name, fields|
+        fields.each do |field_name, resolver|
+          attach_resolver(type_name, field_name, resolver)
+        end
+      end
+    end
+
+    # Wire a single resolver into the live schema.
+    def attach_resolver(type_name, field_name, resolver)
+      if type_name == "Query"
+        existing = @schema.queries[field_name] || {}
+        existing[:resolve] = resolver
+        existing[:args] ||= {}
+        existing[:type] ||= "String"
+        @schema.queries[field_name] = existing
+      elsif type_name == "Mutation"
+        existing = @schema.mutations[field_name] || {}
+        existing[:resolve] = resolver
+        existing[:args] ||= {}
+        existing[:type] ||= "String"
+        @schema.mutations[field_name] = existing
+      else
+        # Object-type field resolver — stash for the executor.
+        @field_resolvers[type_name] ||= {}
+        @field_resolvers[type_name][field_name] = resolver
+      end
+    end
+    private :attach_resolver
+
+    # Get the field resolver registered for an object type, if any.
+    # Used by the executor during nested field resolution.
+    def field_resolver(type_name, field_name)
+      @field_resolvers.dig(type_name, field_name)
     end
 
     # Execute a query string directly
