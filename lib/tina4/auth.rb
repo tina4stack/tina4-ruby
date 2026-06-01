@@ -109,19 +109,25 @@ module Tina4
       end
 
 
-      def valid_token(token) # -> bool
+      # Verify a JWT signature + expiry.
+      #
+      # 3.13.0: return type changed from `Boolean` to `Hash | nil`. The
+      # decoded payload is returned on success, nil on failure. Matches
+      # firebase/jwt-ruby and Python's Auth.valid_token in 3.13.0.
+      #
+      # Legacy `if Tina4::Auth.valid_token(t)` patterns keep working
+      # because a non-empty Hash is truthy and nil is falsy.
+      def valid_token(token)
         if use_hmac?
-          !hmac_decode(token, hmac_secret).nil?
+          hmac_decode(token, hmac_secret) # returns Hash payload or nil
         else
           ensure_keys
           require "jwt"
-          JWT.decode(token, public_key, true, algorithm: "RS256")
-          true
+          decoded = JWT.decode(token, public_key, true, algorithm: "RS256")
+          decoded[0] # firebase/jwt-ruby returns [payload, header]
         end
-      rescue JWT::ExpiredSignature
-        false
-      rescue JWT::DecodeError
-        false
+      rescue JWT::ExpiredSignature, JWT::DecodeError
+        nil
       end
 
       def valid_token_detail(token)

@@ -54,6 +54,7 @@ require_relative "tina4/response_cache"
 require_relative "tina4/html_element"
 require_relative "tina4/error_overlay"
 require_relative "tina4/test_client"
+require_relative "tina4/test"
 require_relative "tina4/docs"
 require_relative "tina4/mcp"
 
