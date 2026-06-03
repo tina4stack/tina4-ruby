@@ -203,8 +203,10 @@ module Tina4
         ts = utc_timestamp
         rid = get_request_id
         rid_str = rid ? " [#{rid}]" : ""
+        fn = caller_name
+        fn_str = fn ? " [#{fn}]" : ""
         ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
-        "#{ts} [#{level_str.ljust(7)}]#{rid_str} #{message}#{ctx}"
+        "#{ts} [#{level_str.ljust(7)}]#{rid_str}#{fn_str} #{message}#{ctx}"
       end
 
       def json_line(level, message)
@@ -216,8 +218,44 @@ module Tina4
         }
         rid = get_request_id
         entry[:request_id] = rid if rid
+        fn = caller_name
+        entry[:function] = fn if fn
         entry[:context] = @current_context if @current_context && !@current_context.empty?
         JSON.generate(entry)
+      end
+
+      # Names that belong to Log itself — walk past them so the reported
+      # frame is the real caller (e.g. the route handler or service
+      # method that called Log.info). Kept as a Set for O(1) lookup.
+      OWN_FRAMES = %w[
+        caller_name format_line json_line log colorize write_to_file
+        debug info warning error critical
+      ].freeze
+
+      # Names that are noise — Ruby block labels, lambdas, top-level
+      # script frames. We skip these the same way Python skips <module>
+      # and <lambda>.
+      NOISE_FRAME_RE = /\A(?:block(?: \(\d+ levels\))? in |<top \(required\)>|<main>)/
+
+      # Return the name of the function that called Log.{debug,info,warning,error}.
+      # Active only when TINA4_LOG_FUNC=true (parity feature #41).
+      # Returns nil on any error so it never crashes a log call.
+      def caller_name
+        return nil unless Tina4::Env.bool("TINA4_LOG_FUNC")
+
+        # caller_locations(2, 16) skips this method + log() and gives us
+        # up to 16 frames to walk. We bail out the moment we hit a frame
+        # whose base_label isn't in OWN_FRAMES and isn't a block label.
+        locs = caller_locations(2, 16) || []
+        locs.each do |loc|
+          label = loc.base_label.to_s
+          next if OWN_FRAMES.include?(label)
+          next if label.empty? || NOISE_FRAME_RE.match?(label)
+          return label
+        end
+        nil
+      rescue StandardError
+        nil
       end
 
       def colorize(level, line)

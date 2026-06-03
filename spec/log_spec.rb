@@ -229,4 +229,104 @@ RSpec.describe Tina4::Log do
       expect { Tina4::Log.info("before setup") }.not_to raise_error
     end
   end
+
+  # ── Function-name injection (parity feature #41) ───────────────────
+  #
+  # When TINA4_LOG_FUNC=true is set, log lines should include the name
+  # of the function/method that called Log.info / .debug / .warning /
+  # .error. Default is OFF so existing log formats are untouched.
+  describe "function-name injection (TINA4_LOG_FUNC)" do
+    before { Tina4::Log.configure(tmpdir) }
+    after  { ENV.delete("TINA4_LOG_FUNC") }
+
+    # Named methods so the caller-walk has a real label to find,
+    # rather than the anonymous block frame RSpec runs `it` blocks in.
+    def emit_info_from_named_method
+      Tina4::Log.info("function-name probe")
+    end
+
+    def emit_error_from_named_method
+      Tina4::Log.error("function-name probe error")
+    end
+
+    it "does NOT inject the function name by default" do
+      ENV.delete("TINA4_LOG_FUNC")
+      emit_info_from_named_method
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("function-name probe")
+      expect(log_content).not_to include("[emit_info_from_named_method]")
+    end
+
+    it "injects the calling method name when TINA4_LOG_FUNC=true" do
+      ENV["TINA4_LOG_FUNC"] = "true"
+      emit_info_from_named_method
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("[emit_info_from_named_method]")
+      expect(log_content).to include("function-name probe")
+    end
+
+    it "works for the .error level too" do
+      ENV["TINA4_LOG_FUNC"] = "true"
+      emit_error_from_named_method
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("[emit_error_from_named_method]")
+    end
+
+    it "accepts the same truthy tokens as Env.bool" do
+      %w[1 on yes y t].each do |token|
+        ENV["TINA4_LOG_FUNC"] = token
+        File.write(File.join(tmpdir, "logs", "tina4.log"), "")
+        emit_info_from_named_method
+        log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+        expect(log_content).to include("[emit_info_from_named_method]"), "expected truthy token #{token.inspect} to enable function name"
+      end
+    end
+
+    it "skips injection for falsy / unknown values" do
+      %w[false 0 no off banana].each do |token|
+        ENV["TINA4_LOG_FUNC"] = token
+        File.write(File.join(tmpdir, "logs", "tina4.log"), "")
+        emit_info_from_named_method
+        log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+        expect(log_content).not_to include("[emit_info_from_named_method]"), "expected falsy token #{token.inspect} to disable function name"
+      end
+    end
+
+    context "in JSON mode" do
+      before do
+        ENV["TINA4_ENV"] = "production"
+        Tina4::Log.configure(tmpdir)
+      end
+
+      after do
+        ENV.delete("TINA4_ENV")
+      end
+
+      it "adds a 'function' key to the JSON entry when enabled" do
+        ENV["TINA4_LOG_FUNC"] = "true"
+        emit_info_from_named_method
+        log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+
+        # The file gets one JSON object per line — find the one we just wrote.
+        json_lines = log_content.lines.map(&:strip).reject(&:empty?)
+        matching = json_lines.map { |l| JSON.parse(l) rescue nil }
+                              .compact
+                              .find { |obj| obj["message"] == "function-name probe" }
+        expect(matching).not_to be_nil
+        expect(matching["function"]).to eq("emit_info_from_named_method")
+      end
+
+      it "omits the 'function' key when disabled" do
+        ENV.delete("TINA4_LOG_FUNC")
+        emit_info_from_named_method
+        log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+        json_lines = log_content.lines.map(&:strip).reject(&:empty?)
+        matching = json_lines.map { |l| JSON.parse(l) rescue nil }
+                              .compact
+                              .find { |obj| obj["message"] == "function-name probe" }
+        expect(matching).not_to be_nil
+        expect(matching).not_to have_key("function")
+      end
+    end
+  end
 end

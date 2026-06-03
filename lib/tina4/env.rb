@@ -83,6 +83,14 @@ module Tina4
       "TINA4_SECRET" => "tina4-secret-change-me"
     }.freeze
 
+    # Typed env-var coercion — parity with tina4_python's Env class,
+    # tina4-php's Tina4\Env, and tina4-nodejs's Env. Truthy values
+    # (case-insensitive after strip): "1", "true", "on", "yes", "y", "t".
+    # Falsy: "0", "false", "off", "no", "n", "f", empty string. Anything
+    # else falls through to default.
+    TRUTHY = %w[1 true on yes y t].freeze
+    FALSY  = %w[0 false off no n f].freeze
+
     # Check if a value is truthy for env boolean checks.
     #
     # Accepts: "true", "True", "TRUE", "1", "yes", "Yes", "YES", "on", "On", "ON".
@@ -90,6 +98,58 @@ module Tina4
     def self.is_truthy(val)
       %w[true 1 yes on].include?(val.to_s.strip.downcase)
     end
+
+    # Read an env var and coerce to Boolean. Returns +default+ when the
+    # var is unset or holds a value outside the TRUTHY/FALSY tables.
+    # Never raises — bad input falls through to default.
+    def self.bool(name, default: false)
+      raw = ENV[name.to_s]
+      return default if raw.nil?
+      token = raw.strip.downcase
+      return true  if TRUTHY.include?(token)
+      return false if FALSY.include?(token) || token.empty?
+      default
+    end
+
+    # Read an env var and coerce to Integer. Logs a warning via Tina4::Log
+    # (if loaded) and returns +default+ on parse failure. Never raises.
+    def self.int(name, default: 0)
+      raw = ENV[name.to_s]
+      return default if raw.nil?
+      Integer(raw.strip)
+    rescue ArgumentError, TypeError
+      log_warning("Env.int(#{name.inspect}): could not parse #{raw.inspect} as Integer — using default #{default.inspect}")
+      default
+    end
+
+    # Read an env var and coerce to Float. Logs a warning via Tina4::Log
+    # (if loaded) and returns +default+ on parse failure. Never raises.
+    def self.float(name, default: 0.0)
+      raw = ENV[name.to_s]
+      return default if raw.nil?
+      Float(raw.strip)
+    rescue ArgumentError, TypeError
+      log_warning("Env.float(#{name.inspect}): could not parse #{raw.inspect} as Float — using default #{default.inspect}")
+      default
+    end
+
+    # Read an env var as a String. Returns +default+ when unset.
+    # Whitespace is preserved — this is a pass-through for the raw env value,
+    # matching Python's Env.str semantics.
+    def self.str(name, default: "")
+      raw = ENV[name.to_s]
+      return default if raw.nil?
+      raw
+    end
+
+    # Emit a warning via Tina4::Log without creating a load-order dependency.
+    # Mirrors Python's Env._log_warning: silently skip if Log isn't loaded.
+    def self.log_warning(message)
+      Tina4::Log.warning(message) if defined?(Tina4::Log)
+    rescue NameError, StandardError
+      # Log not wired up yet (very early bootstrap) — swallow.
+    end
+    private_class_method :log_warning
 
     class << self
       def load_env(root_dir = Dir.pwd)
