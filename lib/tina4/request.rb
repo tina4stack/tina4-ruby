@@ -35,6 +35,63 @@ module Tina4
     end
   end
 
+  # Hash subclass for HTTP headers — string keys are case-insensitive.
+  #
+  # HTTP header field-names are case-insensitive per RFC 7230 §3.2. With
+  # this class, request.headers["Content-Type"], .headers["content-type"],
+  # and .headers["CONTENT-TYPE"] all return the same value. Keys are
+  # stored lowercase internally.
+  #
+  # Cross-framework parity: same behaviour ships in tina4-python
+  # (CaseInsensitiveDict), tina4-php (Tina4\Request), tina4-nodejs
+  # (Tina4Request). tina4-book#141 PY-10-03 — chapter 10 examples
+  # documented headers["Content-Type"] for years; this makes them work.
+  class CaseInsensitiveHash < Hash
+    def [](key)
+      super(normalize_key(key))
+    end
+
+    def []=(key, value)
+      super(normalize_key(key), value)
+    end
+
+    def fetch(key, *args, &block)
+      super(normalize_key(key), *args, &block)
+    end
+
+    def key?(key)
+      super(normalize_key(key))
+    end
+    alias has_key? key?
+    alias include?  key?
+    alias member?   key?
+
+    def delete(key, &block)
+      super(normalize_key(key), &block)
+    end
+
+    def store(key, value)
+      super(normalize_key(key), value)
+    end
+
+    def merge(other)
+      result = dup
+      other.each { |k, v| result[k] = v }
+      result
+    end
+
+    def merge!(other)
+      other.each { |k, v| self[k] = v }
+      self
+    end
+
+    private
+
+    def normalize_key(key)
+      key.is_a?(String) ? key.downcase : key
+    end
+  end
+
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
                 :path_params, :ip
@@ -139,7 +196,10 @@ module Tina4
     end
 
     def header(name)
-      headers[name.to_s.downcase.gsub("-", "_")]
+      # Headers are stored in a CaseInsensitiveHash keyed by lowercase-
+      # dashed names ("content-type", "x-api-key"). The hash normalises
+      # the lookup case automatically, so pass the dashed form through.
+      headers[name.to_s.tr("_", "-")]
     end
 
     def json_body
@@ -169,12 +229,22 @@ module Tina4
     end
 
     def extract_headers
-      h = {}
+      h = CaseInsensitiveHash.new
       @env.each do |key, value|
         if key.start_with?("HTTP_")
-          h[key[5..-1].downcase] = value
+          # Rack normalises "Content-Type" to "HTTP_CONTENT_TYPE" — we
+          # store as "content-type" (lowercase, dashed) so both
+          # headers["Content-Type"] and the legacy headers["content_type"]
+          # via the `header()` helper resolve to the same value. The
+          # CaseInsensitiveHash handles the case-insensitive part.
+          h[key[5..-1].tr("_", "-").downcase] = value
         end
       end
+      # CONTENT_TYPE / CONTENT_LENGTH live at the top level of the Rack
+      # env (no HTTP_ prefix per the Rack spec) — surface them too so
+      # request.headers["Content-Type"] works for POST bodies.
+      h["content-type"] = @env["CONTENT_TYPE"] if @env["CONTENT_TYPE"] && !@env["CONTENT_TYPE"].empty?
+      h["content-length"] = @env["CONTENT_LENGTH"] if @env["CONTENT_LENGTH"] && !@env["CONTENT_LENGTH"].to_s.empty?
       h
     end
 

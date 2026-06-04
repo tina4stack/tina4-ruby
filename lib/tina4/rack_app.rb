@@ -317,19 +317,43 @@ module Tina4
         end
       end
 
-      # Execute handler — inject path params by name, then request/response
+      # Build the route-handler call as a lambda so function-style
+      # middleware can wrap it. Path params are still bound by name —
+      # the continuation just forwards the (possibly-mutated)
+      # request/response pair the outer middleware chose to pass in.
       handler_params = route.handler.parameters.map(&:last)
       route_params = path_params || {}
-      args = handler_params.map do |name|
-        if route_params.key?(name)
-          route_params[name]
-        elsif name == :request || name == :req
-          request
-        else
-          response
+      invoke_handler = lambda do |req, resp|
+        args = handler_params.map do |name|
+          if route_params.key?(name)
+            route_params[name]
+          elsif name == :request || name == :req
+            req
+          else
+            resp
+          end
         end
+        args.empty? ? route.handler.call : route.handler.call(*args)
       end
-      result = args.empty? ? route.handler.call : route.handler.call(*args)
+
+      # Fold any function-style middleware on this route into a
+      # Russian-doll chain wrapping the handler. First declared is the
+      # outermost layer — it receives the request first, calls
+      # next_handler to descend, and runs its "after" code on the way
+      # out. Class-based middleware (before_*/after_*) is handled
+      # separately by run_middleware above and never goes through here.
+      # tina4-book#141 PY-10-01 (cross-framework parity).
+      fn_mws = route.respond_to?(:function_middleware) ? route.function_middleware : []
+      if fn_mws.empty?
+        result = invoke_handler.call(request, response)
+      else
+        chain = invoke_handler
+        fn_mws.reverse_each do |mw|
+          inner = chain
+          chain = lambda { |req, resp| mw.call(req, resp, inner) }
+        end
+        result = chain.call(request, response)
+      end
 
       # Template rendering: when a template is set and the handler returned a Hash,
       # render the template with the hash as data and return the HTML response.

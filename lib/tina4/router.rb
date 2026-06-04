@@ -17,9 +17,11 @@ module Tina4
       @swagger_meta = swagger_meta
       @middleware = middleware.freeze
       @template = template&.freeze
-      # Write routes are secure by default, unless custom middleware is registered
-      # (developer handles auth themselves via middleware)
-      @auth_required = %w[POST PUT PATCH DELETE].include?(@method) && middleware.empty?
+      # Write routes are secure by default — bearer-token auth is enforced
+      # on POST/PUT/PATCH/DELETE regardless of attached middleware.
+      # Middleware is additive, never an auth bypass. tina4-book#141
+      # PY-10-02. Call .no_auth on the route to opt out explicitly.
+      @auth_required = %w[POST PUT PATCH DELETE].include?(@method)
       @cached = false
       @param_names = []
       @path_regex = compile_pattern(@path)
@@ -50,13 +52,18 @@ module Tina4
     # Dual-mode: getter (no args) returns the middleware array;
     # setter (with args) appends middleware and returns self for chaining.
     # Router.post("/api") { ... }.middleware(AuthMiddleware)
+    #
+    # Middleware is purely additive — registering middleware NEVER flips
+    # @auth_required off. The secure-by-default gate for write methods
+    # (POST/PUT/PATCH/DELETE) stays in effect; if a route truly wants to
+    # opt out of the built-in bearer check, call .no_auth explicitly.
+    # tina4-book#141 PY-10-02 — previously, attaching ANY middleware
+    # silently turned off auth_required, which let attackers bypass auth
+    # by routing through a logging middleware. Cross-framework parity.
     def middleware(*middleware_classes)
       return @middleware if middleware_classes.empty?
 
       @middleware = @middleware.dup + middleware_classes
-      # Custom middleware means developer handles auth — disable built-in gate
-      # unless .secure was explicitly called.
-      @auth_required = false unless @auth_required
       self
     end
 
@@ -83,13 +90,48 @@ module Tina4
       end
     end
 
-    # Run per-route middleware chain; returns true if all pass
+    # Run per-route CLASS-based middleware. Function-style middleware
+    # (Proc/Lambda taking 3+ args: req, resp, next_handler) is skipped
+    # here — it's dispatched separately via #function_middleware which
+    # wraps the route handler in a continuation chain (see rack_app.rb).
+    #
+    # Returns true if all class-based middleware passed, false if any
+    # returned literal false (halt request).
     def run_middleware(request, response)
       @middleware.each do |mw|
+        next if Route.function_middleware?(mw)
         result = mw.call(request, response)
         return false if result == false
       end
       true
+    end
+
+    # Function-style middleware attached to this route, in declaration
+    # order. The route dispatcher folds them into a Russian-doll
+    # continuation chain — first declared is the OUTERMOST layer (runs
+    # first on the way in, last on the way out). tina4-book#141
+    # PY-10-01 — chapter 10 documented 8+ examples of function middleware
+    # for years; before this fix the framework silently ignored them.
+    def function_middleware
+      @middleware.select { |mw| Route.function_middleware?(mw) }
+    end
+
+    # Detect Express/FastAPI-style function middleware.
+    #
+    # A Proc/Lambda/Method whose arity indicates 3+ positional params
+    # (req, resp, next_handler). Ruby arity quirk: required-args-only
+    # arity is non-negative; if the callable accepts a splat or
+    # optionals, arity is negated (-required-1). We treat arity >= 3
+    # OR arity <= -4 as function-style. Anything else (a class with
+    # before_*/after_* methods, or a 2-arg callable) is treated as
+    # class-style and goes through #run_middleware.
+    def self.function_middleware?(mw)
+      return false if mw.is_a?(Class) || mw.is_a?(Module)
+      return false unless mw.respond_to?(:arity)
+      ar = mw.arity
+      ar >= 3 || ar <= -4
+    rescue StandardError
+      false
     end
 
     private
