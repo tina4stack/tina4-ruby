@@ -132,10 +132,17 @@ RSpec.describe "RFC 9110 HTTP method conformance (Tina4 Ruby)" do
     expect(allowed).not_to include("PUT", "PATCH")
   end
 
-  it "OPTIONS on a non-existent path returns 404" do
+  it "OPTIONS on a non-existent path returns 204 (discovery method)" do
+    # OPTIONS is a discovery / preflight method — returning 404 confuses
+    # link checkers, monitoring probes, and CORS preflight that lacks the
+    # Origin/ACRM headers our fast-path requires. Matches PHP/Node
+    # behaviour. Per spec/rack_app_spec.rb "handles OPTIONS preflight"
+    # and tina4-ruby v3.13.4+ (lib/tina4/rack_app.rb dispatch).
     Tina4::Router.get("/exists") { |_req, res| res.json({}) }
     status, headers, body = options_req("/does/not/exist")
-    expect(status).to eq(404)
+    expect(status).to eq(204)
+    # Allow header is empty because nothing matches this path.
+    expect(header(headers, "Allow") || "").to eq("")
   end
 
   # ── Group 4: TRACE / CONNECT explicit rejection ─────────────────────

@@ -108,22 +108,29 @@ module Tina4
       else
         # RFC 9110 conformance — before falling through to 404, check whether
         # the PATH is known to the router under any OTHER method.
-        #   - OPTIONS request → 204 with Allow header (§9.3.7)
+        #   - OPTIONS request → 204 with Allow header (§9.3.7). Bare OPTIONS
+        #     on an unknown path also returns 204 (empty Allow header) —
+        #     OPTIONS is a discovery method; rejecting unknown probes with
+        #     404 confuses link checkers and monitoring tools and breaks
+        #     CORS preflight that lacks the Origin/ACRM headers our earlier
+        #     fast-path requires. Matches PHP/Node behaviour. Fixes
+        #     spec/rack_app_spec.rb OPTIONS preflight.
         #   - Any other method (PUT on GET-only, TRACE, CONNECT, etc.)
-        #     → 405 with Allow header (§15.5.6 + §10.2.1)
+        #     → 405 with Allow header (§15.5.6 + §10.2.1) when the path
+        #     exists; → 404 when nothing about the path is known.
         allowed = Tina4::Router.methods_allowed_for_path(path)
-        if !allowed.empty?
+        if method.to_s.upcase == "OPTIONS"
+          allow_header = allowed.empty? ? "" : allowed.join(", ")
+          rack_response = [204, { "allow" => allow_header, "content-length" => "0" }, [""]]
+          matched_pattern = nil
+        elsif !allowed.empty?
           allow_header = allowed.join(", ")
-          if method.to_s.upcase == "OPTIONS"
-            rack_response = [204, { "allow" => allow_header, "content-length" => "0" }, [""]]
-          else
-            body = %({"error":"Method Not Allowed","path":"#{path}","method":"#{method}","allow":[#{allowed.map { |m| %("#{m}") }.join(",")}],"status":405})
-            rack_response = [405, {
-              "allow" => allow_header,
-              "content-type" => "application/json",
-              "content-length" => body.bytesize.to_s
-            }, [body]]
-          end
+          body = %({"error":"Method Not Allowed","path":"#{path}","method":"#{method}","allow":[#{allowed.map { |m| %("#{m}") }.join(",")}],"status":405})
+          rack_response = [405, {
+            "allow" => allow_header,
+            "content-type" => "application/json",
+            "content-length" => body.bytesize.to_s
+          }, [body]]
           matched_pattern = nil
         else
           rack_response = handle_404(path)

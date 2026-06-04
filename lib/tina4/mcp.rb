@@ -612,8 +612,12 @@ module Tina4
         line = err_lines.first.strip
         # Strip the absolute project_root prefix so the error reads
         # as "src/routes/foo.rb:3: syntax error, ..." instead of the
-        # full /Users/... path.
-        line.sub("#{project_root}/", "")
+        # full /Users/... path. Use gsub because Ruby 3.2's MRI parser
+        # double-prints the path — once as the file label prefix and
+        # once inside the (SyntaxError) reference — and the test asserts
+        # the absolute path appears nowhere in import_error.
+        # See: spec/mcp_spec.rb defensive file_write test (CI Ruby 3.2).
+        line.gsub("#{project_root}/", "")
       end
 
       redact_env = lambda do |key, value|
