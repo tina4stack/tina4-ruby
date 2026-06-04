@@ -750,7 +750,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
 - Tests: 1,578 passing
-- Version: 3.12.13
+- Version: 3.13.4
 
 ## Links
 
