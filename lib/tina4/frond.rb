@@ -21,6 +21,33 @@ module Tina4
   end
 
   class Frond
+    # -- Class-level registries ------------------------------------------------
+    # Persist globals, filters, and tests across hot-reloads and across module
+    # boundaries. When app.rb does ``Tina4::Frond.add_filter("money") { ... }``
+    # at startup before any instance exists, the registration sits here. Every
+    # subsequent ``Tina4::Frond.new`` drains these into its instance-local
+    # registries — so hot-reloads (which re-execute ``frond = Frond.new``) and
+    # late-constructed engines automatically inherit prior registrations.
+    #
+    # The same-name dual-callable (class + instance) methods below let callers
+    # write either ``Tina4::Frond.add_filter(...)`` (class-level only) or
+    # ``frond.add_filter(...)`` (updates both the class registry and the
+    # instance's live filter map). Parity with tina4-python's
+    # ``_ClassOrInstanceMethod`` descriptor.
+    @@class_filters = {}
+    @@class_globals = {}
+    @@class_tests   = {}
+
+    # Clear the class-level globals/filters/tests registries.
+    #
+    # Useful in test fixtures to prevent leaking state between tests. Does
+    # NOT affect built-in filters or globals — only user-registered ones.
+    def self.clear_registry
+      @@class_filters = {}
+      @@class_globals = {}
+      @@class_tests   = {}
+    end
+
     # -- Token types ----------------------------------------------------------
     TEXT    = :text
     VAR     = :var      # {{ ... }}
@@ -187,6 +214,16 @@ module Tina4
 
       # Built-in global functions
       register_builtin_globals
+
+      # Drain class-level registries into this instance. Filters and tests
+      # registered via ``Tina4::Frond.add_filter`` BEFORE this instance was
+      # constructed flow in here. Globals likewise. This is the key to the
+      # static-facade: ``app.rb`` registers once at startup, and every
+      # Frond instance created later (including those born from hot-reloads)
+      # automatically inherits the registration. Parity with tina4-python.
+      @filters.merge!(@@class_filters)
+      @globals.merge!(@@class_globals)
+      @tests.merge!(@@class_tests)
     end
 
     # Render a template file with data. Uses token caching for performance.
@@ -249,19 +286,61 @@ module Tina4
       @dotted_split_cache.clear
     end
 
+    # Register a custom filter on the class registry only.
+    #
+    # Callable as ``Tina4::Frond.add_filter("money") { |v| ... }`` at app
+    # startup BEFORE any instance exists. The registration is remembered at
+    # class level so every later ``Tina4::Frond.new`` inherits it. To also
+    # update a live instance's filter map, use the instance method form.
+    def self.add_filter(name, &blk)
+      @@class_filters[name.to_s] = blk
+    end
+
+    # Register a custom test on the class registry only.
+    #
+    # Same dual-callable semantics as ``add_filter`` — see that method for
+    # the static-facade pattern.
+    def self.add_test(name, &blk)
+      @@class_tests[name.to_s] = blk
+    end
+
+    # Register a global variable on the class registry only.
+    #
+    # Same dual-callable semantics as ``add_filter`` — see that method for
+    # the static-facade pattern.
+    def self.add_global(name, value)
+      @@class_globals[name.to_s] = value
+    end
+
     # Register a custom filter.
+    #
+    # Updates BOTH the class registry (so future ``Tina4::Frond.new`` picks
+    # the filter up) AND this instance's live filter map (so the change is
+    # visible to subsequent renders on the current engine).
     def add_filter(name, &blk)
+      self.class.add_filter(name, &blk)
       @filters[name.to_s] = blk
+      self
     end
 
     # Register a custom test.
+    #
+    # Updates BOTH the class registry and this instance's live tests map.
+    # See ``add_filter`` for the dual-write semantics.
     def add_test(name, &blk)
+      self.class.add_test(name, &blk)
       @tests[name.to_s] = blk
+      self
     end
 
     # Register a global variable available in all templates.
+    #
+    # Updates BOTH the class registry and this instance's live globals map.
+    # See ``add_filter`` for the dual-write semantics.
     def add_global(name, value)
+      self.class.add_global(name, value)
       @globals[name.to_s] = value
+      self
     end
 
     # Enable sandbox mode.
