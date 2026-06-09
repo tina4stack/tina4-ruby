@@ -6,7 +6,14 @@ module Tina4
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
-        require "pg"
+        begin
+          require "pg"
+        rescue LoadError
+          raise LoadError,
+                "The 'pg' gem is required for PostgreSQL connections. Install one of:\n" \
+                "    bundle add pg     # if your project uses Bundler\n" \
+                "    gem install pg    # bare driver"
+        end
         url = connection_string
         if username || password
           uri = URI.parse(url)

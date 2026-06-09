@@ -21,8 +21,9 @@ module Tina4
           require "odbc"
         rescue LoadError
           raise LoadError,
-            "The 'ruby-odbc' gem is required for ODBC connections. " \
-            "Install: gem install ruby-odbc"
+                "The 'ruby-odbc' gem is required for ODBC connections. Install one of:\n" \
+                "    bundle add ruby-odbc     # if your project uses Bundler\n" \
+                "    gem install ruby-odbc    # bare driver"
         end
 
         dsn_string = connection_string.to_s

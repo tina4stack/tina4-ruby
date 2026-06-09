@@ -6,7 +6,14 @@ module Tina4
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
-        require "mysql2"
+        begin
+          require "mysql2"
+        rescue LoadError
+          raise LoadError,
+                "The 'mysql2' gem is required for MySQL connections. Install one of:\n" \
+                "    bundle add mysql2     # if your project uses Bundler\n" \
+                "    gem install mysql2    # bare driver"
+        end
         uri = URI.parse(connection_string)
         @connection = Mysql2::Client.new(
           host: uri.host || "localhost",

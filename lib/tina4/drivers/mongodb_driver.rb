@@ -10,8 +10,9 @@ module Tina4
           require "mongo"
         rescue LoadError
           raise LoadError,
-            "The 'mongo' gem is required for MongoDB connections. " \
-            "Install: gem install mongo"
+                "The 'mongo' gem is required for MongoDB connections. Install one of:\n" \
+                "    bundle add mongo     # if your project uses Bundler\n" \
+                "    gem install mongo    # bare driver"
         end
 
         uri = build_uri(connection_string, username, password)

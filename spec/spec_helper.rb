@@ -31,5 +31,12 @@ RSpec.configure do |config|
     Tina4::Router.clear! if defined?(Tina4::Router) && Tina4::Router.respond_to?(:clear!)
     Tina4::Middleware.clear! if defined?(Tina4::Middleware) && Tina4::Middleware.respond_to?(:clear!)
     Tina4::Container.reset if defined?(Tina4::Container) && Tina4::Container.respond_to?(:reset)
+    # v3.13.5: Frond.add_filter/add_global/add_test persist in a class-level
+    # registry so a single startup call survives all later Frond.new
+    # instances. Without this clear, an earlier spec's add_global("name",
+    # "Global") leaks into a later spec that expects the missing-variable
+    # fallback. Same pattern Python uses via an autouse fixture and Node
+    # uses via clearRegistry() in i18n-leaf-alias.test.ts.
+    Tina4::Frond.clear_registry if defined?(Tina4::Frond) && Tina4::Frond.respond_to?(:clear_registry)
   end
 end

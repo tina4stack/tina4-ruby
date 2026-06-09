@@ -118,7 +118,10 @@ module Tina4
 
         open_connection
       rescue LoadError
-        raise "Firebird driver requires the 'fb' gem. Install it with: gem install fb"
+        raise LoadError,
+              "The 'fb' gem is required for Firebird connections. Install one of:\n" \
+              "    bundle add fb     # if your project uses Bundler\n" \
+              "    gem install fb    # bare driver"
       end
 
       def close

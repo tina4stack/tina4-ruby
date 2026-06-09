@@ -6,7 +6,14 @@ module Tina4
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
-        require "tiny_tds"
+        begin
+          require "tiny_tds"
+        rescue LoadError
+          raise LoadError,
+                "The 'tiny_tds' gem is required for MSSQL connections. Install one of:\n" \
+                "    bundle add tiny_tds     # if your project uses Bundler\n" \
+                "    gem install tiny_tds    # bare driver"
+        end
         uri = parse_connection(connection_string)
         @connection = TinyTds::Client.new(
           host: uri[:host],
