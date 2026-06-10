@@ -38,5 +38,10 @@ RSpec.configure do |config|
     # fallback. Same pattern Python uses via an autouse fixture and Node
     # uses via clearRegistry() in i18n-leaf-alias.test.ts.
     Tina4::Frond.clear_registry if defined?(Tina4::Frond) && Tina4::Frond.respond_to?(:clear_registry)
+    # ServiceRunner registry is also class-level — parity_graphql_service_spec
+    # registers "parity-test-svc" and never clears, so the next spec that calls
+    # ServiceRunner.list.first sees a stale entry instead of its own. Reproduces
+    # under seed 27302 with the full suite; passes in isolation.
+    Tina4::ServiceRunner.clear! if defined?(Tina4::ServiceRunner) && Tina4::ServiceRunner.respond_to?(:clear!)
   end
 end
