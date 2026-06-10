@@ -774,14 +774,40 @@ module Tina4
     def handle_500(error, env = nil)
       Tina4::Log.error("500 Internal Server Error: #{error.message}")
       Tina4::Log.error(error.backtrace&.first(10)&.join("\n"))
+
+      # v3.13.7: surface route failures to observability (centralised
+      # logging, APM, Sentry) BEFORE rendering the 500. Listeners get
+      # the canonical {exception:, request:} pair — same shape as
+      # Python / PHP / Node. Listener exceptions are swallowed +
+      # warning-logged so a broken listener can't break the 500 page.
+      begin
+        request = env && env["tina4.request"]
+        Tina4::Events.emit("tina4.request.error", {
+          exception: error,
+          request:   request
+        })
+      rescue StandardError => listener_err
+        begin
+          Tina4::Log.warning(
+            "Listener for tina4.request.error raised: " \
+            "#{listener_err.class}: #{listener_err.message}"
+          )
+        rescue StandardError
+          # Log failures must never block the 500 render.
+        end
+      end
+
       if dev_mode?
         # Rich error overlay with stack trace, source context, and line numbers
         body = Tina4::ErrorOverlay.render_error_overlay(error, request: env)
       else
+        # v3.13.7 SECURITY (CWE-209): production response body must NOT
+        # contain the stack trace. The trace stays in Log.error above
+        # and reaches observability via the tina4.request.error event.
         body = Tina4::Template.render_error(500, {
-          "error_message" => "#{error.message}\n#{error.backtrace&.first(10)&.join("\n")}",
+          "error_message" => "",
           "request_id" => SecureRandom.hex(6)
-        }) rescue "500 Internal Server Error: #{error.message}"
+        }) rescue "500 Internal Server Error"
       end
       [500, { "content-type" => "text/html" }, [body]]
     end
