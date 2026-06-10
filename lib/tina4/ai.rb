@@ -135,6 +135,118 @@ module Tina4
       # @param tool [Hash] tool entry from AI_TOOLS
       # @param context [String] generated context content
       # @return [Array<String>] list of created/updated relative file paths
+      # ── v3.13.9: non-destructive context-file writer ─────────────────
+      #
+      # Pre-v3.13.9 the installer wrote a full developer guide to
+      # CLAUDE.md (and the other context files) on every run, clobbering
+      # whatever the user had put there. Now it writes only a marker-
+      # bracketed Tina4 skill block -- pointing the assistant at
+      # .claude/skills/tina4-*/SKILL.md -- and leaves the rest alone.
+
+      # Return [start, end] markers for the given context file.
+      def markers_for(context_file)
+        if context_file.downcase.end_with?(".md")
+          ["<!-- tina4-skills:start -->", "<!-- tina4-skills:end -->"]
+        else
+          ["# tina4-skills:start", "# tina4-skills:end"]
+        end
+      end
+
+      # Return the marker-bracketed Tina4 skill registration block.
+      def skill_block(context_file)
+        start, finish = markers_for(context_file)
+        body = if context_file.downcase.end_with?(".md")
+          "## Tina4 Skills\n\n" \
+          "When working on this Tina4 project, these skills give the assistant project-aware behaviour:\n\n" \
+          "- **tina4-developer** -- Read `.claude/skills/tina4-developer/SKILL.md` before building features.\n" \
+          "- **tina4-js** -- Read `.claude/skills/tina4-js/SKILL.md` for frontend work.\n" \
+          "- **tina4-maintainer** -- Read `.claude/skills/tina4-maintainer/SKILL.md` for framework-level changes.\n\n" \
+          "See https://tina4.com for full docs."
+        else
+          "Tina4 Skills -- read these files before working on this project:\n" \
+          "  .claude/skills/tina4-developer/SKILL.md   (feature development)\n" \
+          "  .claude/skills/tina4-js/SKILL.md          (frontend / tina4-js)\n" \
+          "  .claude/skills/tina4-maintainer/SKILL.md  (framework-level changes)\n" \
+          "Docs: https://tina4.com"
+        end
+        "#{start}\n#{body}\n#{finish}"
+      end
+
+      # True iff both start and end markers appear in order.
+      def has_markers?(existing, start, finish)
+        s_idx = existing.index(start)
+        return false unless s_idx
+        !existing.index(finish, s_idx + start.length).nil?
+      end
+
+      # Replace the bracketed block in `existing` with `block`.
+      def replace_marker_block(existing, block, start, finish)
+        s_idx = existing.index(start)
+        return existing.rstrip + "\n\n" + block + "\n" unless s_idx
+        e_idx = existing.index(finish, s_idx + start.length)
+        return existing.rstrip + "\n\n" + block + "\n" unless e_idx
+        before = existing[0...s_idx].rstrip
+        after = existing[(e_idx + finish.length)..].sub(/\A\n+/, "")
+        glue_before = before.empty? ? "" : "\n\n"
+        glue_after = after.empty? ? "\n" : "\n" + after
+        "#{before}#{glue_before}#{block}#{glue_after}"
+      end
+
+      # Headers the pre-v3.13.9 installer wrote at the top of CLAUDE.md.
+      OLD_FRAMEWORK_HEADERS = [
+        "# Tina4 Python",
+        "# Tina4 PHP",
+        "# Tina4 Ruby",
+        "# CLAUDE.md -- AI Developer Guide for tina4-nodejs",
+        "# CLAUDE.md — AI Developer Guide for tina4-nodejs",
+      ].freeze
+
+      def looks_like_old_framework_install?(existing)
+        head = existing.lstrip[0, 400] || ""
+        OLD_FRAMEWORK_HEADERS.any? { |h| head.start_with?(h) }
+      end
+
+      # Write the context file non-destructively. Returns a human-readable
+      # action verb for the caller's log line.
+      #
+      # Four branches:
+      #   1. Doesn't exist  -> write framework guide + skill block
+      #   2. Has markers    -> refresh just the skill block (idempotent)
+      #   3. Old header     -> migrate: replace old dump with new guide + block
+      #   4. User content   -> append the skill block, preserve everything else
+      def write_or_merge(context_path, context_file, framework_guide)
+        # Force UTF-8 — CLAUDE.md and the framework guide both contain
+        # non-ASCII (em-dashes, ✓, etc.). Without this, File.read may
+        # return ASCII-8BIT and string concat raises CompatibilityError.
+        block = skill_block(context_file).dup.force_encoding("UTF-8")
+        guide = framework_guide.dup.force_encoding("UTF-8")
+        start, finish = markers_for(context_file)
+
+        unless File.exist?(context_path)
+          File.write(context_path, guide.rstrip + "\n\n" + block + "\n", encoding: "UTF-8")
+          return "Installed"
+        end
+
+        existing = File.read(context_path, encoding: "UTF-8")
+
+        if has_markers?(existing, start, finish)
+          File.write(context_path, replace_marker_block(existing, block, start, finish), encoding: "UTF-8")
+          return "Refreshed skill block in"
+        end
+
+        if looks_like_old_framework_install?(existing)
+          head = existing.lstrip
+          preamble = existing[0, existing.length - head.length] || ""
+          new_content = (preamble.strip.empty? ? "" : preamble.rstrip + "\n\n") +
+                        guide.rstrip + "\n\n" + block + "\n"
+          File.write(context_path, new_content, encoding: "UTF-8")
+          return "Migrated (replaced old framework dump in)"
+        end
+
+        File.write(context_path, existing.rstrip + "\n\n" + block + "\n", encoding: "UTF-8")
+        "Appended skill block to"
+      end
+
       def install_for_tool(root, tool, context)
         created = []
         context_path = File.join(root, tool[:context_file])
@@ -145,9 +257,8 @@ module Tina4
         end
         FileUtils.mkdir_p(File.dirname(context_path))
 
-        # Always overwrite -- user chose to install
-        action = File.exist?(context_path) ? "Updated" : "Installed"
-        File.write(context_path, context)
+        # v3.13.9: non-destructive write -- see write_or_merge below.
+        action = write_or_merge(context_path, tool[:context_file], context)
         rel = context_path.sub("#{root}/", "")
         created << rel
         puts "  \e[32m✓\e[0m #{action} #{rel}"
