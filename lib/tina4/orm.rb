@@ -302,13 +302,27 @@ module Tina4
       def create_table
         return true if db.table_exists?(table_name)
 
+        # v3.13.11 (BooleanField parity): pick each engine's native
+        # bool type where it's reliable. SQLite has no native bool;
+        # Firebird's driver round-trip for native BOOLEAN is uneven —
+        # both stay on INTEGER. PG/MySQL/MSSQL use their native types
+        # so Python ``True``/Ruby ``true`` bind cleanly without
+        # ``operator does not exist: boolean = integer`` errors.
+        engine = (db.respond_to?(:get_database_type) ? db.get_database_type : "").to_s.downcase
+        bool_sql = case engine
+                   when "postgres", "postgresql" then "BOOLEAN"
+                   when "mysql" then "BOOLEAN" # alias for TINYINT(1)
+                   when "mssql", "sqlserver" then "BIT"
+                   else "INTEGER" # sqlite, firebird, odbc, anything else
+                   end
+
         type_map = {
           integer: "INTEGER",
           string: "VARCHAR(255)",
           text: "TEXT",
           float: "REAL",
           decimal: "REAL",
-          boolean: "INTEGER",
+          boolean: bool_sql,
           date: "DATE",
           datetime: "DATETIME",
           timestamp: "TIMESTAMP",
@@ -419,10 +433,18 @@ module Tina4
         setter = "#{key}="
         __send__(setter, value) if respond_to?(setter)
       end
-      # Set defaults
+      # Set defaults.
+      # v3.13.11 (issue #50.1): when the default is a Proc/lambda
+      # (``default: -> { Time.now }``), call it per-instance so
+      # per-row timestamps actually differ. Class objects are
+      # excluded — ``default: Integer`` is almost never intended
+      # to mean ``Integer.new`` (and Integer has no zero-arg
+      # constructor anyway).
       self.class.field_definitions.each do |name, opts|
         if __send__(name).nil? && opts[:default]
-          __send__("#{name}=", opts[:default])
+          d = opts[:default]
+          d = d.call if d.respond_to?(:call) && !d.is_a?(Class)
+          __send__("#{name}=", d)
         end
       end
     end
