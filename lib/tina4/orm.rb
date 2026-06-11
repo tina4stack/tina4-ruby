@@ -18,7 +18,11 @@ module Tina4
 
     class << self
       def db
-        @db || Tina4.database
+        # v3.13.12: implicit binding from TINA4_DATABASE_URL.
+        # Resolution: per-class @db → global Tina4.database → env-derived
+        # auto-discovery. Pre-v3.13.12 this fell through to nil — the
+        # helper auto_discover_db existed but was never called.
+        @db || Tina4.database || auto_discover_db
       end
 
       # Per-model database binding

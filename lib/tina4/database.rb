@@ -82,6 +82,21 @@ module Tina4
       "odbc" => "Tina4::Drivers::OdbcDriver"
     }.freeze
 
+    # v3.13.12 — strip trailing `;` from user SQL before the framework
+    # wraps it with COUNT(*) subqueries or appends LIMIT/OFFSET. Without
+    # this, ``"SELECT * FROM t;"`` produces ``"SELECT * FROM t; LIMIT 100
+    # OFFSET 0"`` — a syntax error on every engine. Internal semicolons
+    # (inside string literals, between meaningful statements) are left
+    # alone; drivers reject those if multi-statement isn't supported.
+    def self.strip_trailing_semicolons(sql)
+      return sql if sql.nil? || sql.empty?
+      stripped = sql.rstrip
+      while stripped.end_with?(";")
+        stripped = stripped[0..-2].rstrip
+      end
+      stripped
+    end
+
     # Static factory — cross-framework consistency: Database.create(url)
     def self.create(url, username: "", password: "", pool: nil)
       new(url, username: username.empty? ? nil : username,
@@ -253,6 +268,13 @@ module Tina4
       offset ||= 0
       drv = current_driver
 
+      # v3.13.12: strip trailing `;` so the driver's apply_limit
+      # (which appends "LIMIT N OFFSET M") doesn't produce
+      # "SELECT * FROM t; LIMIT 100 OFFSET 0" — a syntax error
+      # on every engine. Also helps any COUNT(*) FROM (sql)
+      # subqueries downstream survive a user-supplied semicolon.
+      sql = Tina4::Database.strip_trailing_semicolons(sql)
+
       effective_sql = sql
       # Skip appending LIMIT if SQL already has one
       has_limit = sql.upcase.split("--")[0].include?("LIMIT")
@@ -279,6 +301,7 @@ module Tina4
     end
 
     def fetch_one(sql, params = [])
+      sql = Tina4::Database.strip_trailing_semicolons(sql)
       if @cache_enabled
         key = cache_key(sql + ":ONE", params)
         cached = cache_get(key)
