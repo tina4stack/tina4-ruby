@@ -260,7 +260,11 @@ module Tina4
     #   rows.each { |row| puts row["name"] }
     #
     # Returns [] (not nil) when no rows match.
-    def fetch_all(sql, params = [], limit: 100, offset: nil)
+    #
+    # v3.13.12: default `limit` is **nil** (no truncation) — the method
+    # name says fetch_all, so it returns all matching rows. Pre-v3.13.12
+    # silently truncated to 100. Pass an explicit `limit:` to cap.
+    def fetch_all(sql, params = [], limit: nil, offset: nil)
       fetch(sql, params, limit: limit, offset: offset).records
     end
 

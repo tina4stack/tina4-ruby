@@ -125,4 +125,44 @@ RSpec.describe "v3.13.12 SQL normalization + ORM binding" do
       expect(klass.db).to be_nil
     end
   end
+
+  describe "fetch_all returns ALL rows by default (v3.13.12)" do
+    let(:db_file) { Tempfile.new(["tina4_fetch_all", ".db"]).tap(&:close).path }
+    let(:db) { Tina4::Database.new("sqlite://#{db_file}") }
+
+    before do
+      db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER)")
+      # 150 rows — bigger than the legacy silent-truncation default of 100
+      150.times { |i| db.execute("INSERT INTO rows (n) VALUES (?)", [i]) }
+    end
+
+    after do
+      db.close rescue nil
+      File.unlink(db_file) if File.exist?(db_file)
+    end
+
+    it "fetch_all returns ALL 150 rows by default" do
+      # Pre-v3.13.12: silently truncated to 100 because fetch_all defaulted
+      # to limit: 100. v3.13.12 changed the default to limit: nil → no LIMIT.
+      rows = db.fetch_all("SELECT * FROM rows ORDER BY n")
+      expect(rows.length).to eq(150)
+    end
+
+    it "fetch_all with explicit limit still caps" do
+      rows = db.fetch_all("SELECT * FROM rows ORDER BY n", limit: 10)
+      expect(rows.length).to eq(10)
+    end
+
+    it "fetch_all with explicit limit and offset returns the slice" do
+      rows = db.fetch_all("SELECT * FROM rows ORDER BY n", limit: 5, offset: 20)
+      expect(rows.length).to eq(5)
+      expect(rows.first[:n]).to eq(20)
+      expect(rows.last[:n]).to eq(24)
+    end
+
+    it "fetch_all composes with the trailing-; strip" do
+      rows = db.fetch_all("SELECT * FROM rows ORDER BY n;")
+      expect(rows.length).to eq(150)
+    end
+  end
 end
