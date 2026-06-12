@@ -80,6 +80,13 @@ module Tina4
         @current_context = {}
         @mutex = Mutex.new
 
+        # v3.13.14: unbuffer stdout so logs reach `docker logs` / k8s
+        # immediately. A non-TTY $stdout (every container) is block-buffered
+        # by default — logs sat in the buffer until it filled or the process
+        # exited, so operators "weren't getting logs". No-op when output is
+        # file-only.
+        $stdout.sync = true if @output != "file"
+
         # Build the file logger via stdlib Logger which handles rotation natively.
         # Logger.new(path, shift_age, shift_size):
         #   shift_age  = number of files to keep
@@ -175,8 +182,15 @@ module Tina4
       end
 
       def resolve_level
-        env_level = ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]"
-        LEVELS[env_level] || 0
+        # v3.13.14: default is INFO (was ALL) so a deployed app surfaces
+        # request/startup/warn/error without debug noise, matching
+        # Python/PHP/Node. Accept BOTH the legacy bracket form
+        # ("[TINA4_LOG_ERROR]") AND plain names ("ERROR") so the env value
+        # is portable across all four frameworks.
+        raw = (ENV["TINA4_LOG_LEVEL"] || "").strip
+        return 1 if raw.empty? # INFO
+        key = raw.start_with?("[") ? raw.upcase : "[TINA4_LOG_#{raw.upcase}]"
+        LEVELS[key] || 1
       end
 
       def severity_to_level(level)

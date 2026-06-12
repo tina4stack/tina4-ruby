@@ -329,4 +329,61 @@ RSpec.describe Tina4::Log do
       end
     end
   end
+
+  # v3.13.14 — level resolution: default INFO, accept plain + bracket names.
+  # docker logs / k8s read stdout; the default must surface info+ and the
+  # env value must be portable with Python/PHP/Node ("ERROR", not just
+  # "[TINA4_LOG_ERROR]").
+  describe "level resolution (v3.13.14)" do
+    around do |example|
+      saved = ENV["TINA4_LOG_LEVEL"]
+      example.run
+      saved.nil? ? ENV.delete("TINA4_LOG_LEVEL") : ENV["TINA4_LOG_LEVEL"] = saved
+    end
+
+    def console_level
+      Tina4::Log.send(:resolve_level)
+    end
+
+    it "defaults to INFO when unset" do
+      ENV.delete("TINA4_LOG_LEVEL")
+      expect(console_level).to eq(1)
+    end
+
+    it "accepts plain names (parity with other frameworks)" do
+      ENV["TINA4_LOG_LEVEL"] = "ERROR"
+      expect(console_level).to eq(3)
+    end
+
+    it "accepts lowercase plain names" do
+      ENV["TINA4_LOG_LEVEL"] = "warning"
+      expect(console_level).to eq(2)
+    end
+
+    it "still accepts the legacy bracket form" do
+      ENV["TINA4_LOG_LEVEL"] = "[TINA4_LOG_ERROR]"
+      expect(console_level).to eq(3)
+    end
+
+    it "falls back to INFO for an unknown value" do
+      ENV["TINA4_LOG_LEVEL"] = "gibberish"
+      expect(console_level).to eq(1)
+    end
+  end
+
+  describe "stdout unbuffering (v3.13.14)" do
+    let(:tmpdir2) { Dir.mktmpdir }
+    after { FileUtils.rm_rf(tmpdir2) }
+
+    it "sets $stdout.sync so docker logs sees output immediately" do
+      original = $stdout.sync
+      begin
+        $stdout.sync = false
+        Tina4::Log.configure(tmpdir2)
+        expect($stdout.sync).to be(true)
+      ensure
+        $stdout.sync = original
+      end
+    end
+  end
 end
