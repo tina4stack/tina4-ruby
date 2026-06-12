@@ -92,4 +92,57 @@ RSpec.describe Tina4::RackApp do
       expect(parsed["id"]).to eq("42")
     end
   end
+
+  # v3.13.14 — per-request log line. The dev inspector fed only the /__dev
+  # UI; nothing reached stdout, so `tina4ruby serve` went silent after the
+  # banner. Now every request logs through Tina4::Log (→ stdout), on by
+  # default in dev, opt-in in prod via TINA4_LOG_REQUESTS.
+  describe "request logging (v3.13.14)" do
+    around do |example|
+      saved_debug = ENV["TINA4_DEBUG"]
+      saved_req = ENV["TINA4_LOG_REQUESTS"]
+      example.run
+      saved_debug.nil? ? ENV.delete("TINA4_DEBUG") : ENV["TINA4_DEBUG"] = saved_debug
+      saved_req.nil? ? ENV.delete("TINA4_LOG_REQUESTS") : ENV["TINA4_LOG_REQUESTS"] = saved_req
+    end
+
+    def gate(app_instance)
+      app_instance.send(:request_logging_enabled?)
+    end
+
+    it "gate: unset follows dev mode (on)" do
+      ENV.delete("TINA4_LOG_REQUESTS")
+      ENV["TINA4_DEBUG"] = "true"
+      expect(gate(app)).to be(true)
+    end
+
+    it "gate: unset follows dev mode (off in prod)" do
+      ENV.delete("TINA4_LOG_REQUESTS")
+      ENV["TINA4_DEBUG"] = "false"
+      expect(gate(app)).to be(false)
+    end
+
+    it "gate: explicit true overrides prod" do
+      ENV["TINA4_LOG_REQUESTS"] = "true"
+      ENV["TINA4_DEBUG"] = "false"
+      expect(gate(app)).to be(true)
+    end
+
+    it "gate: explicit false overrides dev" do
+      ENV["TINA4_LOG_REQUESTS"] = "false"
+      ENV["TINA4_DEBUG"] = "true"
+      expect(gate(app)).to be(false)
+    end
+
+    it "logs every request through Tina4::Log in dev" do
+      ENV["TINA4_DEBUG"] = "true"
+      ENV.delete("TINA4_LOG_REQUESTS")
+      Tina4::Log.configure(tmp_dir) # writes logs/tina4.log under tmp_dir
+      Tina4.get("/hello") { |_req, res| res.json({ ok: true }) }
+      app.call(mock_env("GET", "/hello"))
+      log = File.read(File.join(tmp_dir, "logs", "tina4.log"))
+      expect(log).to include("GET /hello -> 200 (")
+      expect(log).to include("ms)")
+    end
+  end
 end

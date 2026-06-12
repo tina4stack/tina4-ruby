@@ -295,7 +295,9 @@ module Tina4
           elapsed_ms = 0.0
         end
 
-        Tina4::Log.info("[RequestLogger] #{request.method} #{request.path} -> #{response.status_code} (#{elapsed_ms}ms)")
+        # v3.13.14: dropped the "[RequestLogger]" prefix for format parity
+        # with Python/PHP/Node — the line is just METHOD PATH -> STATUS (Nms).
+        Tina4::Log.info("#{request.method} #{request.path} -> #{response.status_code} (#{elapsed_ms}ms)")
         [request, response]
       end
 

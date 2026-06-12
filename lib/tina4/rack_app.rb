@@ -163,6 +163,16 @@ module Tina4
         )
       end
 
+      # Request log line (v3.13.14). The dev inspector above only feeds the
+      # /__dev UI — it never reached stdout, so `tina4ruby serve` printed the
+      # banner then went silent. Emit a per-request line through Tina4::Log so
+      # it lands on stdout (docker logs / k8s). On by default in dev, opt-in in
+      # production via TINA4_LOG_REQUESTS. Same format across all four frameworks.
+      if request_logging_enabled? && !path.start_with?("/__dev")
+        log_elapsed = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - request_start) * 1000).round(3)
+        Tina4::Log.info("#{method} #{path} -> #{rack_response[0]} (#{log_elapsed}ms)")
+      end
+
       # Inject dev overlay button for HTML responses in dev mode
       if dev_mode? && !path.start_with?("/__dev")
         status, headers, body_parts = rack_response
@@ -814,6 +824,17 @@ module Tina4
 
     def dev_mode?
       Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
+    end
+
+    # Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS
+    # is the explicit control (true/false); when unset, request logging
+    # follows dev mode (on under TINA4_DEBUG, off in production). Same
+    # contract across all four frameworks.
+    def request_logging_enabled?
+      val = ENV["TINA4_LOG_REQUESTS"]
+      return Tina4::Env.is_truthy(val) if val && !val.empty?
+
+      dev_mode?
     end
 
     def websocket_upgrade?(env)
