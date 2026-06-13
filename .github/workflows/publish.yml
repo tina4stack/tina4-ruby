@@ -24,11 +24,22 @@ jobs:
         with:
           ruby-version: '3.2'
 
-      - name: Build gem
-        run: gem build tina4ruby.gemspec
+      - name: Build gems
+        # Build both the real framework gem and the transitional `tina4`
+        # meta-gem (a pointer that depends on tina4ruby ~> 3.0). They share
+        # Tina4::VERSION, so both build at the same version.
+        run: |
+          gem build tina4ruby.gemspec
+          gem build tina4.gemspec
 
       - name: Publish to RubyGems
-        run: gem push tina4ruby-*.gem
+        # Push tina4ruby first (the real framework), then the transitional
+        # `tina4` meta-gem that depends on it. Keeping both in lockstep means
+        # `gem install tina4` never drifts — it once stuck at 3.10.68 because
+        # only tina4ruby was being pushed each release.
+        run: |
+          gem push tina4ruby-*.gem
+          gem push tina4-*.gem
         env:
           GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
 
