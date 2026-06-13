@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "schema_split"
+
 module Tina4
   module Drivers
     class SqliteDriver
+      include SchemaSplit
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
@@ -92,13 +95,26 @@ module Tina4
         @connection.execute("ROLLBACK")
       end
 
+      # v3.13.14 (#48): a SQLite "schema" is an ATTACH alias ("extra.widget").
+      # Query that database's own sqlite_master when the prefix is a plain
+      # identifier; otherwise treat the whole string as a bare table name.
+      def table_exists?(name)
+        schema, tbl = split_schema(name)
+        master = schema && identifier?(schema) ? "#{schema}.sqlite_master" : "sqlite_master"
+        rows = execute_query("SELECT 1 FROM #{master} WHERE type='table' AND name=?", [tbl])
+        !rows.empty?
+      end
+
       def tables
         rows = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         rows.map { |r| r[:name] }
       end
 
       def columns(table_name)
-        rows = execute_query("PRAGMA table_info(#{table_name})")
+        # v3.13.14 (#48): PRAGMA accepts an attached-schema prefix.
+        schema, tbl = split_schema(table_name)
+        pragma = schema && identifier?(schema) && identifier?(tbl) ? "#{schema}.table_info(#{tbl})" : "table_info(#{table_name})"
+        rows = execute_query("PRAGMA #{pragma}")
         rows.map do |r|
           {
             name: r[:name],
@@ -111,6 +127,11 @@ module Tina4
       end
 
       private
+
+      # A safe-to-interpolate SQL identifier (no quoting/escaping needed).
+      def identifier?(str)
+        str.to_s.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+      end
 
       def symbolize_keys(hash)
         hash.each_with_object({}) do |(k, v), h|

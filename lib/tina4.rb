@@ -62,6 +62,7 @@ require_relative "tina4/mcp"
 module Tina4
   # ── Lazy-loaded: database drivers ─────────────────────────────────────
   module Drivers
+    autoload :SchemaSplit,    File.expand_path("tina4/drivers/schema_split", __dir__)
     autoload :SqliteDriver,   File.expand_path("tina4/drivers/sqlite_driver", __dir__)
     autoload :PostgresDriver, File.expand_path("tina4/drivers/postgres_driver", __dir__)
     autoload :MysqlDriver,    File.expand_path("tina4/drivers/mysql_driver", __dir__)

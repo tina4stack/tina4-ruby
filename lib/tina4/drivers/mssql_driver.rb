@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "schema_split"
+
 module Tina4
   module Drivers
     class MssqlDriver
+      include SchemaSplit
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
@@ -73,14 +76,28 @@ module Tina4
         @connection.execute("ROLLBACK").do
       end
 
+      # v3.13.14 (#48): honour a schema-qualified name ("dbo.widget"); a bare
+      # name matches in any schema (NULL guard skips the schema filter).
+      def table_exists?(name)
+        schema, tbl = split_schema(name)
+        sql = "SELECT 1 FROM INFORMATION_SCHEMA.TABLES " \
+              "WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME = ? " \
+              "AND (? IS NULL OR TABLE_SCHEMA = ?)"
+        rows = execute_query(sql, [tbl, schema, schema])
+        !rows.empty?
+      end
+
       def tables
         rows = execute_query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
         rows.map { |r| r[:TABLE_NAME] || r[:table_name] }
       end
 
       def columns(table_name)
-        sql = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ?"
-        rows = execute_query(sql, [table_name])
+        # v3.13.14 (#48): honour a schema-qualified name; bare names match any schema.
+        schema, tbl = split_schema(table_name)
+        sql = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS " \
+              "WHERE TABLE_NAME = ? AND (? IS NULL OR TABLE_SCHEMA = ?)"
+        rows = execute_query(sql, [tbl, schema, schema])
         rows.map do |r|
           {
             name: r[:COLUMN_NAME] || r[:column_name],
@@ -109,7 +126,14 @@ module Tina4
         return sql if params.empty?
         result = sql.dup
         params.each do |param|
-          escaped = param.is_a?(String) ? "'#{param.gsub("'", "''")}'" : param.to_s
+          escaped =
+            if param.nil?
+              "NULL"
+            elsif param.is_a?(String)
+              "'#{param.gsub("'", "''")}'"
+            else
+              param.to_s
+            end
           result = result.sub("?", escaped)
         end
         result

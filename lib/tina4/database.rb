@@ -489,6 +489,12 @@ module Tina4
     alias get_columns columns
 
     def table_exists?(table_name)
+      drv = current_driver
+      # v3.13.14 (#48): drivers that can resolve a schema/catalog-qualified
+      # name ("gift_cards.gift_card", "dbo.widget", "attached.table") answer
+      # directly; the rest fall back to a case-insensitive scan of tables.
+      return drv.table_exists?(table_name) if drv.respond_to?(:table_exists?)
+
       tables.any? { |t| t.downcase == table_name.to_s.downcase }
     end
 

@@ -749,7 +749,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
-- Tests: 2,991 passing
+- Tests: 2,999 passing
 - Version: 3.13.14
 
 ## Links

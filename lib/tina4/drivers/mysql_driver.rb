@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "schema_split"
+
 module Tina4
   module Drivers
     class MysqlDriver
+      include SchemaSplit
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
@@ -73,6 +76,19 @@ module Tina4
 
       def rollback
         @connection.query("ROLLBACK")
+      end
+
+      # v3.13.14 (#48): MySQL's "schema" is the database. A qualified name
+      # ("otherdb.table") checks that catalog; a bare name defaults to the
+      # connection's current database via DATABASE().
+      def table_exists?(name)
+        schema, tbl = split_schema(name)
+        rows = execute_query(
+          "SELECT 1 FROM information_schema.tables " \
+          "WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ?",
+          [schema, tbl]
+        )
+        !rows.empty?
       end
 
       def tables

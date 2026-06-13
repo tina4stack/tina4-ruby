@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "schema_split"
+
 module Tina4
   module Drivers
     class PostgresDriver
+      include SchemaSplit
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
@@ -112,15 +115,29 @@ module Tina4
         @connection.exec("ROLLBACK")
       end
 
+      # v3.13.14 (#48): to_regclass resolves a (possibly schema-qualified)
+      # relation name and search_path like a FROM clause; nil if absent.
+      def table_exists?(name)
+        rows = execute_query("SELECT to_regclass($1) AS oid", [name.to_s])
+        !rows.empty? && !rows[0][:oid].nil?
+      end
+
       def tables
-        sql = "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+        # v3.13.14 (#48): list every user schema; public tables stay bare,
+        # others are returned schema-qualified.
+        sql = "SELECT schemaname, tablename FROM pg_tables " \
+              "WHERE schemaname NOT IN ('pg_catalog', 'information_schema') " \
+              "ORDER BY schemaname, tablename"
         rows = execute_query(sql)
-        rows.map { |r| r[:tablename] }
+        rows.map { |r| r[:schemaname] == "public" ? r[:tablename] : "#{r[:schemaname]}.#{r[:tablename]}" }
       end
 
       def columns(table_name)
-        sql = "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1"
-        rows = execute_query(sql, [table_name])
+        # v3.13.14 (#48): honour a schema-qualified name; default to public.
+        schema, tbl = split_schema(table_name)
+        schema ||= "public"
+        sql = "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2"
+        rows = execute_query(sql, [tbl, schema])
         rows.map do |r|
           {
             name: r[:column_name],
