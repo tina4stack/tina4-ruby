@@ -223,6 +223,25 @@ module Tina4
       @cache_misses = 0
       @cache_mutex = Mutex.new
 
+      # Persistent mode may route through the unified CacheBackend (redis/
+      # valkey/memcached/mongodb/database via TINA4_DB_CACHE_BACKEND) so
+      # multiple instances can share one cache with global write-invalidation.
+      # Request-scoped mode always stays in-process (the @query_cache dict).
+      # The DatabaseResult is serialized to a JSON-friendly Hash before storing
+      # and reconstructed on read so shared backends work cross-instance.
+      @cache_backend = nil
+      if @cache_persistent
+        begin
+          @cache_backend = Tina4::CacheBackends.create_backend(
+            backend: ENV["TINA4_DB_CACHE_BACKEND"] || "memory",
+            url: ENV["TINA4_DB_CACHE_URL"],
+            max_entries: 1000
+          )
+        rescue StandardError
+          @cache_backend = nil # fall back to the in-process dict
+        end
+      end
+
       # Register this connection so Tina4::Database.reset_request_caches can
       # clear its request-scoped entries at the start of every HTTP request.
       Tina4::Database.register_instance(self)
@@ -289,6 +308,19 @@ module Tina4
     # ── Query Cache ──────────────────────────────────────────────
 
     def cache_stats
+      if @cache_backend
+        bs = @cache_backend.stats
+        return {
+          enabled: @cache_enabled,
+          mode: cache_mode,
+          hits: @cache_hits,
+          misses: @cache_misses,
+          size: bs[:size],
+          backend: bs[:backend] || @cache_backend.name,
+          ttl: @cache_ttl
+        }
+      end
+
       @cache_mutex.synchronize do
         {
           enabled: @cache_enabled,
@@ -303,6 +335,7 @@ module Tina4
     end
 
     def cache_clear
+      @cache_backend.clear if @cache_backend
       @cache_mutex.synchronize do
         @query_cache.clear
         @cache_hits = 0
@@ -762,6 +795,13 @@ module Tina4
     end
 
     def cache_get(key)
+      # Shared backend (persistent + TINA4_DB_CACHE_BACKEND) — reconstruct the
+      # DatabaseResult from the serialized Hash so cross-instance reads work.
+      if @cache_backend
+        raw = @cache_backend.get(key)
+        return raw.is_a?(Hash) ? deserialize_result(raw) : nil
+      end
+
       @cache_mutex.synchronize do
         entry = @query_cache[key]
         return nil unless entry
@@ -774,6 +814,11 @@ module Tina4
     end
 
     def cache_set(key, value)
+      if @cache_backend
+        @cache_backend.set(key, serialize_result(value), @cache_ttl)
+        return
+      end
+
       @cache_mutex.synchronize do
         @query_cache[key] = {
           expires_at: Process.clock_gettime(Process::CLOCK_MONOTONIC) + @cache_ttl,
@@ -783,7 +828,57 @@ module Tina4
     end
 
     def cache_invalidate
+      @cache_backend.clear if @cache_backend
       @cache_mutex.synchronize { @query_cache.clear }
+    end
+
+    # Flatten a DatabaseResult (or a single fetch_one Hash) into a JSON-friendly
+    # Hash for shared backends. fetch_one stores a plain Hash row, so we tag the
+    # shape so deserialize can return the right thing.
+    def serialize_result(value)
+      if value.is_a?(Tina4::DatabaseResult)
+        {
+          "kind" => "result",
+          "records" => value.records,
+          "count" => value.count,
+          "limit" => value.limit,
+          "offset" => value.offset,
+          "affected_rows" => value.affected_rows,
+          "last_id" => value.last_id
+        }
+      else
+        # fetch_one row (Hash) or nil
+        { "kind" => "row", "row" => value }
+      end
+    end
+
+    # Reconstruct from a backend-cached Hash. JSON round-trips string keys, so
+    # accept both string and symbol keys. Records are re-symbolised so a cached
+    # result is byte-for-byte equivalent to an uncached fetch (driver rows use
+    # symbol keys) regardless of which backend stored it.
+    def deserialize_result(data)
+      kind = data["kind"] || data[:kind]
+      if kind == "row"
+        row = data["row"] || data[:row]
+        symbolize_row(row)
+      else
+        records = (data["records"] || data[:records] || []).map { |r| symbolize_row(r) }
+        Tina4::DatabaseResult.new(
+          records,
+          count: data["count"] || data[:count] || 0,
+          limit: data["limit"] || data[:limit] || 0,
+          offset: data["offset"] || data[:offset] || 0,
+          affected_rows: data["affected_rows"] || data[:affected_rows] || 0,
+          last_id: data["last_id"] || data[:last_id]
+        )
+      end
+    end
+
+    # Driver rows use symbol keys; re-key a JSON-round-tripped Hash to match.
+    def symbolize_row(row)
+      return row unless row.is_a?(Hash)
+
+      row.each_with_object({}) { |(k, v), h| h[k.to_sym] = v }
     end
 
     def detect_driver(conn)

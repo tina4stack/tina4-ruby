@@ -14,16 +14,27 @@ module Tina4
   # middleware by attaching ResponseCache to your route, not by calling
   # the (private) internal_lookup / internal_store directly.
   #
-  # Backends are selected via the TINA4_CACHE_BACKEND env var:
-  #   memory — in-process LRU cache (default, zero deps)
-  #   redis  — Redis / Valkey (uses `redis` gem or raw RESP over TCP)
-  #   file   — JSON files in data/cache/
+  # Backends are selected via the TINA4_CACHE_BACKEND env var and built by the
+  # unified factory (Tina4::CacheBackends.create_backend):
+  #   memory    — in-process LRU cache (default, zero deps)
+  #   file      — JSON files in data/cache/
+  #   redis     — Redis (redis gem or raw RESP over TCP)
+  #   valkey    — Valkey (Redis wire protocol; reports "valkey")
+  #   memcached — Memcached (zero-dep text protocol over TCP)
+  #   mongodb   — MongoDB TTL collection (requires the mongo gem)
+  #   database  — tina4_cache table in any Tina4-supported database
+  #
+  # A configured network/driver backend that is unreachable degrades to the
+  # file backend (a real working cache), never a silent no-op.
   #
   # Environment:
-  #   TINA4_CACHE_BACKEND      — memory | redis | file  (default: memory)
-  #   TINA4_CACHE_URL           — redis://localhost:6379  (redis only)
+  #   TINA4_CACHE_BACKEND      — memory|file|redis|valkey|memcached|mongodb|database
+  #   TINA4_CACHE_URL           — connection URL (redis/valkey/memcached/mongo) OR
+  #                               SQL URL for database (falls back to TINA4_DATABASE_URL)
   #   TINA4_CACHE_TTL           — default TTL in seconds  (default: 60)
   #   TINA4_CACHE_MAX_ENTRIES   — maximum cache entries   (default: 1000)
+  #   TINA4_CACHE_DIR           — file backend directory  (default: data/cache)
+  #   TINA4_CACHE_USERNAME / TINA4_CACHE_PASSWORD — credentials when not in the URL
   #
   class ResponseCache
     CacheEntry = Struct.new(:body, :content_type, :status_code, :expires_at)
@@ -187,52 +198,32 @@ module Tina4
     #
     # @return [Hash] with :hits, :misses, :size, :backend, :keys
     def cache_stats
-      @mutex.synchronize do
-        case @backend_name
-        when "memory"
+      if memory_backend?
+        @mutex.synchronize do
           now = Time.now.to_f
           @store.reject! { |_k, v| v.is_a?(CacheEntry) && now > v.expires_at }
           { hits: @hits, misses: @misses, size: @store.size, backend: @backend_name, keys: @store.keys.dup }
-        when "file"
-          sweep
-          files = Dir.glob(File.join(@cache_dir, "*.json"))
-          { hits: @hits, misses: @misses, size: files.size, backend: @backend_name, keys: [] }
-        when "redis"
-          size = 0
-          if @redis_client
-            begin
-              keys = @redis_client.keys("tina4:cache:*")
-              size = keys.size
-            rescue StandardError
-            end
-          end
-          { hits: @hits, misses: @misses, size: size, backend: @backend_name, keys: [] }
-        else
-          { hits: @hits, misses: @misses, size: @store.size, backend: @backend_name, keys: @store.keys.dup }
         end
+      else
+        st = @backend.stats
+        { hits: @hits, misses: @misses, size: st[:size], backend: @backend_name, keys: [] }
       end
     end
 
     # Clear all cached responses.
     def clear_cache
-      @mutex.synchronize do
-        @hits = 0
-        @misses = 0
-
-        case @backend_name
-        when "memory"
+      if memory_backend?
+        @mutex.synchronize do
+          @hits = 0
+          @misses = 0
           @store.clear
-        when "file"
-          Dir.glob(File.join(@cache_dir, "*.json")).each { |f| File.delete(f) rescue nil }
-        when "redis"
-          if @redis_client
-            begin
-              keys = @redis_client.keys("tina4:cache:*")
-              @redis_client.del(*keys) unless keys.empty?
-            rescue StandardError
-            end
-          end
         end
+      else
+        @mutex.synchronize do
+          @hits = 0
+          @misses = 0
+        end
+        @backend.clear
       end
     end
 
@@ -240,8 +231,7 @@ module Tina4
     #
     # @return [Integer] number of entries removed
     def sweep
-      case @backend_name
-      when "memory"
+      if memory_backend?
         @mutex.synchronize do
           now = Time.now.to_f
           keys_to_remove = @store.select { |_k, v| v.is_a?(CacheEntry) && now > v.expires_at }.keys
@@ -249,21 +239,12 @@ module Tina4
           keys_to_remove.each { |k| @store.delete(k) }
           keys_to_remove.size
         end
-      when "file"
-        removed = 0
-        now = Time.now.to_f
-        Dir.glob(File.join(@cache_dir, "*.json")).each do |f|
-          begin
-            data = JSON.parse(File.read(f))
-            if data["expires_at"] && now > data["expires_at"]
-              File.delete(f)
-              removed += 1
-            end
-          rescue StandardError
-          end
-        end
-        removed
+      elsif @backend.respond_to?(:sweep)
+        # The file backend supports an explicit sweep that returns a count.
+        @backend.sweep
       else
+        # Network/db backends expire entries lazily (TTL) — parity with
+        # Python, whose non-memory backends return 0 from sweep.
         0
       end
     end
@@ -370,62 +351,50 @@ module Tina4
 
     # ── Backend initialization ─────────────────────────────────
 
+    # Build the storage backend. Memory keeps an in-process LRU store on the
+    # ResponseCache itself (for direct CacheEntry access + per-instance stats);
+    # every other backend delegates to a Tina4::CacheBackends object, which
+    # also handles graceful file-fallback when a network backend is
+    # unreachable. @backend_name is reconciled to the ACTUAL backend so a
+    # degraded redis correctly reports "file".
     def init_backend
-      case @backend_name
-      when "redis"
-        init_redis
-      when "file"
-        init_file_dir
+      if @backend_name == "memory"
+        @backend = nil
+        return
       end
+
+      @backend = Tina4::CacheBackends.create_backend(
+        backend: @backend_name,
+        url: @cache_url,
+        max_entries: @max_entries,
+        cache_dir: @cache_dir
+      )
+      # Reconcile reported name with reality (e.g. redis → file on fallback).
+      @backend_name = @backend.name
     end
 
-    def init_redis
-      @redis_client = nil
-      begin
-        require "redis"
-        parsed = parse_redis_url(@cache_url)
-        @redis_client = Redis.new(host: parsed[:host], port: parsed[:port], db: parsed[:db], timeout: 5)
-        @redis_client.ping
-      rescue LoadError, StandardError
-        @redis_client = nil
-      end
-    end
-
-    def parse_redis_url(url)
-      cleaned = url.sub(%r{^redis://}, "")
-      parts = cleaned.split(":")
-      host = parts[0].empty? ? "localhost" : parts[0]
-      port_and_db = parts[1] ? parts[1].split("/") : ["6379"]
-      port = port_and_db[0].to_i
-      port = 6379 if port == 0
-      db = port_and_db[1] ? port_and_db[1].to_i : 0
-      { host: host, port: port, db: db }
-    end
-
-    def init_file_dir
-      require "json"
-      require "fileutils"
-      FileUtils.mkdir_p(@cache_dir)
+    def memory_backend?
+      @backend.nil?
     end
 
     # ── Backend operations ─────────────────────────────────────
+    #
+    # The middleware stores response entries as a Hash (entry_data) and the
+    # direct KV API stores its own wrapper Hash. Both round-trip through the
+    # unified backend's get/set/delete; for memory we keep the in-process
+    # store with LRU eviction (parity with the previous behaviour and the
+    # response-cache CacheEntry path).
 
     def backend_get(key)
-      case @backend_name
-      when "memory"
+      if memory_backend?
         @mutex.synchronize { @store[key] }
-      when "redis"
-        redis_get(key)
-      when "file"
-        file_get(key)
       else
-        @mutex.synchronize { @store[key] }
+        @backend.get(key)
       end
     end
 
     def backend_set(key, entry, ttl)
-      case @backend_name
-      when "memory"
+      if memory_backend?
         @mutex.synchronize do
           if @store.size >= @max_entries && !@store.key?(key)
             oldest_key = @store.keys.first
@@ -433,157 +402,16 @@ module Tina4
           end
           @store[key] = entry
         end
-      when "redis"
-        redis_set(key, entry, ttl)
-      when "file"
-        file_set(key, entry)
+      else
+        @backend.set(key, entry, ttl)
       end
     end
 
     def backend_delete(key)
-      case @backend_name
-      when "memory"
-        @mutex.synchronize do
-          !@store.delete(key).nil?
-        end
-      when "redis"
-        redis_delete(key)
-      when "file"
-        file_delete(key)
-      end
-    end
-
-    # ── Redis operations ───────────────────────────────────────
-
-    def redis_get(key)
-      full_key = "tina4:cache:#{key}"
-      if @redis_client
-        begin
-          raw = @redis_client.get(full_key)
-          return nil if raw.nil?
-          JSON.parse(raw)
-        rescue StandardError
-          nil
-        end
+      if memory_backend?
+        @mutex.synchronize { !@store.delete(key).nil? }
       else
-        resp_get(full_key)
-      end
-    end
-
-    def redis_set(key, entry, ttl)
-      full_key = "tina4:cache:#{key}"
-      serialized = JSON.generate(entry)
-      if @redis_client
-        begin
-          if ttl > 0
-            @redis_client.setex(full_key, ttl, serialized)
-          else
-            @redis_client.set(full_key, serialized)
-          end
-        rescue StandardError
-        end
-      else
-        if ttl > 0
-          resp_command("SETEX", full_key, ttl.to_s, serialized)
-        else
-          resp_command("SET", full_key, serialized)
-        end
-      end
-    end
-
-    def redis_delete(key)
-      full_key = "tina4:cache:#{key}"
-      if @redis_client
-        begin
-          @redis_client.del(full_key) > 0
-        rescue StandardError
-          false
-        end
-      else
-        result = resp_command("DEL", full_key)
-        result == "1"
-      end
-    end
-
-    def resp_get(key)
-      result = resp_command("GET", key)
-      return nil if result.nil?
-      JSON.parse(result) rescue nil
-    end
-
-    def resp_command(*args)
-      parsed = parse_redis_url(@cache_url)
-      cmd = "*#{args.size}\r\n"
-      args.each { |arg| s = arg.to_s; cmd += "$#{s.bytesize}\r\n#{s}\r\n" }
-
-      sock = TCPSocket.new(parsed[:host], parsed[:port])
-      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, [5, 0].pack("l_2"))
-      if parsed[:db] > 0
-        select_cmd = "*2\r\n$6\r\nSELECT\r\n$#{parsed[:db].to_s.bytesize}\r\n#{parsed[:db]}\r\n"
-        sock.write(select_cmd)
-        sock.recv(1024)
-      end
-      sock.write(cmd)
-      response = sock.recv(65536)
-      sock.close
-
-      if response.start_with?("+")
-        response[1..].strip
-      elsif response.start_with?("$-1")
-        nil
-      elsif response.start_with?("$")
-        lines = response.split("\r\n")
-        lines[1]
-      elsif response.start_with?(":")
-        response[1..].strip
-      else
-        nil
-      end
-    rescue StandardError
-      nil
-    end
-
-    # ── File operations ────────────────────────────────────────
-
-    def file_key_path(key)
-      require "digest"
-      safe = Digest::SHA256.hexdigest(key)
-      File.join(@cache_dir, "#{safe}.json")
-    end
-
-    def file_get(key)
-      path = file_key_path(key)
-      return nil unless File.exist?(path)
-      begin
-        data = JSON.parse(File.read(path))
-        if data["expires_at"] && Time.now.to_f > data["expires_at"]
-          File.delete(path) rescue nil
-          return nil
-        end
-        data
-      rescue StandardError
-        nil
-      end
-    end
-
-    def file_set(key, entry)
-      init_file_dir
-      files = Dir.glob(File.join(@cache_dir, "*.json")).sort_by { |f| File.mtime(f) }
-      while files.size >= @max_entries
-        File.delete(files.shift) rescue nil
-      end
-      path = file_key_path(key)
-      File.write(path, JSON.generate(entry))
-    rescue StandardError
-    end
-
-    def file_delete(key)
-      path = file_key_path(key)
-      if File.exist?(path)
-        File.delete(path) rescue nil
-        true
-      else
-        false
+        @backend.delete(key)
       end
     end
   end

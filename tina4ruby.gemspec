@@ -37,6 +37,10 @@ Gem::Specification.new do |spec|
   spec.add_dependency "sqlite3", "~> 2.0"
 
   spec.add_development_dependency "listen", "~> 3.8"
+  # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
+  # it lazily, exactly like pg. It is a development/optional dependency only so
+  # the runtime stays zero-dep; the backend degrades gracefully if it is absent.
+  spec.add_development_dependency "mongo", "~> 2.19"
   spec.add_development_dependency "pg", "~> 1.5"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.12"

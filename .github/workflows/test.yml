@@ -9,8 +9,68 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      # Cache backends — exercised by spec/cache_backends_spec.rb. Each backend's
+      # examples skip automatically when its service is unreachable, so the
+      # suite stays green even if a service fails to come up.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      memcached:
+        image: memcached:1.6
+        ports:
+          - 11211:11211
+        options: >-
+          --health-cmd "timeout 2 bash -c '</dev/tcp/127.0.0.1/11211'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' || mongo --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
+
+      # Password-protected Redis (requirepass s3cret) on 6381 — verifies the
+      # AUTH round-trip and the wrong-password file-fallback path. Run as a
+      # manual container because service-container command args (the password)
+      # aren't supported by GitHub Actions service definitions.
+      - name: Start password-protected Redis (6381)
+        run: |
+          docker run -d --name redis-auth -p 6381:6379 redis:7 \
+            redis-server --requirepass s3cret
+          for i in $(seq 1 20); do
+            if docker exec redis-auth redis-cli -a s3cret ping 2>/dev/null | grep -q PONG; then
+              echo "redis-auth ready"; break
+            fi
+            sleep 1
+          done
 
       - uses: ruby/setup-ruby@v1
         with:
