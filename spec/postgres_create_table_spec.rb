@@ -131,6 +131,22 @@ RSpec.describe "PostgreSQL engine-aware create_table (v3.13.16)" do
     expect(result[0..0].length).to eq(1)
   end
 
+  it "decodes PostgreSQL columns to native Ruby types (not strings)" do
+    # The pg gem hands back every column as a String by default; the driver
+    # now installs PG::BasicTypeMapForResults so reads match SQLite / Python /
+    # Node native shapes — id is an Integer, active is true/false (not "t"),
+    # the timestamp is a Time.
+    PgCreateTableWidget.create_table
+    @db.execute(
+      "INSERT INTO pg_create_table_widgets (name, active, created_at) VALUES (?, ?, ?)",
+      ["typed", true, Time.now]
+    )
+    row = @db.fetch("SELECT * FROM pg_create_table_widgets ORDER BY id")[0]
+    expect(row[:id]).to be_a(Integer)
+    expect(row[:active]).to be(true)
+    expect(row[:created_at]).to be_a(Time)
+  end
+
   it "honours a native-boolean predicate without a boolean->int rewrite" do
     PgCreateTableWidget.create_table
     @db.execute(

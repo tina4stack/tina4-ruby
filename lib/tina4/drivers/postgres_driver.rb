@@ -25,6 +25,8 @@ module Tina4
           url = uri.to_s
         end
         @connection = PG.connect(url)
+        apply_result_type_map(@connection)
+        @connection
       end
 
       def close
@@ -150,6 +152,55 @@ module Tina4
       end
 
       private
+
+      # Decode result columns to native Ruby types (parity with SQLite, and
+      # with Python psycopg2 / Node node-postgres which both return native
+      # types). Without this the pg gem hands back EVERY column as a String —
+      # ``id: "1"``, ``active: "t"``, timestamps as strings — so an app
+      # written on SQLite silently changes behaviour on PostgreSQL.
+      #
+      # PG::BasicTypeMapForResults decodes by column OID:
+      #   int2/int4/int8/serial -> Integer
+      #   bool                  -> true / false
+      #   float4/float8         -> Float
+      #   numeric               -> BigDecimal
+      #   timestamp/timestamptz -> Time
+      #   date                  -> Date
+      #   text/varchar          -> String (unchanged)
+      #
+      # The map is set on the *connection*, so it applies uniformly to both
+      # ``exec`` and ``exec_params`` and therefore to every fetch / fetch_one /
+      # columns path that flows through execute_query.
+      #
+      # uuid / json / jsonb / regclass have no built-in coder; left alone the
+      # map prints a noisy "no type cast defined" warning to stderr and falls
+      # back to a raw string anyway. We register explicit text decoders for them
+      # so they stay plain strings (the documented behaviour) without the
+      # warning — regclass matters because table_exists? selects to_regclass().
+      # bytea is already handled by the map as an ASCII-8BIT binary string,
+      # which is what decode_blobs expects.
+      def apply_result_type_map(conn)
+        type_map = PG::BasicTypeMapForResults.new(conn)
+        register_text_decoders(conn, type_map, %w[uuid json jsonb regclass])
+        conn.type_map_for_results = type_map
+      rescue PG::Error, NameError
+        # If the type map can't be built (e.g. a minimal pg build without
+        # BasicTypeMapForResults, or a connection that can't resolve OIDs),
+        # leave results as strings rather than breaking the connection.
+        nil
+      end
+
+      # Register a plain-text decoder for each named PostgreSQL type so the
+      # result map returns it unchanged as a String instead of warning that no
+      # cast is defined. Unknown type names are skipped silently.
+      def register_text_decoders(conn, type_map, type_names)
+        type_names.each do |name|
+          oid = conn.exec_params("SELECT $1::regtype::oid", [name]).getvalue(0, 0).to_i
+          type_map.add_coder(PG::TextDecoder::String.new(oid: oid, name: name, format: 0))
+        rescue PG::Error
+          next
+        end
+      end
 
       def convert_placeholders(sql)
         counter = 0
