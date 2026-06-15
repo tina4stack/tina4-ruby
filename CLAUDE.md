@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.23 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.24 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -626,8 +626,17 @@ Tina4.cache_get(key)                        # KV get (parity with Python cache_g
 Tina4.cache_set(key, value, ttl: 0)         # KV set (parity with Python cache_set)
 Tina4.cache_delete(key)                     # KV delete (parity with Python cache_delete)
 
-# Environment: TINA4_CACHE_TTL sets default TTL in seconds (default: 60)
+# Environment:
+#   TINA4_CACHE_BACKEND  memory (default) | file | redis | valkey | memcached | mongodb | database
+#   TINA4_CACHE_URL      connection for redis/valkey/memcached/mongodb, OR a SQL URL for database (falls back to TINA4_DATABASE_URL)
+#   TINA4_CACHE_USERNAME / TINA4_CACHE_PASSWORD  credentials (mirror TINA4_DATABASE_USERNAME/_PASSWORD); may also be embedded
+#                        in TINA4_CACHE_URL (redis://user:pass@host, redis://:pass@host, mongodb://user:pass@host). memcached is unauthenticated
+#   TINA4_CACHE_TTL      default TTL in seconds (default: 60)
+#   TINA4_CACHE_MAX_ENTRIES  max cached entries (default: 1000)
+#   TINA4_CACHE_DIR      directory for the file backend (default: data/cache)
 ```
+
+The response/KV cache supports seven backends, selected by `TINA4_CACHE_BACKEND`. **Graceful fallback**: if a configured backend's driver is missing or the service/credentials are unreachable or wrong, the cache logs a warning and falls back to the **file** backend — a real persistent cache, never a silent no-op.
 
 ### Container — Dependency injection
 
@@ -794,10 +803,10 @@ Tina4::DevAdmin.request_inspector.clear
 - CLI scaffolding: `tina4ruby generate model/route/migration/middleware`
 - Production server auto-detect: `tina4ruby serve --production` (auto-installs Puma, 2.8x improvement)
 - Frond pre-compilation for 2.8x template render improvement
-- DB query caching: request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical reads within a request and flushes on writes; persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s); `cache_stats` reports `mode` (request/persistent/off), `cache_clear`
+- DB query caching: request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical reads within a request and flushes on writes; persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL` so instances share one cache with global write-invalidation; `cache_stats` reports `mode` (request/persistent/off) and `backend`, `cache_clear`
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
 - Queue backends: file (default), RabbitMQ, Kafka, MongoDB
-- Cache backends: memory (default), Redis, file
+- Cache backends: unified set across response/KV and persistent DB cache — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — selected via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); falls back to the file backend if a backend is unreachable
 - Session handlers: file, Redis, MongoDB. `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
 - WebSocket backplane (Redis pub/sub) for horizontal scaling. Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL` env vars. Rooms API: `conn.join_room(name)`, `conn.leave_room(name)`, `conn.rooms`, `conn.broadcast_to_room(name, msg)`, `ws.room_count(name)`, `ws.get_room_connections(name)`, `ws.broadcast_to_room(name, msg, exclude: nil)`
@@ -807,8 +816,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
-- Tests: 3,049 passing
-- Version: 3.13.23
+- Tests: 3,070 passing
+- Version: 3.13.24
 
 ## Links
 
