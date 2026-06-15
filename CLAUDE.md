@@ -194,15 +194,24 @@ model.restore -> Boolean              # Restore soft-deleted record
 model.load(sql, params = [], include: nil) -> Boolean  # selectOne into self; true if found
 model.validate -> Array[String]       # Validate fields; empty = valid
 model.persisted? -> Boolean
-model.to_h(include: nil) -> Hash      # Ruby idiom (aliases: to_hash, to_dict, to_assoc, to_object)
+model.to_h(include: nil) -> Hash      # Ruby idiom (aliases: to_hash, to_dict, to_object)
 model.to_json(include: nil) -> String
 model.to_array -> Array              # List of values
 model.to_list -> Array               # Alias for to_array
-model.has_one(related_class, foreign_key: nil) -> MyModel | nil
-model.has_many(related_class, foreign_key: nil, limit: 100, offset: 0) -> Array
-model.belongs_to(related_class, foreign_key: nil) -> MyModel | nil
+# Relationships are declared at the class level (DSL); each generates a named accessor.
+# class User < Tina4::ORM
+#   has_one :profile, class_name: "Profile", foreign_key: "user_id"
+#   has_many :posts, class_name: "Post", foreign_key: "user_id"
+#   belongs_to :team, class_name: "Team", foreign_key: "team_id"
+# end
+# user.profile -> Profile | nil      # generated accessor (has_one)
+# user.posts   -> Array[Post]        # generated accessor (has_many)
+# user.team    -> Team | nil         # generated accessor (belongs_to)
 
 # Class methods
+MyModel.has_one(name, class_name: nil, foreign_key: nil)    # Declare 1:1 relationship
+MyModel.has_many(name, class_name: nil, foreign_key: nil)   # Declare 1:many relationship
+MyModel.belongs_to(name, class_name: nil, foreign_key: nil) # Declare many:1 relationship
 MyModel.find(id) -> MyModel | nil
 MyModel.find_or_fail(id) -> MyModel   # Find or raise error
 MyModel.create(attributes = {}) -> MyModel
