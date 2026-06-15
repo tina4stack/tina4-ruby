@@ -147,13 +147,13 @@ RSpec.describe Tina4::ResponseCache do
       end
     end
 
-    it "defaults to 0 (disabled) when env var not set" do
+    it "defaults to 60 when env var not set" do
       original = ENV["TINA4_CACHE_TTL"]
       begin
         ENV.delete("TINA4_CACHE_TTL")
         cache = Tina4::ResponseCache.new
-        expect(cache.ttl).to eq(0)
-        expect(cache.enabled?).to be false
+        expect(cache.ttl).to eq(60)
+        expect(cache.enabled?).to be true
       ensure
         ENV["TINA4_CACHE_TTL"] = original if original
       end

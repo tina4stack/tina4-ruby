@@ -22,7 +22,7 @@ module Tina4
   # Environment:
   #   TINA4_CACHE_BACKEND      — memory | redis | file  (default: memory)
   #   TINA4_CACHE_URL           — redis://localhost:6379  (redis only)
-  #   TINA4_CACHE_TTL           — default TTL in seconds  (default: 0 = disabled)
+  #   TINA4_CACHE_TTL           — default TTL in seconds  (default: 60)
   #   TINA4_CACHE_MAX_ENTRIES   — maximum cache entries   (default: 1000)
   #
   class ResponseCache
@@ -36,7 +36,7 @@ module Tina4
     # @param cache_dir [String, nil] File cache directory
     def initialize(ttl: nil, max_entries: nil, status_codes: [200],
                    backend: nil, cache_url: nil, cache_dir: nil)
-      @ttl = ttl || (ENV["TINA4_CACHE_TTL"] ? ENV["TINA4_CACHE_TTL"].to_i : 0)
+      @ttl = ttl || (ENV["TINA4_CACHE_TTL"] ? ENV["TINA4_CACHE_TTL"].to_i : 60)
       @max_entries = max_entries || (ENV["TINA4_CACHE_MAX_ENTRIES"] ? ENV["TINA4_CACHE_MAX_ENTRIES"].to_i : 1000)
       @status_codes = status_codes
       @backend_name = backend || ENV.fetch("TINA4_CACHE_BACKEND", "memory").downcase.strip

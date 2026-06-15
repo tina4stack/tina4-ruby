@@ -626,7 +626,7 @@ Tina4.cache_get(key)                        # KV get (parity with Python cache_g
 Tina4.cache_set(key, value, ttl: 0)         # KV set (parity with Python cache_set)
 Tina4.cache_delete(key)                     # KV delete (parity with Python cache_delete)
 
-# Environment: TINA4_CACHE_TTL sets default TTL (0 = disabled)
+# Environment: TINA4_CACHE_TTL sets default TTL in seconds (default: 60)
 ```
 
 ### Container — Dependency injection

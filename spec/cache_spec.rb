@@ -16,9 +16,9 @@ RSpec.describe Tina4::ResponseCache do
   # ── Construction & Defaults ──────────────────────────────────────
 
   describe "initialization" do
-    it "defaults ttl to 0 (disabled)" do
+    it "defaults ttl to 60" do
       cache = described_class.new
-      expect(cache.ttl).to eq(0)
+      expect(cache.ttl).to eq(60)
     end
 
     it "defaults max_entries to 1000" do
