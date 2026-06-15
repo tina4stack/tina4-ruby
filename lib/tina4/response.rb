@@ -80,6 +80,7 @@ module Tina4
     # Matches Python __call__ / PHP __invoke / Node response() pattern.
     def call(data = nil, status_code = 200, content_type = nil)
       @status_code = status_code
+      data = jsonable(data)
       if content_type
         @headers["content-type"] = content_type
         @body = data.to_s
@@ -96,9 +97,28 @@ module Tina4
     def json(data, status_or_opts = nil, status: nil)
       @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
       @headers["content-type"] = JSON_CONTENT_TYPE
+      data = jsonable(data)
       @body = data.is_a?(String) ? data : JSON.generate(data)
       self
     end
+
+    # Normalise domain objects into JSON-serialisable structures so handlers can
+    # `response.(model)` / `response.json(model)` without calling .to_h by hand:
+    #
+    #   response.json(user)            # ORM model      -> Hash
+    #   response.json(User.all)        # Array<ORM>      -> Array<Hash>
+    #   response.json(db.fetch(sql))   # DatabaseResult  -> Array<Hash>
+    #
+    # Plain Hash / Array / String pass through unchanged (Array members that are
+    # models are still converted).
+    def jsonable(data)
+      return data.to_h if data.is_a?(Tina4::ORM)
+      return data.records if data.is_a?(Tina4::DatabaseResult)
+      return data.map { |item| item.is_a?(Tina4::ORM) ? item.to_h : item } if data.is_a?(Array)
+
+      data
+    end
+    private :jsonable
 
     def html(content, status_or_opts = nil, status: nil)
       @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 200)
