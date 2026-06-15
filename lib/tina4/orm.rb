@@ -306,19 +306,44 @@ module Tina4
       def create_table
         return true if db.table_exists?(table_name)
 
-        # v3.13.11 (BooleanField parity): pick each engine's native
-        # bool type where it's reliable. SQLite has no native bool;
-        # Firebird's driver round-trip for native BOOLEAN is uneven —
-        # both stay on INTEGER. PG/MySQL/MSSQL use their native types
-        # so Python ``True``/Ruby ``true`` bind cleanly without
-        # ``operator does not exist: boolean = integer`` errors.
+        # v3.13.16: engine-aware DDL. Ruby used to emit SQLite-only DDL on
+        # every driver — INTEGER for booleans, DATETIME for datetimes, and a
+        # raw AUTOINCREMENT keyword — then ignore db.execute()'s return value
+        # and report success. On PostgreSQL the CREATE blew up
+        # ("syntax error at or near AUTOINCREMENT"), db.execute() swallowed it
+        # into get_error() and returned false, yet create_table still returned
+        # true with no table created — a silent, misleading pass.
+        #
+        # The fix mirrors the Python reference (tina4_python.orm.model):
+        #   • get_database_type() now exists on Database (it didn't before, so
+        #     the v3.13.11 BooleanField check never actually fired on Ruby).
+        #   • BooleanField → native BOOLEAN (PG/MySQL) / BIT (MSSQL) /
+        #     INTEGER (sqlite, firebird) — both PG aliases are matched.
+        #   • DateTimeField → TIMESTAMP on PG/Firebird (neither has a DATETIME
+        #     type), DATETIME elsewhere.
+        #   • boolean DEFAULT is engine-aware: TRUE/FALSE for a native BOOLEAN,
+        #     1/0 for INTEGER/BIT-backed bools.
+        #   • AUTOINCREMENT is translated per engine via SQLTranslator
+        #     (SERIAL on PG, AUTO_INCREMENT on MySQL, IDENTITY on MSSQL, dropped
+        #     on Firebird) instead of being emitted raw.
+        #   • return false (not true) when the DDL fails.
         engine = (db.respond_to?(:get_database_type) ? db.get_database_type : "").to_s.downcase
+
         bool_sql = case engine
                    when "postgres", "postgresql" then "BOOLEAN"
                    when "mysql" then "BOOLEAN" # alias for TINYINT(1)
                    when "mssql", "sqlserver" then "BIT"
                    else "INTEGER" # sqlite, firebird, odbc, anything else
                    end
+
+        # PostgreSQL and Firebird have no DATETIME type — CREATE TABLE fails
+        # with `type "datetime" does not exist`. Emit each engine's real
+        # timestamp type. (MySQL/MSSQL/SQLite keep DATETIME: valid there, and
+        # on MySQL it avoids TIMESTAMP's auto-update + 2038 surprises.)
+        datetime_sql = case engine
+                       when "postgres", "postgresql", "firebird" then "TIMESTAMP"
+                       else "DATETIME"
+                       end
 
         type_map = {
           integer: "INTEGER",
@@ -328,7 +353,7 @@ module Tina4
           decimal: "REAL",
           boolean: bool_sql,
           date: "DATE",
-          datetime: "DATETIME",
+          datetime: datetime_sql,
           timestamp: "TIMESTAMP",
           blob: "BLOB",
           json: "TEXT"
@@ -346,15 +371,29 @@ module Tina4
           parts << "AUTOINCREMENT" if opts[:auto_increment]
           parts << "NOT NULL" if !opts[:nullable] && !opts[:primary_key]
           if opts[:default] && !opts[:auto_increment]
-            default_val = opts[:default].is_a?(String) ? "'#{opts[:default]}'" : opts[:default]
-            parts << "DEFAULT #{default_val}"
+            parts << "DEFAULT #{default_literal(opts[:default], opts[:type], bool_sql)}"
           end
           col_defs << parts.join(" ")
         end
 
         sql = "CREATE TABLE IF NOT EXISTS #{table_name} (#{col_defs.join(', ')})"
-        db.execute(sql)
+
+        # Translate AUTOINCREMENT to the engine's auto-increment syntax
+        # (INTEGER PRIMARY KEY AUTOINCREMENT -> SERIAL PRIMARY KEY on PG, etc.).
+        # SQLTranslator keys off the -ql spelling for postgres.
+        translator_engine = %w[postgres postgresql].include?(engine) ? "postgresql" : engine
+        sql = SQLTranslator.auto_increment_syntax(sql, translator_engine)
+
+        # Don't claim success when the DDL failed. db.execute() swallows the
+        # driver error into get_error() and returns false, so a bad type (or
+        # any DDL error) used to leave create_table returning true while no
+        # table was actually created.
+        ok = db.execute(sql)
         db.commit
+        if ok == false
+          Tina4::Log.error("create_table failed for #{table_name}: #{db.get_error}", { sql: sql })
+          return false
+        end
         true
       end
 
@@ -426,6 +465,28 @@ module Tina4
         end
         results = db.fetch(sql, filter.values)
         results.map { |row| from_hash(row) }
+      end
+
+      # Render a column DEFAULT literal for create_table.
+      #
+      # Strings are quoted. Booleans are engine-aware: a native BOOLEAN
+      # column (PG/MySQL) needs TRUE/FALSE, while INTEGER- and BIT-backed
+      # bools (SQLite, Firebird, MSSQL) need 1/0 — `DEFAULT 0` on a PG
+      # BOOLEAN raises "default expression is of type integer". Everything
+      # else is emitted as-is.
+      def default_literal(value, type, bool_sql)
+        if value.is_a?(String)
+          "'#{value}'"
+        elsif value == true || value == false || type == :boolean
+          truthy = value == true || value == 1 || value == "1"
+          if bool_sql == "BOOLEAN"
+            truthy ? "TRUE" : "FALSE"
+          else
+            truthy ? "1" : "0"
+          end
+        else
+          value.to_s
+        end
       end
     end
 

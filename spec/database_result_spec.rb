@@ -84,5 +84,40 @@ RSpec.describe Tina4::DatabaseResult do
       record = result[0]
       expect(record).not_to be_nil
     end
+
+    it "returns the row hash at the given index (documented result[0])" do
+      expect(result[0]["name"] || result[0][:name]).to eq("Alice")
+      expect(result[1]["name"] || result[1][:name]).to eq("Bob")
+    end
+
+    it "supports negative indexing like an Array" do
+      expect(result[-1]["name"] || result[-1][:name]).to eq("Bob")
+    end
+
+    it "supports range slicing, returning an Array of rows" do
+      slice = result[0..0]
+      expect(slice).to be_an(Array)
+      expect(slice.length).to eq(1)
+      expect(slice.first["name"] || slice.first[:name]).to eq("Alice")
+    end
+
+    it "supports start,length slicing" do
+      slice = result[1, 1]
+      expect(slice).to be_an(Array)
+      expect(slice.length).to eq(1)
+      expect(slice.first["name"] || slice.first[:name]).to eq("Bob")
+    end
+
+    it "returns nil for an out-of-range index" do
+      expect(result[99]).to be_nil
+    end
+  end
+
+  describe "#to_ary" do
+    it "coerces to an Array of rows (splattable / destructurable)" do
+      a, b = *result
+      expect(a["name"] || a[:name]).to eq("Alice")
+      expect(b["name"] || b[:name]).to eq("Bob")
+    end
   end
 end

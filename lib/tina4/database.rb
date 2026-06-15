@@ -405,6 +405,18 @@ module Tina4
       nil
     end
 
+    # Return the normalised engine name for this connection.
+    #
+    # Cross-framework parity with Python/PHP/Node ``get_database_type()``.
+    # ORM.create_table needs this to emit engine-correct DDL (SERIAL vs
+    # AUTOINCREMENT, BOOLEAN vs INTEGER, TIMESTAMP vs DATETIME). Returns the
+    # resolved driver key ("postgres", "mysql", "mssql", "firebird",
+    # "sqlite", ...) — the same alias-normalised value used to pick the
+    # driver class, so callers don't have to re-parse the connection string.
+    def get_database_type
+      @driver_name
+    end
+
     # Execute a write statement. Returns true/false for simple writes.
     # Returns DatabaseResult if SQL contains RETURNING, CALL, EXEC, or SELECT.
     def execute(sql, params = [])

@@ -39,8 +39,21 @@ module Tina4
       @records.empty?
     end
 
-    def [](index)
-      @records[index]
+    # Index / slice access into the result rows.
+    #
+    # ``result[0]`` is documented (book ch5 §4 "Index Access"). Delegating
+    # straight to the materialised rows means every Array subscript form
+    # works — ``result[0]``, ``result[-1]``, ``result[1, 2]`` and
+    # ``result[1..3]`` — and matches Python's ``DatabaseResult.__getitem__``,
+    # which forwards to its records list.
+    def [](*args)
+      @records[*args]
+    end
+
+    # Implicit array coercion, so a DatabaseResult can be splatted and used
+    # anywhere an Array is expected (``a, b = result``, ``[*result]``).
+    def to_ary
+      @records.dup
     end
 
     def length
