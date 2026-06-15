@@ -517,6 +517,15 @@ module Tina4
       @persisted = false
       @errors = []
       @relationship_cache = {}
+      # Accept a JSON object string (parity with Python/PHP/Node):
+      #   Widget.new('{"id":1,"name":"alpha"}')
+      attributes = JSON.parse(attributes) if attributes.is_a?(String)
+      # A single model is one record — reject an Array with a clear message.
+      if attributes.is_a?(Array)
+        raise ArgumentError,
+              "#{self.class}.new expects a Hash, keyword args, or a JSON object string " \
+              "for one record — got an Array. Map over the list to build many records."
+      end
       attributes.each do |key, value|
         setter = "#{key}="
         __send__(setter, value) if respond_to?(setter)
