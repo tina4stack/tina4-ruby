@@ -276,7 +276,7 @@ RSpec.describe Tina4::Session do
 
     it "includes Max-Age" do
       session = Tina4::Session.new(env, options)
-      expect(session.cookie_header).to include("Max-Age=86400")
+      expect(session.cookie_header).to include("Max-Age=3600")
     end
 
     it "uses custom cookie name" do

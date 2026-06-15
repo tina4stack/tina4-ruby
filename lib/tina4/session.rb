@@ -7,7 +7,7 @@ module Tina4
     DEFAULT_OPTIONS = {
       cookie_name: "tina4_session",
       secret: nil,
-      max_age: 86400,
+      max_age: 3600,
       handler: :file,
       handler_options: {}
     }.freeze
