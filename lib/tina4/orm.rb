@@ -41,14 +41,32 @@ module Tina4
 
     class << self
       def db
-        # v3.13.12: implicit binding from TINA4_DATABASE_URL.
-        # Resolution: per-class @db → global Tina4.database → env-derived
-        # auto-discovery. Pre-v3.13.12 this fell through to nil — the
-        # helper auto_discover_db existed but was never called.
-        @db || Tina4.database || auto_discover_db
+        # Resolution order:
+        #   1. @db is a Symbol/String → named connection from Tina4.databases
+        #      (bound via Tina4.bind_database(db, name:)). Raises a clear
+        #      error if that named connection was never registered.
+        #   2. @db is a Database/driver instance → use it directly.
+        #   3. Otherwise → global Tina4.database, else env-derived
+        #      auto-discovery (TINA4_DATABASE_URL). v3.13.12 wired this
+        #      fallback; before that auto_discover_db was never called.
+        case @db
+        when Symbol, String
+          name = @db.to_sym
+          Tina4.databases[name] || raise(
+            "Tina4 named database connection '#{@db}' is not registered for #{name}. " \
+            "Call Tina4.bind_database(db, name: #{@db.inspect}) before using this model."
+          )
+        when nil
+          Tina4.database || auto_discover_db
+        else
+          @db
+        end
       end
 
-      # Per-model database binding
+      # Per-model database binding.
+      #   self.db = some_database_instance   → use that connection
+      #   self.db = :analytics               → resolve a named connection
+      #                                         from Tina4.databases at access time
       def db=(database)
         @db = database
       end
@@ -476,8 +494,7 @@ module Tina4
       def auto_discover_db
         url = ENV["TINA4_DATABASE_URL"]
         return nil unless url
-        Tina4.database = Tina4::Database.new(url, username: ENV.fetch("TINA4_DATABASE_USERNAME", ""), password: ENV.fetch("TINA4_DATABASE_PASSWORD", ""))
-        Tina4.database
+        Tina4.bind_database(Tina4::Database.new(url, username: ENV.fetch("TINA4_DATABASE_USERNAME", ""), password: ENV.fetch("TINA4_DATABASE_PASSWORD", "")))
       end
 
       def find_by_filter(filter)

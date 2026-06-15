@@ -120,7 +120,26 @@ module Tina4
   BANNER
 
   class << self
-    attr_accessor :root_dir, :database
+    attr_accessor :root_dir
+    attr_reader :database
+
+    # Bind a database connection.
+    #   bind_database(db)                  → sets the global default (Tina4.database)
+    #   bind_database(db, name: :analytics) → registers a named connection
+    # A model with `self.db = :analytics` resolves from this named registry;
+    # otherwise models fall back to the global default / TINA4_DATABASE_URL.
+    def bind_database(db, name: nil)
+      if name.nil?
+        @database = db
+      else
+        (@databases ||= {})[name.to_sym] = db
+      end
+      db
+    end
+
+    # Named connection registry. bind_database(db, name:) populates it;
+    # models with a Symbol/String `self.db` resolve against it.
+    def databases = (@databases ||= {})
 
     def print_banner(host: "0.0.0.0", port: 7147, server_name: nil)
       # TINA4_SUPPRESS — short-circuit ALL banner output for headless / CI runs.
@@ -450,7 +469,7 @@ module Tina4
       db_url = ENV["TINA4_DATABASE_URL"]
       if db_url && !db_url.empty?
         begin
-          @database = Tina4::Database.new(db_url)
+          bind_database(Tina4::Database.new(db_url))
           Tina4::Log.info("Database connected: #{db_url.sub(/:[^:@]+@/, ':***@')}")
         rescue => e
           Tina4::Log.error("Database connection failed: #{e.message}")

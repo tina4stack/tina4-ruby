@@ -52,7 +52,7 @@ RSpec.describe "ORM v3 features" do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     db.execute("CREATE TABLE IF NOT EXISTS softdeleteusers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT, is_deleted INTEGER DEFAULT 0)")
     db.execute("CREATE TABLE IF NOT EXISTS mappedusers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT, user_email TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS authors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)")

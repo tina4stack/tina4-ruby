@@ -92,11 +92,11 @@ RSpec.describe "v3.13.12 SQL normalization + ORM binding" do
       # Snapshot + clear so we can simulate "fresh app boot".
       @saved_url = ENV["TINA4_DATABASE_URL"]
       @saved_database = Tina4.database
-      Tina4.database = nil
+      Tina4.bind_database(nil)
     end
 
     after do
-      Tina4.database = @saved_database
+      Tina4.bind_database(@saved_database)
       if @saved_url
         ENV["TINA4_DATABASE_URL"] = @saved_url
       else

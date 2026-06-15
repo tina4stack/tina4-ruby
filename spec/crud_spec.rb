@@ -16,7 +16,7 @@ RSpec.describe Tina4::Crud do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     Tina4::Router.clear!
     Tina4::AutoCrud.clear!
     Tina4::Crud.instance_variable_set(:@registered_tables, {})

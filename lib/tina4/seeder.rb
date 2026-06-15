@@ -373,7 +373,7 @@ module Tina4
 
     db = Tina4.database
     unless db
-      Tina4::Log.error("Seeder: No database connection. Set Tina4.database first.")
+      Tina4::Log.error("Seeder: No database connection. Call Tina4.bind_database(db) first.")
       return 0
     end
 

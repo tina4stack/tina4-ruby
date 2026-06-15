@@ -546,12 +546,12 @@ RSpec.describe Tina4::DevAdmin do
     before do
       allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
-      Tina4.database = db
+      Tina4.bind_database(db)
     end
 
     after do
       db.close rescue nil
-      Tina4.database = nil
+      Tina4.bind_database(nil)
       File.delete(db_path) if File.exist?(db_path)
     end
 

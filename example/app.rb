@@ -13,7 +13,7 @@ Tina4.initialize!(__dir__)
 # Database setup — SQLite for this example
 DB_PATH = File.join(__dir__, "example.db")
 db = Tina4::Database.new("sqlite://#{DB_PATH}")
-Tina4.database = db
+Tina4.bind_database(db)
 
 # Create users table
 db.execute(<<~SQL)

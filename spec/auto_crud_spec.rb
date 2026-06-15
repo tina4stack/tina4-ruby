@@ -16,7 +16,7 @@ RSpec.describe Tina4::AutoCrud do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     Tina4::Router.clear!
     Tina4::AutoCrud.clear!
     db.execute("CREATE TABLE IF NOT EXISTS cruditems (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price INTEGER DEFAULT 0)")

@@ -16,7 +16,7 @@ RSpec.describe Tina4::ORM do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     db.execute("CREATE TABLE IF NOT EXISTS testusers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT, age INTEGER DEFAULT 0)")
   end
 

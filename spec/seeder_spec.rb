@@ -287,7 +287,7 @@ RSpec.describe "Tina4.seed_orm" do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     db.execute("CREATE TABLE IF NOT EXISTS seed_users (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT, last_name TEXT, email TEXT, age INTEGER DEFAULT 0, balance REAL DEFAULT 0.0, bio TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS seed_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS seed_products (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, price REAL DEFAULT 0.0, category_id INTEGER, status TEXT)")
@@ -371,7 +371,7 @@ RSpec.describe "Tina4.seed_orm" do
   end
 
   it "returns 0 when no database" do
-    Tina4.database = nil
+    Tina4.bind_database(nil)
     count = Tina4.seed_orm(SeedTestUser, count: 5)
     expect(count).to eq(0)
   end
@@ -387,7 +387,7 @@ RSpec.describe "Tina4.seed_table" do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     db.execute("CREATE TABLE IF NOT EXISTS raw_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, score INTEGER)")
   end
 
@@ -432,7 +432,7 @@ RSpec.describe "Tina4.seed_batch" do
   let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
   before(:each) do
-    Tina4.database = db
+    Tina4.bind_database(db)
     db.execute("CREATE TABLE IF NOT EXISTS seed_users (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT, last_name TEXT, email TEXT, age INTEGER DEFAULT 0, balance REAL DEFAULT 0.0, bio TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS seed_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS seed_products (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, price REAL DEFAULT 0.0, category_id INTEGER, status TEXT)")
@@ -556,7 +556,7 @@ RSpec.describe "FakeData edge cases" do
     let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     before(:each) do
-      Tina4.database = db
+      Tina4.bind_database(db)
       db.execute("CREATE TABLE IF NOT EXISTS seed_users (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT, last_name TEXT, email TEXT, age INTEGER DEFAULT 0, balance REAL DEFAULT 0.0, bio TEXT)")
     end
 
