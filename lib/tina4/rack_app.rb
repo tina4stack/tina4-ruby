@@ -43,6 +43,13 @@ module Tina4
       path = env["PATH_INFO"] || "/"
       request_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
+      # Request-scoped query cache boundary (v3.13.23). Tina4 Ruby runs a
+      # long-running Rack server, so the request-scoped DB cache (default-on)
+      # would otherwise serve rows from a previous request. Clear it on every
+      # live connection at the very start of each request, before any routing.
+      # No-op for persistent-mode (TINA4_DB_CACHE=true) connections.
+      Tina4::Database.reset_request_caches if defined?(Tina4::Database)
+
       # Fast-path: CORS preflight. Real CORS preflight requests carry an
       # Origin header AND an Access-Control-Request-Method header — the
       # browser is asking "may I send this method?" before the actual

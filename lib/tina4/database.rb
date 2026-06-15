@@ -2,6 +2,7 @@
 require "json"
 require "uri"
 require "digest"
+require "weakref"
 
 module Tina4
   # Thread-safe connection pool with round-robin rotation.
@@ -67,6 +68,43 @@ module Tina4
 
   class Database
     attr_reader :driver, :driver_name, :connected, :pool
+
+    # Live Database instances, so the request dispatcher can reset the
+    # request-scoped query cache on every connection at the start of a request.
+    # WeakRefs avoid keeping closed connections (or short-lived script
+    # connections) alive — parity with Python's weakref.WeakSet. Guarded by a
+    # mutex because connections can be created from multiple threads.
+    @instances = []
+    @instances_mutex = Mutex.new
+
+    class << self
+      # Register a live connection in the class-level WeakRef registry.
+      def register_instance(db)
+        @instances_mutex.synchronize do
+          @instances << WeakRef.new(db)
+        end
+      end
+
+      # Clear the request-scoped query cache on every live Database instance.
+      #
+      # The request dispatcher calls this at the start of each HTTP request so
+      # request-scoped caching never serves rows across requests (zero
+      # cross-request staleness). Persistent-mode connections are left alone.
+      # Dead WeakRefs (closed/GC'd connections) are pruned as we go.
+      def reset_request_caches
+        @instances_mutex.synchronize do
+          @instances.reject! do |ref|
+            begin
+              inst = ref.__getobj__
+              inst.cache_new_request
+              false
+            rescue WeakRef::RefError, StandardError
+              true  # dead reference (or errored) — prune it
+            end
+          end
+        end
+      end
+    end
 
     DRIVERS = {
       "sqlite" => "Tina4::Drivers::SqliteDriver",
@@ -162,13 +200,32 @@ module Tina4
       # driver for every call so the whole transaction runs on one connection.
       @tx_pin_key = :"tina4_pinned_adapter_#{object_id}"
 
-      # Query cache — off by default, opt-in via TINA4_DB_CACHE=true
-      @cache_enabled = truthy?(ENV["TINA4_DB_CACHE"])
-      @cache_ttl = (ENV["TINA4_DB_CACHE_TTL"] || "30").to_i
+      # Query cache. One store, two layers (parity with Python connection.py):
+      #   • request-scoped (DEFAULT ON, off-switch TINA4_QUERY_CACHE=false) —
+      #     dedupes identical SELECTs to protect the DB from rapid repeat reads.
+      #     Cleared at the START of every HTTP request (so it never serves rows
+      #     across requests) AND on any write, with a short safety TTL (5s) for
+      #     non-request contexts (scripts/workers).
+      #   • persistent (opt-in, TINA4_DB_CACHE=true) — cross-request TTL cache
+      #     that is NOT cleared per request; entries expire by TINA4_DB_CACHE_TTL.
+      @cache_persistent = truthy?(ENV["TINA4_DB_CACHE"])
+      # Default true; honour the same truthy semantics the framework uses
+      # (mirrors Python's is_truthy(get("TINA4_QUERY_CACHE", "true"))).
+      @cache_request_scoped = truthy?(ENV["TINA4_QUERY_CACHE"] || "true")
+      @cache_enabled = @cache_persistent || @cache_request_scoped
+      @cache_ttl = if @cache_persistent
+                     (ENV["TINA4_DB_CACHE_TTL"] || "30").to_i
+                   else
+                     (ENV["TINA4_QUERY_CACHE_TTL"] || "5").to_i
+                   end
       @query_cache = {}  # key => { expires_at:, value: }
       @cache_hits = 0
       @cache_misses = 0
       @cache_mutex = Mutex.new
+
+      # Register this connection so Tina4::Database.reset_request_caches can
+      # clear its request-scoped entries at the start of every HTTP request.
+      Tina4::Database.register_instance(self)
 
       if @pool_size > 0
         # Pooled mode — create a ConnectionPool with lazy driver creation
@@ -235,9 +292,11 @@ module Tina4
       @cache_mutex.synchronize do
         {
           enabled: @cache_enabled,
+          mode: cache_mode,
           hits: @cache_hits,
           misses: @cache_misses,
           size: @query_cache.size,
+          backend: "memory",
           ttl: @cache_ttl
         }
       end
@@ -249,6 +308,16 @@ module Tina4
         @cache_hits = 0
         @cache_misses = 0
       end
+    end
+
+    # Clear the request-scoped query cache at the start of an HTTP request.
+    #
+    # No-op in persistent mode (TINA4_DB_CACHE=true) so cross-request entries
+    # survive up to their TTL. Cumulative hit/miss counters are preserved.
+    def cache_new_request
+      return unless @cache_request_scoped && !@cache_persistent
+
+      @cache_mutex.synchronize { @query_cache.clear }
     end
 
     # Fetch rows and return the records array directly.
@@ -675,6 +744,17 @@ module Tina4
 
     def truthy?(val)
       %w[true 1 yes on].include?((val || "").to_s.strip.downcase)
+    end
+
+    # "persistent" / "request" / "off" — mirrors Python connection.py.
+    def cache_mode
+      if @cache_persistent
+        "persistent"
+      elsif @cache_request_scoped
+        "request"
+      else
+        "off"
+      end
     end
 
     def cache_key(sql, params)
