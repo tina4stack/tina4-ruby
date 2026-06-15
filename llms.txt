@@ -43,7 +43,7 @@ Tina4::Router.get("/api/private") { |req, res|
 
 # Template rendering
 Tina4::Router.get "/dashboard" do |request, response|
-  response.template("dashboard.twig", { title: "Dashboard" })
+  response.render("dashboard.twig", { title: "Dashboard" })
 end
 ```
 
