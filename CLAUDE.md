@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.22 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.23 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -794,7 +794,7 @@ Tina4::DevAdmin.request_inspector.clear
 - CLI scaffolding: `tina4ruby generate model/route/migration/middleware`
 - Production server auto-detect: `tina4ruby serve --production` (auto-installs Puma, 2.8x improvement)
 - Frond pre-compilation for 2.8x template render improvement
-- DB query caching: `TINA4_DB_CACHE=true` env var, `cache_stats`, `cache_clear`
+- DB query caching: request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical reads within a request and flushes on writes; persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s); `cache_stats` reports `mode` (request/persistent/off), `cache_clear`
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
 - Queue backends: file (default), RabbitMQ, Kafka, MongoDB
 - Cache backends: memory (default), Redis, file
@@ -807,8 +807,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
-- Tests: 3,040 passing
-- Version: 3.13.19
+- Tests: 3,049 passing
+- Version: 3.13.23
 
 ## Links
 

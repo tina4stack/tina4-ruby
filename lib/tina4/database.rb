@@ -201,7 +201,7 @@ module Tina4
       @tx_pin_key = :"tina4_pinned_adapter_#{object_id}"
 
       # Query cache. One store, two layers (parity with Python connection.py):
-      #   • request-scoped (DEFAULT ON, off-switch TINA4_QUERY_CACHE=false) —
+      #   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) —
       #     dedupes identical SELECTs to protect the DB from rapid repeat reads.
       #     Cleared at the START of every HTTP request (so it never serves rows
       #     across requests) AND on any write, with a short safety TTL (5s) for
@@ -210,13 +210,13 @@ module Tina4
       #     that is NOT cleared per request; entries expire by TINA4_DB_CACHE_TTL.
       @cache_persistent = truthy?(ENV["TINA4_DB_CACHE"])
       # Default true; honour the same truthy semantics the framework uses
-      # (mirrors Python's is_truthy(get("TINA4_QUERY_CACHE", "true"))).
-      @cache_request_scoped = truthy?(ENV["TINA4_QUERY_CACHE"] || "true")
+      # (mirrors Python's is_truthy(get("TINA4_AUTO_CACHING", "true"))).
+      @cache_request_scoped = truthy?(ENV["TINA4_AUTO_CACHING"] || "true")
       @cache_enabled = @cache_persistent || @cache_request_scoped
       @cache_ttl = if @cache_persistent
                      (ENV["TINA4_DB_CACHE_TTL"] || "30").to_i
                    else
-                     (ENV["TINA4_QUERY_CACHE_TTL"] || "5").to_i
+                     (ENV["TINA4_AUTO_CACHING_TTL"] || "5").to_i
                    end
       @query_cache = {}  # key => { expires_at:, value: }
       @cache_hits = 0

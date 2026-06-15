@@ -8,7 +8,7 @@ require "tmpdir"
 # contract in tina4_python/database/connection.py.
 #
 # Layers:
-#   • request-scoped (DEFAULT ON, off-switch TINA4_QUERY_CACHE=false) — dedupes
+#   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) — dedupes
 #     identical SELECTs, cleared per request + on writes, short safety TTL (5s).
 #   • persistent (opt-in TINA4_DB_CACHE=true) — cross-request TTL cache (30s),
 #     NOT cleared per request.
@@ -21,8 +21,8 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     saved = {
       "TINA4_DB_CACHE" => ENV["TINA4_DB_CACHE"],
       "TINA4_DB_CACHE_TTL" => ENV["TINA4_DB_CACHE_TTL"],
-      "TINA4_QUERY_CACHE" => ENV["TINA4_QUERY_CACHE"],
-      "TINA4_QUERY_CACHE_TTL" => ENV["TINA4_QUERY_CACHE_TTL"]
+      "TINA4_AUTO_CACHING" => ENV["TINA4_AUTO_CACHING"],
+      "TINA4_AUTO_CACHING_TTL" => ENV["TINA4_AUTO_CACHING_TTL"]
     }
     # Start each example from the framework default (all unset → request mode).
     saved.each_key { |k| ENV.delete(k) }
@@ -99,8 +99,8 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
   end
 
   describe "off-switch" do
-    it "TINA4_QUERY_CACHE=false disables (mode off)" do
-      ENV["TINA4_QUERY_CACHE"] = "false"
+    it "TINA4_AUTO_CACHING=false disables (mode off)" do
+      ENV["TINA4_AUTO_CACHING"] = "false"
       db = make_db
       stats = db.cache_stats
       expect(stats[:enabled]).to be false
