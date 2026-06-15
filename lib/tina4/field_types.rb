@@ -84,7 +84,12 @@ module Tina4
       # Automatically:
       #   - Registers an integer field for the column
       #   - Calls belongs_to on this class (strip _id suffix for association name)
-      #   - Calls has_many on the referenced class (if already loaded)
+      #   - Calls has_many on the referenced class. The accessor name is the
+      #     declaring class name lowercased + "s" (e.g. Post → posts), matching
+      #     Python; override with related_name:. Works whether the referenced
+      #     class loaded before OR after this one, including the string form
+      #     (references: "Author") for forward references — resolution is
+      #     deferred via Tina4::ORM.inherited until the target class exists.
       #
       # @param name [Symbol]  Column name (e.g. :user_id)
       # @param references [Class, String]  Referenced model class or its name
@@ -122,12 +127,45 @@ module Tina4
           has_many_name: hm_key.to_sym,
           foreign_key: name.to_s
         }
+
+        # If the referenced model is ALREADY loaded (string form whose target
+        # is defined, or any forward reference that has since resolved), wire
+        # the deferred entry right now. The inherited hook on Tina4::ORM only
+        # fires when a NEW class is defined, so a string reference to a class
+        # that loaded BEFORE this one would otherwise never wire its has_many
+        # side. resolve_referenced_class returns the live class for either the
+        # Class or the string form.
+        resolved = resolve_referenced_class(references)
+        resolved.apply_fk_registry! if resolved && resolved.respond_to?(:apply_fk_registry!, true)
+      end
+
+      # Resolve a ForeignKeyField `references:` argument to a live Tina4::ORM
+      # subclass, or nil if it is not (yet) loaded. Accepts either a Class or a
+      # class-name String (with or without a namespace). The string form is the
+      # documented deferred-safe path: a bare constant used before its class is
+      # defined raises NameError (plain Ruby), so forward references must be
+      # written as strings.
+      def resolve_referenced_class(references)
+        return references if references.is_a?(Class)
+        return nil unless defined?(Tina4::ORM) && Tina4::ORM.respond_to?(:model_subclasses)
+
+        simple = references.to_s.split("::").last
+        Tina4::ORM.model_subclasses.find do |klass|
+          klass.name && klass.name.split("::").last == simple
+        end
+      rescue StandardError
+        nil
       end
 
       # Apply any deferred FK-registry has_many wiring for this class.
       # Called automatically when a class that is referenced by a ForeignKeyField is defined.
       def apply_fk_registry!
-        class_simple_name = self.name.split("::").last
+        # Anonymous classes (Class.new(Tina4::ORM), common in specs) have a nil
+        # name and can never be a string-form ForeignKeyField target, so there
+        # is nothing to wire — bail out instead of raising on nil.split.
+        return if name.nil?
+
+        class_simple_name = name.split("::").last
         return unless defined?(@@_fk_registry) && @@_fk_registry.key?(class_simple_name)
 
         @@_fk_registry[class_simple_name].each do |entry|

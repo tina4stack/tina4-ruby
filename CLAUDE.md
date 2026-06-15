@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.17 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.18 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -234,7 +234,8 @@ belongs_to :company, class_name: "Company", foreign_key: :company_id
 # Foreign key auto-wire DSL — one line wires BOTH sides
 # foreign_key_field :user_id, references: User
 # → declaring class gets: belongs_to :user (association name = column minus _id)
-# → referenced class gets: has_many :<tableName>s (or related_name: override)
+# → referenced class gets: has_many :<declaringClass.downcase>s (or related_name: override)
+#   e.g. class Post → User.posts; matches Python's declaring-class-lowercased + "s"
 foreign_key_field :user_id, references: User
 foreign_key_field :category_id, references: Category, related_name: :blog_posts
 ```
@@ -758,8 +759,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
-- Tests: 3,011 passing
-- Version: 3.13.17
+- Tests: 3,018 passing
+- Version: 3.13.18
 
 ## Links
 

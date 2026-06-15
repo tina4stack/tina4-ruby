@@ -16,6 +16,29 @@ module Tina4
   class ORM
     include Tina4::FieldTypes
 
+    # When a new model class is defined, resolve any deferred ForeignKeyField
+    # wiring that targets it. The string / forward-reference form of
+    # `foreign_key_field` (e.g. `references: "Author"`) records the has_many
+    # side in @@_fk_registry but cannot wire it until the referenced class
+    # actually loads — which is now. Without this hook apply_fk_registry! was
+    # never called, so the has_many side silently never wired. The class body
+    # (where the model's own foreign_key_field declarations run, populating the
+    # registry) executes AFTER inherited returns, so entries keyed on THIS
+    # class were already recorded by earlier-loaded models. Chain through super
+    # so we never clobber a future inherited hook.
+    def self.inherited(subclass)
+      super
+      (@_model_subclasses ||= []) << subclass
+      subclass.apply_fk_registry! if subclass.respond_to?(:apply_fk_registry!, true)
+    end
+
+    # Every Tina4::ORM subclass that has been loaded, in definition order.
+    # Mirrors Python's ORM.__subclasses__() — used to resolve string-form
+    # ForeignKeyField references to a live class.
+    def self.model_subclasses
+      @_model_subclasses ||= []
+    end
+
     class << self
       def db
         # v3.13.12: implicit binding from TINA4_DATABASE_URL.
@@ -132,7 +155,7 @@ module Tina4
       #
       # @return [Tina4::QueryBuilder]
       def query
-        QueryBuilder.from(table_name, db: db)
+        QueryBuilder.from_table(table_name, db: db)
       end
 
       def find(id_or_filter = nil, filter = nil, **kwargs)
