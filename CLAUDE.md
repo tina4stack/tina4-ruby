@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.18 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.19 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -158,6 +158,8 @@ db = Tina4::Database.new("firebird://localhost:3050/mydb", username: "sysdba", p
 db = Tina4::Database.new  # reads from ENV
 
 db.fetch(sql, params = [], limit: nil, offset: nil) -> DatabaseResult
+# A DatabaseResult auto-serializes to a JSON array when returned from a route
+# via response.json(...) / response.call(...).
 db.fetch_one(sql, params = []) -> Hash | nil
 db.execute(sql, params = []) -> DatabaseResult
 db.insert(table, data) -> DatabaseResult
@@ -177,6 +179,35 @@ db.close
 
 **`tina4_sequences` table** — Auto-created by `get_next_id` on first use for SQLite, MySQL, and MSSQL. Stores the current sequence value per table. Do not modify this table manually.
 
+### Database binding — connecting models to a database
+
+```ruby
+# (a) .env auto-default — NO call required.
+#     If TINA4_DATABASE_URL is set, auto_discover_db binds it as the default
+#     connection on boot, and all models use it automatically.
+
+# (b) Override the default connection explicitly:
+Tina4.bind_database(Tina4::Database.new("sqlite://app.db"))
+
+# (c) Register a NAMED (secondary) connection and point a model at it:
+Tina4.bind_database(
+  Tina4::Database.new("postgres://localhost:5432/analytics", username: "u", password: "p"),
+  name: :analytics
+)
+
+class Visit < Tina4::ORM
+  self.db = :analytics    # symbol selects the named connection registered above
+end
+
+# Tina4.database (READER) returns the current default connection.
+Tina4.database -> Tina4::Database
+```
+
+`Tina4.bind_database(db)` is the writer (the old `Tina4.database = db` writer was
+removed in 3.13.19 — there is no alias). `Tina4.bind_database(db, name: :…)` registers
+a named connection; a model selects it with `self.db = :…`. A missing named connection
+raises a clear error.
+
 ### ORM — Active Record base class
 
 ```ruby
@@ -187,6 +218,12 @@ end
 
 # Instance methods
 model = MyModel.new(attributes = {})
+# Constructor accepts a Hash, keyword args, OR a JSON object string:
+#   MyModel.new(name: "Alice")           # kwargs
+#   MyModel.new("name" => "Alice")       # Hash
+#   MyModel.new('{"name": "Alice"}')     # JSON object string -> one record
+# Passing an Array raises ArgumentError (a single-record constructor); map over
+# the list to build many records.
 model.save -> self | false            # Returns self on success (fluent), false on failure
 model.delete -> Boolean               # Soft-delete if enabled, else hard delete
 model.force_delete -> Boolean         # Hard delete (bypasses soft-delete)
@@ -318,6 +355,17 @@ request.cookies -> Hash               # Parsed from Cookie header
 response.xml(content, status: 200)    # XML response
 response.call(data, status, content_type)  # Callable response (auto-detects type)
 response.stream(generator, content_type: "text/event-stream", status: 200)  # SSE/streaming
+```
+
+`response.json(...)` and `response.call(...)` auto-serialize domain objects to JSON:
+an ORM model becomes a JSON object; an array of models or a `DatabaseResult`
+(e.g. from `db.fetch(...)`) becomes a JSON array. Plain Hashes, Arrays and Strings
+behave exactly as before — this is purely additive.
+
+```ruby
+Tina4::Router.get("/api/users") do |request, response|
+  response.json(User.all)             # array of models -> JSON array
+end
 ```
 
 ### Template — ERB/Twig engine
@@ -759,8 +807,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive
-- Tests: 3,018 passing
-- Version: 3.13.18
+- Tests: 3,040 passing
+- Version: 3.13.19
 
 ## Links
 
