@@ -89,6 +89,20 @@ RSpec.describe Tina4::Database, "pool transaction atomicity" do
       expect(drivers.uniq.length).to eq(1),
         "current_driver rotated #{drivers.uniq.length} times inside a transaction — pin broken"
     end
+
+    it "makes a standalone write visible across pooled connections (autocommit on)" do
+      # No start_transaction — standalone writes must auto-commit on their own
+      # connection so any round-robin connection sees them.
+      db.execute("INSERT INTO t (id, val) VALUES (100, 'p')")
+      db.execute("INSERT INTO t (id, val) VALUES (200, 'q')")
+
+      counts = 8.times.map do
+        row = db.fetch_one("SELECT count(*) AS n FROM t")
+        (row["n"] || row[:n]).to_i
+      end
+      expect(counts).to all(eq(2)),
+        "standalone write not visible from a round-robin connection (got #{counts.inspect})"
+    end
   end
 
   describe "with pool = 0 (no regression)" do
