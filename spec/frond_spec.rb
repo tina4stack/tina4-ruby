@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+# Load spec_helper so the after(:each) registry cleanup runs even when this
+# file is run on its own (`rspec spec/frond_spec.rb`). Without it, an earlier
+# example's add_global("name", ...) leaked into the inline-if fallback specs —
+# the suite passed only because another file pulled spec_helper in first.
+require_relative "spec_helper"
 require_relative "../lib/tina4/frond"
 require "tmpdir"
 require "fileutils"
