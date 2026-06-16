@@ -160,7 +160,7 @@ RSpec.describe Tina4::Frond do
     end
 
     it "url_encode" do
-      expect(engine.render_string("{{ text | url_encode }}", { "text" => "hello world" })).to eq("hello+world")
+      expect(engine.render_string("{{ text | url_encode }}", { "text" => "hello world" })).to eq("hello%20world")
     end
   end
 
@@ -411,8 +411,9 @@ RSpec.describe Tina4::Frond do
     end
 
     it "nl2br" do
-      result = engine.render_string("{{ text | nl2br | raw }}", { "text" => "line1\nline2" })
-      expect(result).to include("<br>")
+      # Twig/PHP parity: nl2br escapes, inserts <br />, and is safe (no re-escape)
+      result = engine.render_string("{{ text | nl2br }}", { "text" => "line1\nline2" })
+      expect(result).to eq("line1<br />\nline2")
     end
 
     it "format with args" do
@@ -1774,4 +1775,23 @@ RSpec.describe Tina4::Frond do
       expect(out).to eq("2026-05-05")
     end
   end
+
+  describe "Twig parity fixes" do
+    it "escape does not double-escape" do
+      expect(engine.render_string("{{ h | e }}", { "h" => "<b>x</b>" })).to eq("&lt;b&gt;x&lt;/b&gt;")
+    end
+
+    it "concatenates two string literals" do
+      expect(engine.render_string("{{ 'a' ~ 'b' }}", {})).to eq("ab")
+    end
+
+    it "inline if with two string literals" do
+      expect(engine.render_string("{{ 'Y' if x else 'N' }}", { "x" => true })).to eq("Y")
+    end
+
+    it "url_encode percent-encodes spaces" do
+      expect(engine.render_string("{{ s | url_encode }}", { "s" => "a b" })).to eq("a%20b")
+    end
+  end
+
 end

@@ -10,6 +10,7 @@ require "json"
 require "digest"
 require "base64"
 require "cgi"
+require "erb"
 require "uri"
 require "date"
 require "time"
@@ -738,7 +739,7 @@ module Tina4
                   when "title"      then value.to_s.split.map(&:capitalize).join(" ")
                   when "string"     then value.to_s
                   when "int"        then value.to_i
-                  when "escape", "e" then Frond.escape_html(value.to_s)
+                  when "escape", "e" then Tina4::SafeString.new(Frond.escape_html(value.to_s))
                   else value
                   end
           next
@@ -1042,9 +1043,26 @@ module Tina4
     # ── Literal values: strings, numbers, booleans, null ──
 
     def eval_literal(expr)
-      if (expr.start_with?('"') && expr.end_with?('"')) ||
-         (expr.start_with?("'") && expr.end_with?("'"))
-        return expr[1..-2]
+      if expr.length >= 2 && (expr[0] == '"' || expr[0] == "'") && expr[-1] == expr[0]
+        # Only a SINGLE complete string literal — i.e. the opening quote's
+        # match is the final char. Without this check, `'a' ~ 'b'` and
+        # `'Y' if x else 'N'` (which merely start and end with a quote) get
+        # their outer quotes stripped here before concat / inline-if run.
+        q = expr[0]
+        i = 1
+        single = false
+        while i < expr.length
+          if expr[i] == "\\"
+            i += 2
+            next
+          end
+          if expr[i] == q
+            single = (i == expr.length - 1)
+            break
+          end
+          i += 1
+        end
+        return expr[1..-2] if single
       end
       return expr.to_i if expr =~ INTEGER_RE
       return expr.to_f if expr =~ FLOAT_RE
@@ -1894,8 +1912,8 @@ module Tina4
         "striptags"  => ->(v, *_a) { v.to_s.gsub(STRIPTAGS_RE, "") },
 
         # -- Encoding --
-        "escape"        => ->(v, *_a) { Frond.escape_html(v.to_s) },
-        "e"             => ->(v, *_a) { Frond.escape_html(v.to_s) },
+        "escape"        => ->(v, *_a) { Tina4::SafeString.new(Frond.escape_html(v.to_s)) },
+        "e"             => ->(v, *_a) { Tina4::SafeString.new(Frond.escape_html(v.to_s)) },
         "raw"           => ->(v, *_a) { v },
         "safe"          => ->(v, *_a) { v },
         "json_encode"   => ->(v, *_a) { JSON.generate(v) rescue v.to_s },
@@ -1914,7 +1932,7 @@ module Tina4
             v.to_s
           end
         },
-        "url_encode"    => ->(v, *_a) { CGI.escape(v.to_s) },
+        "url_encode"    => ->(v, *_a) { ERB::Util.url_encode(v.to_s) },
 
         # -- JSON / JS --
         "to_json" => ->(v, *a) {
@@ -2058,7 +2076,7 @@ module Tina4
           lines.join("\n")
         },
         "slug"   => ->(v, *_a) { v.to_s.downcase.gsub(SLUG_CLEAN_RE, "-").gsub(SLUG_TRIM_RE, "") },
-        "nl2br"  => ->(v, *_a) { v.to_s.gsub("\n", "<br>\n") },
+        "nl2br"  => ->(v, *_a) { Tina4::SafeString.new(Frond.escape_html(v.to_s).gsub("\n", "<br />\n")) },
         "format" => ->(v, *a) {
           if a.any?
             v.to_s % a
