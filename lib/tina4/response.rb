@@ -285,9 +285,19 @@ module Tina4
       self
     end
 
-    # Stream response from a block for Server-Sent Events (SSE).
+    # Stream a response for Server-Sent Events (SSE) / chunked transfer.
     #
-    # Usage:
+    # Two equivalent call styles (cross-framework parity — Python/PHP/Node
+    # pass a generator positionally; Ruby additionally supports a block):
+    #
+    #   # 1. Positional generator (Enumerator, or anything responding to
+    #   #    #each or #call that yields string chunks):
+    #   gen = Enumerator.new do |y|
+    #     10.times { |i| y << "data: message #{i}\n\n" }
+    #   end
+    #   response.stream(gen)
+    #
+    #   # 2. Block form (unchanged):
     #   Tina4::Router.get "/events" do |request, response|
     #     response.stream do |out|
     #       10.times do |i|
@@ -297,16 +307,18 @@ module Tina4
     #     end
     #   end
     #
+    # @param generator [#each, #call, nil] Optional source of string chunks.
     # @param content_type [String] Content type (default: text/event-stream)
     # @yield [Enumerator::Yielder] Block receives a yielder to push chunks
     # @return [self]
-    def stream(content_type: "text/event-stream", &block)
+    def stream(generator = nil, content_type: "text/event-stream", &block)
       @status_code = @status_code || 200
       @headers["content-type"] = content_type
       @headers["cache-control"] = "no-cache"
       @headers["connection"] = "keep-alive"
       @headers["x-accel-buffering"] = "no"
       @_streaming = true
+      @_stream_generator = generator
       @_stream_block = block
       self
     end
@@ -330,9 +342,24 @@ module Tina4
       final_headers["set-cookie"] = @cookies.join("\n") if @cookies && !@cookies.empty?
 
       if @_streaming
-        # Streaming mode — return an Enumerator as the body
+        # Streaming mode — return an Enumerator as the Rack body. A positional
+        # generator wins over a block when both are somehow present.
+        gen = @_stream_generator
+        blk = @_stream_block
         body = Enumerator.new do |yielder|
-          @_stream_block.call(yielder)
+          if gen
+            if gen.respond_to?(:each)
+              # Enumerator / array / any Enumerable of string chunks
+              gen.each { |chunk| yielder << chunk }
+            elsif gen.respond_to?(:call)
+              # Callable that receives the yielder, like the block form
+              gen.call(yielder)
+            else
+              yielder << gen.to_s
+            end
+          elsif blk
+            blk.call(yielder)
+          end
         end
         return [@status_code, final_headers, body]
       end

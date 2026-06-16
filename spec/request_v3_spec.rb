@@ -84,8 +84,11 @@ RSpec.describe "Request v3 features" do
     end
   end
 
-  describe "#body and #body_parsed" do
-    it "parses JSON body" do
+  describe "#body, #body_raw and #body_parsed" do
+    # Cross-framework parity (tina4-python/php/nodejs): request.body returns
+    # the PARSED payload; request.body_raw returns the raw bytes string;
+    # body_parsed is a backwards-compatible alias of body.
+    it "returns the PARSED JSON body from #body (parity with Python/PHP/Node)" do
       json_body = '{"name":"Alice","age":30}'
       env = make_env(
         "REQUEST_METHOD" => "POST",
@@ -93,12 +96,19 @@ RSpec.describe "Request v3 features" do
         "rack.input" => StringIO.new(json_body)
       )
       req = Tina4::Request.new(env)
-      expect(req.body).to eq(json_body)
+
+      # body and body_parsed both return the parsed Hash
+      expect(req.body).to be_a(Hash)
+      expect(req.body["name"]).to eq("Alice")
+      expect(req.body["age"]).to eq(30)
       expect(req.body_parsed["name"]).to eq("Alice")
       expect(req.body_parsed["age"]).to eq(30)
+
+      # body_raw still returns the raw bytes string
+      expect(req.body_raw).to eq(json_body)
     end
 
-    it "parses form-encoded body" do
+    it "parses form-encoded body for #body and exposes raw via #body_raw" do
       form_body = "name=Bob&email=bob%40test.com"
       env = make_env(
         "REQUEST_METHOD" => "POST",
@@ -106,8 +116,32 @@ RSpec.describe "Request v3 features" do
         "rack.input" => StringIO.new(form_body)
       )
       req = Tina4::Request.new(env)
+      expect(req.body["name"]).to eq("Bob")
+      expect(req.body["email"]).to eq("bob@test.com")
       expect(req.body_parsed["name"]).to eq("Bob")
-      expect(req.body_parsed["email"]).to eq("bob@test.com")
+      expect(req.body_raw).to eq(form_body)
+    end
+
+    it "body_parsed is an alias of body (same object)" do
+      json_body = '{"k":"v"}'
+      env = make_env(
+        "REQUEST_METHOD" => "POST",
+        "CONTENT_TYPE" => "application/json",
+        "rack.input" => StringIO.new(json_body)
+      )
+      req = Tina4::Request.new(env)
+      expect(req.body_parsed).to equal(req.body)
+    end
+
+    it "json_body still parses the raw JSON regardless of the body flip" do
+      json_body = '{"name":"Carol"}'
+      env = make_env(
+        "REQUEST_METHOD" => "POST",
+        "CONTENT_TYPE" => "application/json",
+        "rack.input" => StringIO.new(json_body)
+      )
+      req = Tina4::Request.new(env)
+      expect(req.json_body["name"]).to eq("Carol")
     end
   end
 

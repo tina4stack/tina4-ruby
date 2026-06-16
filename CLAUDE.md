@@ -281,16 +281,16 @@ NoSQL support: `to_mongo()` generates MongoDB query documents from the same flue
 
 ### File Uploads
 
-Multipart file uploads are available via `request.files` (hash keyed by field name). Each file is a hash:
+Multipart file uploads are available via `request.files` (hash keyed by field name). Each file is an **indifferent-access** hash — string and symbol keys both work (`file["content"]` and `file[:content]` are equivalent), matching the string-key access used by Python/PHP/Node:
 
 ```ruby
 # request.files["avatar"] =>
 {
-  fieldName: "avatar",
   filename: "photo.png",
   type: "image/png",
-  tempfile: <File>,          # Rack tempfile — read with .read
-  size: 102400
+  tempfile: <File>,          # Rack tempfile — for large-file streaming (.read)
+  size: 102400,
+  content: "<raw bytes>"     # raw file bytes (NOT base64) — parity with Python/PHP/Node
 }
 ```
 
@@ -298,10 +298,15 @@ Multipart file uploads are available via `request.files` (hash keyed by field na
 post "/api/upload" do |request, response|
   file = request.files["avatar"]
   return response.json({ error: "No file" }, 400) unless file
-  File.binwrite("src/public/uploads/#{file[:filename]}", file[:tempfile].read)
+  # Use file["content"] (raw bytes) for small files...
+  File.binwrite("src/public/uploads/#{file["filename"]}", file["content"])
+  # ...or stream the tempfile for large uploads:
+  # IO.copy_stream(file[:tempfile], "src/public/uploads/#{file[:filename]}")
   response.json({ ok: true })
 end
 ```
+
+`file["content"]` is the raw bytes (the tempfile is read once and rewound, so `:tempfile` stays usable for streaming large files).
 
 Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
 
@@ -351,10 +356,39 @@ db.get_error -> String | nil
 ### Request/Response extras
 
 ```ruby
-request.cookies -> Hash               # Parsed from Cookie header
-response.xml(content, status: 200)    # XML response
+request.body          -> Hash | Object  # PARSED body (JSON->Hash, form->Hash, multipart fields->Hash)
+request.body_parsed   -> Hash | Object  # Alias of #body (backwards-compatible)
+request.body_raw      -> String         # Raw body bytes exactly as sent (for SOAP/GraphQL/etc.)
+request.json_body     -> Hash           # Parse the raw body as JSON ({} on failure)
+request.cookies       -> Hash           # Parsed from Cookie header
+
+response.xml(content, status: 200)         # XML response
 response.call(data, status, content_type)  # Callable response (auto-detects type)
-response.stream(generator, content_type: "text/event-stream", status: 200)  # SSE/streaming
+
+# Streaming / SSE — pass a positional generator (Enumerator, or anything
+# responding to #each or #call yielding string chunks), OR use a block.
+# Cross-framework parity: Python/PHP/Node use the positional-generator form.
+response.stream(generator = nil, content_type: "text/event-stream", &block)
+```
+
+`request.body` returns the **parsed** payload (parity with Python/PHP/Node). Use
+`request.body_raw` when you need the raw string (e.g. SOAP XML, custom parsing).
+
+```ruby
+# Streaming — positional generator (Python/PHP/Node parity):
+Tina4::Router.get "/events" do |request, response|
+  gen = Enumerator.new do |out|
+    10.times { |i| out << "data: message #{i}\n\n" }
+  end
+  response.stream(gen)
+end
+
+# ...or the block form (Ruby-idiomatic, unchanged):
+Tina4::Router.get "/events" do |request, response|
+  response.stream do |out|
+    10.times { |i| out << "data: message #{i}\n\n" }
+  end
+end
 ```
 
 `response.json(...)` and `response.call(...)` auto-serialize domain objects to JSON:

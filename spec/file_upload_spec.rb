@@ -71,6 +71,67 @@ RSpec.describe "Multipart file upload parsing" do
     end
   end
 
+  describe "file content field (cross-framework parity)" do
+    # Python/PHP/Node expose file["content"] as the raw bytes. Ruby matches.
+    it "exposes the raw bytes via the content field (not base64)" do
+      upload = make_upload(LOGO_PATH, "logo.svg", "image/svg+xml")
+      @uploads = [upload]
+
+      env = make_env(
+        "rack.request.form_hash" => { "avatar" => upload }
+      )
+
+      request = Tina4::Request.new(env)
+      file = request.files["avatar"]
+
+      # content is the raw file bytes, identical to the source on disk
+      expect(file["content"]).to be_a(String)
+      expect(file["content"]).to eq(File.binread(LOGO_PATH))
+      expect(file["content"].bytesize).to eq(File.size(LOGO_PATH))
+
+      # It must NOT be base64 — raw SVG markup is present
+      expect(file["content"]).to include("<svg")
+    end
+
+    it "reading content does not consume the tempfile (rewound for streaming)" do
+      upload = make_upload(LOGO_PATH, "logo.svg", "image/svg+xml")
+      @uploads = [upload]
+
+      env = make_env(
+        "rack.request.form_hash" => { "doc" => upload }
+      )
+
+      request = Tina4::Request.new(env)
+      file = request.files["doc"]
+
+      # content already read above; tempfile must still yield the full bytes
+      streamed = file[:tempfile].read
+      expect(streamed.bytesize).to eq(File.size(LOGO_PATH))
+      expect(streamed).to eq(file["content"])
+    end
+
+    it "per-file hash supports indifferent access (string and symbol keys)" do
+      upload = make_upload(LOGO_PATH, "logo.svg", "image/svg+xml")
+      @uploads = [upload]
+
+      env = make_env(
+        "rack.request.form_hash" => { "avatar" => upload }
+      )
+
+      request = Tina4::Request.new(env)
+      file = request.files["avatar"]
+
+      # filename / type / size / content all reachable both ways
+      expect(file["filename"]).to eq("logo.svg")
+      expect(file[:filename]).to eq("logo.svg")
+      expect(file["type"]).to eq("image/svg+xml")
+      expect(file[:type]).to eq("image/svg+xml")
+      expect(file["size"]).to eq(File.size(LOGO_PATH))
+      expect(file[:size]).to eq(File.size(LOGO_PATH))
+      expect(file["content"]).to eq(file[:content])
+    end
+  end
+
   describe "non-file fields vs file fields" do
     it "non-file fields go to body_parsed, files go to request.files" do
       upload = make_upload(LOGO_PATH, "logo.svg", "image/svg+xml")

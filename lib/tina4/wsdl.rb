@@ -116,9 +116,18 @@ module Tina4
     def handle
       return generate_wsdl if @request.nil?
 
+      # SOAP bodies are raw XML, so read the raw bytes. On a real
+      # Tina4::Request use body_raw (request.body now returns the PARSED
+      # payload); test stubs that only expose `body` fall back to it.
+      raw_body = if @request.respond_to?(:body_raw)
+                   @request.body_raw
+                 elsif @request.respond_to?(:body)
+                   @request.body
+                 end
+
       method = if @request.respond_to?(:method)
                  @request.method.to_s.upcase
-               elsif @request.respond_to?(:body) && @request.body && !@request.body.to_s.empty?
+               elsif raw_body && !raw_body.to_s.empty?
                  "POST"
                else
                  "GET"
@@ -131,11 +140,7 @@ module Tina4
         return generate_wsdl
       end
 
-      body = if @request.respond_to?(:body)
-               @request.body.is_a?(String) ? @request.body : @request.body.to_s
-             else
-               ""
-             end
+      body = raw_body.is_a?(String) ? raw_body : raw_body.to_s
 
       process_soap(body)
     end

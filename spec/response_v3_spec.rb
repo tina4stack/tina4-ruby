@@ -186,4 +186,63 @@ RSpec.describe "Response v3 features" do
       expect(response.headers["X-Request-Id"]).to eq("abc")
     end
   end
+
+  describe "#stream" do
+    # Helper: drain the Rack body into the list of chunks it yields.
+    def stream_chunks(resp)
+      _status, _headers, body = resp.to_rack
+      chunks = []
+      body.each { |c| chunks << c }
+      chunks
+    end
+
+    it "sets SSE headers and returns self" do
+      result = response.stream { |out| out << "data: x\n\n" }
+      expect(result).to equal(response)
+      expect(response.headers["content-type"]).to eq("text/event-stream")
+      expect(response.headers["cache-control"]).to eq("no-cache")
+      expect(response.headers["connection"]).to eq("keep-alive")
+      expect(response.headers["x-accel-buffering"]).to eq("no")
+    end
+
+    it "streams from a block (unchanged behaviour)" do
+      response.stream do |out|
+        3.times { |i| out << "data: msg #{i}\n\n" }
+      end
+      _status, _headers, body = response.to_rack
+      expect(body).to be_a(Enumerator)
+      expect(stream_chunks(response)).to eq([
+        "data: msg 0\n\n", "data: msg 1\n\n", "data: msg 2\n\n"
+      ])
+    end
+
+    it "streams from a positional Enumerator generator (Python/PHP/Node parity)" do
+      gen = Enumerator.new do |y|
+        3.times { |i| y << "data: gen #{i}\n\n" }
+      end
+      response.stream(gen)
+      _status, _headers, body = response.to_rack
+      expect(body).to be_a(Enumerator)
+      expect(stream_chunks(response)).to eq([
+        "data: gen 0\n\n", "data: gen 1\n\n", "data: gen 2\n\n"
+      ])
+    end
+
+    it "streams from any object responding to #each (e.g. an Array)" do
+      response.stream(["a", "b", "c"])
+      expect(stream_chunks(response)).to eq(["a", "b", "c"])
+    end
+
+    it "streams from a callable generator (responds to #call with a yielder)" do
+      callable = ->(out) { 2.times { |i| out << "c#{i}" } }
+      response.stream(callable)
+      expect(stream_chunks(response)).to eq(["c0", "c1"])
+    end
+
+    it "honours a custom content_type with a positional generator" do
+      response.stream(["x"], content_type: "text/plain")
+      expect(response.headers["content-type"]).to eq("text/plain")
+      expect(stream_chunks(response)).to eq(["x"])
+    end
+  end
 end

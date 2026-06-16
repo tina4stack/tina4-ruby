@@ -161,15 +161,24 @@ module Tina4
       @session ||= Tina4::Session.new(@env)
     end
 
-    # Raw body string
+    # Parsed body (JSON -> Hash, form-urlencoded -> Hash, multipart ->
+    # fields Hash, else the current fallback). This matches Python's
+    # `request.body`, PHP's, and Node's: `body` is the PARSED payload, not
+    # the raw bytes. For the raw string use `body_raw`.
     def body
+      @body_parsed ||= parse_body
+    end
+
+    # Raw body string — the bytes exactly as the client sent them.
+    # (This is what `body` used to return before the cross-framework
+    # parity flip; SOAP/GraphQL and any consumer that needs the raw text
+    # reads this.)
+    def body_raw
       @body_raw ||= read_body
     end
 
-    # Parsed body (JSON or form data)
-    def body_parsed
-      @body_parsed ||= parse_body
-    end
+    # Backwards-compatible alias of `body` — both return the parsed payload.
+    alias body_parsed body
 
     # Parsed query string as hash
     def query
@@ -204,7 +213,7 @@ module Tina4
 
     def json_body
       @json_body ||= begin
-        JSON.parse(body)
+        JSON.parse(body_raw)
       rescue JSON::ParserError, TypeError
         {}
       end
@@ -273,7 +282,7 @@ module Tina4
       if @content_type.include?("application/json")
         json_body
       elsif @content_type.include?("application/x-www-form-urlencoded")
-        parse_query_to_hash(body)
+        parse_query_to_hash(body_raw)
       elsif @content_type.include?("multipart/form-data")
         # Extract form fields from Rack's parsed multipart data.
         # Files are handled separately by extract_files.
@@ -324,12 +333,32 @@ module Tina4
         if form_hash
           form_hash.each do |key, value|
             if value.is_a?(Hash) && value[:tempfile]
-              result[key] = {
-                filename: value[:filename],
-                type: value[:type],
-                tempfile: value[:tempfile],
-                size: value[:tempfile].size
-              }
+              tempfile = value[:tempfile]
+
+              # Read the raw bytes once for the `content` field (parity with
+              # Python/PHP/Node, which expose file["content"] as raw bytes —
+              # never base64), then rewind so `:tempfile` is still usable for
+              # large-file streaming.
+              content = begin
+                tempfile.rewind if tempfile.respond_to?(:rewind)
+                bytes = tempfile.read
+                tempfile.rewind if tempfile.respond_to?(:rewind)
+                bytes
+              rescue StandardError
+                nil
+              end
+
+              # Indifferent-access per-file hash so file["content"],
+              # file[:content], file["filename"], file[:filename] all work —
+              # string-key access matches the other three frameworks while
+              # staying idiomatic for Ruby callers using symbols.
+              file = IndifferentHash.new
+              file[:filename] = value[:filename]
+              file[:type]     = value[:type]
+              file[:tempfile] = tempfile
+              file[:size]     = tempfile.size
+              file[:content]  = content
+              result[key] = file
             end
           end
         end

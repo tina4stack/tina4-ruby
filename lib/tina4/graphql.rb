@@ -1026,7 +1026,9 @@ module Tina4
 
       graphql = self
       Tina4.post path, auth: false do |request, response|
-        body = request.body
+        # handle_request expects the raw JSON text (it JSON.parses internally),
+        # so read body_raw — request.body now returns the PARSED payload.
+        body = request.body_raw
         result = graphql.handle_request(body, context: { request: request })
         response.json(result)
       end
