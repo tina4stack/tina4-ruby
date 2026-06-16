@@ -98,8 +98,7 @@ module Tina4
     # Full reflection of a single class — `nil` for unknown.
     def class_spec(fqn)
       ensure_index
-      key = normalise_fqn(fqn)
-      class_entry = all_entries.find { |e| e[:kind] == "class" && e[:fqn] == key }
+      class_entry = resolve_class(fqn)
       return nil if class_entry.nil?
 
       methods = all_entries.select do |m|
@@ -123,9 +122,10 @@ module Tina4
     # Single method spec — `nil` for unknown.
     def method_spec(class_fqn, method_name)
       ensure_index
-      key = normalise_fqn(class_fqn)
+      klass = resolve_class(class_fqn)
+      resolved = klass ? klass[:fqn] : normalise_fqn(class_fqn)
       entry = all_entries.find do |e|
-        e[:kind] == "method" && e[:class_fqn] == key && e[:name] == method_name.to_s
+        e[:kind] == "method" && e[:class_fqn] == resolved && e[:name] == method_name.to_s
       end
       entry && method_payload(entry)
     end
@@ -558,6 +558,38 @@ module Tina4
       tokens.each do |tk|
         score += 1 if !tk.empty? && doc.include?(tk)
       end
+
+      # Class-qualified queries ("Frond.add_test" / "Frond::add_test" /
+      # "Frond add_test"): score the owning class so the qualifier steers
+      # ranking instead of being dead weight.
+      class_fqn = (entry[:class_fqn] || entry[:class]).to_s
+      unless class_fqn.empty?
+        parent = class_fqn.split("::").last.to_s.downcase
+        unless parent.empty?
+          # Exact "Class.method" intent — normalise `.`/`::`/whitespace in the
+          # (already space-stripped) joined query to a single `.` separator.
+          q_norm = joined.gsub(/[:.]+/, ".")
+          if q_norm == "#{parent}.#{name}" || q_norm == "#{parent}.#{stripped}"
+            score += 6 # strongest signal we have
+          end
+          tokens.each do |tk|
+            next if tk.empty?
+            if tk == parent
+              score += 2.5
+            elsif parent.start_with?(tk)
+              score += 1
+            end
+          end
+        end
+      end
+
+      # Any token that is a whole dotted / :: segment of the fqn
+      # (namespace / class / method).
+      fqn_segs = entry[:fqn].to_s.downcase.split(/[.:#\s]+/).reject(&:empty?)
+      tokens.each do |tk|
+        score += 1 if !tk.empty? && fqn_segs.include?(tk)
+      end
+
       # Substring fallback — full joined query inside the name.
       if !joined.empty? && score.zero? && name.include?(joined)
         score += 2
@@ -631,6 +663,37 @@ module Tina4
 
     def normalise_fqn(fqn)
       fqn.to_s.sub(/\A::/, "")
+    end
+
+    # Resolve a class entry by exact FQN, documented public path, or bare name.
+    #
+    # Callers naturally type the exact stored FQN (`Tina4::Database`), a bare
+    # class name (`Database`), or a longer path that nests the class name
+    # (`Tina4::Database::Database`). Match exactly first, then by class name
+    # (the last `::`/`.` segment), disambiguating by requiring the given
+    # segments to appear in the stored FQN (framework + shortest wins). A
+    # genuinely unknown name returns `nil` — no false positives.
+    def resolve_class(given)
+      classes = all_entries.select { |e| e[:kind] == "class" }
+      key = normalise_fqn(given)
+
+      exact = classes.find { |e| e[:fqn] == key }
+      return exact if exact
+
+      gsegs = key.split(/[:.]+/).reject(&:empty?)
+      gname = gsegs.empty? ? key : gsegs.last
+      cands = classes.select { |e| e[:fqn].to_s.split(/[:.]+/).last == gname }
+      return nil if cands.empty?
+      return cands.first if cands.size == 1
+
+      # Disambiguate: prefer classes whose stored FQN contains every given
+      # segment, then framework source, then the shortest FQN.
+      subset = cands.select do |e|
+        segs = e[:fqn].to_s.split(/[:.]+/)
+        gsegs.all? { |s| segs.include?(s) }
+      end
+      pool = subset.empty? ? cands : subset
+      pool.min_by { |e| [e[:source] == "framework" ? 0 : 1, e[:fqn].to_s.length, e[:fqn].to_s] }
     end
   end
 end

@@ -237,4 +237,63 @@ RSpec.describe Tina4::Docs do
         "vendor/ paths leaked into default search"
     end
   end
+
+  # ── 17 ───────────────────────────────────────────────────────────
+  # Frond's add_filter/add_global/add_test are a dual class+instance facade
+  # (`def self.add_filter` AND `def add_filter`). They are public, documented
+  # API and must be indexed with a usable signature leading with the method
+  # name. (In Python/PHP these are metaprogrammed and the reflector originally
+  # dropped them; in Ruby they are normal `def`s, so this verifies parity.)
+  it "facade-defined Frond methods are indexed" do
+    %w[add_filter add_global add_test].each do |name|
+      spec = docs.method_spec("Tina4::Frond", name)
+      expect(spec).not_to be_nil, "Tina4::Frond##{name} must be indexed"
+      sig = (spec[:signature] || spec["signature"]).to_s
+      expect(sig).to include("#{name}("),
+        "signature should lead with the method name: #{sig.inspect}"
+      # No Ruby receiver tokens should leak into the public signature.
+      expect(sig).not_to include("(self"), "receiver must not appear in signature: #{sig.inspect}"
+    end
+  end
+
+  # ── 18 ───────────────────────────────────────────────────────────
+  # A "Class.method" / "Class method" query must rank that class's method
+  # first — the class qualifier has to steer ranking, not be dead weight.
+  it "class-qualified search ranks the owning method" do
+    ["Frond.add_test", "Frond add_test", "add_test"].each do |query|
+      hits = docs.search(query, k: 3)
+      expect(hits).not_to be_empty, "no hits for #{query.inspect}"
+      top = hits.first[:fqn] || hits.first["fqn"]
+      expect(top).to eq("Tina4::Frond#add_test"),
+        "#{query.inspect} should rank Tina4::Frond#add_test #1; got #{hits.map { |h| h[:fqn] || h["fqn"] }.inspect}"
+    end
+  end
+
+  # ── 19 ───────────────────────────────────────────────────────────
+  # A longer documented path that nests the class name resolves to the same
+  # class as the exact stored FQN, and method_spec resolves through it too.
+  it "lookup resolves a longer documented path" do
+    exact  = "Tina4::Database"
+    nested = "Tina4::Database::Database"
+    expect(docs.class_spec(exact)).not_to be_nil, "precondition: exact FQN resolves"
+    expect(docs.class_spec(nested)).not_to be_nil, "nested documented path must resolve"
+    expect(docs.method_spec(nested, "execute")).not_to be_nil,
+      "method_spec must resolve via the nested path"
+    # Both paths point at the same class.
+    expect((docs.class_spec(nested)[:fqn] || docs.class_spec(nested)["fqn"]))
+      .to eq((docs.class_spec(exact)[:fqn] || docs.class_spec(exact)["fqn"]))
+  end
+
+  # ── 20 ───────────────────────────────────────────────────────────
+  # A bare class name (Database) resolves to the one matching class.
+  it "lookup resolves a bare class name" do
+    spec = docs.class_spec("Database")
+    expect(spec).not_to be_nil, "bare class name must resolve"
+    expect((spec[:fqn] || spec["fqn"]).to_s).to end_with("Database")
+    expect(docs.method_spec("Database", "execute")).not_to be_nil
+    # A leading :: resolves to the same class.
+    expect(docs.class_spec("::Tina4::Database")).not_to be_nil
+    # A truly unknown name still returns nil (no false positives).
+    expect(docs.class_spec("DefinitelyNotAClass")).to be_nil
+  end
 end
