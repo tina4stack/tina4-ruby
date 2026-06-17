@@ -845,7 +845,7 @@ Tina4::DevAdmin.request_inspector.clear
 - QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
 - WebSocket backplane (Redis pub/sub) for horizontal scaling. Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL` env vars. Rooms API: `conn.join_room(name)`, `conn.leave_room(name)`, `conn.rooms`, `conn.broadcast_to_room(name, msg)`, `ws.room_count(name)`, `ws.get_room_connections(name)`, `ws.broadcast_to_room(name, msg, exclude: nil)`
 - SameSite=Lax default on session cookies (`TINA4_SESSION_SAMESITE`)
-- `tina4 init` generates Dockerfile and .dockerignore
+- `tina4 deploy docker` generates Dockerfile and .dockerignore
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`
 - Race-safe `get_next_id` with atomic sequence table (`tina4_sequences`) for SQLite/MySQL/MSSQL; PostgreSQL auto-creates sequences
 - Frond template engine optimizations: pre-compiled regexes, lazy loop context (copy-on-write), filter chain caching, path split caching, inline common filters (11-15% speedup)
