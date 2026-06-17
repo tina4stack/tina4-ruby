@@ -513,6 +513,36 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
+  # ── File read language detection (GET /__dev/api/file) ─────────
+  # The dev-admin SPA maps the payload's `language` field to a
+  # CodeMirror grammar for syntax highlighting. Coverage must be
+  # IDENTICAL to the Python master lang_map. Mirrors
+  # tina4-python / tina4-php / tina4-nodejs file-read endpoints.
+  describe "file read language" do
+    it "maps .ts to typescript" do
+      expect(Tina4::DevAdmin.send(:dev_admin_language, "src/app.ts")).to eq("typescript")
+    end
+
+    it "maps .rb to ruby" do
+      expect(Tina4::DevAdmin.send(:dev_admin_language, "lib/tina4/router.rb")).to eq("ruby")
+    end
+
+    it "detects a no-extension Dockerfile" do
+      expect(Tina4::DevAdmin.send(:dev_admin_language, "Dockerfile")).to eq("dockerfile")
+    end
+
+    it "falls back to text for unknown extensions" do
+      expect(Tina4::DevAdmin.send(:dev_admin_language, "data.bin")).to eq("text")
+    end
+
+    it "includes a language field in the file_read_payload" do
+      payload = Tina4::DevAdmin.send(:file_read_payload, "Gemfile")
+      # Gemfile has no mapped extension -> text; the key must always be present
+      expect(payload).to have_key(:language)
+      expect(payload[:language]).to be_a(String)
+    end
+  end
+
   # ── Hot-reload parity tests ────────────────────────────────────
   # Mirrors tina4-php/tests/DevAdminTest.php, tina4-python/tests/test_dev_admin.py,
   # tina4-nodejs/test/devAdmin.test.ts. The mtime counter must only

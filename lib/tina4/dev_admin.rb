@@ -1392,6 +1392,32 @@ module Tina4
         { path: rel, branch: git[:branch], entries: entries, count: entries.size }
       end
 
+      # Map a relative path to a CodeMirror language string. IDENTICAL in
+      # coverage to the Python master (tina4_python/dev_admin lang_map). The
+      # dev-admin SPA reads the "language" field to pick its grammar.
+      def dev_admin_language(rel)
+        base = File.basename(rel.to_s).downcase
+        return "dockerfile" if %w[dockerfile dockerfile.dev dockerfile.prod].include?(base)
+        return "env" if base == ".env" || base == ".env.example"
+
+        ext_map = {
+          ".py" => "python", ".php" => "php", ".rb" => "ruby",
+          ".ts" => "typescript", ".js" => "javascript", ".jsx" => "javascript",
+          ".tsx" => "typescript", ".json" => "json", ".html" => "html",
+          ".twig" => "html", ".css" => "css", ".scss" => "css",
+          ".md" => "markdown", ".sql" => "sql", ".yaml" => "yaml",
+          ".yml" => "yaml", ".toml" => "toml", ".xml" => "html",
+          ".env" => "env",
+          ".sh" => "shell", ".bash" => "shell",
+          ".bat" => "shell", ".cmd" => "shell", ".ps1" => "shell",
+          ".rs" => "rust", ".go" => "go", ".java" => "java",
+          ".txt" => "text", ".csv" => "text", ".log" => "text",
+          ".gemspec" => "ruby", ".rake" => "ruby",
+          ".svg" => "svg"
+        }
+        ext_map.fetch(File.extname(base).downcase, "text")
+      end
+
       def file_read_payload(rel)
         return { error: "path required" } if rel.nil? || rel.empty?
         begin
@@ -1399,7 +1425,7 @@ module Tina4
           return { error: "Not found" } unless File.exist?(target)
           return { error: "Not a file" } unless File.file?(target)
           content = File.read(target, encoding: "utf-8", invalid: :replace, undef: :replace)
-          { path: rel, content: content, bytes: File.size(target) }
+          { path: rel, content: content, bytes: File.size(target), language: dev_admin_language(rel) }
         rescue => e
           { error: e.message }
         end
