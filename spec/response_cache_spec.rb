@@ -265,6 +265,66 @@ RSpec.describe Tina4::ResponseCache do
     end
   end
 
+  # ── X-Cache response headers (parity with Python/PHP/Node) ──────
+
+  describe "X-Cache response headers" do
+    # Drive the real middleware hooks (before_cache / after_cache) with a real
+    # Tina4::Request + Tina4::Response, exactly as the orchestrator does.
+    def get_request(path)
+      Tina4::Request.new("REQUEST_METHOD" => "GET", "PATH_INFO" => path)
+    end
+
+    let(:cache) { Tina4::ResponseCache.new(ttl: 60) }
+
+    it "sets X-Cache: MISS when the handler runs (first request)" do
+      request = get_request("/api/widgets")
+      response = Tina4::Response.new
+
+      # before_cache: nothing cached yet -> tags request, no HIT header.
+      request, response = cache.before_cache(request, response)
+      # Handler produces the response body.
+      response.json({ "widgets" => [] })
+      # after_cache: stores the entry and stamps MISS.
+      request, response = cache.after_cache(request, response)
+
+      expect(response.headers["X-Cache"]).to eq("MISS")
+      expect(response.headers["X-Cache-TTL"]).not_to be_nil
+      expect(response.headers["X-Cache-TTL"].to_i).to be > 0
+    end
+
+    it "sets X-Cache: HIT on the second request, with X-Cache-TTL present" do
+      # First request — populate the cache (MISS).
+      req1 = get_request("/api/widgets")
+      res1 = Tina4::Response.new
+      req1, res1 = cache.before_cache(req1, res1)
+      res1.json({ "widgets" => [1, 2, 3] })
+      cache.after_cache(req1, res1)
+      expect(res1.headers["X-Cache"]).to eq("MISS")
+
+      # Second request — served from cache (HIT).
+      req2 = get_request("/api/widgets")
+      res2 = Tina4::Response.new
+      req2, res2 = cache.before_cache(req2, res2)
+
+      expect(res2.headers["X-Cache"]).to eq("HIT")
+      expect(res2.headers["X-Cache-TTL"]).not_to be_nil
+      expect(res2.headers["X-Cache-TTL"].to_i).to be > 0
+      # The cached body is replayed.
+      expect(res2.body).to eq('{"widgets":[1,2,3]}')
+    end
+
+    it "does not set Cache-Control" do
+      request = get_request("/api/no-cc")
+      response = Tina4::Response.new
+      request, response = cache.before_cache(request, response)
+      response.json({ "ok" => true })
+      request, response = cache.after_cache(request, response)
+
+      expect(response.headers).not_to have_key("Cache-Control")
+      expect(response.headers).not_to have_key("cache-control")
+    end
+  end
+
   # ── File backend ────────────────────────────────────────────────
 
   describe "file backend" do

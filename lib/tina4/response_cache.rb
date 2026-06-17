@@ -86,6 +86,7 @@ module Tina4
       if hit
         if response.respond_to?(:call)
           new_response = response.call(hit.body, hit.status_code, hit.content_type)
+          set_cache_headers(new_response, "HIT", remaining_ttl(hit.expires_at))
           return [request, new_response]
         end
       end
@@ -106,16 +107,17 @@ module Tina4
     def after_cache(request, response)
       return [request, response] unless enabled?
 
-      method = if request.respond_to?(:[])
-                 request[:_cache_method]
-               else
-                 request.instance_variable_get(:@_cache_method)
-               end
-      url = if request.respond_to?(:[])
-              request[:_cache_url]
-            else
-              request.instance_variable_get(:@_cache_url)
-            end
+      # Read the tags using the SAME mechanism before_cache wrote them with.
+      # before_cache keys the write on respond_to?(:[]=), so read the same way:
+      # a Tina4::Request responds to #[] (read-only param lookup) but NOT #[]=,
+      # so the tags live on instance variables, not the param hash.
+      if request.respond_to?(:[]=)
+        method = request[:_cache_method]
+        url = request[:_cache_url]
+      else
+        method = request.instance_variable_get(:@_cache_method)
+        url = request.instance_variable_get(:@_cache_url)
+      end
       return [request, response] if method.nil? || url.nil?
 
       status = if response.respond_to?(:status_code)
@@ -137,6 +139,9 @@ module Tina4
              end
 
       internal_store(method, url, status.to_i, content_type.to_s, body)
+      # The handler ran (cache miss) — annotate the response so clients can
+      # see this was a fresh response and how long it will be cached.
+      set_cache_headers(response, "MISS", @ttl)
       [request, response]
     end
 
@@ -277,6 +282,26 @@ module Tina4
     # Build a cache key from method and URL.
     def cache_key(method, url)
       "#{method}:#{url}"
+    end
+
+    # Stamp X-Cache / X-Cache-TTL on a response. `state` is "HIT" or "MISS";
+    # `ttl` is the remaining (HIT) or configured (MISS) TTL in seconds.
+    # Parity with Python/PHP/Node ResponseCache, which set the same two
+    # headers (no Cache-Control). No-op for responses that don't carry a
+    # mutable headers hash (e.g. test doubles).
+    def set_cache_headers(response, state, ttl)
+      return unless response.respond_to?(:headers) && response.headers.is_a?(Hash)
+
+      response.headers["X-Cache"] = state
+      response.headers["X-Cache-TTL"] = ttl.to_i.to_s
+    end
+
+    # Remaining whole seconds until `expires_at` (a monotonic-ish Time.now.to_f
+    # epoch), floored at 0 so an entry on the cusp of expiry never reports a
+    # negative TTL.
+    def remaining_ttl(expires_at)
+      remaining = (expires_at || 0) - Time.now.to_f
+      remaining.positive? ? remaining : 0
     end
 
     # Internal: retrieve a cached response. Used by middleware hooks only.

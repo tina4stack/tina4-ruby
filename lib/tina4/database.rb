@@ -366,11 +366,20 @@ module Tina4
     # v3.13.12: default `limit` is **nil** (no truncation) — the method
     # name says fetch_all, so it returns all matching rows. Pre-v3.13.12
     # silently truncated to 100. Pass an explicit `limit:` to cap.
-    def fetch_all(sql, params = [], limit: nil, offset: nil)
-      fetch(sql, params, limit: limit, offset: offset).records
+    #
+    # Pass `no_cache: true` to bypass the query cache for this call (see #fetch).
+    def fetch_all(sql, params = [], limit: nil, offset: nil, no_cache: false)
+      fetch(sql, params, limit: limit, offset: offset, no_cache: no_cache).records
     end
 
-    def fetch(sql, params = [], limit: 100, offset: nil)
+    # Fetch rows with pagination, returning a DatabaseResult.
+    #
+    # Pass `no_cache: true` to bypass the query cache entirely for this single
+    # call — no lookup, no store — and run the query directly against the
+    # driver. Works for both the request-scoped auto-cache and the persistent
+    # DB cache. The default `false` preserves the cached behaviour. Parity with
+    # Python db.fetch(no_cache=) / PHP / Node.
+    def fetch(sql, params = [], limit: 100, offset: nil, no_cache: false)
       offset ||= 0
       drv = current_driver
 
@@ -388,7 +397,7 @@ module Tina4
         effective_sql = drv.apply_limit(effective_sql, limit, offset)
       end
 
-      if @cache_enabled
+      if @cache_enabled && !no_cache
         key = cache_key(effective_sql, params)
         cached = cache_get(key)
         if cached
@@ -406,9 +415,15 @@ module Tina4
       Tina4::DatabaseResult.new(rows, sql: effective_sql, db: self)
     end
 
-    def fetch_one(sql, params = [])
+    # Fetch a single row (or nil).
+    #
+    # Pass `no_cache: true` to bypass the query cache entirely for this call —
+    # no lookup, no store — running the query directly. The `no_cache` flag is
+    # propagated to the inner #fetch so the request-scoped/persistent cache is
+    # never populated either. Default `false` preserves cached behaviour.
+    def fetch_one(sql, params = [], no_cache: false)
       sql = Tina4::Database.strip_trailing_semicolons(sql)
-      if @cache_enabled
+      if @cache_enabled && !no_cache
         key = cache_key(sql + ":ONE", params)
         cached = cache_get(key)
         if cached
@@ -422,7 +437,7 @@ module Tina4
         return value
       end
 
-      result = fetch(sql, params, limit: 1)
+      result = fetch(sql, params, limit: 1, no_cache: no_cache)
       result.first
     end
 
