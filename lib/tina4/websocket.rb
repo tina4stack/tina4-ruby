@@ -344,4 +344,52 @@ module Tina4
       Tina4.build_frame(opcode, data)
     end
   end
+
+  # Shared, process-wide manager for the dev-reload channel (/__dev_reload).
+  #
+  # Every browser that loads a page in debug mode opens a WebSocket here and
+  # keeps it open. POST /__dev/api/reload (issued by the tina4 Rust CLI on a
+  # file change) calls Tina4::DevReload.broadcast(...) to push an instant
+  # {type, file, mtime} message to every connected client — no respawn, no
+  # poll. Mirrors Python's single `_ws_manager` holding /__dev_reload
+  # connections by path; in Ruby each route upgrade otherwise spins its own
+  # isolated WebSocket engine, so a dedicated shared manager is what makes a
+  # broadcast reach all clients.
+  module DevReload
+    @manager = nil
+    @mutex = Mutex.new
+
+    class << self
+      # The shared WebSocket manager that holds every /__dev_reload connection.
+      def manager
+        @mutex.synchronize { @manager ||= Tina4::WebSocket.new }
+      end
+
+      # Register an open connection so a later broadcast reaches it.
+      def add(connection)
+        manager.connections[connection.id] = connection
+      end
+
+      # Drop a connection on close.
+      def remove(connection)
+        manager.connections.delete(connection.id)
+      end
+
+      # Number of live dev-reload clients (used by tests / introspection).
+      def count
+        manager.connections.size
+      end
+
+      # Push a text frame to every connected dev-reload client. Best-effort:
+      # a dead socket or zero clients must never raise into the caller (the
+      # /__dev/api/reload endpoint), so failures are swallowed per-connection.
+      def broadcast(message)
+        manager.connections.values.each do |conn|
+          conn.send_text(message)
+        rescue StandardError
+          next
+        end
+      end
+    end
+  end
 end

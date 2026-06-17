@@ -456,6 +456,63 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
+  # ── File browser parity (GET /__dev/api/files) ─────────────────
+  # Locks the SPA contract that broke once: every entry MUST carry
+  # `is_dir` (boolean) so the dashboard renders folders, plus
+  # `has_children`, `git_status` and `size`; the payload carries the git
+  # `branch`. Mirrors tina4-python / tina4-php / tina4-nodejs 1:1.
+  describe "file browser" do
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+    end
+
+    def files_get(path)
+      env = {
+        "PATH_INFO" => "/__dev/api/files",
+        "REQUEST_METHOD" => "GET",
+        "QUERY_STRING" => "path=#{path}"
+      }
+      _, _, body = Tina4::DevAdmin.handle_request(env)
+      JSON.parse(body.first)
+    end
+
+    it "returns entries with is_dir / has_children / git_status / size + branch" do
+      data = files_get(".")
+      expect(data["path"]).to be_a(String)
+      expect(data["branch"]).to be_a(String)
+      expect(data["entries"]).to be_an(Array)
+      expect(data["entries"]).not_to be_empty
+
+      entry = data["entries"].first
+      expect([true, false]).to include(entry["is_dir"])
+      expect(entry).to have_key("has_children")
+      expect(entry["git_status"]).to be_a(String)
+      expect(entry).to have_key("size")
+      expect(entry["name"]).to be_a(String)
+      expect(entry["path"]).to be_a(String)
+      # the legacy `type` field is gone — canonical shape is is_dir
+      expect(data["entries"].none? { |e| e.key?("type") }).to be true
+    end
+
+    it "marks directories is_dir true (size nil) and files is_dir false" do
+      data = files_get(".")
+      dir = data["entries"].find { |e| e["is_dir"] == true }
+      file = data["entries"].find { |e| e["is_dir"] == false }
+      expect(dir).not_to be_nil
+      expect(dir["size"]).to be_nil
+      expect([true, false]).to include(dir["has_children"])
+      expect(file).not_to be_nil
+      expect(file["has_children"]).to be_nil
+    end
+
+    it "returns an empty-but-valid shape for a missing path (no crash)" do
+      data = files_get("__does_not_exist__")
+      expect(data["entries"]).to eq([])
+      expect(data["branch"]).to be_a(String)
+    end
+  end
+
   # ── Hot-reload parity tests ────────────────────────────────────
   # Mirrors tina4-php/tests/DevAdminTest.php, tina4-python/tests/test_dev_admin.py,
   # tina4-nodejs/test/devAdmin.test.ts. The mtime counter must only

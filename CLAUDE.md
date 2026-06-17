@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.35 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.36 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -37,14 +37,22 @@ Set `TINA4_DEBUG=true` in `.env` to enable development features:
 - **SCSS auto-compile** — `.scss` changes compiled to `src/public/css/`
 - **Verbose logging** — Full debug output to console and `logs/debug.log`
 
-### How DevReload works
+### How DevReload works (WebSocket-primary)
 
-The `tina4` Rust CLI is the sole file watcher for the Tina4 stack — there is no framework-side watcher (the `listen`-gem based `dev_reload.rb` was removed in 3.11.x). The flow is:
+DevReload is **WebSocket-primary** — the reload is instant, not polled. The `tina4` Rust CLI is the sole file watcher for the Tina4 stack (there is no framework-side watcher; the `listen`-gem based `dev_reload.rb` was removed in 3.11.x). The flow is:
 
-1. `tina4 serve` (Rust CLI) watches `src/`, `migrations/`, `.env`. Noise is filtered (Access/Metadata events, `__pycache__`, `.git`, `node_modules`, `logs`, `.log`/`.db*`/`.swp` files) and a real mtime check defeats overlayfs spurious events.
-2. On a real change, the CLI POSTs `/__dev/api/reload` to the running Ruby server.
-3. `Tina4::DevAdmin` bumps its `@reload_mtime` counter and broadcasts `{type: 'reload'}` over WebSocket at `/__dev_reload`. `GET /__dev/api/mtime` returns the counter for the polling fallback.
-4. The browser's dev toolbar reloads the page (or swaps the stylesheet for CSS changes).
+1. `tina4 serve` (Rust CLI) watches `src/`, `migrations/`, `.env`. Noise is filtered (Access/Metadata events, `__pycache__`, `.git`, `node_modules`, `logs`, `.log`/`.db*`/`.swp` files) and a real mtime check defeats overlayfs spurious events. On a real change the CLI POSTs `/__dev/api/reload` to the **running** server — it does **not** restart the worker process.
+2. The server re-runs route discovery (`Tina4::Router.rescan_routes!`) — registering new `src/routes/` files and re-loading changed ones **in-process** (mtime-tracked, routes dir only; framework files never), so the worker keeps the same PID — then bumps its `@reload_mtime` counter.
+3. The server **broadcasts** a JSON message `{type, file, mtime}` to every browser connected on the `/__dev_reload` WebSocket (`type` is `"css"` for stylesheet changes, else `"reload"`). The injected dev-toolbar client and the dev-admin dashboard both connect here and act on it instantly: CSS changes swap `<link rel=stylesheet>` hrefs with a cache-bust query; everything else does a full page reload.
+4. **Poll is fallback only.** The injected toolbar client stops polling the moment the socket connects, and only restarts the `GET /__dev/api/mtime` poll (every 3 s) when the socket drops — reconnecting after ~2 s. The poll seeds its last-seen mtime to a null sentinel (not 0) and reloads whenever the polled mtime *differs* (not just when greater), so the first change after load isn't swallowed and a counter reset on restart still triggers. In normal operation there is no polling.
+
+The `/__dev_reload` WebSocket route is registered automatically when `TINA4_DEBUG=true` (`Tina4::RackApp.register_dev_reload_ws`), held open by the process-wide `Tina4::DevReload` manager so a single broadcast reaches every browser. WebSocket upgrades require a hijack-capable server (Puma); under WEBrick (the bare-`ruby app.rb` default) the upgrade is rejected and the client uses the poll fallback. The reload client is suppressed on the stable AI port. Running without the Rust CLI (e.g. Docker, `TINA4_OVERRIDE_CLIENT=true`) means no automatic reload.
+
+### Route hot-reload (changed files re-load — no restart)
+
+`rescan_routes!` is mtime-tracked: it walks the route files under the discovered routes/`src` directory and `load`s a file when it is **new** OR its **mtime has increased** since the last scan; unchanged files are skipped. Ruby's `load` re-executes the file, so editing an existing route file re-runs its `Tina4::Router.get`/`.post`/… calls — and `Router.add` now **replaces** a re-registered `(method, path)` in place rather than appending, so the fresh handler wins instead of being shadowed by the stale one. New route files register the same way. The scope is the routes/`src` directory only — framework files are never re-loaded.
+
+Honest caveat: cross-module references captured earlier (e.g. an ORM class identity, or a symbol imported by name into another *unchanged* file) keep the old reference until that other file is itself touched. The edited route file re-loads, but a separate module that grabbed the old reference still holds it.
 
 ## Project Structure
 

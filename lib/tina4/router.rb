@@ -327,9 +327,31 @@ module Tina4
                           swagger_meta: swagger_meta,
                           middleware: middleware,
                           template: template)
-        routes << route
-        method_index[route.method] << route
-        Tina4::Log.debug("Route registered: #{method.upcase} #{path}")
+        # Replace semantics: re-registering the same (method, path) overwrites
+        # the existing entry in place rather than appending a second one.
+        # This is what makes dev hot-reload work — when a changed route file is
+        # re-loaded, its Router.get("/x") call runs again with a fresh handler,
+        # and #find_route returns the FIRST match, so a stale leftover would
+        # otherwise shadow the new handler forever. Overwriting keeps the
+        # registry free of duplicates and ensures the latest handler wins.
+        # Distinct (method, path) pairs are untouched — only an exact dup
+        # collapses onto the prior slot, preserving its position/order.
+        bucket = method_index[route.method]
+        existing_index = routes.index { |r| r.method == route.method && r.path == route.path }
+        if existing_index
+          routes[existing_index] = route
+          bucket_index = bucket.index { |r| r.path == route.path }
+          if bucket_index
+            bucket[bucket_index] = route
+          else
+            bucket << route
+          end
+          Tina4::Log.debug("Route replaced: #{route.method} #{route.path}")
+        else
+          routes << route
+          bucket << route
+          Tina4::Log.debug("Route registered: #{route.method} #{route.path}")
+        end
         route
       end
       # Convenience registration methods
@@ -485,10 +507,20 @@ module Tina4
 
       # Load route files from a directory (file-based route discovery).
       #
-      # Idempotent: files already loaded by a previous call are skipped, so
-      # calling load_routes repeatedly (e.g. on /__dev/api/reload) only
-      # picks up NEW files. Records the directory so #rescan_routes! can
-      # re-run without re-passing it.
+      # mtime-tracked & re-runnable so re-discovery on /__dev/api/reload is
+      # cheap and picks up edits without a server restart:
+      #
+      #   * NEW file (not seen before)            → load it, record its mtime.
+      #   * CHANGED file (mtime newer than seen)  → load it again. Ruby's `load`
+      #     RE-EXECUTES the file, so its Router.get(...) calls run afresh and
+      #     #add replaces the (method, path) in place — the new handler wins
+      #     instead of being shadowed by the stale one.
+      #   * UNCHANGED file (present, same mtime)  → skip (keeps reload cheap).
+      #
+      # Scope guard: the glob is rooted at the user's routes/`src` `directory`,
+      # so only application route files are ever (re)loaded — framework files
+      # are never touched. Records the directory so #rescan_routes! can re-run
+      # without re-passing it.
       def load_routes(directory)
         return unless Dir.exist?(directory)
 
@@ -498,10 +530,12 @@ module Tina4
         files = Dir.glob(File.join(directory, "**/*.rb")).sort
         total = files.length
         files.each do |file|
-          next if @loaded_route_files[file]
+          current_mtime = File.mtime(file).to_i
+          # Skip only when we've seen this file AND it hasn't changed since.
+          next if @loaded_route_files.key?(file) && current_mtime <= @loaded_route_files[file]
           begin
             load file
-            @loaded_route_files[file] = true
+            @loaded_route_files[file] = current_mtime
             Tina4::Log.debug("Route loaded: #{file}")
           rescue ScriptError, StandardError => e
             # ScriptError catches SyntaxError, which is NOT a StandardError —

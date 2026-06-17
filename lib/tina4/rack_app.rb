@@ -36,6 +36,29 @@ module Tina4
 
       # Shared WebSocket engine for route-based WS handling
       @websocket_engine = Tina4::WebSocket.new
+
+      # Register the dev-reload WebSocket route (debug mode only) so a browser
+      # handshake to /__dev_reload is accepted and held open by the connection
+      # manager. Without this the handshake never matches a route and falls
+      # through to 404, silently degrading the whole reloader to polling.
+      RackApp.register_dev_reload_ws if dev_mode?
+    end
+
+    # WebSocket handler for the dev-reload channel (/__dev_reload).
+    #
+    # Connections are accepted and held open; the shared Tina4::DevReload
+    # manager keeps a reference (wired in handle_websocket_upgrade) so
+    # POST /__dev/api/reload can broadcast an instant reload to every browser.
+    # Incoming frames are ignored — the open socket is the whole point.
+    DEV_RELOAD_WS_HANDLER = proc { |_connection, _event, _data| nil }
+
+    # Register the /__dev_reload WebSocket route (idempotent). Guarded on the
+    # router's actual state rather than a one-shot flag so that a Router.clear!
+    # (specs, hot-reload rescans) followed by a fresh RackApp re-registers it.
+    def self.register_dev_reload_ws
+      return if Tina4::Router.find_ws_route("/__dev_reload")
+
+      Tina4::Router.websocket("/__dev_reload", &DEV_RELOAD_WS_HANDLER)
     end
 
     def call(env)
@@ -865,8 +888,15 @@ module Tina4
       # Create a dedicated WebSocket engine for this route so handlers stay isolated
       ws = Tina4::WebSocket.new
 
+      # The dev-reload channel is held by a process-wide shared manager so a
+      # broadcast from POST /__dev/api/reload reaches every browser, not just
+      # the connections of this one isolated per-socket engine. Mirrors
+      # Python's single _ws_manager keyed on the /__dev_reload path.
+      dev_reload = ws_route.path == "/__dev_reload"
+
       ws.on(:open) do |connection|
         connection.params = ws_params
+        Tina4::DevReload.add(connection) if dev_reload
         handler.call(connection, :open, nil)
       end
 
@@ -875,6 +905,7 @@ module Tina4
       end
 
       ws.on(:close) do |connection|
+        Tina4::DevReload.remove(connection) if dev_reload
         handler.call(connection, :close, nil)
       end
 
@@ -1014,7 +1045,7 @@ module Tina4
                 el.style.color='#f38ba8';
             });
         }
-        #{ai_port ? "" : "/* tina4:reload-js */"}
+        #{ai_port ? "" : dev_reload_client_js}
         </script>
       HTML
 
@@ -1023,6 +1054,79 @@ module Tina4
       else
         body + "\n" + toolbar
       end
+    end
+
+    # WebSocket-primary dev reloader injected into HTML pages in debug mode.
+    #
+    # The running server re-imports changed src/ route files in-process and
+    # pushes a {type,file,mtime} message over /__dev_reload — no respawn,
+    # instant refresh. The mtime poll is a FALLBACK only: it is started when
+    # the socket is down and stopped the moment it connects. On a CSS change
+    # the client swaps <link rel=stylesheet> hrefs with a cache-bust query;
+    # any other change does a full location.reload(). The poll seeds its
+    # last-seen mtime to a null sentinel (NOT 0) and reloads whenever the
+    # polled mtime DIFFERS (not just when greater) so the first change after
+    # load isn't swallowed and a counter reset on restart still triggers.
+    # Mirrors the Python master's injected client exactly.
+    def dev_reload_client_js
+      poll_interval_ms = (ENV["TINA4_DEV_POLL_INTERVAL"] || "3000").to_i
+      poll_interval_ms = 3000 if poll_interval_ms <= 0
+      <<~JS
+        (function(){
+            var _t4_css_exts=['.css','.scss'],_t4_debounce=null;
+            var _t4_interval=parseInt('#{poll_interval_ms}')||3000;
+            var _t4_ws=null,_t4_poll_timer=null,_t4_mtime=null;
+            function _t4_apply(d){
+                d=d||{};
+                var f=d.file||'',t=d.type||'';
+                var isCss=t==='css'||_t4_css_exts.some(function(e){return f.endsWith(e)});
+                if(isCss){
+                    var links=document.querySelectorAll('link[rel="stylesheet"]');
+                    links.forEach(function(l){
+                        var href=l.getAttribute('href');
+                        if(href){l.setAttribute('href',href.split('?')[0]+'?_t4='+(d.mtime||Date.now()))}
+                    });
+                }else{
+                    location.reload();
+                }
+            }
+            function _t4_poll(){
+                fetch('/__dev/api/mtime').then(function(r){return r.json()}).then(function(d){
+                    if(_t4_mtime===null){_t4_mtime=d.mtime;return;}
+                    if(d.mtime!==_t4_mtime){
+                        _t4_mtime=d.mtime;
+                        if(_t4_debounce)clearTimeout(_t4_debounce);
+                        _t4_debounce=setTimeout(function(){_t4_apply(d);},500);
+                    }
+                }).catch(function(){});
+            }
+            function _t4_startPoll(){
+                if(_t4_poll_timer)return;
+                _t4_mtime=null;
+                _t4_poll_timer=setInterval(_t4_poll,_t4_interval);
+            }
+            function _t4_stopPoll(){
+                if(_t4_poll_timer){clearInterval(_t4_poll_timer);_t4_poll_timer=null;}
+            }
+            function _t4_connect(){
+                var url=(location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/__dev_reload';
+                try{_t4_ws=new WebSocket(url);}catch(_){_t4_startPoll();return;}
+                _t4_ws.addEventListener('open',function(){_t4_stopPoll();});
+                _t4_ws.addEventListener('message',function(ev){
+                    var d=null;
+                    try{d=typeof ev.data==='string'?JSON.parse(ev.data):null;}catch(_){}
+                    if(!d)return;
+                    if(d.type==='reload'||d.type==='change'||d.type==='css'){
+                        if(_t4_debounce)clearTimeout(_t4_debounce);
+                        _t4_debounce=setTimeout(function(){_t4_apply(d);},150);
+                    }
+                });
+                _t4_ws.addEventListener('close',function(){_t4_ws=null;_t4_startPoll();setTimeout(_t4_connect,2000);});
+                _t4_ws.addEventListener('error',function(){try{_t4_ws&&_t4_ws.close();}catch(_){}});
+            }
+            _t4_connect();
+        })();
+      JS
     end
 
 

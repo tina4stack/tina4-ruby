@@ -392,11 +392,29 @@ module Tina4
           reload_type = body["type"] || "reload"
           Tina4::Log.info("External reload trigger: #{reload_type}#{@reload_file.empty? ? '' : " (#{@reload_file})"}")
           # Re-discover so files dropped into src/routes/ register without
-          # a server restart. Idempotent — already-loaded files are skipped.
+          # a server restart. Idempotent — already-loaded files are skipped,
+          # changed files are re-loaded (mtime-tracked).
           begin
             Tina4::Router.rescan_routes!
           rescue StandardError => e
             Tina4::Log.error("Re-discover on reload failed: #{e.message}")
+          end
+          # WebSocket-primary reload: push an instant message to every browser
+          # connected on /__dev_reload. The toolbar client (and the dev-admin
+          # dashboard) act on this immediately — the mtime poll above is only a
+          # fallback for when the socket is down. CSS changes swap stylesheets;
+          # everything else triggers a full page reload. We normalise the wire
+          # `type` to "css"/"reload" (the clients only react to css/reload/change)
+          # but still echo the caller's original type in the HTTP response.
+          # Wrapped so a broadcast failure — or zero connected clients — never
+          # 500s the reload endpoint.
+          begin
+            ws_type = reload_type == "css" ? "css" : "reload"
+            Tina4::DevReload.broadcast(
+              JSON.generate({ type: ws_type, file: @reload_file, mtime: @reload_mtime })
+            )
+          rescue StandardError => e
+            Tina4::Log.error("Dev-reload WebSocket broadcast failed: #{e.message}")
           end
           json_response({ ok: true, type: reload_type })
         when ["GET", "/__dev/api/status"]
@@ -1258,24 +1276,120 @@ module Tina4
         resolved
       end
 
-      def files_list(env)
-        rel = query_param(env, "path") || "."
-        begin
-          target = safe_project_path(rel)
-          return { error: "Not found" } unless File.exist?(target)
-          return { error: "Not a directory" } unless File.directory?(target)
-          entries = Dir.children(target).sort.map do |name|
-            full = File.join(target, name)
-            {
-              name: name,
-              type: File.directory?(full) ? "dir" : "file",
-              size: File.file?(full) ? File.size(full) : 0
-            }
+      # Noise dirs + hidden dot-entries are hidden from the file browser,
+      # except the env files — verbatim parity with PHP/Python dev-admin.
+      DEV_FILES_IGNORED = %w[__pycache__ node_modules vendor .git venv .venv dist target .tina4].freeze
+
+      def dev_files_hidden?(name)
+        return true if DEV_FILES_IGNORED.include?(name)
+        name.start_with?(".") && name != ".env" && name != ".env.example"
+      end
+
+      # Same 4-status mapping Python/PHP use for a porcelain code.
+      def dev_git_status_label(code)
+        return "untracked" if code == "??"
+        return "modified" if code.include?("M")
+        return "added" if code.include?("A")
+        return "deleted" if code.include?("D")
+        "clean"
+      end
+
+      # Branch + porcelain status map for the file browser (mirrors PHP/Python
+      # dev-admin). Paths git reports are relative to the repo root (always
+      # forward-slash); the project root may sit inside a larger repo, so the
+      # toplevel is returned too for rebasing. Empty on any error / no git.
+      def dev_git_info(root)
+        require "shellwords" unless defined?(Shellwords)
+        esc = Shellwords.escape(root)
+        inside = `cd #{esc} && git rev-parse --is-inside-work-tree 2>/dev/null`.strip
+        return { branch: "", git_root: nil, status: {} } unless inside == "true"
+
+        branch = `cd #{esc} && git rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
+        top = `cd #{esc} && git rev-parse --show-toplevel 2>/dev/null`.strip
+        git_root = top.empty? ? nil : top.tr("\\", "/").sub(%r{/+\z}, "")
+
+        status = {}
+        `cd #{esc} && git status --porcelain -uall 2>/dev/null`.each_line do |line|
+          line = line.chomp
+          next if line.length < 4
+          code = line[0, 2].strip
+          path = line[3..].to_s.strip
+          if (idx = path.index(" -> ")) # rename/copy — keep destination
+            path = path[(idx + 4)..]
           end
-          { path: rel, entries: entries, count: entries.size }
-        rescue => e
-          { error: e.message }
+          next if path.nil? || path.empty?
+          status[path] = code
         end
+        { branch: branch, git_root: git_root, status: status }
+      rescue StandardError
+        { branch: "", git_root: nil, status: {} }
+      end
+
+      def files_list(env)
+        # Response shape matches tina4-python / tina4-php 1:1 so the dev-admin
+        # SPA works against every framework: each entry carries `is_dir`,
+        # `has_children`, `git_status` and `size`; the payload carries `branch`.
+        rel = query_param(env, "path") || "."
+        root = File.expand_path(Dir.pwd)
+        git = dev_git_info(root)
+
+        # Missing/invalid paths return an empty-but-valid shape (not an error
+        # body): the SPA restores expanded-folder state from localStorage and
+        # non-existent folders would otherwise spam the console.
+        target = begin
+          safe_project_path(rel)
+        rescue StandardError
+          nil
+        end
+        unless target && File.directory?(target)
+          return { path: rel, branch: git[:branch], entries: [], error: "not a directory" }
+        end
+
+        root_fwd = root.tr("\\", "/")
+        cwd_in_git = ""
+        if git[:git_root] && git[:git_root] != root_fwd && root_fwd.start_with?(git[:git_root])
+          cwd_in_git = root_fwd[git[:git_root].length..].to_s.sub(%r{\A/+}, "")
+          cwd_in_git += "/" unless cwd_in_git.empty?
+        end
+
+        entries = Dir.children(target).sort.filter_map do |name|
+          next if dev_files_hidden?(name)
+          full = File.join(target, name)
+          entry_rel = full[root.length..].to_s.sub(%r{\A/+}, "").tr("\\", "/")
+          is_dir = File.directory?(full)
+
+          # git status for this entry (same mapping PHP/Python use)
+          git_path = cwd_in_git + entry_rel
+          label = "clean"
+          if (code = git[:status][git_path])
+            label = dev_git_status_label(code)
+          elsif is_dir
+            prefix = "#{git_path}/" # propagate dirty status from any child
+            hit = git[:status].find { |gf, _| gf.start_with?(prefix) }
+            label = (hit && hit[1] == "??") ? "untracked" : "modified" if hit
+          end
+
+          # has_children: does the dir contain anything visible?
+          has_children = nil
+          if is_dir
+            has_children = begin
+              Dir.children(full).any? { |c| !dev_files_hidden?(c) }
+            rescue StandardError
+              false
+            end
+          end
+
+          {
+            name: name,
+            path: entry_rel,
+            is_dir: is_dir,
+            has_children: has_children,
+            git_status: label,
+            size: is_dir ? nil : (File.size(full) rescue 0)
+          }
+        end
+
+        { path: rel, branch: git[:branch], entries: entries, count: entries.size }
       end
 
       def file_read_payload(rel)

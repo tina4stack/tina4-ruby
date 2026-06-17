@@ -3,6 +3,8 @@
 require "spec_helper"
 require "fileutils"
 require "tmpdir"
+require "json"
+require "stringio"
 
 # Covers the developer pain point where a fresh `tina4 init` + a file
 # added to src/routes/ did not load until a server restart.
@@ -87,5 +89,100 @@ RSpec.describe "Tina4::Router reload-aware discovery" do
     payload = File.read(sentinels.first)
     expect(payload).to include("auto_discover_failure")
     expect(payload).to include("broken.rb")
+  end
+
+  # ── mtime-tracked hot reload ───────────────────────────────────
+  # The dev pain point: editing an EXISTING route file should serve the
+  # fresh handler after POST /__dev/api/reload, not the stale one. Ruby's
+  # `load` re-executes the file and #add replaces the (method, path) in
+  # place, so the latest handler wins. Mirrors the Python master fix.
+  #
+  # A same-second rewrite would have the same mtime, so we bump it
+  # explicitly with File.utime to make "changed" unambiguous.
+
+  it "rescan_routes! serves the NEW handler when an existing route file changes" do
+    path = write_route("hot", <<~RUBY)
+      Tina4::Router.get("/hot") { |_req, _res| "VERSION_1" }
+    RUBY
+
+    Tina4::Router.load_routes(routes_dir)
+    route, = Tina4::Router.find_route("GET", "/hot")
+    expect(route.handler.call(nil, nil)).to eq("VERSION_1")
+
+    # Rewrite the SAME file with a new handler and bump its mtime so the
+    # change is detected even within the same wall-clock second.
+    File.write(path, <<~RUBY)
+      Tina4::Router.get("/hot") { |_req, _res| "VERSION_2" }
+    RUBY
+    future = Time.now + 2
+    File.utime(future, future, path)
+
+    Tina4::Router.rescan_routes!
+
+    route, = Tina4::Router.find_route("GET", "/hot")
+    expect(route.handler.call(nil, nil)).to eq("VERSION_2")
+
+    # Replace, not append: exactly one route for GET /hot.
+    matches = Tina4::Router.routes.select { |r| r.method == "GET" && r.path == "/hot" }
+    expect(matches.length).to eq(1)
+    # And the method_index bucket must not carry a stale duplicate either.
+    bucket = Tina4::Router.method_index["GET"].select { |r| r.path == "/hot" }
+    expect(bucket.length).to eq(1)
+  end
+
+  it "does NOT re-load an unchanged file on a second scan (mtime map unchanged)" do
+    path = write_route("stable", <<~RUBY)
+      Tina4::Router.get("/stable") { |_req, _res| "ok" }
+    RUBY
+
+    Tina4::Router.load_routes(routes_dir)
+    loaded = Tina4::Router.instance_variable_get(:@loaded_route_files)
+    mtime_after_first = loaded[path]
+    expect(mtime_after_first).to eq(File.mtime(path).to_i)
+
+    # Second pass with no file change — the recorded mtime stays put and
+    # the route is not re-registered (still exactly one).
+    Tina4::Router.rescan_routes!
+    loaded = Tina4::Router.instance_variable_get(:@loaded_route_files)
+    expect(loaded[path]).to eq(mtime_after_first)
+
+    matches = Tina4::Router.routes.select { |r| r.method == "GET" && r.path == "/stable" }
+    expect(matches.length).to eq(1)
+  end
+
+  it "hot-reloads a changed file end-to-end via POST /__dev/api/reload" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+
+    path = write_route("endpoint", <<~RUBY)
+      Tina4::Router.get("/endpoint") { |_req, _res| "FIRST" }
+    RUBY
+
+    # Boot-time discovery primes @last_routes_dir so rescan_routes! (called
+    # by the reload handler) knows where to look.
+    Tina4::Router.load_routes(routes_dir)
+    route, = Tina4::Router.find_route("GET", "/endpoint")
+    expect(route.handler.call(nil, nil)).to eq("FIRST")
+
+    File.write(path, <<~RUBY)
+      Tina4::Router.get("/endpoint") { |_req, _res| "SECOND" }
+    RUBY
+    future = Time.now + 2
+    File.utime(future, future, path)
+
+    # Drive the real dev reload endpoint the Rust CLI POSTs to on a change.
+    env = {
+      "PATH_INFO" => "/__dev/api/reload",
+      "REQUEST_METHOD" => "POST",
+      "rack.input" => StringIO.new({ "file" => "src/routes/endpoint.rb", "type" => "reload" }.to_json)
+    }
+    status, _headers, body = Tina4::DevAdmin.handle_request(env)
+    expect(status).to eq(200)
+    expect(JSON.parse(body.first)["ok"]).to be true
+
+    route, = Tina4::Router.find_route("GET", "/endpoint")
+    expect(route.handler.call(nil, nil)).to eq("SECOND")
+    matches = Tina4::Router.routes.select { |r| r.method == "GET" && r.path == "/endpoint" }
+    expect(matches.length).to eq(1)
   end
 end
