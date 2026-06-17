@@ -423,8 +423,17 @@ module Tina4
 
   @_default_mcp_server = nil
 
+  # The default dev MCP server, mounted at /__dev/mcp. Built lazily on first
+  # access and pre-loaded with the built-in dev tools (database_query,
+  # file_read, route_list, …) so both the REST shim (/__dev/api/mcp/*) and
+  # the JSON-RPC + SSE endpoints (/__dev/mcp[/message], /__dev/mcp/sse)
+  # share one fully-populated tool registry.
   def self._default_mcp_server
-    @_default_mcp_server ||= McpServer.new("/__dev/mcp", name: "Tina4 Dev Tools")
+    @_default_mcp_server ||= begin
+      server = McpServer.new("/__dev/mcp", name: "Tina4 Dev Tools")
+      McpDevTools.register(server)
+      server
+    end
   end
 
   # Register a block as an MCP tool.
@@ -661,12 +670,13 @@ module Tina4
 
       # ── Route Tools ───────────────────────────────────
       server.register_tool("route_list", lambda {
-        routes = Tina4::Router.routes
-        routes.map do |route|
+        # Tina4::Router.routes returns Route objects (attr_readers), not
+        # Hashes — use accessors, never [] subscript.
+        Tina4::Router.routes.map do |route|
           {
-            "method"        => route[:method].to_s,
-            "path"          => route[:path].to_s,
-            "auth_required" => !route[:auth_handler].nil?
+            "method"        => route.method.to_s,
+            "path"          => route.path.to_s,
+            "auth_required" => route.auth_required ? true : false
           }
         end
       }, "List all registered routes")

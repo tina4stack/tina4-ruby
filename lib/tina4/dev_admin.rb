@@ -614,6 +614,14 @@ module Tina4
         when ["POST", "/__dev/api/mcp/call"]
           body = read_json_body(env) || {}
           json_response(mcp_tool_call(body))
+        # JSON-RPC + SSE endpoints that real MCP clients (Claude Code/Desktop)
+        # speak. Mounted on the same dispatch as the REST shim above and gated
+        # on the same enabled? (TINA4_DEBUG) check, so disabled → 404. They
+        # share the default MCP server's tool registry with the REST shim.
+        when ["POST", "/__dev/mcp"], ["POST", "/__dev/mcp/message"]
+          mcp_jsonrpc(env)
+        when ["GET", "/__dev/mcp/sse"]
+          mcp_sse_handshake
         when ["GET", "/__dev/api/scaffold"]
           json_response(scaffold_templates)
         when ["POST", "/__dev/api/scaffold/run"]
@@ -1429,6 +1437,29 @@ module Tina4
         raw = server.handle_message(payload)
         return {} if raw.nil? || raw.empty?
         JSON.parse(raw)
+      end
+
+      # Native MCP JSON-RPC endpoint (POST /__dev/mcp[/message]). Real MCP
+      # clients POST a JSON-RPC 2.0 request; we hand the parsed body straight
+      # to the default server's handle_message and echo the response. A
+      # notification (no id) yields an empty 204, mirroring Python.
+      def mcp_jsonrpc(env)
+        body = read_json_body(env) || {}
+        server = Tina4._default_mcp_server
+        raw = server.handle_message(body)
+        if raw.nil? || raw.empty?
+          [204, { "content-type" => "application/json; charset=utf-8" }, []]
+        else
+          [200, { "content-type" => "application/json; charset=utf-8" }, [raw]]
+        end
+      end
+
+      # SSE handshake (GET /__dev/mcp/sse). Tells the client where to POST
+      # JSON-RPC messages via the standard `endpoint` event, then the client
+      # switches to POST /__dev/mcp/message. Body + content-type match Python.
+      def mcp_sse_handshake
+        body = "event: endpoint\ndata: /__dev/mcp/message\n\n"
+        [200, { "content-type" => "text/event-stream" }, [body]]
       end
 
       def scaffold_templates
