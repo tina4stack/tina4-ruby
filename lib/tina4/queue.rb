@@ -17,11 +17,14 @@ module Tina4
   #   # Or pass a backend instance directly (legacy)
   #   queue = Queue.new(topic: "tasks", backend: my_backend)
   class Queue
-    attr_reader :topic, :max_retries
+    attr_reader :topic, :max_retries, :retry_backoff
 
-    def initialize(topic:, backend: nil, max_retries: 3)
+    def initialize(topic:, backend: nil, max_retries: 3, retry_backoff: 0)
       @topic = topic
       @max_retries = max_retries
+      # Seconds to wait before a failed job is re-attempted (lite backend).
+      # Default 0 = retry on the very next pop/consume iteration.
+      @retry_backoff = retry_backoff
       @backend = resolve_backend_arg(backend)
     end
 
@@ -37,22 +40,25 @@ module Tina4
 
     # Pop the next available job. Returns Job or nil.
     def pop # -> Job|None
-      @backend.dequeue(@topic)
+      attach(@backend.dequeue(@topic))
     end
 
     # Pop up to count jobs at once. Returns a partial batch if fewer available.
     def pop_batch(count)
-      if @backend.respond_to?(:dequeue_batch)
-        @backend.dequeue_batch(@topic, count)
-      else
-        jobs = []
-        count.times do
-          job = @backend.dequeue(@topic)
-          break if job.nil?
-          jobs << job
+      jobs =
+        if @backend.respond_to?(:dequeue_batch)
+          @backend.dequeue_batch(@topic, count)
+        else
+          collected = []
+          count.times do
+            job = @backend.dequeue(@topic)
+            break if job.nil?
+            collected << job
+          end
+          collected
         end
-        jobs
-      end
+      jobs.each { |job| attach(job) }
+      jobs
     end
 
     # Clear all pending jobs from this queue's topic. Returns count removed.
@@ -157,7 +163,7 @@ module Tina4
           end
         else
           loop do
-            job = @backend.dequeue(topic)
+            job = attach(@backend.dequeue(topic))
             if job.nil?
               break if poll_interval <= 0
               sleep(poll_interval)
@@ -172,7 +178,7 @@ module Tina4
         Enumerator.new do |yielder|
           consumed = 0
           loop do
-            job = @backend.dequeue(topic)
+            job = attach(@backend.dequeue(topic))
             if job.nil?
               break if poll_interval <= 0
               sleep(poll_interval)
@@ -186,10 +192,12 @@ module Tina4
       end
     end
 
-    # Pop a specific job by ID from the queue.
-    def pop_by_id(id)
+    # Pop a specific job by ID from the queue. Searches the pending queue for
+    # the given topic (defaults to this queue's topic). Returns the matching
+    # Job (claimed/removed from the queue) or nil.
+    def pop_by_id(topic = nil, id)
       return nil unless @backend.respond_to?(:find_by_id)
-      @backend.find_by_id(@topic, id)
+      attach(@backend.find_by_id(topic || @topic, id))
     end
 
     # Get the number of messages by status.
@@ -259,12 +267,12 @@ module Tina4
     end
 
     # Resolve the default backend from env vars.
-    def self.resolve_backend(name = nil)
+    def self.resolve_backend(name = nil, max_retries: 3, retry_backoff: 0)
       chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "file").downcase.strip
 
       case chosen.to_s
       when "lite", "file", "default"
-        Tina4::QueueBackends::LiteBackend.new
+        Tina4::QueueBackends::LiteBackend.new(max_retries: max_retries, retry_backoff: retry_backoff)
       when "rabbitmq"
         config = resolve_rabbitmq_config
         Tina4::QueueBackends::RabbitmqBackend.new(config)
@@ -281,11 +289,23 @@ module Tina4
 
     private
 
+    # Stamp the queue reference onto a popped job so job.fail / job.retry /
+    # job.complete can reach the backend. Returns the job (or nil) unchanged.
+    def attach(job)
+      job.queue = self if job
+      job
+    end
+
     def resolve_backend_arg(backend)
-      # If a backend instance is passed directly (legacy), use it
-      return backend if backend && !backend.is_a?(Symbol) && !backend.is_a?(String)
+      # If a backend instance is passed directly (legacy), use it. Best-effort
+      # propagate the queue's retry policy if the instance exposes setters.
+      if backend && !backend.is_a?(Symbol) && !backend.is_a?(String)
+        backend.max_retries = @max_retries if backend.respond_to?(:max_retries=)
+        backend.retry_backoff = @retry_backoff if backend.respond_to?(:retry_backoff=)
+        return backend
+      end
       # If a symbol or string name is passed, resolve it
-      Queue.resolve_backend(backend)
+      Queue.resolve_backend(backend, max_retries: @max_retries, retry_backoff: @retry_backoff)
     end
 
     def self.resolve_rabbitmq_config

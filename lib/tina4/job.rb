@@ -4,31 +4,41 @@ require "securerandom"
 
 module Tina4
   class Job
-    attr_reader :id, :topic, :payload, :created_at, :attempts, :priority, :available_at
-    attr_accessor :status
+    attr_reader :id, :topic, :payload, :created_at, :priority, :available_at
+    attr_accessor :status, :attempts, :error, :queue
 
-    def initialize(topic:, payload:, id: nil, priority: 0, available_at: nil, attempts: 0, queue: nil)
+    def initialize(topic:, payload:, id: nil, priority: 0, available_at: nil,
+                   attempts: 0, created_at: nil, error: nil, queue: nil)
       @id = id || SecureRandom.uuid
       @topic = topic
       @payload = payload
-      @created_at = Time.now
+      @created_at = created_at || Time.now
       @attempts = attempts
       @priority = priority
       @available_at = available_at
+      # Populated by fail()/reject() — why the job last died. Surfaces in
+      # dead_letters() so consumers can see the failure reason without
+      # trawling logs.
+      @error = error
       @status = :pending
       @queue = queue
     end
 
-    # Re-queue this message with incremented attempts.
-    # Uses the stored queue reference (set at construction time).
+    # Re-queue this message with optional delay. Always re-enqueues regardless
+    # of the retry limit — this is a manual override, distinct from the
+    # automatic fail() path. Increments attempts.
     def retry(delay_seconds: 0)
       q = @queue
       raise ArgumentError, "No queue reference — set at construction" unless q
 
-      @attempts += 1
-      @status = :pending
-      @available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
-      q.backend.enqueue(self)
+      if q.backend.respond_to?(:retry)
+        q.backend.retry(self, delay_seconds: delay_seconds)
+      else
+        @attempts += 1
+        @status = :pending
+        @available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
+        q.backend.enqueue(self)
+      end
       self
     end
 
@@ -41,10 +51,11 @@ module Tina4
         id: @id,
         topic: @topic,
         payload: @payload,
-        created_at: @created_at.iso8601,
+        created_at: @created_at.iso8601(6),
         attempts: @attempts,
         status: @status,
-        priority: @priority
+        priority: @priority,
+        error: @error
       }
       h[:available_at] = @available_at.iso8601 if @available_at
       h
@@ -58,23 +69,37 @@ module Tina4
       @attempts += 1
     end
 
-    # Mark this job as completed.
+    # Mark this job as completed. Terminal — the job is done and removed.
     def complete
       @status = :completed
+      @queue.backend.complete(self) if @queue && @queue.backend.respond_to?(:complete)
+      self
     end
 
-    # Mark this job as failed with a reason.
+    # Record a failed attempt.
+    #
+    # Increments +attempts+ and stores +reason+. If the job still has retries
+    # left (+attempts < max_retries+) it is automatically re-enqueued to the
+    # pending queue, so the next pop/consume picks it up again (after the
+    # queue's retry_backoff delay, if any). Once it has been attempted
+    # +max_retries+ times it is moved to the dead-letter store, where
+    # queue.dead_letters returns it. No manual retry_failed is required.
     def fail(reason = "")
-      @status = :failed
       @error = reason
-      @attempts += 1
+      if @queue && @queue.backend.respond_to?(:fail)
+        @queue.backend.fail(self, reason)
+        @status = @attempts >= @queue.max_retries ? :dead : :pending
+      else
+        # No backend reference — degrade to in-memory bookkeeping only.
+        @attempts += 1
+        @status = :failed
+      end
+      self
     end
 
     # Reject this job with a reason. Alias for fail().
     def reject(reason = "")
       fail(reason)
     end
-
-    attr_reader :error
   end
 end

@@ -284,13 +284,17 @@ RSpec.describe Tina4::Queue do
   end
 
   describe "#dead_letters" do
-    it "delegates to backend" do
+    it "returns Hashes for jobs that exhausted their retries" do
       queue = Tina4::Queue.new(topic: "dead", backend: backend, max_retries: 1)
-      # Push a message and move it to dead letter
-      msg = Tina4::Job.new(topic: "dead", payload: { x: 1 })
-      backend.dead_letter(msg)
+      queue.push({ x: 1 })
+      queue.pop.fail("boom")  # attempts=1 >= max_retries=1 → dead-lettered
+
       dead = queue.dead_letters
       expect(dead).to be_an(Array)
+      expect(dead.length).to eq(1)
+      expect(dead.first).to be_a(Hash)
+      expect(dead.first["status"]).to eq("dead")
+      expect(dead.first["attempts"]).to eq(1)
     end
   end
 
@@ -326,6 +330,254 @@ RSpec.describe Tina4::Queue do
       expect {
         Tina4::Queue.resolve_backend("unknown")
       }.to raise_error(ArgumentError)
+    end
+  end
+
+  # ── Priority-ordered pop (priority DESC, created_at ASC) ──────────
+  describe "priority-ordered pop" do
+    it "pops the highest-priority job first" do
+      queue = Tina4::Queue.new(topic: "prio", backend: backend)
+      queue.push({ n: "low" }, priority: 0)
+      sleep(0.002)
+      queue.push({ n: "high" }, priority: 5)
+      sleep(0.002)
+      queue.push({ n: "mid" }, priority: 2)
+
+      order = 3.times.map { queue.pop.payload["n"] }
+      expect(order).to eq(%w[high mid low])
+    end
+
+    it "breaks priority ties oldest-first (created_at ASC)" do
+      queue = Tina4::Queue.new(topic: "prio_tie", backend: backend)
+      queue.push({ n: "a" }, priority: 1)
+      sleep(0.002)
+      queue.push({ n: "b" }, priority: 1)
+      sleep(0.002)
+      queue.push({ n: "c" }, priority: 1)
+
+      order = 3.times.map { queue.pop.payload["n"] }
+      expect(order).to eq(%w[a b c])
+    end
+
+    it "applies the same ordering to pop_batch" do
+      queue = Tina4::Queue.new(topic: "prio_batch", backend: backend)
+      queue.push({ n: "low" }, priority: 0)
+      sleep(0.002)
+      queue.push({ n: "high" }, priority: 9)
+
+      jobs = queue.pop_batch(2)
+      expect(jobs.map { |j| j.payload["n"] }).to eq(%w[high low])
+    end
+
+    it "skips delayed jobs until they become available" do
+      queue = Tina4::Queue.new(topic: "prio_delay", backend: backend)
+      queue.push({ n: "later" }, priority: 9, delay_seconds: 60)
+      queue.push({ n: "now" }, priority: 0)
+
+      job = queue.pop
+      expect(job.payload["n"]).to eq("now")
+      expect(queue.pop).to be_nil
+    end
+  end
+
+  # ── Automatic retry → dead-letter on job.fail() ──────────────────
+  describe "automatic retry then dead-letter" do
+    it "executes a persistently-failing job exactly max_retries times then dead-letters it" do
+      queue = Tina4::Queue.new(topic: "auto_dl", backend: backend, max_retries: 3)
+      queue.push({ task: "boom" })
+
+      executions = 0
+      # Drain loop: consume keeps re-popping the auto-re-enqueued job until it
+      # is dead-lettered. poll_interval: 0 returns when the queue is empty —
+      # no manual retry_failed needed.
+      queue.consume(poll_interval: 0) do |job|
+        executions += 1
+        job.fail("kaboom #{executions}")
+      end
+
+      expect(executions).to eq(3)
+      dead = queue.dead_letters
+      expect(dead.length).to eq(1)
+      expect(dead.first["attempts"]).to eq(3)
+      expect(dead.first["error"]).to eq("kaboom 3")
+      expect(queue.size).to eq(0)          # nothing left pending
+      expect(queue.failed).to eq([])       # no retryable-pending remnants
+    end
+
+    it "re-enqueues a failing job under the limit (does not dead-letter early)" do
+      queue = Tina4::Queue.new(topic: "under_limit", backend: backend, max_retries: 3)
+      queue.push({ task: "x" })
+
+      job = queue.pop
+      job.fail("first failure")
+
+      expect(queue.dead_letters).to eq([])  # not dead yet
+      expect(queue.size).to eq(1)           # back in pending
+      requeued = queue.pop
+      expect(requeued.attempts).to eq(1)
+      expect(requeued.error).to eq("first failure")  # prior error carried over
+    end
+
+    it "does not dead-letter a job that succeeds on its second attempt" do
+      queue = Tina4::Queue.new(topic: "succeed_2nd", backend: backend, max_retries: 3)
+      queue.push({ task: "retry-then-ok" })
+
+      attempts = 0
+      queue.consume(poll_interval: 0) do |job|
+        attempts += 1
+        if attempts == 1
+          job.fail("transient")
+        else
+          job.complete
+        end
+      end
+
+      expect(attempts).to eq(2)
+      expect(queue.dead_letters).to eq([])
+      expect(queue.size).to eq(0)
+    end
+
+    it "delays the re-enqueue when retry_backoff is set" do
+      queue = Tina4::Queue.new(topic: "backoff", backend: backend, max_retries: 3, retry_backoff: 60)
+      queue.push({ task: "x" })
+
+      job = queue.pop
+      job.fail("transient")
+
+      expect(queue.size).to eq(1)   # written back to pending...
+      expect(queue.pop).to be_nil   # ...but not yet available (delayed)
+    end
+
+    it "treats reject as an alias for fail" do
+      queue = Tina4::Queue.new(topic: "reject_alias", backend: backend, max_retries: 1)
+      queue.push({ task: "x" })
+
+      job = queue.pop
+      job.reject("rejected")
+
+      # max_retries=1 → first failure dead-letters immediately
+      expect(queue.dead_letters.length).to eq(1)
+      expect(queue.dead_letters.first["error"]).to eq("rejected")
+    end
+
+    it "keeps complete terminal — never re-enqueues or dead-letters" do
+      queue = Tina4::Queue.new(topic: "complete_terminal", backend: backend, max_retries: 3)
+      queue.push({ task: "x" })
+
+      queue.pop.complete
+      expect(queue.size).to eq(0)
+      expect(queue.dead_letters).to eq([])
+    end
+  end
+
+  # ── Lifecycle consistency ────────────────────────────────────────
+  describe "lifecycle consistency" do
+    it "failed returns retryable pending jobs (0 < attempts < max_retries)" do
+      queue = Tina4::Queue.new(topic: "lc_failed", backend: backend, max_retries: 3)
+      queue.push({ task: "x" })
+      queue.pop.fail("once")  # attempts=1 → re-enqueued to pending
+
+      failed = queue.failed
+      expect(failed.length).to eq(1)
+      expect(failed.first["attempts"]).to eq(1)
+      expect(queue.dead_letters).to eq([])
+    end
+
+    it "size(status:) and purge(status:) scan the dead-letter store for dead states" do
+      queue = Tina4::Queue.new(topic: "lc_size", backend: backend, max_retries: 1)
+      queue.push({ task: "x" })
+      queue.pop.fail("boom")  # dead immediately
+
+      expect(queue.size(status: "dead")).to eq(1)
+      expect(queue.size(status: "failed")).to eq(1)
+      expect(queue.size).to eq(0)  # pending
+
+      expect(queue.purge("dead")).to eq(1)
+      expect(queue.size(status: "dead")).to eq(0)
+    end
+
+    it "Queue#retry(job_id) always revives a specific dead-letter" do
+      queue = Tina4::Queue.new(topic: "lc_retry", backend: backend, max_retries: 1)
+      pushed = queue.push({ task: "deadme" })
+      queue.pop.fail("boom")  # dead immediately (attempts=1 >= max_retries=1)
+
+      expect(queue.dead_letters.length).to eq(1)
+      expect(queue.retry(pushed.id)).to be true
+      expect(queue.dead_letters).to eq([])
+      expect(queue.size).to eq(1)
+    end
+
+    it "retry_failed revives dead-letters under a raised limit" do
+      queue = Tina4::Queue.new(topic: "lc_retry_failed", backend: backend, max_retries: 2)
+      queue.push({ task: "z" })
+      2.times { queue.pop&.fail("nope") }  # exhausts to dead at attempts=2
+
+      expect(queue.dead_letters.length).to eq(1)
+      revived = queue.retry_failed(max_retries: 5)  # raised limit revives it
+      expect(revived).to eq(1)
+      expect(queue.size).to eq(1)
+    end
+
+    it "job.retry always re-enqueues and increments attempts" do
+      queue = Tina4::Queue.new(topic: "lc_job_retry", backend: backend, max_retries: 3)
+      queue.push({ task: "y" })
+
+      job = queue.pop
+      job.retry
+      expect(job.attempts).to eq(1)
+      expect(queue.size).to eq(1)
+    end
+  end
+
+  # ── consume(id:) / pop_by_id bug fixes ───────────────────────────
+  describe "consume(id:) and pop_by_id" do
+    it "consume(topic, id:) retrieves exactly the matching job" do
+      queue = Tina4::Queue.new(topic: "byid", backend: backend)
+      queue.push({ k: 1 })
+      target = queue.push({ k: 2 })
+      queue.push({ k: 3 })
+
+      got = nil
+      queue.consume("byid", id: target.id, poll_interval: 0) { |job| got = job }
+
+      expect(got).not_to be_nil
+      expect(got.id).to eq(target.id)
+      expect(got.payload["k"]).to eq(2)
+      expect(queue.size).to eq(2)  # only the targeted job was claimed
+    end
+
+    it "consume(id:) does not raise ArgumentError (signature reconciled)" do
+      queue = Tina4::Queue.new(topic: "byid_noraise", backend: backend)
+      pushed = queue.push({ k: 1 })
+      expect {
+        queue.consume("byid_noraise", id: pushed.id, poll_interval: 0) { |_job| }
+      }.not_to raise_error
+    end
+
+    it "pop_by_id returns the matching job and removes it from the queue" do
+      queue = Tina4::Queue.new(topic: "pbid", backend: backend)
+      first = queue.push({ k: 1 })
+      queue.push({ k: 2 })
+
+      popped = queue.pop_by_id(first.id)
+      expect(popped).not_to be_nil
+      expect(popped.payload["k"]).to eq(1)
+      expect(queue.size).to eq(1)
+    end
+
+    it "pop_by_id returns nil when no job matches" do
+      queue = Tina4::Queue.new(topic: "pbid_miss", backend: backend)
+      queue.push({ k: 1 })
+      expect(queue.pop_by_id("does-not-exist")).to be_nil
+    end
+
+    it "a job popped by id carries the queue reference so fail() persists" do
+      queue = Tina4::Queue.new(topic: "pbid_fail", backend: backend, max_retries: 1)
+      pushed = queue.push({ k: 1 })
+
+      job = queue.pop_by_id(pushed.id)
+      job.fail("boom")  # max_retries=1 → dead-lettered
+      expect(queue.dead_letters.length).to eq(1)
     end
   end
 end
