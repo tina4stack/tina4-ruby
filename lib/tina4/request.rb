@@ -35,6 +35,26 @@ module Tina4
     end
   end
 
+  # Per-file upload hash: indifferent access plus a lazily-materialised
+  # `content` field. The raw bytes are read from the tempfile only on first
+  # access to `content` (then rewound, so :tempfile streaming still works),
+  # so :tempfile-only handlers never buffer large uploads in memory.
+  class FileUpload < IndifferentHash
+    def [](key)
+      if key.to_s == "content" && !key?("content") && (tf = super("tempfile"))
+        self["content"] = begin
+          tf.rewind if tf.respond_to?(:rewind)
+          data = tf.read
+          tf.rewind if tf.respond_to?(:rewind)
+          data
+        rescue StandardError
+          nil
+        end
+      end
+      super(key)
+    end
+  end
+
   # Hash subclass for HTTP headers — string keys are case-insensitive.
   #
   # HTTP header field-names are case-insensitive per RFC 7230 §3.2. With
@@ -335,29 +355,16 @@ module Tina4
             if value.is_a?(Hash) && value[:tempfile]
               tempfile = value[:tempfile]
 
-              # Read the raw bytes once for the `content` field (parity with
-              # Python/PHP/Node, which expose file["content"] as raw bytes —
-              # never base64), then rewind so `:tempfile` is still usable for
-              # large-file streaming.
-              content = begin
-                tempfile.rewind if tempfile.respond_to?(:rewind)
-                bytes = tempfile.read
-                tempfile.rewind if tempfile.respond_to?(:rewind)
-                bytes
-              rescue StandardError
-                nil
-              end
-
               # Indifferent-access per-file hash so file["content"],
-              # file[:content], file["filename"], file[:filename] all work —
-              # string-key access matches the other three frameworks while
-              # staying idiomatic for Ruby callers using symbols.
-              file = IndifferentHash.new
+              # file[:content], file["filename"], file[:filename] all work.
+              # `content` (raw bytes, never base64) is materialised lazily on
+              # first access (see FileUpload) — :tempfile-only handlers never
+              # buffer large uploads in memory.
+              file = FileUpload.new
               file[:filename] = value[:filename]
               file[:type]     = value[:type]
               file[:tempfile] = tempfile
               file[:size]     = tempfile.size
-              file[:content]  = content
               result[key] = file
             end
           end
