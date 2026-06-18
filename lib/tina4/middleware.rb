@@ -41,24 +41,44 @@ module Tina4
         @global_middleware = []
       end
 
-      # Run all "before" hooks: block-based handlers, then class-based before_* methods.
+      # Run all "before" hooks: block-based handlers, then class-based before_*
+      # methods (in definition order).
       #
       # Signature matches Python/PHP/Node orchestrators: pass the list of
       # middleware classes explicitly.
       #
-      # Returns [request, response] on success, or false to halt the request.
+      # M2 — visible-but-resilient: every before_* call is wrapped so a THROW
+      # never crashes the worker. On a throw the error is LOGGED and the
+      # response becomes a clean 500 ({"error":"Internal Server Error",
+      # "status":500}), then processing halts (handler skipped) — deterministic,
+      # never an unhandled exception. A before_* that sets status >= 400 also
+      # halts (the existing 4xx short-circuit). after_* still run on either
+      # halt path (see the dispatcher / #run_after docstring).
+      #
+      # Returns true on success, or false to halt the request (handler skipped).
       def run_before(middleware_classes, request, response)
         # 1. Block-based before handlers (pattern-matched)
         before_handlers.each do |entry|
           next unless matches_pattern?(request.path, entry[:pattern])
-          result = entry[:handler].call(request, response)
+
+          begin
+            result = entry[:handler].call(request, response)
+          rescue StandardError, ScriptError => error
+            middleware_500(response, "before handler", error)
+            return false
+          end
           return false if result == false
         end
 
-        # 2. Class-based middleware: call every before_* method
+        # 2. Class-based middleware: call every before_* method (definition order)
         middleware_classes.each do |klass|
           before_methods_for(klass).each do |method_name|
-            result = klass.send(method_name, request, response)
+            begin
+              result = klass.send(method_name, request, response)
+            rescue StandardError, ScriptError => error
+              middleware_500(response, "#{class_label(klass)}.#{method_name}", error)
+              return false
+            end
             # Support returning [request, response] (Python convention) or false to halt
             if result == false
               return false
@@ -73,21 +93,42 @@ module Tina4
         true
       end
 
-      # Run all "after" hooks: block-based handlers, then class-based after_* methods.
+      # Run all "after" hooks: block-based handlers, then class-based after_*
+      # methods (in definition order).
       #
       # Signature matches Python/PHP/Node orchestrators: pass the list of
       # middleware classes explicitly.
+      #
+      # AFTER-ON-4xx RULE (M2, documented + consistent across all 4 frameworks):
+      # after_* ALWAYS run even when a before_* short-circuited with status >= 400
+      # and the handler was skipped — so they can still add headers / logging.
+      # The dispatcher calls #run_after unconditionally after the before/handler
+      # block (including on the 4xx / throw halt path).
+      #
+      # M2 — every after_* call is wrapped: a THROW is LOGGED and turns the
+      # response into a clean 500, then the REMAINING after_* still run (they
+      # may add headers/logging). Never an unhandled crash.
       def run_after(middleware_classes, request, response)
         # 1. Block-based after handlers (pattern-matched)
         after_handlers.each do |entry|
           next unless matches_pattern?(request.path, entry[:pattern])
-          entry[:handler].call(request, response)
+
+          begin
+            entry[:handler].call(request, response)
+          rescue StandardError, ScriptError => error
+            middleware_500(response, "after handler", error)
+          end
         end
 
-        # 2. Class-based middleware: call every after_* method
+        # 2. Class-based middleware: call every after_* method (definition order)
         middleware_classes.each do |klass|
           after_methods_for(klass).each do |method_name|
-            result = klass.send(method_name, request, response)
+            begin
+              result = klass.send(method_name, request, response)
+            rescue StandardError, ScriptError => error
+              middleware_500(response, "#{class_label(klass)}.#{method_name}", error)
+              next
+            end
             if result.is_a?(Array) && result.length == 2
               request, response = result
             end
@@ -95,7 +136,37 @@ module Tina4
         end
       end
 
+      # Deterministic clean 500 for a middleware that threw. Logs the cause
+      # (NEVER silent) then sets the response to the canonical error shape —
+      # byte-identical to the Python master ({"error":"Internal Server Error",
+      # "status":500} + status 500). Returns the response for chaining.
+      def middleware_500(response, label, error)
+        begin
+          Tina4::Log.error(
+            "Middleware #{label} raised #{error.class.name}: #{error.message}"
+          )
+        rescue StandardError
+          begin
+            $stderr.puts("Middleware #{label} raised #{error.class.name}: #{error.message}")
+            $stderr.flush
+          rescue StandardError
+            # never let logging break the worker
+          end
+        end
+        response.json({ error: "Internal Server Error", status: 500 }, 500)
+      end
+
       private
+
+      # Human-readable label for a middleware (class name, or the class of an
+      # instance) used in the logged 500 message.
+      def class_label(klass)
+        if klass.is_a?(Class) || klass.is_a?(Module)
+          klass.name || klass.to_s
+        else
+          klass.class.name || klass.class.to_s
+        end
+      end
 
       def matches_pattern?(path, pattern)
         return true if pattern.nil?
@@ -109,14 +180,66 @@ module Tina4
         end
       end
 
-      # Collect all public class methods matching before_*
+      # Collect all class methods matching before_* in DEFINITION order.
       def before_methods_for(klass)
-        klass.methods(false).select { |m| m.to_s.start_with?("before_") }.sort
+        discover_methods(klass, "before_")
       end
 
-      # Collect all public class methods matching after_*
+      # Collect all class methods matching after_* in DEFINITION order.
       def after_methods_for(klass)
-        klass.methods(false).select { |m| m.to_s.start_with?("after_") }.sort
+        discover_methods(klass, "after_")
+      end
+
+      # ----------------------------------------------------------------------
+      # MIDDLEWARE ORDERING (M1) — within a class, before_*/after_* methods run
+      # in SOURCE-DEFINITION order, NOT alphabetical. Cross-class order is the
+      # natural iteration of the registered middleware list (registration
+      # order). before_* run before the handler, after_* after.
+      #
+      # WHY source line numbers, not instance_methods(false): in Ruby/PRISM
+      # `instance_methods(false)` is NOT a reliable definition-order report —
+      # once a method NAME (symbol) has been defined on any other class first,
+      # that name can sort ahead in a later class's list. So we sort the
+      # matching methods by their `source_location` line number, which IS the
+      # true source-definition order and is immune to the symbol-table quirk.
+      # (Methods with no source_location — e.g. C-defined — sort to the front
+      # deterministically by name.) We walk the ancestry base→derived so
+      # inherited middleware methods run before a subclass's own, de-duping
+      # overrides to their first (base) position. Mirrors the Python master's
+      # Middleware._discover_methods MRO walk (which leans on __dict__ insertion
+      # order — the equivalent of source-definition order).
+      def discover_methods(klass, prefix)
+        target = klass.is_a?(Class) || klass.is_a?(Module) ? klass.singleton_class : klass.class
+        seen = {}
+        names = []
+        target.ancestors.reverse_each do |ancestor|
+          matched = begin
+                      ancestor.instance_methods(false).select do |name|
+                        name.to_s.start_with?(prefix) &&
+                          !seen.key?(name) &&
+                          klass.respond_to?(name)
+                      end
+                    rescue StandardError
+                      []
+                    end
+
+          ordered = matched.sort_by.with_index do |name, idx|
+            line = begin
+                     loc = ancestor.instance_method(name).source_location
+                     loc ? loc[1] : -1
+                   rescue StandardError
+                     -1
+                   end
+            # Tie-break on the symbol-table index so the result is total/stable.
+            [line, idx]
+          end
+
+          ordered.each do |name|
+            seen[name] = true
+            names << name
+          end
+        end
+        names
       end
     end
   end

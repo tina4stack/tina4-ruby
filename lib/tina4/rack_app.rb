@@ -351,9 +351,12 @@ module Tina4
       env["tina4.request"] = request  # Store for session save after response
       response = Tina4::Response.new
 
-      # Run global middleware (block-based + class-based before_* methods)
+      # Run global middleware (block-based + class-based before_* methods).
+      # M2 — AFTER-ON-4xx RULE: when a before_* short-circuits (4xx/skip) or
+      # throws (clean 500), the after-pass STILL runs so after_* can add
+      # headers/logging — consistent across all 4 frameworks.
       unless Tina4::Middleware.run_before(Tina4::Middleware.global_middleware, request, response)
-        # Middleware halted the request -- return whatever response was set
+        Tina4::Middleware.run_after(Tina4::Middleware.global_middleware, request, response)
         return response.to_rack
       end
 

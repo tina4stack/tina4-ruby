@@ -682,6 +682,18 @@ Tina4::Events.once("app.ready") { puts "Started!" }
 # Fire an event — returns array of listener results
 results = Tina4::Events.emit("user.created", { name: "Alice" })
 
+# Listener isolation (visible-but-resilient): a throwing listener never
+# aborts the rest. emit() wraps EACH listener — on a throw it LOGS via
+# Tina4::Log.warning (event name + error class+message; falls back to $stderr
+# if the logger itself fails — never silent) and CONTINUES. A failed listener
+# contributes a nil slot, so N listeners always yield N results in priority
+# order. Pass strict: true to RE-RAISE on the first listener error instead
+# (later listeners then do NOT run).
+results = Tina4::Events.emit("calc", 5, strict: true)
+# emit_async isolates each threaded listener the same way; strict: true
+# re-raises the listener error on Thread#join.
+threads = Tina4::Events.emit_async("user.created", { name: "Alice" })
+
 # Remove a specific listener or all listeners for an event
 handler = Tina4::Events.on("evt") { }
 Tina4::Events.off("evt", handler)   # remove specific
@@ -896,7 +908,7 @@ Tina4::DevAdmin.request_inspector.clear
 - JWT auth via `jwt` gem
 - Password hashing via `bcrypt`
 - File watching handled by the `tina4` Rust CLI (no framework-side watcher)
-- Event system (observer pattern) for decoupled module communication
+- Event system (observer pattern) for decoupled module communication — listener isolation: a throwing listener is logged (never silent) and the rest of `emit`/`emit_async` still run (N listeners → N results, failed slot = nil); `strict: true` re-raises on the first error
 - DI container with lazy factories and memoization
 - In-memory response cache (GET only, TTL-based, thread-safe)
 - Cross-engine SQL translator (Firebird ROWS, MSSQL TOP, CONCAT, boolean, ILIKE, placeholders)
@@ -908,6 +920,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Dev toolbar dashboard with request inspector, message log, and dev mailbox (debug mode)
 - Rate limiting middleware
 - CORS middleware
+- Middleware ordering & error handling (visible-but-resilient): cross-class order = **registration order** (the order classes are attached via `Router.use` / `route.middleware`); within a class, `before_*`/`after_*` run in **source-definition order** (resolved by `source_location` line number, immune to Ruby's symbol-table reordering of `instance_methods`), inherited methods (base→derived) before a subclass's own. `before_*` run before the handler, `after_*` after. A middleware that **throws** is caught, logged via `Tina4::Log.error`, and produces a deterministic clean 500 (`{"error":"Internal Server Error","status":500}`) — never an unhandled crash. `after_*` ALWAYS run, even when a `before_*` short-circuited with status >= 400 (handler skipped) or threw, so they can still add headers/logging.
 - Graceful shutdown handling
 - Health check endpoint
 - HTTP status code constants (`Tina4::HTTP_OK`, `Tina4::HTTP_NOT_FOUND`, etc.)
