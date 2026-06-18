@@ -537,7 +537,11 @@ module Tina4
           body = read_json_body(env)
           table_name = (body && body["table"]) || ""
           count = (body && body["count"]) || 10
-          json_response(seed_table_data(table_name, count.to_i))
+          seed = body && body["seed"]
+          seed = (Integer(seed) rescue nil) unless seed.nil?
+          clear = body && (body["clear"] == true || body["clear"].to_s == "true")
+          strict = body && (body["strict"] == true || body["strict"].to_s == "true")
+          json_response(seed_table_data(table_name, count.to_i, seed: seed, clear: clear, strict: strict))
         when ["POST", "/__dev/api/tool"]
           body = read_json_body(env)
           tool = (body && body["tool"]) || ""
@@ -919,16 +923,27 @@ module Tina4
         end
       end
 
-      def seed_table_data(table_name, count)
+      def seed_table_data(table_name, count, seed: nil, clear: false, strict: false)
         return { error: "No table name provided" } if table_name.nil? || table_name.strip.empty?
 
         db = Tina4.database
         return { error: "No database configured" } unless db
 
         begin
-          columns = db.columns(table_name)
-          seeded = Tina4.seed_table(table_name, columns, count: count)
-          { table: table_name, seeded: seeded }
+          # Delegate to the shared resilient seed_table helper so the endpoint
+          # gets the exact same per-row wrap (P1) — no unhandled row failure can
+          # crash the endpoint — plus clear/seed/strict (P2/P3). _normalize_columns
+          # skips auto-increment id PKs from the introspected column list.
+          summary = Tina4.seed_table(
+            table_name, db.columns(table_name),
+            count: count, seed: seed, clear: clear, strict: strict
+          )
+          {
+            table: table_name,
+            seeded: summary.seeded,
+            failed: summary.failed,
+            errors: summary.errors
+          }
         rescue => e
           { error: e.message }
         end

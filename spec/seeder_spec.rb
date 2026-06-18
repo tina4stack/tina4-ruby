@@ -622,3 +622,231 @@ RSpec.describe "Tina4.run_seeds" do
     expect { Tina4.run_seeds(seed_folder: seeds_dir, clear: false) }.not_to raise_error
   end
 end
+
+# ===================================================================
+# SEEDING FULL OVERHAUL — lock-in tests (engine-agnostic SQLite)
+# Mirrors tests/test_seeder_overhaul.py from the Python master.
+# ===================================================================
+
+# Model whose `email` column has a UNIQUE constraint in the table DDL, so a
+# repeated value violates the constraint (used to exercise P1 error handling).
+class SeedUniqueEmail < Tina4::ORM
+  table_name "seed_unique_emails"
+  integer_field :id, primary_key: true, auto_increment: true
+  string_field :email
+end
+
+# FK-related models for topological ordering (P4a).
+class SeedAuthor < Tina4::ORM
+  table_name "seed_authors"
+  integer_field :id, primary_key: true, auto_increment: true
+  string_field :name
+end
+
+class SeedBook < Tina4::ORM
+  table_name "seed_books"
+  integer_field :id, primary_key: true, auto_increment: true
+  string_field :title
+  foreign_key_field :author_id, references: SeedAuthor
+end
+
+RSpec.describe "Seeding overhaul — P1 error handling" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_seed_overhaul") }
+  let(:db_path) { File.join(tmp_dir, "test.db") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
+
+  before(:each) do
+    Tina4.bind_database(db)
+    # email UNIQUE so the SECOND identical override row violates the constraint.
+    db.execute("CREATE TABLE IF NOT EXISTS seed_unique_emails (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE)")
+  end
+
+  after(:each) do
+    db.close
+    FileUtils.rm_rf(tmp_dir)
+  end
+
+  it "test_summary_shape — SeedSummary exposes seeded/failed/errors + int contract" do
+    summary = Tina4.seed_orm(SeedUniqueEmail, count: 3, seed: 1)
+    expect(summary.seeded).to eq(3)
+    expect(summary.failed).to eq(0)
+    expect(summary.errors).to eq([])
+    # Hash-style + dict-style access
+    expect(summary[:seeded]).to eq(3)
+    expect(summary["failed"]).to eq(0)
+    expect(summary.to_h).to eq({ seeded: 3, failed: 0, errors: [] })
+    # Backward-compatible int contract
+    expect(summary).to eq(3)
+    expect(summary.to_i).to eq(3)
+  end
+
+  it "test_constraint_violation_does_not_crash_and_is_not_silent" do
+    # Force every row to the same email -> first inserts, rest violate UNIQUE.
+    summary = nil
+    expect {
+      summary = Tina4.seed_orm(
+        SeedUniqueEmail, count: 5, clear: true, seed: 1,
+        overrides: { email: "dup@example.com" }
+      )
+    }.not_to raise_error
+
+    expect(summary.failed).to be >= 1            # NOT silently all-success
+    expect(summary.seeded).to be < 5             # at least one row skipped
+    expect(summary.seeded + summary.failed).to eq(5)
+    expect(summary.errors.length).to eq(summary.failed)
+    expect(summary.errors.first).to include(:row, :message)
+  end
+
+  it "test_strict_reraises_on_first_failure" do
+    expect {
+      Tina4.seed_orm(
+        SeedUniqueEmail, count: 5, clear: true, strict: true, seed: 1,
+        overrides: { email: "dup@example.com" }
+      )
+    }.to raise_error(StandardError)
+
+    # Strict re-raises on the FIRST failure: row 0 inserted, row 1 raised.
+    result = db.fetch_one("SELECT count(*) as cnt FROM seed_unique_emails")
+    expect(result[:cnt]).to eq(1)
+  end
+
+  it "test_partial_success_counts — good rows seeded, bad rows counted" do
+    # 1 unique email succeeds, then 4 duplicate-email rows fail.
+    emails = ["unique1@example.com"] + Array.new(4) { "same@example.com" }
+    idx = -1
+    summary = Tina4.seed_orm(
+      SeedUniqueEmail, count: 5, clear: true,
+      overrides: { email: ->(_f) { idx += 1; emails[idx] } }
+    )
+    expect(summary.seeded).to eq(2)   # unique1 + first 'same'
+    expect(summary.failed).to eq(3)   # remaining 3 'same' rows
+  end
+end
+
+RSpec.describe "Seeding overhaul — P2 idempotency (seed_table clear)" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_seed_idempotency") }
+  let(:db_path) { File.join(tmp_dir, "test.db") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
+
+  before(:each) do
+    Tina4.bind_database(db)
+    db.execute("CREATE TABLE IF NOT EXISTS idem_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, score INTEGER)")
+    db.execute("CREATE TABLE IF NOT EXISTS idem_pk (code INTEGER PRIMARY KEY, label TEXT)")
+  end
+
+  after(:each) do
+    db.close
+    FileUtils.rm_rf(tmp_dir)
+  end
+
+  it "test_clear_avoids_duplicates_on_rerun" do
+    Tina4.seed_table("idem_test", { name: :string, score: :integer }, count: 10, clear: true, seed: 1)
+    first = db.fetch_one("SELECT count(*) as cnt FROM idem_test")[:cnt]
+
+    Tina4.seed_table("idem_test", { name: :string, score: :integer }, count: 10, clear: true, seed: 1)
+    second = db.fetch_one("SELECT count(*) as cnt FROM idem_test")[:cnt]
+
+    expect(first).to eq(10)
+    expect(second).to eq(10)   # clear prevented duplicates on the re-run
+  end
+
+  it "test_clear_prevents_unique_pk_violation" do
+    # A fixed non-auto PK collides on the second run unless we clear first.
+    counter = 0
+    pk_gen = ->(_f) { counter += 1 }
+    run = lambda do
+      counter = 0
+      Tina4.seed_table(
+        "idem_pk", { code: :integer, label: :string },
+        count: 5, clear: true, overrides: { code: pk_gen }
+      )
+    end
+
+    s1 = run.call
+    s2 = run.call
+    expect(s1.failed).to eq(0)
+    expect(s2.failed).to eq(0)   # clear truncated before the second run
+    expect(db.fetch_one("SELECT count(*) as cnt FROM idem_pk")[:cnt]).to eq(5)
+  end
+end
+
+RSpec.describe "Seeding overhaul — P3 reproducibility" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_seed_repro") }
+
+  after(:each) { FileUtils.rm_rf(tmp_dir) }
+
+  it "test_same_seed_identical_data — FakeData same seed → identical sequence" do
+    a = Tina4::FakeData.new(seed: 7)
+    b = Tina4::FakeData.new(seed: 7)
+    rows_a = Array.new(20) { [a.name, a.email, a.integer] }
+    rows_b = Array.new(20) { [b.name, b.email, b.integer] }
+    expect(rows_a).to eq(rows_b)
+  end
+
+  it "test_seed_orm_seed_param_reproducible — same seed → identical rows across two DBs" do
+    paths = [File.join(tmp_dir, "a.db"), File.join(tmp_dir, "b.db")]
+    captured = paths.map do |p|
+      db = Tina4::Database.new("sqlite:///" + p)
+      Tina4.bind_database(db)
+      db.execute("CREATE TABLE IF NOT EXISTS seed_users (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT, last_name TEXT, email TEXT, age INTEGER DEFAULT 0, balance REAL DEFAULT 0.0, bio TEXT)")
+      Tina4.seed_orm(SeedTestUser, count: 5, clear: true, seed: 12345)
+      rows = db.fetch("SELECT first_name, last_name, email FROM seed_users ORDER BY id").to_a
+      db.close
+      rows
+    end
+
+    expect(captured[0]).to eq(captured[1])
+  end
+end
+
+RSpec.describe "Seeding overhaul — P4a FK ordering" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_seed_fk") }
+  let(:db_path) { File.join(tmp_dir, "test.db") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
+
+  before(:each) do
+    Tina4.bind_database(db)
+    # SQLite enforces FKs when PRAGMA foreign_keys=ON. The Ruby sqlite driver
+    # enables it on connect; assert it so the test is a real FK guard.
+    db.execute("PRAGMA foreign_keys = ON")
+    db.execute("CREATE TABLE IF NOT EXISTS seed_authors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS seed_books (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, author_id INTEGER REFERENCES seed_authors(id))")
+  end
+
+  after(:each) do
+    db.close
+    FileUtils.rm_rf(tmp_dir)
+  end
+
+  it "test_wrong_declared_order_still_seeds_parents_first" do
+    # Pass the models in the WRONG order (child before parent). Topo-sort must
+    # seed authors first, then books referencing real author ids — no FK
+    # violation, no orphan.
+    results = Tina4.seed_models([SeedBook, SeedAuthor], count: 5, clear: true, seed: 3)
+
+    expect(results["SeedAuthor"].failed).to eq(0)
+    expect(results["SeedBook"].failed).to eq(0)
+    expect(results["SeedAuthor"].seeded).to eq(5)
+    expect(results["SeedBook"].seeded).to eq(5)
+
+    # Every book references a real author (no orphans).
+    orphans = db.fetch_one(
+      "SELECT count(*) as cnt FROM seed_books b LEFT JOIN seed_authors a ON b.author_id = a.id WHERE a.id IS NULL"
+    )[:cnt]
+    expect(orphans).to eq(0)
+  end
+
+  it "test_clear_runs_in_reverse_topo_order" do
+    # Seed once, then re-seed with clear: true. The clear must remove children
+    # (books) BEFORE parents (authors) so the parent delete doesn't trip the
+    # FK constraint — no error, and the re-run lands clean counts.
+    Tina4.seed_models([SeedAuthor, SeedBook], count: 4, clear: true, seed: 1)
+
+    expect {
+      Tina4.seed_models([SeedAuthor, SeedBook], count: 4, clear: true, seed: 2)
+    }.not_to raise_error
+
+    expect(db.fetch_one("SELECT count(*) as cnt FROM seed_authors")[:cnt]).to eq(4)
+    expect(db.fetch_one("SELECT count(*) as cnt FROM seed_books")[:cnt]).to eq(4)
+  end
+end

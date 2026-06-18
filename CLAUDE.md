@@ -532,10 +532,33 @@ fake.numeric(min: 0.0, max: 1000.0, decimals: 2) -> Float
 fake.datetime(start_year: 2020, end_year: 2026) -> Time
 fake.for_field(field_def, column_name = nil) -> Object
 
-Tina4.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil) -> Integer
-Tina4.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil) -> Integer
+Tina4.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil, strict: false) -> SeedSummary
+Tina4.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil, strict: false) -> SeedSummary
+Tina4.seed_models(orm_classes, count: 10, overrides: {}, clear: false, seed: nil, strict: false) -> { "ModelName" => SeedSummary }
+Tina4.seed_batch(tasks, clear: false, strict: false) -> { "ClassName" => SeedSummary }
 Tina4.run_seeds(seed_folder: "seeds", clear: false)
 ```
+
+**Seeding is visible-but-resilient.** `seed_orm` / `seed_table` wrap each row:
+on a row failure the cause is logged (with the 0-based row index) and the row is
+skipped, incrementing `failed`; with `strict: true` the FIRST failure re-raises
+instead of skipping. Both return a `SeedSummary` — `{ seeded:, failed:, errors: }`
+where `errors` is an array of `{ row:, message: }`. `SeedSummary` defines `to_i`
+/ `==` against an Integer, so the old count contract (`expect(seed_orm(...)).to
+eq(5)`) still holds while `summary.seeded` / `summary.failed` / `summary.errors`
+/ `summary.to_h` expose the struct.
+
+- **clear:** truncates the target table before seeding (parity across
+  `seed_table` / `seed_orm` / `seed_models`) so re-runs don't duplicate rows or
+  trip unique-PK violations.
+- **seed:** seeds the FakeData RNG for reproducible data.
+- **FK ordering:** `seed_models` / `seed_batch` topologically sort models by
+  their `foreign_key_field` (belongs_to) dependency graph — parents seed before
+  children, and `clear: true` clears in reverse order. Child FK columns are
+  filled from a pool of REAL parent primary keys so no FK constraint is tripped.
+- **dev-admin** `POST /__dev/api/seed` accepts `{table, count, seed, clear,
+  strict}` and delegates to `seed_table` (shared per-row wrap; returns
+  `{table, seeded, failed, errors}`).
 
 ### Api — External HTTP client
 

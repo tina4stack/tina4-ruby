@@ -349,179 +349,528 @@ module Tina4
     end
   end
 
+  # Result of a seed run — +{seeded, failed, errors}+.
+  #
+  # Mirrors the Python master's +SeedSummary(int)+. Ruby has no int subclass,
+  # but the OLD seed helpers returned the inserted count as an Integer and
+  # specs assert on it (+expect(count).to eq(5)+). To keep that contract
+  # intact while exposing the new struct, +SeedSummary+ defines +to_i+, +==+
+  # (against an Integer or another SeedSummary), +to_int+ (implicit coercion)
+  # and Hash-style read access (+summary[:seeded]+, +to_h+) so it behaves like
+  # the seeded count where an Integer is expected and like the struct
+  # everywhere else.
+  #
+  # +errors+ is a list of +{ row: <0-based index>, message: <str> }+ hashes
+  # describing every skipped row.
+  class SeedSummary
+    attr_reader :seeded, :failed, :errors
+
+    def initialize(seeded: 0, failed: 0, errors: nil)
+      @seeded = seeded.to_i
+      @failed = failed.to_i
+      @errors = errors || []
+    end
+
+    # Integer value == seeded (preserves the pre-overhaul count contract).
+    def to_i
+      @seeded
+    end
+    alias to_int to_i
+
+    def to_h
+      { seeded: @seeded, failed: @failed, errors: @errors }
+    end
+    alias to_hash to_h
+
+    # Hash-style read access: summary[:seeded] / summary["failed"].
+    def [](key)
+      to_h[key.to_sym]
+    end
+
+    # Compare equal to a bare Integer (the seeded count) OR another summary.
+    def ==(other)
+      case other
+      when Integer then @seeded == other
+      when SeedSummary then to_h == other.to_h
+      when Hash then to_h == other
+      else false
+      end
+    end
+
+    def eql?(other)
+      other.is_a?(SeedSummary) && to_h == other.to_h
+    end
+
+    def hash
+      to_h.hash
+    end
+
+    # Arithmetic / ordering against Integers so existing numeric assertions
+    # (e.g. +be >= 1+, +count + 1+) keep working.
+    def coerce(other)
+      [other, @seeded]
+    end
+
+    def <=>(other)
+      @seeded <=> (other.is_a?(SeedSummary) ? other.to_i : other)
+    end
+    include Comparable
+
+    def to_json(*args)
+      to_h.to_json(*args)
+    end
+
+    def to_s
+      "SeedSummary(seeded=#{@seeded}, failed=#{@failed}, errors=#{@errors.inspect})"
+    end
+    alias inspect to_s
+  end
+
   # Seed an ORM class with auto-generated fake data.
+  #
+  # Visible-but-resilient: each row is wrapped. On a row failure the cause is
+  # logged (with the row index) and the row is skipped — unless +strict: true+,
+  # in which case the FIRST failure RE-RAISES. A one-line summary is logged at
+  # the end. This replaces both the old crash-prone path and the silent swallow.
   #
   # @param orm_class [Class] ORM subclass (e.g., User, Product)
   # @param count [Integer] number of records to insert
   # @param overrides [Hash] field overrides — static values or lambdas receiving FakeData
-  # @param clear [Boolean] delete existing records before seeding
-  # @param seed [Integer, nil] random seed for reproducible data
-  # @return [Integer] number of records inserted
+  # @param clear [Boolean] delete existing records before seeding (P2)
+  # @param seed [Integer, nil] random seed for reproducible data (P3)
+  # @param strict [Boolean] re-raise on the first failed row instead of skipping (P1)
+  # @return [SeedSummary] +{seeded, failed, errors}+ — also usable as the int count
   #
   # @example
   #   Tina4.seed_orm(User, count: 50)
   #   Tina4.seed_orm(Order, count: 200, overrides: { status: ->(f) { f.choice(%w[pending shipped]) } })
-  def self.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil)
+  def self.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil, strict: false)
     fake = FakeData.new(seed: seed)
     fields = orm_class.field_definitions
     table = orm_class.table_name
 
     if fields.empty?
       Tina4::Log.error("Seeder: No fields found on #{orm_class.name}")
-      return 0
+      return SeedSummary.new
     end
 
     db = Tina4.database
     unless db
       Tina4::Log.error("Seeder: No database connection. Call Tina4.bind_database(db) first.")
-      return 0
+      return SeedSummary.new
     end
 
-    # Idempotency check
+    # Idempotency short-circuit (Ruby-specific, additive to the Python master):
+    # without an explicit clear, skip when the table already has >= count rows.
     unless clear
       begin
         result = db.fetch_one("SELECT count(*) as cnt FROM #{table}")
         if result && result[:cnt].to_i >= count
           Tina4::Log.info("Seeder: #{table} already has #{result[:cnt]} records, skipping")
-          return 0
+          return SeedSummary.new
         end
       rescue => e
-        # Table might not exist
+        # Table might not exist — fall through and let row inserts surface it.
       end
     end
 
-    # Clear if requested
-    if clear
-      begin
-        db.execute("DELETE FROM #{table}")
-        Tina4::Log.info("Seeder: Cleared #{table}")
-      rescue => e
-        Tina4::Log.warn("Seeder: Could not clear #{table}: #{e.message}")
-      end
-    end
+    _clear_orm(orm_class) if clear
 
-    # Identify fields to populate
-    pk_field = orm_class.primary_key_field
     insert_fields = fields.reject { |name, opts| opts[:primary_key] && opts[:auto_increment] }
 
-    inserted = 0
+    # P4a — resolve FK columns to REAL parent PKs so a child row references an
+    # existing parent. Snapshotted once (parents are seeded first by
+    # seed_models's topo-sort, so the table is populated by now).
+    fk_pools = _foreign_key_pools(orm_class, insert_fields)
+
+    seeded = 0
+    failed = 0
+    errors = []
+
     count.times do |i|
-      attrs = {}
-
-      insert_fields.each do |name, field_def|
-        if overrides.key?(name)
-          val = overrides[name]
-          attrs[name] = val.respond_to?(:call) ? val.call(fake) : val
-        else
-          generated = fake.for_field(field_def, name)
-          attrs[name] = generated unless generated.nil?
-        end
-      end
-
       begin
+        attrs = {}
+        insert_fields.each do |name, field_def|
+          if overrides.key?(name)
+            val = overrides[name]
+            attrs[name] = val.respond_to?(:call) ? val.call(fake) : val
+          elsif fk_pools[name] && !fk_pools[name].empty?
+            attrs[name] = fake.choice(fk_pools[name])
+          else
+            generated = fake.for_field(field_def, name)
+            attrs[name] = generated unless generated.nil?
+          end
+        end
+
+        _validate_types(fields, attrs, orm_class.name)
+
         obj = orm_class.new(attrs)
+        # ORM#save returns false (it rolls back internally) instead of raising
+        # on a constraint failure — convert that falsy result into a counted
+        # failure so it is never reported as success.
         if obj.save
-          inserted += 1
+          seeded += 1
         else
-          Tina4::Log.warn("Seeder: Insert failed for #{table} row #{i + 1}: #{obj.errors.join(', ')}")
+          reason = obj.errors.empty? ? "save returned false" : obj.errors.join(", ")
+          raise "save failed: #{reason}"
         end
       rescue => e
-        Tina4::Log.warn("Seeder: Insert failed for #{table} row #{i + 1}: #{e.message}")
+        if strict
+          Tina4::Log.error("Seeder: row #{i} failed seeding #{orm_class.name} (strict): #{e.message}")
+          raise
+        end
+        failed += 1
+        errors << { row: i, message: e.message }
+        Tina4::Log.warning("Seeder: row #{i} failed seeding #{orm_class.name}, skipped: #{e.message}")
       end
     end
 
-    Tina4::Log.info("Seeder: Inserted #{inserted}/#{count} records into #{table}")
-    inserted
+    Tina4::Log.info("Seeder: #{orm_class.name} — seeded #{seeded}, #{failed} failed")
+    SeedSummary.new(seeded: seeded, failed: failed, errors: errors)
   end
 
   # Seed a raw database table (no ORM class needed).
   #
+  # Visible-but-resilient: each row is wrapped. On a row failure the cause is
+  # logged (with the row index) and the row is skipped — unless +strict: true+,
+  # in which case the FIRST failure RE-RAISES. A one-line summary is logged at
+  # the end.
+  #
   # @param table_name [String] name of the table
-  # @param columns [Hash] { column_name: type_string } — supports :integer, :string, :text, etc.
+  # @param columns [Hash, Array] +{ column_name => type_string }+ OR an array of
+  #   column descriptor hashes (+{ name:, type: }+) as returned by +db.columns+.
+  #   Values may also be callables (or FakeData-receiving lambdas) — parity with
+  #   the Python +field_map+.
   # @param count [Integer] number of records to insert
-  # @param overrides [Hash] field overrides
-  # @param clear [Boolean] delete before seeding
-  # @param seed [Integer, nil] random seed
-  # @return [Integer] records inserted
-  def self.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil)
+  # @param overrides [Hash] static values (or callables) set on every row
+  # @param clear [Boolean] delete every existing row before seeding (P2)
+  # @param seed [Integer, nil] random seed — seeds the FakeData RNG used for any
+  #   generator that is not an explicit callable (P3 / signature parity)
+  # @param strict [Boolean] re-raise on the first failed row instead of skipping (P1)
+  # @return [SeedSummary] +{seeded, failed, errors}+ — also usable as the int count
+  def self.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil, strict: false)
     fake = FakeData.new(seed: seed)
     db = Tina4.database
 
     unless db
       Tina4::Log.error("Seeder: No database connection.")
-      return 0
+      return SeedSummary.new
     end
 
-    if clear
-      begin
-        db.execute("DELETE FROM #{table_name}")
-      rescue => e
-        Tina4::Log.warn("Seeder: Could not clear #{table_name}: #{e.message}")
-      end
-    end
+    field_map = _normalize_columns(columns)
 
-    inserted = 0
+    _clear_table(db, table_name) if clear
+
+    seeded = 0
+    failed = 0
+    errors = []
+
     count.times do |i|
-      row = {}
-      columns.each do |col_name, type_str|
-        if overrides.key?(col_name)
-          val = overrides[col_name]
-          row[col_name] = val.respond_to?(:call) ? val.call(fake) : val
-        else
-          field_def = { type: type_str.to_sym }
-          row[col_name] = fake.for_field(field_def, col_name)
-        end
-      end
-
       begin
+        row = {}
+        field_map.each do |col_name, type_str|
+          if overrides.key?(col_name)
+            val = overrides[col_name]
+            row[col_name] = val.respond_to?(:call) ? val.call(fake) : val
+          elsif type_str.respond_to?(:call)
+            # field_map value is itself a generator (Python field_map parity).
+            row[col_name] = type_str.arity.zero? ? type_str.call : type_str.call(fake)
+          else
+            field_def = { type: type_str.to_sym }
+            row[col_name] = fake.for_field(field_def, col_name)
+          end
+        end
+
         db.insert(table_name, row)
-        inserted += 1
+        seeded += 1
       rescue => e
-        Tina4::Log.warn("Seeder: Insert failed for #{table_name} row #{i + 1}: #{e.message}")
+        if strict
+          Tina4::Log.error("Seeder: row #{i} failed seeding '#{table_name}' (strict): #{e.message}")
+          raise
+        end
+        failed += 1
+        errors << { row: i, message: e.message }
+        Tina4::Log.warning("Seeder: row #{i} failed seeding '#{table_name}', skipped: #{e.message}")
       end
     end
 
-    Tina4::Log.info("Seeder: Inserted #{inserted}/#{count} records into #{table_name}")
-    inserted
+    begin
+      db.commit
+    rescue StandardError
+      # Autocommit-on engines / pooled standalone writes may not need an
+      # explicit commit; never let the summary itself crash.
+    end
+
+    Tina4::Log.info("Seeder: '#{table_name}' — seeded #{seeded}, #{failed} failed")
+    SeedSummary.new(seeded: seeded, failed: failed, errors: errors)
   end
 
-  # Seed multiple ORM classes in batch with optional dependency-aware clearing.
+  # Batch-seed several ORM models, ordering by their ForeignKeyField dependency
+  # graph (P4a). Parent tables seed before children (topological sort over the
+  # ORM's belongs_to/has_many FK metadata); when +clear: true+ the clear runs in
+  # the REVERSE order so children are removed before parents — no FK violations
+  # regardless of the order the caller lists the models in.
+  #
+  # @param orm_classes [Array<Class>] ORM subclasses to seed
+  # @param count [Integer] rows per model
+  # @param overrides [Hash] per-model overrides as +{ ModelClass => { field: value } }+
+  #   or a single flat hash applied to every model
+  # @param clear [Boolean] clear each table first (reverse-topo order)
+  # @param seed [Integer, nil] PRNG seed (P3) — applied per model
+  # @param strict [Boolean] re-raise on the first failed row
+  # @return [Hash] +{ "ModelName" => SeedSummary }+ for each model seeded
+  def self.seed_models(orm_classes, count: 10, overrides: {}, clear: false, seed: nil, strict: false)
+    ordered = _topo_sort_models(orm_classes)
+
+    if clear
+      ordered.reverse_each { |model| _clear_orm(model) }
+    end
+
+    results = {}
+    ordered.each do |model|
+      model_overrides = overrides
+      if overrides.is_a?(Hash) && overrides.key?(model)
+        model_overrides = overrides[model]
+      end
+      results[model.name] = seed_orm(
+        model, count: count, overrides: model_overrides || {},
+        clear: false, seed: seed, strict: strict
+      )
+    end
+    results
+  end
+
+  # Seed multiple ORM classes in batch with dependency-aware ordering.
+  #
+  # Backwards-compatible task form (+[{ orm_class:, count:, overrides:, seed: }]+).
+  # The tasks are reordered by the FK dependency graph so parents seed before
+  # children; +clear: true+ clears in reverse-topo order. Strict mode re-raises
+  # on the first failed row of any task.
   #
   # @param tasks [Array<Hash>] each hash has :orm_class, :count, :overrides, :seed
-  # @param clear [Boolean] delete existing records (in reverse order) before seeding
-  # @return [Hash] { "ClassName" => inserted_count, ... }
+  # @param clear [Boolean] delete existing records (reverse-topo order) before seeding
+  # @param strict [Boolean] re-raise on the first failed row
+  # @return [Hash] +{ "ClassName" => SeedSummary }+
   #
   # @example
   #   Tina4.seed_batch([
   #     { orm_class: User, count: 20 },
   #     { orm_class: Order, count: 100, overrides: { status: "pending" } }
   #   ], clear: true)
-  def self.seed_batch(tasks, clear: false)
-    results = {}
+  def self.seed_batch(tasks, clear: false, strict: false)
+    by_class = {}
+    tasks.each { |t| by_class[t[:orm_class]] = t }
+    ordered_classes = _topo_sort_models(tasks.map { |t| t[:orm_class] })
 
     if clear
-      tasks.reverse_each do |task|
-        begin
-          Tina4.database&.execute("DELETE FROM #{task[:orm_class].table_name}")
-          Tina4::Log.info("Seeder: Cleared #{task[:orm_class].table_name}")
-        rescue => e
-          Tina4::Log.warn("Seeder: Could not clear #{task[:orm_class].table_name}: #{e.message}")
-        end
-      end
+      ordered_classes.reverse_each { |orm_class| _clear_orm(orm_class) }
     end
 
-    tasks.each do |task|
-      n = Tina4.seed_orm(
-        task[:orm_class],
+    results = {}
+    ordered_classes.each do |orm_class|
+      task = by_class[orm_class]
+      results[orm_class.name] = seed_orm(
+        orm_class,
         count: task[:count] || 10,
         overrides: task[:overrides] || {},
         clear: false,
-        seed: task[:seed]
+        seed: task[:seed],
+        strict: strict
       )
-      results[task[:orm_class].name] = n
     end
 
     results
+  end
+
+  # --- internal helpers (P2/P4a/P4c) --------------------------------------
+
+  # Normalise the +columns+ argument of +seed_table+ into a uniform
+  # +{ column_name => type_or_callable }+ hash. Accepts a plain hash (the
+  # documented form) OR an array of column-descriptor hashes
+  # (+{ name:, type:, primary_key:, ... }+) as returned by +db.columns+,
+  # skipping auto-increment / id primary keys so they are left to the engine.
+  def self._normalize_columns(columns)
+    return columns if columns.is_a?(Hash)
+
+    map = {}
+    Array(columns).each do |col|
+      next unless col.is_a?(Hash)
+
+      name = col[:name] || col["name"]
+      next if name.nil?
+
+      pk = col[:primary_key] || col["primary_key"]
+      lname = name.to_s.downcase
+      # Skip primary-key id columns — the engine assigns them.
+      next if pk && lname == "id"
+
+      type = col[:type] || col["type"] || "string"
+      map[name.to_sym] = _normalize_sql_type(type)
+    end
+    map
+  end
+
+  # Map a raw SQL/driver type string to a FakeData field type symbol.
+  def self._normalize_sql_type(type)
+    t = type.to_s.downcase
+    return :integer if t =~ /int|serial/
+    return :float   if t =~ /real|float|double|numeric|decimal|money/
+    return :boolean if t =~ /bool|bit/
+    return :datetime if t =~ /datetime|timestamp/
+    return :date     if t == "date"
+    return :blob     if t =~ /blob|binary/
+    return :text     if t =~ /text|clob/
+    :string
+  end
+
+  # Delete every row in +table+. Tolerant — logs and continues on error.
+  def self._clear_table(db, table)
+    db.delete(table, "1=1")
+    Tina4::Log.info("Seeder: Cleared #{table}")
+  rescue => e
+    Tina4::Log.warning("Seeder: could not clear '#{table}': #{e.message}")
+  end
+
+  # Delete every row backing an ORM model. Tolerant — logs and continues.
+  def self._clear_orm(orm_class)
+    db = orm_class.get_db
+    return unless db
+
+    db.delete(orm_class.table_name, "1=1")
+    Tina4::Log.info("Seeder: Cleared #{orm_class.table_name}")
+  rescue => e
+    Tina4::Log.warning("Seeder: could not clear #{orm_class.name}: #{e.message}")
+  end
+
+  # For each foreign-key column on the model, fetch the existing primary-key
+  # values of the referenced table so seeded child rows reference a real
+  # parent (P4a). Returns +{ fk_column_sym => [pk_value, ...] }+; columns with
+  # no resolvable / empty parent table are omitted (the generic generator then
+  # fills them, and the row may fail loudly — never silently).
+  def self._foreign_key_pools(orm_class, fields)
+    pools = {}
+    fk_columns = _foreign_keys_for(orm_class)
+    fields.each_key do |name|
+      ref_class = fk_columns[name.to_s]
+      next unless ref_class
+
+      begin
+        db = ref_class.get_db
+        next unless db
+
+        pk = ref_class.primary_key_field || :id
+        rows = db.fetch("SELECT #{pk} FROM #{ref_class.table_name}", [], limit: 100_000)
+        list = rows.respond_to?(:to_a) ? rows.to_a : Array(rows)
+        values = list.map { |r| r[pk] || r[pk.to_s] }.compact
+        pools[name] = values unless values.empty?
+      rescue => e
+        Tina4::Log.warning("Seeder: could not resolve FK pool for #{name}: #{e.message}")
+      end
+    end
+    pools
+  end
+
+  # Resolve the foreign-key columns declared on a model to their referenced
+  # ORM classes. Reads the model's belongs_to relationship metadata (the
+  # foreign_key_field DSL wires a belongs_to whose :foreign_key is the column
+  # and :class_name names the parent). Returns +{ "column_name" => ParentClass }+.
+  def self._foreign_keys_for(orm_class)
+    out = {}
+    return out unless orm_class.respond_to?(:relationship_definitions)
+
+    orm_class.relationship_definitions.each_value do |rel|
+      next unless rel[:type] == :belongs_to
+
+      fk = (rel[:foreign_key] || "").to_s
+      next if fk.empty?
+
+      target = _resolve_model_by_name(rel[:class_name])
+      out[fk] = target if target
+    end
+    out
+  end
+
+  # Topologically sort ORM models so parents (referenced tables) come before
+  # children (tables with a FK pointing at them). Uses the belongs_to FK
+  # metadata. Models not in the input list are ignored as dependencies.
+  # Cycles / unresolved deps fall back to declared order so nothing is dropped.
+  def self._topo_sort_models(orm_classes)
+    in_set = orm_classes.uniq
+    by_name = {}
+    in_set.each { |m| by_name[m.name.to_s.split("::").last] = m }
+
+    deps_of = {}
+    in_set.each do |model|
+      deps = []
+      _foreign_keys_for(model).each_value do |ref_class|
+        simple = ref_class.name.to_s.split("::").last
+        target = by_name[simple]
+        deps << target if target && !target.equal?(model)
+      end
+      deps_of[model] = deps.uniq
+    end
+
+    ordered = []
+    placed = []
+    remaining = in_set.dup
+    progressed = true
+    while !remaining.empty? && progressed
+      progressed = false
+      still = []
+      remaining.each do |model|
+        if deps_of[model].all? { |d| placed.include?(d) }
+          ordered << model
+          placed << model
+          progressed = true
+        else
+          still << model
+        end
+      end
+      remaining = still
+    end
+    # Cycle / unresolved deps — append in declared order so we never drop a model.
+    ordered.concat(remaining)
+    ordered
+  end
+
+  # Find a loaded Tina4::ORM subclass by its simple (unqualified) class name.
+  def self._resolve_model_by_name(class_name)
+    return nil if class_name.nil?
+    return class_name if class_name.is_a?(Class)
+
+    simple = class_name.to_s.split("::").last
+    return nil unless defined?(Tina4::ORM) && Tina4::ORM.respond_to?(:model_subclasses)
+
+    Tina4::ORM.model_subclasses.find do |k|
+      k.name && k.name.split("::").last == simple
+    end
+  end
+
+  # P4c — when a generated/static value's Ruby type clearly mismatches the
+  # target column's field type, LOG a warning (never hard-fail). bool-in-int
+  # is allowed (Ruby has no bool/int subclass relation, but seeded booleans are
+  # represented as 0/1 integers here, so only flag truly suspicious cases).
+  def self._validate_types(fields, attrs, model_name)
+    expected = { integer: Integer, float: Float, boolean: Integer }
+    attrs.each do |name, value|
+      next if value.nil?
+
+      field = fields[name]
+      next if field.nil?
+
+      want = expected[field[:type]]
+      next if want.nil?
+
+      # A Float landing in an :integer column (or vice-versa) is the suspicious
+      # case; everything that is_a? the expected numeric is fine.
+      next if value.is_a?(want)
+      next if want == Integer && value.is_a?(Numeric) && field[:type] == :boolean
+
+      Tina4::Log.warning(
+        "Seeder: #{model_name}.#{name} expected #{want} but generated " \
+        "#{value.class} (#{value.inspect}) — inserting anyway"
+      )
+    end
   end
 
   # Run all seed files in the given folder.
