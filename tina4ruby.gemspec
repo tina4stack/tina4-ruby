@@ -7,8 +7,8 @@ Gem::Specification.new do |spec|
   spec.version = Tina4::VERSION
   spec.authors = ["Tina4 Team"]
   spec.email = ["info@tina4.com"]
-  spec.summary = "Tina4 for Ruby — 54 built-in features, zero dependencies"
-  spec.description = "TINA4: The Intelligent Native Application 4ramework for Ruby — Simple. Fast. Human. Built for AI. Built for you. 54 built-in features, zero dependencies. Full parity with Python, PHP, and Node.js."
+  spec.summary = "Tina4 for Ruby — 54 built-in features, minimal dependencies"
+  spec.description = "TINA4: The Intelligent Native Application 4ramework for Ruby — Simple. Fast. Human. Built for AI. Built for you. 54 built-in features, minimal dependencies (Rack-based; the runtime gems are production-deployment essentials, not framework bloat). Full parity with Python, PHP, and Node.js."
   spec.homepage = "https://tina4.com"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
@@ -36,7 +36,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "listen", "~> 3.8"
   # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
   # it lazily, exactly like pg. It is a development/optional dependency only so
-  # the runtime stays zero-dep; the backend degrades gracefully if it is absent.
+  # it is never force-installed; the backend degrades gracefully if it is absent.
   spec.add_development_dependency "mongo", "~> 2.19"
   spec.add_development_dependency "pg", "~> 1.5"
   spec.add_development_dependency "rake", "~> 13.0"
