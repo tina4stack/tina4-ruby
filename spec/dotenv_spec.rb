@@ -67,10 +67,10 @@ RSpec.describe Tina4::Env do
       ENV.delete("DOTENV_EXISTING")
     end
 
-    # .env.local is the standard "local overrides, gitignored" layer: it loads
-    # AFTER .env with override semantics, so a previously-generated dev secret
-    # (or any local override) wins. Parity with Python's
-    # load_env(".env.local", override=True).
+    # .env.local is the standard "local overrides, gitignored" layer: it beats
+    # .env (a previously-generated dev secret, or any local override, wins over
+    # the committed .env). Precedence is real-env > .env.local > .env — see the
+    # dedicated precedence specs below for the full ordering guarantee.
     it "loads .env.local as an override on top of .env" do
       File.write(File.join(tmpdir, ".env"), "DOTENV_LOCAL_KEY=from_env\n")
       File.write(File.join(tmpdir, ".env.local"), "DOTENV_LOCAL_KEY=from_local\n")
@@ -86,6 +86,41 @@ RSpec.describe Tina4::Env do
       Tina4::Env.load_env(tmpdir)
       expect(ENV["DOTENV_NO_LOCAL"]).to eq("base")
       ENV.delete("DOTENV_NO_LOCAL")
+    end
+  end
+
+  # ── dotenv precedence (regression guard for the .env.local override bug) ──
+  #
+  # Correct precedence is real-env > .env.local > .env. The original #3
+  # dev-secret work loaded .env.local with override=TRUE, which let a stray
+  # gitignored .env.local CLOBBER an explicitly-set real env var — breaking
+  # tests that sign a token with a real TINA4_SECRET, and a security hole (a
+  # stale .env.local could override a real production secret). These specs lock
+  # the ordering in: the bug would surface as the .env.local value winning over
+  # the real env var in case (a).
+  describe ".load_env precedence (env-local-precedence)" do
+    it "(a) a REAL env var WINS over .env.local" do
+      File.write(File.join(tmpdir, ".env.local"), "TINA4_SECRET=from_local\n")
+      ENV["TINA4_SECRET"] = "from_real"   # real env set BEFORE the load
+      begin
+        Tina4::Env.load_env(tmpdir)
+        # The bug (override=true) would clobber this to "from_local".
+        expect(ENV["TINA4_SECRET"]).to eq("from_real")
+      ensure
+        ENV.delete("TINA4_SECRET")
+      end
+    end
+
+    it "(b) with no real env var, .env.local WINS over .env" do
+      File.write(File.join(tmpdir, ".env"), "TINA4_SECRET=from_dotenv\n")
+      File.write(File.join(tmpdir, ".env.local"), "TINA4_SECRET=from_local\n")
+      ENV.delete("TINA4_SECRET")          # no real env var present
+      begin
+        Tina4::Env.load_env(tmpdir)
+        expect(ENV["TINA4_SECRET"]).to eq("from_local")
+      ensure
+        ENV.delete("TINA4_SECRET")
+      end
     end
 
     it "loads environment-specific .env files" do

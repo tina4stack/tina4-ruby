@@ -188,7 +188,8 @@ module Tina4
       # Print banner
       print_banner
 
-      # Load environment (.env, then .env.local as an override)
+      # Load environment. Precedence: real-env > .env.local > .env
+      # (.env.local loads first, both first-wins, so a real env var always wins).
       Tina4::Env.load_env(root_dir)
 
       # Setup debug logging

@@ -161,20 +161,25 @@ module Tina4
         unless File.exist?(env_file)
           create_default_env(env_file)
         end
-        parse_env_file(env_file)
-        # Standard "local overrides, gitignored" pattern: .env loads first
-        # (it never clobbers a real process env var), then .env.local re-loads
-        # with override=true so a previously-generated dev secret (or any local
-        # override) wins. Parity with Python's load_env(".env.local",
-        # override=True) after the main .env load. .env.local is gitignored.
+        # Precedence: real-env > .env.local > .env. Both loads are first-wins
+        # (override=false / `ENV[key] ||= value`), so a key already present in
+        # the real process environment is NEVER clobbered. .env.local loads
+        # FIRST so its values beat .env, but a real env var set before boot
+        # still wins over both. This is the security-correct ordering: a stray
+        # gitignored .env.local (e.g. a stale auto-generated dev secret) must
+        # not override an explicitly-set real TINA4_SECRET. The ensure-dev-secret
+        # bootstrap runs AFTER this (only mints a secret if still unset in dev).
         load_local_env(root_dir)
+        parse_env_file(env_file)
       end
 
-      # Load .env.local as an OVERRIDE on top of whatever is already in ENV.
-      # No-op when the file is absent (the common case for fresh checkouts).
+      # Load .env.local with first-wins semantics (override=false). A real
+      # process env var already present wins; this only fills keys not already
+      # set. Loaded BEFORE .env so .env.local beats .env (real-env > .env.local
+      # > .env). No-op when the file is absent (common for fresh checkouts).
       def load_local_env(root_dir = Dir.pwd)
         local_file = File.join(root_dir, ".env.local")
-        parse_env_file(local_file, override: true) if File.exist?(local_file)
+        parse_env_file(local_file) if File.exist?(local_file)
       end
 
       # Get an env var value, with optional default
@@ -232,10 +237,14 @@ module Tina4
 
       # Parse a dotenv file into ENV.
       #
-      # override=false (default): `ENV[key] ||= value` — a real process env var
-      # always wins, so .env never clobbers the environment.
-      # override=true: `ENV[key] = value` — used for .env.local so local
-      # overrides (e.g. a generated dev secret) take precedence.
+      # override=false (default): `ENV[key] ||= value` — first-wins; a key
+      # already present (real env var, or a higher-precedence file loaded
+      # earlier) is never clobbered. Both .env.local and .env are loaded this
+      # way; ordering (.env.local first) gives the precedence real-env >
+      # .env.local > .env.
+      # override=true: `ENV[key] = value` — unconditional set. NOT used by the
+      # boot load sequence; kept only as an explicit opt-in for callers that
+      # genuinely need to force values.
       def parse_env_file(path, override: false)
         return unless File.exist?(path)
         File.readlines(path).each do |line|
