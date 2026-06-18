@@ -199,6 +199,13 @@ module Tina4
       # commit/rollback clear it. While pinned, current_driver returns the same
       # driver for every call so the whole transaction runs on one connection.
       @tx_pin_key = :"tina4_pinned_adapter_#{object_id}"
+      # Per-thread nested-transaction depth counter (DB-contract C, v3.13.37).
+      # A second start_transaction on a thread that already holds the pin is a
+      # double-begin: most engines silently commit or no-op the inner BEGIN,
+      # leaving the connection mid-transaction. We warn + increment depth instead
+      # of re-beginning; the inner commit just decrements; the outer commit/any
+      # rollback releases the pin.
+      @tx_depth_key = :"tina4_tx_depth_#{object_id}"
 
       # Query cache. One store, two layers (parity with Python connection.py).
       # BOTH layers are OPT-IN — the DEFAULT is OFF.
@@ -380,6 +387,14 @@ module Tina4
 
     # Fetch rows with pagination, returning a DatabaseResult.
     #
+    # FAILS LOUD (v3.13.37, DB-contract A): a SQL error in the main query
+    # propagates — a typo'd / bad SELECT RAISES, it never silently returns an
+    # empty result. The cause is captured on @last_error / #get_error before the
+    # re-raise (parity with #execute and the Python master), so the public API
+    # can read why it failed even for engines whose driver doesn't expose its
+    # own last_error. Because the raise happens BEFORE cache_set is reached, a
+    # buried failure is never written into the query cache.
+    #
     # Pass `no_cache: true` to bypass the query cache entirely for this single
     # call — no lookup, no store — and run the query directly against the
     # driver. Works for both the request-scoped auto-cache and the persistent
@@ -410,22 +425,30 @@ module Tina4
           @cache_mutex.synchronize { @cache_hits += 1 }
           return cached
         end
-        result = drv.execute_query(effective_sql, params)
-        result = Tina4::DatabaseResult.new(result, sql: effective_sql, db: self)
+        # fetch_direct RAISES on a SQL error (and captures @last_error), so a
+        # failed read never reaches cache_set below — we never cache an empty
+        # result produced by a buried failure.
+        result = fetch_direct(drv, effective_sql, params)
         cache_set(key, result)
         @cache_mutex.synchronize { @cache_misses += 1 }
         return result
       end
 
-      rows = drv.execute_query(effective_sql, params)
-      Tina4::DatabaseResult.new(rows, sql: effective_sql, db: self)
+      fetch_direct(drv, effective_sql, params)
     end
 
     # Fetch a single row (or nil).
     #
+    # FAILS LOUD (v3.13.37, DB-contract A): a SQL error RAISES and populates
+    # @last_error / #get_error the same way #execute and #fetch do — pre-fix
+    # fetch_one ran the query through #fetch but did not separately guarantee the
+    # error capture, and a buried failure could be cached as nil. It now routes
+    # the uncached path through fetch_one_direct (capture + re-raise) and, on the
+    # cached path, only ever stores a value produced by a SUCCESSFUL read.
+    #
     # Pass `no_cache: true` to bypass the query cache entirely for this call —
     # no lookup, no store — running the query directly. The `no_cache` flag is
-    # propagated to the inner #fetch so the request-scoped/persistent cache is
+    # propagated to the inner read so the request-scoped/persistent cache is
     # never populated either. Default `false` preserves cached behaviour.
     def fetch_one(sql, params = [], no_cache: false)
       sql = Tina4::Database.strip_trailing_semicolons(sql)
@@ -436,15 +459,15 @@ module Tina4
           @cache_mutex.synchronize { @cache_hits += 1 }
           return cached
         end
-        result = fetch(sql, params, limit: 1)
-        value = result.first
+        # Raises (and captures @last_error) BEFORE cache_set, so a failed read
+        # is never cached as nil.
+        value = fetch_one_direct(sql, params)
         cache_set(key, value)
         @cache_mutex.synchronize { @cache_misses += 1 }
         return value
       end
 
-      result = fetch(sql, params, limit: 1, no_cache: no_cache)
-      result.first
+      fetch_one_direct(sql, params)
     end
 
     def insert(table, data)
@@ -591,6 +614,7 @@ module Tina4
     def transaction
       drv = current_driver
       Thread.current[@tx_pin_key] = drv
+      Thread.current[@tx_depth_key] = 1
       drv.begin_transaction
       yield self
       drv.commit
@@ -599,29 +623,83 @@ module Tina4
       raise e
     ensure
       Thread.current[@tx_pin_key] = nil
+      Thread.current[@tx_depth_key] = nil
     end
 
     # Begin a transaction without a block — matches PHP/Python/Node API.
     # Pins the driver to this thread for the whole transaction so executes
     # and the final commit/rollback all run on the same connection.
+    #
+    # Nested-begin guard (v3.13.37, DB-contract C): a second start_transaction
+    # on a thread that already holds the pin is a double-begin — the inner BEGIN
+    # silently commits or no-ops on most engines, leaving the connection
+    # mid-transaction with the caller none the wiser. We keep a per-thread depth
+    # counter and log a clear warning instead of silently re-beginning. The pin
+    # stays on the original driver so commit/rollback still land on the right
+    # connection.
     def start_transaction
+      pinned = Thread.current[@tx_pin_key]
+      if pinned
+        depth = (Thread.current[@tx_depth_key] || 1)
+        Tina4::Log.warning(
+          "start_transaction called while a transaction is already open on this " \
+          "thread (depth would become #{depth + 1}). Nested transactions are not " \
+          "supported — the existing transaction stays open on its pinned " \
+          "connection and this nested begin is ignored. Commit or rollback the " \
+          "outer transaction first."
+        )
+        Thread.current[@tx_depth_key] = depth + 1
+        return
+      end
       drv = current_driver
       Thread.current[@tx_pin_key] = drv
+      Thread.current[@tx_depth_key] = 1
       drv.begin_transaction
     end
 
     # Commit the current transaction and release the driver pin.
+    #
+    # FAILS LOUD (v3.13.37, DB-contract C): if the underlying commit raises,
+    # capture @last_error and RE-RAISE — never swallow. On failure the
+    # transaction pin is RETAINED so the caller's follow-up #rollback lands on
+    # the SAME connection (clearing it would leak a dirty connection back into
+    # the pool and route the rollback to a different one). The pin is cleared
+    # ONLY on a successful commit. An inner commit of an ignored nested begin
+    # (depth > 1) just decrements the depth and returns — the outer commit is
+    # the real one.
     def commit
+      depth = (Thread.current[@tx_depth_key] || 0)
+      if depth > 1
+        Thread.current[@tx_depth_key] = depth - 1
+        return
+      end
       current_driver.commit
-    ensure
+      @last_error = nil
+      # Success — release the pin.
       Thread.current[@tx_pin_key] = nil
+      Thread.current[@tx_depth_key] = nil
+    rescue => e
+      # Keep the pin so rollback reaches this same connection.
+      @last_error = e.message
+      raise
     end
 
     # Roll back the current transaction and release the driver pin.
+    #
+    # Rollback is the terminal cleanup of a transaction, so it ALWAYS clears the
+    # pin (and the depth counter) — even after a failed commit it routes to the
+    # retained pinned connection and cleans it up. If the underlying rollback
+    # itself raises, @last_error is captured and the error re-raised, but the pin
+    # is still released so a poisoned connection doesn't stay pinned forever.
     def rollback
       current_driver.rollback
+      @last_error = nil
+    rescue => e
+      @last_error = e.message
+      raise
     ensure
       Thread.current[@tx_pin_key] = nil
+      Thread.current[@tx_depth_key] = nil
     end
 
     def tables
@@ -754,6 +832,46 @@ module Tina4
 
     private
 
+    # Run a fetch straight against the driver — no cache lookup or store.
+    #
+    # DB-contract A (v3.13.37): shared by the cached and no_cache paths so error
+    # capture is identical regardless of caching. FAILS LOUD: a SQL error in the
+    # main query propagates (same contract as #execute). The cause is captured on
+    # @last_error for #get_error before the re-raise — preferring the driver's own
+    # last_error (when it exposes one, e.g. postgres) over the exception message.
+    def fetch_direct(drv, effective_sql, params)
+      result = drv.execute_query(effective_sql, params)
+      @last_error = nil
+      Tina4::DatabaseResult.new(result, sql: effective_sql, db: self)
+    rescue => e
+      @last_error = driver_error_message(drv, e)
+      raise
+    end
+
+    # Run a fetch_one straight against the driver — no cache lookup or store.
+    #
+    # DB-contract A (v3.13.37): goes through #fetch (so the trailing-semicolon
+    # strip + LIMIT-append + driver path stay identical), but wraps it so the
+    # error is captured on @last_error and re-raised. Returns the first row (a
+    # Hash) or nil on a SUCCESSFUL "no row" read.
+    def fetch_one_direct(sql, params)
+      result = fetch(sql, params, limit: 1, no_cache: true)
+      @last_error = nil
+      result.first
+    rescue => e
+      @last_error = driver_error_message(current_driver, e)
+      raise
+    end
+
+    # Prefer the driver's own last_error (postgres sets one) over str(e), so the
+    # captured message matches what each engine surfaces; never blank.
+    def driver_error_message(drv, error)
+      drv_err = drv.respond_to?(:last_error) ? drv.last_error : nil
+      msg = drv_err || error.message
+      msg = error.message if msg.nil? || msg.to_s.empty?
+      msg || @last_error
+    end
+
     # Ensure the tina4_sequences table exists for race-safe ID generation.
     def ensure_sequence_table
       return if table_exists?("tina4_sequences")
@@ -768,41 +886,212 @@ module Tina4
     end
 
     # Atomically increment and return the next value for a named sequence.
-    # Seeds from MAX(pk_column) on first use so existing data is respected.
+    #
+    # DB-contract B (v3.13.37): the old read-increment-read path had a RACE —
+    # two concurrent callers could read the same current_value and return the
+    # same id (duplicate primary keys). Each engine now uses a single atomic
+    # increment-and-return, pinned to ONE driver so the two statements (where two
+    # are needed) land on the same connection:
+    #
+    #   * SQLite (lib >= 3.35): UPDATE ... SET current_value = current_value + 1
+    #     WHERE seq_name = ? RETURNING current_value — one atomic statement, run
+    #     under the process-wide SqliteDriver.write_lock. Older SQLite falls back
+    #     to UPDATE +1 then SELECT, still serialised by the held write_lock.
+    #   * MySQL: UPDATE ... SET current_value = LAST_INSERT_ID(current_value + 1)
+    #     then SELECT LAST_INSERT_ID() on the SAME connection (per-connection →
+    #     race-safe).
+    #   * MSSQL: UPDATE ... SET current_value += 1 OUTPUT inserted.current_value
+    #     WHERE seq_name = ? — one atomic statement.
+    #
+    # Seeding is race-safe: an atomic insert-if-absent (INSERT OR IGNORE /
+    # INSERT IGNORE / INSERT ... WHERE NOT EXISTS) seeded from MAX(pk) runs BEFORE
+    # the atomic increment, so there is never a read-then-insert gap. On error we
+    # RAISE (never silently fall back to 1).
     def sequence_next(seq_name, table: nil, pk_column: "id")
-      ensure_sequence_table
+      # Pin a single driver for the whole sequence op so seed + increment + read
+      # all hit the SAME connection. Inside an active transaction the driver is
+      # already pinned; otherwise pin here and release in the ensure so the pool
+      # can rotate afterwards.
+      already_pinned = !Thread.current[@tx_pin_key].nil?
       drv = current_driver
+      Thread.current[@tx_pin_key] = drv unless already_pinned
 
-      # Check if the sequence key already exists
-      rows = drv.execute_query("SELECT current_value FROM tina4_sequences WHERE seq_name = ?", [seq_name])
-      row = rows.is_a?(Array) ? rows.first : nil
-
-      if row.nil?
-        # Seed from MAX(pk_column) if table data exists
-        seed_value = 0
-        if table
-          begin
-            max_rows = drv.execute_query("SELECT MAX(#{pk_column}) AS max_id FROM #{table}")
-            max_row = max_rows.is_a?(Array) ? max_rows.first : nil
-            val = row_value(max_row, :max_id)
-            seed_value = val.to_i if val
-          rescue
-            # Table may not exist yet — start from 0
-          end
+      begin
+        case @driver_name
+        when "sqlite"
+          # SQLite does ensure-table + seed + increment all under the driver
+          # write lock (a single shared connection — concurrent reads/writes on
+          # it otherwise corrupt or race).
+          sequence_next_sqlite(drv, seq_name, table, pk_column)
+        when "mysql"
+          ensure_sequence_table
+          sequence_next_mysql(drv, seq_name, table, pk_column)
+        when "mssql"
+          ensure_sequence_table
+          sequence_next_mssql(drv, seq_name, table, pk_column)
+        else
+          # Any other engine routed here (defensive) — generic atomic-ish path.
+          ensure_sequence_table
+          sequence_next_generic(drv, seq_name, table, pk_column)
         end
-        drv.execute("INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)", [seq_name, seed_value])
-        drv.commit rescue nil
+      ensure
+        Thread.current[@tx_pin_key] = nil unless already_pinned
       end
+    end
 
-      # Atomic increment
+    # Best-effort MAX(pk) seed for a new sequence row. 0 if table missing/empty.
+    def sequence_seed_value(drv, table, pk_column)
+      return 0 unless table
+
+      max_rows = drv.execute_query("SELECT MAX(#{pk_column}) AS max_id FROM #{table}")
+      max_row = max_rows.is_a?(Array) ? max_rows.first : nil
+      val = row_value(max_row, :max_id)
+      val ? val.to_i : 0
+    rescue StandardError
+      0  # Table doesn't exist yet — start at 0
+    end
+
+    # SQLite atomic increment. Holds the process-wide write lock for the ENTIRE
+    # op (ensure-table + seed + increment). The single UPDATE ... RETURNING (lib
+    # >= 3.35) is itself atomic; the held lock serialises every connection touch
+    # so no duplicate ids under concurrency. ensure-table is done inline under the
+    # lock (NOT via ensure_sequence_table, which would re-enter current_driver/
+    # table_exists? and risk a nested touch).
+    def sequence_next_sqlite(drv, seq_name, table, pk_column)
+      conn = drv.respond_to?(:connection) ? drv.connection : nil
+      raise "get_next_id: SQLite driver has no live connection" if conn.nil?
+
+      Tina4::Drivers::SqliteDriver.write_lock.synchronize do
+        # Ensure the sequence table exists (idempotent) on this connection.
+        conn.execute(
+          "CREATE TABLE IF NOT EXISTS tina4_sequences (" \
+          "seq_name VARCHAR(200) NOT NULL PRIMARY KEY, " \
+          "current_value INTEGER NOT NULL DEFAULT 0)"
+        )
+        seed = sequence_seed_value(drv, table, pk_column)
+        conn.execute(
+          "INSERT OR IGNORE INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)",
+          [seq_name, seed]
+        )
+
+        if sqlite_supports_returning?
+          # One atomic increment-and-return.
+          rows = conn.execute(
+            "UPDATE tina4_sequences SET current_value = current_value + 1 " \
+            "WHERE seq_name = ? RETURNING current_value",
+            [seq_name]
+          )
+          row = rows.is_a?(Array) ? rows.first : nil
+        else
+          # Older SQLite (< 3.35, no RETURNING): increment then read. Still
+          # race-safe because we hold write_lock across both statements.
+          conn.execute(
+            "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?",
+            [seq_name]
+          )
+          rows = conn.execute(
+            "SELECT current_value FROM tina4_sequences WHERE seq_name = ?",
+            [seq_name]
+          )
+          row = rows.is_a?(Array) ? rows.first : nil
+        end
+
+        val = sqlite_row_value(row, "current_value")
+        raise "get_next_id: sequence row '#{seq_name}' vanished mid-increment" if val.nil?
+
+        val.to_i
+      end
+    end
+
+    # MySQL atomic increment. LAST_INSERT_ID(expr) stashes expr in this
+    # CONNECTION's session var and returns it — atomic per-connection, no
+    # read-back race. Calls the driver directly (not self.commit) so it doesn't
+    # trip Database#commit's pin management.
+    def sequence_next_mysql(drv, seq_name, table, pk_column)
+      seed = sequence_seed_value(drv, table, pk_column)
+      # Race-safe seed: INSERT IGNORE is a no-op if the row exists.
+      drv.execute("INSERT IGNORE INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)", [seq_name, seed])
+      drv.commit rescue nil
+      drv.execute(
+        "UPDATE tina4_sequences SET current_value = LAST_INSERT_ID(current_value + 1) WHERE seq_name = ?",
+        [seq_name]
+      )
+      drv.commit rescue nil
+      rows = drv.execute_query("SELECT LAST_INSERT_ID() AS next_id")
+      row = rows.is_a?(Array) ? rows.first : nil
+      val = row_value(row, :next_id)
+      raise "get_next_id: LAST_INSERT_ID() returned nothing for '#{seq_name}'" if val.nil?
+
+      val.to_i
+    end
+
+    # MSSQL atomic increment via a single UPDATE ... OUTPUT statement.
+    def sequence_next_mssql(drv, seq_name, table, pk_column)
+      seed = sequence_seed_value(drv, table, pk_column)
+      # Race-safe seed: INSERT only when absent (single statement).
+      drv.execute(
+        "INSERT INTO tina4_sequences (seq_name, current_value) " \
+        "SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM tina4_sequences WHERE seq_name = ?)",
+        [seq_name, seed, seq_name]
+      )
+      drv.commit rescue nil
+      # Single atomic statement: increment + return the new value via OUTPUT.
+      rows = drv.execute_query(
+        "UPDATE tina4_sequences SET current_value = current_value + 1 " \
+        "OUTPUT inserted.current_value AS next_id WHERE seq_name = ?",
+        [seq_name]
+      )
+      drv.commit rescue nil
+      row = rows.is_a?(Array) ? rows.first : nil
+      val = row_value(row, :next_id)
+      raise "get_next_id: OUTPUT produced no row for sequence '#{seq_name}'" if val.nil?
+
+      val.to_i
+    end
+
+    # Defensive fallback for any engine not otherwise special-cased: seed if
+    # absent (rollback on conflict), increment, then read on the pinned driver.
+    def sequence_next_generic(drv, seq_name, table, pk_column)
+      seed = sequence_seed_value(drv, table, pk_column)
+      begin
+        drv.execute("INSERT INTO tina4_sequences (seq_name, current_value) VALUES (?, ?)", [seq_name, seed])
+        drv.commit rescue nil
+      rescue StandardError
+        # Row likely already exists (PK conflict) — fine, keep going.
+        drv.rollback rescue nil
+      end
       drv.execute("UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?", [seq_name])
       drv.commit rescue nil
-
-      # Read back the incremented value
       rows = drv.execute_query("SELECT current_value FROM tina4_sequences WHERE seq_name = ?", [seq_name])
       row = rows.is_a?(Array) ? rows.first : nil
       val = row_value(row, :current_value)
-      val ? val.to_i : 1
+      raise "get_next_id: sequence row '#{seq_name}' missing" if val.nil?
+
+      val.to_i
+    end
+
+    # Whether the loaded SQLite library supports the RETURNING clause (>= 3.35).
+    def sqlite_supports_returning?
+      return @sqlite_returning unless @sqlite_returning.nil?
+
+      ver = (defined?(SQLite3::SQLITE_VERSION) && SQLite3::SQLITE_VERSION) || "0.0.0"
+      parts = ver.split(".").map(&:to_i)
+      major, minor = parts[0].to_i, parts[1].to_i
+      @sqlite_returning = (major > 3) || (major == 3 && minor >= 35)
+    rescue StandardError
+      @sqlite_returning = false
+    end
+
+    # Read a value from a raw sqlite3 row (results_as_hash → string keys; a bare
+    # RETURNING row may come back as a positional Array on some gem versions).
+    def sqlite_row_value(row, key)
+      return nil if row.nil?
+
+      if row.is_a?(Hash)
+        row[key] || row[key.to_sym] || row.values.first
+      elsif row.is_a?(Array)
+        row.first
+      end
     end
 
     # Safely extract a value from a driver result row, trying both symbol and string keys.

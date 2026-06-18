@@ -8,6 +8,18 @@ module Tina4
       include SchemaSplit
       attr_reader :connection
 
+      # Process-wide write lock — parity with Python's SQLiteAdapter._write_lock.
+      #
+      # DB-contract B (v3.13.37): get_next_id's atomic sequence-table increment
+      # serialises the ENTIRE ensure-table + seed + increment op under this lock
+      # so concurrent callers can never read the same counter and return a
+      # duplicate id. Class-level (one per process) so every Database instance /
+      # pooled connection contends on the same lock for the same SQLite file.
+      @write_lock = Mutex.new
+      class << self
+        attr_reader :write_lock
+      end
+
       def connect(connection_string, username: nil, password: nil)
         require "sqlite3"
         db_path = self.class.resolve_path(connection_string)
@@ -87,12 +99,23 @@ module Tina4
         @connection.execute("BEGIN TRANSACTION")
       end
 
+      # Committing/rolling back when no transaction is open is a harmless no-op,
+      # NOT a failure — SQLite raises "cannot commit - no transaction is active"
+      # in that case. Swallow ONLY that specific condition so a stray commit
+      # (e.g. after an autocommit standalone write) doesn't poison the
+      # Database-level @last_error. A genuine commit/rollback failure (disk I/O,
+      # constraint deferral, locked DB) still propagates so Database#commit can
+      # FAIL LOUD per the DB-contract.
       def commit
         @connection.execute("COMMIT")
+      rescue SQLite3::SQLException => e
+        raise unless e.message.to_s.downcase.include?("no transaction is active")
       end
 
       def rollback
         @connection.execute("ROLLBACK")
+      rescue SQLite3::SQLException => e
+        raise unless e.message.to_s.downcase.include?("no transaction is active")
       end
 
       # v3.13.14 (#48): a SQLite "schema" is an ATTACH alias ("extra.widget").

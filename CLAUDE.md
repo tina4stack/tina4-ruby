@@ -168,7 +168,13 @@ db = Tina4::Database.new  # reads from ENV
 db.fetch(sql, params = [], limit: nil, offset: nil) -> DatabaseResult
 # A DatabaseResult auto-serializes to a JSON array when returned from a route
 # via response.json(...) / response.call(...).
+# FAILS LOUD: a SQL error (bad SQL, missing table/column) RAISES — it never
+# silently returns an empty result. The cause is captured on db.get_error
+# before the re-raise. A failed read is never written into the query cache.
 db.fetch_one(sql, params = []) -> Hash | nil
+    # FAILS LOUD too: a SQL error RAISES and populates db.get_error (it does not
+    # return nil/"no row" on a bad query). Mirrors fetch/execute and the Python
+    # master. A SUCCESSFUL "no matching row" still returns nil.
 db.execute(sql, params = []) -> true | DatabaseResult  # RAISES on SQL error (never returns false)
     # FAILS LOUD: a SQL error (bad SQL, constraint violation, dead/aborted
     # connection) RAISES — it never silently returns false. The cause is still
@@ -184,10 +190,22 @@ db.tables -> Array
 db.columns(table_name) -> Array
 db.table_exists?(table_name) -> Boolean
 db.get_next_id(table, pk_column: "id", generator_name: nil) -> Integer
-    # Race-safe ID generation using atomic sequence table (tina4_sequences).
-    # SQLite/MySQL/MSSQL: uses tina4_sequences table with atomic UPDATE+SELECT.
-    # PostgreSQL: auto-creates a sequence if missing, uses nextval().
-    # Firebird: uses existing generator (unchanged).
+    # ATOMIC ID generation — N concurrent callers never get duplicate ids.
+    # SQLite: single UPDATE ... RETURNING (lib >= 3.35; else UPDATE+SELECT)
+    #   under a process-wide write lock — no read-increment-read race.
+    # MySQL: UPDATE ... LAST_INSERT_ID(current_value+1) then SELECT
+    #   LAST_INSERT_ID() on the SAME connection (per-connection, race-safe).
+    # MSSQL: single UPDATE ... OUTPUT inserted.current_value.
+    # PostgreSQL: auto-creates a sequence if missing, uses nextval() (atomic).
+    # Firebird: uses GEN_ID generator (atomic). Seeding is atomic
+    #   insert-if-absent from MAX(pk); raises on error (never falls back to 1).
+db.start_transaction
+db.commit    # RAISES on a failed commit (captures db.get_error) and RETAINS the
+             # transaction pin so a follow-up rollback lands on the same
+             # connection. The pin is released only on a successful commit.
+db.rollback  # terminal cleanup — ALWAYS releases the pin (even after a failed
+             # commit). A second start_transaction on the same thread warns and
+             # is a guarded no-op (nested transactions are not supported).
 db.close
 ```
 
