@@ -20,14 +20,11 @@ Gem::Specification.new do |spec|
   spec.add_dependency "rack", "~> 3.0"
   spec.add_dependency "rackup", "~> 2.1"
   spec.add_dependency "puma", "~> 6.0"
-  spec.add_dependency "dotenv", "~> 3.0"
   spec.add_dependency "jwt", "~> 2.7"
-  spec.add_dependency "bcrypt", "~> 3.1"
 
   spec.add_dependency "net-smtp", "~> 0.5"
   spec.add_dependency "net-imap", "~> 0.5"
   spec.add_dependency "json", "~> 2.7"
-  spec.add_dependency "oj", "~> 3.16"
   spec.add_dependency "rexml", "~> 3.2"
   spec.add_dependency "webrick", "~> 1.8"
   # sqlite3 is a runtime dependency because Tina4 Ruby promises "SQLite

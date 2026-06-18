@@ -3,11 +3,7 @@
 require "spec_helper"
 
 RSpec.describe "Performance optimizations" do
-  describe "JSON serialization (oj)" do
-    it "oj is loaded when available" do
-      expect(defined?(Oj)).to eq("constant")
-    end
-
+  describe "JSON serialization" do
     it "JSON.generate produces valid JSON" do
       data = { name: "Alice", age: 30, tags: %w[ruby tina4] }
       json = JSON.generate(data)
