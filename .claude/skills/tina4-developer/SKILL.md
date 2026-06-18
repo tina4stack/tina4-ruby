@@ -268,6 +268,14 @@ When helping a developer build with Tina4, always follow these:
    - Load a partial: `loadPage("/route", "targetId")`. Low-level call: `sendRequest(url, data, method, cb)`.
    - The reactive **tina4-js** frontend is the exception, not the rule — use it only for a decoupled SPA (see "Two Ways to Build"); for normal server-rendered apps, Tina4CSS + frond.js is the path.
 
+7. **Render a template with `response.render(name, data)` — there is NO `template()` function.**
+   A common hallucination is `response.html(template("login.twig"))`, which is undefined.
+   To render a page, use:
+   ```ruby
+   response.render("login.twig", { title: "Login" })   # renders + responds
+   ```
+   Need the rendered HTML as a string? `Tina4::Template.render("login.twig", { title: "Login" })`.
+
 ### @noauth Is a Last Resort — Not a Default
 
 `@noauth()` makes a write route (POST/PUT/PATCH/DELETE) publicly accessible with NO authentication.
