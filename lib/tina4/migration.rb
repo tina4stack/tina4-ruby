@@ -356,10 +356,12 @@ module Tina4
           Tina4::Log.info("Migration #{File.basename(file)}: #{skip_reason}")
           next
         end
-        result = @db.execute(stmt)
-        if result == false
-          raise RuntimeError, @db.get_error || "SQL execution failed: #{stmt}"
-        end
+        # db.execute() now RAISES on a SQL error (it no longer returns false),
+        # so a bad statement throws straight up to run_migration's rescue, which
+        # records the migration as failed and surfaces the error. The old
+        # "if result == false: raise" check is dead — a plain execute carries
+        # the same failure semantics.
+        @db.execute(stmt)
       end
     end
 

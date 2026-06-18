@@ -74,13 +74,17 @@ module Tina4
   end
 
   module Env
+    # NOTE: TINA4_SECRET is deliberately ABSENT here. The default signing
+    # secret must never become a guessable built-in. A blank secret is the
+    # signal for Auth.ensure_dev_secret to mint a per-machine random dev secret
+    # (saved to gitignored .env.local) in dev, or to emit the actionable
+    # "set TINA4_SECRET" warning in CI/prod. Parity with the Python master.
     DEFAULT_ENV = {
       "PROJECT_NAME" => "Tina4 Ruby Project",
       "TINA4_SWAGGER_VERSION" => "1.0.0",
       "TINA4_LOCALE" => "en",
       "TINA4_DEBUG" => "true",
-      "TINA4_LOG_LEVEL" => "[TINA4_LOG_ALL]",
-      "TINA4_SECRET" => "tina4-secret-change-me"
+      "TINA4_LOG_LEVEL" => "[TINA4_LOG_ALL]"
     }.freeze
 
     # Typed env-var coercion — parity with tina4_python's Env class,
@@ -158,6 +162,19 @@ module Tina4
           create_default_env(env_file)
         end
         parse_env_file(env_file)
+        # Standard "local overrides, gitignored" pattern: .env loads first
+        # (it never clobbers a real process env var), then .env.local re-loads
+        # with override=true so a previously-generated dev secret (or any local
+        # override) wins. Parity with Python's load_env(".env.local",
+        # override=True) after the main .env load. .env.local is gitignored.
+        load_local_env(root_dir)
+      end
+
+      # Load .env.local as an OVERRIDE on top of whatever is already in ENV.
+      # No-op when the file is absent (the common case for fresh checkouts).
+      def load_local_env(root_dir = Dir.pwd)
+        local_file = File.join(root_dir, ".env.local")
+        parse_env_file(local_file, override: true) if File.exist?(local_file)
       end
 
       # Get an env var value, with optional default
@@ -213,7 +230,13 @@ module Tina4
         File.write(path, content)
       end
 
-      def parse_env_file(path)
+      # Parse a dotenv file into ENV.
+      #
+      # override=false (default): `ENV[key] ||= value` — a real process env var
+      # always wins, so .env never clobbers the environment.
+      # override=true: `ENV[key] = value` — used for .env.local so local
+      # overrides (e.g. a generated dev secret) take precedence.
+      def parse_env_file(path, override: false)
         return unless File.exist?(path)
         File.readlines(path).each do |line|
           line = line.strip
@@ -221,7 +244,11 @@ module Tina4
           if (match = line.match(/\A([A-Za-z_][A-Za-z0-9_]*)=["']?(.*)["']?\z/))
             key = match[1]
             value = match[2].gsub(/["']\z/, "")
-            ENV[key] ||= value
+            if override
+              ENV[key] = value
+            else
+              ENV[key] ||= value
+            end
             @loaded_keys ||= []
             @loaded_keys << key
           end

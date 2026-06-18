@@ -169,7 +169,13 @@ db.fetch(sql, params = [], limit: nil, offset: nil) -> DatabaseResult
 # A DatabaseResult auto-serializes to a JSON array when returned from a route
 # via response.json(...) / response.call(...).
 db.fetch_one(sql, params = []) -> Hash | nil
-db.execute(sql, params = []) -> DatabaseResult
+db.execute(sql, params = []) -> true | DatabaseResult  # RAISES on SQL error (never returns false)
+    # FAILS LOUD: a SQL error (bad SQL, constraint violation, dead/aborted
+    # connection) RAISES — it never silently returns false. The cause is still
+    # readable via db.get_error after the raise. Mirrors fetch/fetch_one and the
+    # Python master. On success returns true (or a DatabaseResult for
+    # RETURNING/CALL/EXEC/SELECT) — always truthy. Wrap writes in begin/rescue
+    # instead of testing the return value.
 db.insert(table, data) -> DatabaseResult
 db.update(table, data, filter = {}) -> DatabaseResult
 db.delete(table, filter = {}) -> DatabaseResult
@@ -330,7 +336,28 @@ Tina4::Auth.hash_password(password, salt=nil, iterations=260000) -> String  # PB
 Tina4::Auth.check_password(password, hash) -> Boolean  # timing-safe
 Tina4::Auth.validate_api_key(provided, expected: nil) -> Boolean  # timing-safe, reads TINA4_API_KEY
 Tina4::Auth.authenticate_request(headers) -> Hash | nil  # Bearer JWT, falls back to API key
+Tina4::Auth.ensure_dev_secret(root_dir = Dir.pwd) -> String | nil  # boot-time fail-safe dev secret
 ```
+
+**`TINA4_SECRET` and the fail-safe dev secret.** There is **no guessable
+built-in default** for `TINA4_SECRET` — a blank secret is the signal for the
+fail-safe bootstrap. At boot (after env load, before auth is used)
+`Tina4::Auth.ensure_dev_secret` runs once:
+
+- **Dev** (`TINA4_DEBUG` truthy, `CI` unset, `TINA4_ENV` != `production`) with a
+  **blank** secret → it mints a cryptographically-random secret
+  (`SecureRandom.hex(32)`, 64 hex chars), sets it in the process env for this
+  run, and **appends** it to a gitignored `.env.local` (created if missing). On
+  any write failure it keeps the in-memory secret and warns — it never crashes
+  boot. Logs `INFO`: "generated a development secret, saved to .env.local
+  (gitignored)".
+- **CI or production** with a blank secret → it **never** generates and
+  **never** writes. It emits the actionable warning: *"Set TINA4_SECRET to a
+  random value (e.g. `openssl rand -hex 32`)"*.
+
+`.env.local` is loaded as an **override** on top of `.env` at every boot (so the
+generated dev secret is picked up on the next run) and is gitignored in both the
+framework repo and the scaffolded-project `.gitignore` template.
 
 ### Session
 
@@ -356,9 +383,12 @@ Backends: file, redis, valkey, mongodb, database.
 ### Database extras
 
 ```ruby
-db.execute(sql, params) -> true/false | result  # bool for writes, result for RETURNING/CALL/EXEC
+db.execute(sql, params) -> true | result  # RAISES on SQL error (never false); true for writes, DatabaseResult for RETURNING/CALL/EXEC
+    # On a SQL error execute RAISES (the cause is captured on db.get_error AND
+    # re-raised) rather than returning false — callers should use begin/rescue,
+    # not a return-value test. Parity with fetch/fetch_one and the Python master.
 db.get_last_id -> Integer | nil
-db.get_error -> String | nil
+db.get_error -> String | nil  # cause of the last execute/fetch error (set before the raise)
 ```
 
 ### Request/Response extras
@@ -845,7 +875,7 @@ Tina4::DevAdmin.request_inspector.clear
 - CLI scaffolding: `tina4ruby generate model/route/migration/middleware`
 - Production server auto-detect: `tina4ruby serve --production` (auto-installs Puma, 2.8x improvement)
 - Frond pre-compilation for 2.8x template render improvement
-- DB query caching: request-scoped auto cache **on by default** (`TINA4_AUTO_CACHING=true`, TTL `TINA4_AUTO_CACHING_TTL=5`s) dedupes identical reads within a request and flushes on writes; persistent cross-request cache opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL` so instances share one cache with global write-invalidation; `cache_stats` reports `mode` (request/persistent/off) and `backend`, `cache_clear`
+- DB query caching: request-scoped auto cache **off by default — opt-in** via `TINA4_AUTO_CACHING=true` (TTL `TINA4_AUTO_CACHING_TTL=5`s) for read-heavy endpoints; it dedupes identical reads within a request and flushes on writes. It defaults OFF because a request-scoped cache that defaults on is a footgun: a `SELECT MAX(id)`/generator read right before an `INSERT` in the **same** request would return a cached pre-write value (duplicate keys), and any read-after-write in one request would show stale state. Persistent cross-request cache is also opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL` so instances share one cache with global write-invalidation; `cache_stats` reports `mode` (request/persistent/off — `off` when neither layer is enabled) and `backend`, `cache_clear`
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
 - Queue backends: file (default), RabbitMQ, Kafka, MongoDB
 - Cache backends: unified set across response/KV and persistent DB cache — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — selected via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); falls back to the file backend if a backend is unreachable

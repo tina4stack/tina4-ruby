@@ -873,19 +873,21 @@ module Tina4
             end
           end
 
-          # Execute all statements (single write or multi-statement batch)
+          # Execute all statements (single write or multi-statement batch).
+          # db.execute() now RAISES on a SQL error (it no longer returns false),
+          # so a bad statement is caught by the rescue below and surfaced as a
+          # clean { error: } payload — the dead "if result == false" check is
+          # gone. true is returned for plain writes; a DatabaseResult for
+          # RETURNING/CALL/EXEC (which carries affected_rows).
           total_affected = 0
           statements.each do |stmt|
             result = db.execute(stmt)
-            if result == false
-              return { error: db.get_error || "Statement failed: #{stmt}" }
-            end
             total_affected += (result.respond_to?(:affected_rows) ? result.affected_rows : 0)
           end
 
           { affected: total_affected, success: true }
         rescue => e
-          { error: e.message }
+          { error: db.get_error || e.message }
         end
       end
 

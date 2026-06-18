@@ -67,6 +67,27 @@ RSpec.describe Tina4::Env do
       ENV.delete("DOTENV_EXISTING")
     end
 
+    # .env.local is the standard "local overrides, gitignored" layer: it loads
+    # AFTER .env with override semantics, so a previously-generated dev secret
+    # (or any local override) wins. Parity with Python's
+    # load_env(".env.local", override=True).
+    it "loads .env.local as an override on top of .env" do
+      File.write(File.join(tmpdir, ".env"), "DOTENV_LOCAL_KEY=from_env\n")
+      File.write(File.join(tmpdir, ".env.local"), "DOTENV_LOCAL_KEY=from_local\n")
+      ENV.delete("DOTENV_LOCAL_KEY")
+      Tina4::Env.load_env(tmpdir)
+      expect(ENV["DOTENV_LOCAL_KEY"]).to eq("from_local")
+      ENV.delete("DOTENV_LOCAL_KEY")
+    end
+
+    it "is a no-op when .env.local is absent" do
+      File.write(File.join(tmpdir, ".env"), "DOTENV_NO_LOCAL=base\n")
+      ENV.delete("DOTENV_NO_LOCAL")
+      Tina4::Env.load_env(tmpdir)
+      expect(ENV["DOTENV_NO_LOCAL"]).to eq("base")
+      ENV.delete("DOTENV_NO_LOCAL")
+    end
+
     it "loads environment-specific .env files" do
       File.write(File.join(tmpdir, ".env.test"), 'DOTENV_ENVSPEC="test_value"')
       old_env = ENV["ENVIRONMENT"]

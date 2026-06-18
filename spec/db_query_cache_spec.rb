@@ -3,20 +3,26 @@
 require "spec_helper"
 require "tmpdir"
 
-# Request-scoped DB query cache (default-on) — protects the DB from rapid
-# identical reads. Mirrors Python's tests/test_db_query_cache.py and the
-# contract in tina4_python/database/connection.py.
+# DB query cache — BOTH layers opt-in, DEFAULT OFF. Mirrors Python's
+# tests/test_db_query_cache.py and the contract in
+# tina4_python/database/connection.py.
+#
+# A request-scoped cache that defaults ON is a footgun: a SELECT MAX(id) (or
+# generator read) right before an INSERT in the same request returns a cached
+# pre-write value → duplicate primary keys, and any read-after-write in one
+# request shows stale state. So the DEFAULT is OFF; the request cache stays
+# available opt-in for read-heavy endpoints via TINA4_AUTO_CACHING=true.
 #
 # Layers:
-#   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) — dedupes
-#     identical SELECTs, cleared per request + on writes, short safety TTL (5s).
+#   • request-scoped (OPT-IN, TINA4_AUTO_CACHING=true) — dedupes identical
+#     SELECTs, cleared per request + on writes, short safety TTL (5s).
 #   • persistent (opt-in TINA4_DB_CACHE=true) — cross-request TTL cache (30s),
 #     NOT cleared per request.
 #
 # Cache mode is read at CONSTRUCTION, so each test sets ENV before building the
 # Database. ENV is snapshotted and restored around every example so the
-# default-on/off state never leaks into other specs.
-RSpec.describe "DB query cache (request-scoped, default-on)" do
+# default-off/on state never leaks into other specs.
+RSpec.describe "DB query cache (opt-in, default-off)" do
   around(:each) do |example|
     saved = {
       "TINA4_DB_CACHE" => ENV["TINA4_DB_CACHE"],
@@ -43,14 +49,28 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
   end
 
   describe "request-scoped default" do
-    it "is on by default (mode request)" do
+    it "is OFF by default (mode off) when TINA4_AUTO_CACHING is unset" do
+      db = make_db
+      stats = db.cache_stats
+      expect(stats[:enabled]).to be false
+      expect(stats[:mode]).to eq("off")
+      # Nothing is cached by default — identical reads do not dedupe.
+      db.fetch("SELECT * FROM t")
+      db.fetch("SELECT * FROM t")
+      expect(db.cache_stats[:size]).to eq(0)
+      expect(db.cache_stats[:hits]).to eq(0)
+    end
+
+    it "opts in to request mode via TINA4_AUTO_CACHING=true" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       stats = db.cache_stats
       expect(stats[:enabled]).to be true
       expect(stats[:mode]).to eq("request")
     end
 
-    it "dedupes identical fetches" do
+    it "dedupes identical fetches (opt-in)" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t") # miss -> populates
       db.fetch("SELECT * FROM t") # hit
@@ -59,7 +79,8 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
       expect(stats[:size]).to eq(1)
     end
 
-    it "invalidates on execute write" do
+    it "invalidates on execute write (opt-in)" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t")
       expect(db.cache_stats[:size]).to eq(1)
@@ -67,7 +88,8 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
       expect(db.cache_stats[:size]).to eq(0)
     end
 
-    it "invalidates on insert helper" do
+    it "invalidates on insert helper (opt-in)" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t")
       expect(db.cache_stats[:size]).to eq(1)
@@ -76,8 +98,9 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     end
   end
 
-  describe "request boundary" do
+  describe "request boundary (opt-in)" do
     it "reset_request_caches clears the request cache" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t")
       expect(db.cache_stats[:size]).to eq(1)
@@ -87,6 +110,7 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     end
 
     it "cache_new_request preserves cumulative counters" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t")
       db.fetch("SELECT * FROM t") # one hit
@@ -114,6 +138,7 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
 
   describe "per-query no_cache bypass" do
     it "does not populate the cache on a no_cache read (request mode)" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t", no_cache: true)
       stats = db.cache_stats
@@ -123,6 +148,7 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     end
 
     it "does not return a previously-cached value (bypasses lookup)" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT n FROM t WHERE id = ?", [1]) # miss -> caches row n="a"
       expect(db.cache_stats[:size]).to eq(1)
@@ -141,6 +167,7 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     end
 
     it "fetch_one with no_cache bypasses lookup and does not store" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch_one("SELECT n FROM t WHERE id = ?", [1]) # caches n="a"
       size_after_cached = db.cache_stats[:size]
@@ -155,6 +182,7 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     end
 
     it "fetch_all with no_cache returns rows without caching" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       rows = db.fetch_all("SELECT * FROM t", no_cache: true)
       expect(rows.length).to eq(2)
@@ -162,6 +190,7 @@ RSpec.describe "DB query cache (request-scoped, default-on)" do
     end
 
     it "leaves the normal cached path working alongside no_cache calls" do
+      ENV["TINA4_AUTO_CACHING"] = "true"
       db = make_db
       db.fetch("SELECT * FROM t", no_cache: true) # bypass — no effect on cache
       db.fetch("SELECT * FROM t")                 # miss -> populates

@@ -31,6 +31,28 @@ RSpec.describe Tina4::Database do
     it "executes raw SQL" do
       expect { db.execute("CREATE TABLE test (id INTEGER)") }.not_to raise_error
     end
+
+    # execute() FAILS LOUD — it raises on a SQL error (mirroring fetch/fetch_one
+    # and the Python master) instead of swallowing the cause and returning false.
+    # The cause stays readable through get_error after the raise.
+    it "raises on a bad statement and still populates get_error" do
+      expect { db.execute("INSERT INTO no_such_table (x) VALUES (1)") }.to raise_error(StandardError)
+      expect(db.get_error).not_to be_nil
+    end
+
+    it "raises on a constraint violation and does NOT write the row" do
+      db.execute("CREATE TABLE widget (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+      expect { db.execute("INSERT INTO widget (id, name) VALUES (1, NULL)") }.to raise_error(StandardError)
+      expect(db.fetch("SELECT * FROM widget").count).to eq(0)
+    end
+
+    it "returns truthy (never false) and clears the error on a successful write" do
+      result = db.execute("INSERT INTO users (name, email, age) VALUES ('ok', 'ok@example.com', 1)")
+      expect(result).not_to be false
+      expect(result).not_to be_nil
+      expect(db.get_error).to be_nil
+      expect(db.fetch("SELECT * FROM users").count).to eq(1)
+    end
   end
 
   describe "#insert" do

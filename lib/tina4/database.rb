@@ -200,18 +200,24 @@ module Tina4
       # driver for every call so the whole transaction runs on one connection.
       @tx_pin_key = :"tina4_pinned_adapter_#{object_id}"
 
-      # Query cache. One store, two layers (parity with Python connection.py):
-      #   • request-scoped (DEFAULT ON, off-switch TINA4_AUTO_CACHING=false) —
-      #     dedupes identical SELECTs to protect the DB from rapid repeat reads.
-      #     Cleared at the START of every HTTP request (so it never serves rows
-      #     across requests) AND on any write, with a short safety TTL (5s) for
-      #     non-request contexts (scripts/workers).
+      # Query cache. One store, two layers (parity with Python connection.py).
+      # BOTH layers are OPT-IN — the DEFAULT is OFF.
+      #
+      # A request-scoped cache that defaults ON is a footgun: a SELECT MAX(id)
+      # (or generator read) right before an INSERT in the SAME request returns a
+      # cached pre-write value → duplicate primary keys, and any read-after-write
+      # in one request shows stale state. So both layers default OFF:
+      #   • request-scoped (opt-in, TINA4_AUTO_CACHING=true) — dedupes identical
+      #     SELECTs to protect the DB from rapid repeat reads on read-heavy
+      #     endpoints. Cleared at the START of every HTTP request (so it never
+      #     serves rows across requests) AND on any write, with a short safety
+      #     TTL (5s) for non-request contexts (scripts/workers).
       #   • persistent (opt-in, TINA4_DB_CACHE=true) — cross-request TTL cache
       #     that is NOT cleared per request; entries expire by TINA4_DB_CACHE_TTL.
       @cache_persistent = truthy?(ENV["TINA4_DB_CACHE"])
-      # Default true; honour the same truthy semantics the framework uses
-      # (mirrors Python's is_truthy(get("TINA4_AUTO_CACHING", "true"))).
-      @cache_request_scoped = truthy?(ENV["TINA4_AUTO_CACHING"] || "true")
+      # Default OFF; honour the same truthy semantics the framework uses
+      # (mirrors Python's is_truthy(get("TINA4_AUTO_CACHING", "false"))).
+      @cache_request_scoped = truthy?(ENV["TINA4_AUTO_CACHING"] || "false")
       @cache_enabled = @cache_persistent || @cache_request_scoped
       @cache_ttl = if @cache_persistent
                      (ENV["TINA4_DB_CACHE_TTL"] || "30").to_i
@@ -534,8 +540,23 @@ module Tina4
       @driver_name
     end
 
-    # Execute a write statement. Returns true/false for simple writes.
-    # Returns DatabaseResult if SQL contains RETURNING, CALL, EXEC, or SELECT.
+    # Execute a write statement. FAILS LOUD — raises on a SQL error.
+    #
+    # On a SQL error (bad SQL, constraint violation, dead/aborted connection,
+    # missing driver) the cause is captured on @last_error / #get_error AND the
+    # error is re-raised — execute() never silently returns false on failure.
+    # Almost no caller checks a boolean after every write, so the old
+    # swallow-and-return-false behaviour turned a failed INSERT/UPDATE/DELETE
+    # into a silent partial-write footgun. This mirrors fetch()/fetch_one(),
+    # which already raise, and the Python master (database.execute).
+    #
+    # On SUCCESS the return is unchanged: a DatabaseResult when the SQL contains
+    # RETURNING, CALL, EXEC, or SELECT (truthy), otherwise true. Never false.
+    #
+    # Higher-level callers that promise a boolean (ORM save/create_table) wrap
+    # this in begin/rescue and return false themselves; the migration runner and
+    # dev-admin/MCP DB tools catch the raise and surface it as a failed migration
+    # or a clean { error: } payload respectively.
     def execute(sql, params = [])
       cache_invalidate if @cache_enabled
       result = current_driver.execute(sql, params)
@@ -548,7 +569,7 @@ module Tina4
       true
     rescue => e
       @last_error = e.message
-      false
+      raise
     end
 
     def execute_many(sql, params_list = [])

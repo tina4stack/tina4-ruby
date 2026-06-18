@@ -651,9 +651,16 @@ module Tina4
         db = Tina4.database
         return { "error" => "No database connection" } if db.nil?
         param_list = params.is_a?(String) ? JSON.parse(params) : params
-        result = db.execute(sql, param_list)
-        db.commit rescue nil
-        { "success" => true, "affected_rows" => (result.respond_to?(:count) ? result.count : 0) }
+        # db.execute() now RAISES on a SQL error (it no longer returns false).
+        # Catch it and return a clean { error: } payload instead of letting the
+        # exception escape the tool handler.
+        begin
+          result = db.execute(sql, param_list)
+          db.commit rescue nil
+          { "success" => true, "affected_rows" => (result.respond_to?(:count) ? result.count : 0) }
+        rescue => e
+          { "error" => db.get_error || e.message }
+        end
       }, "Execute arbitrary SQL (INSERT/UPDATE/DELETE/DDL)")
 
       server.register_tool("database_tables", lambda {

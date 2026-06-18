@@ -425,17 +425,20 @@ module Tina4
         translator_engine = %w[postgres postgresql].include?(engine) ? "postgresql" : engine
         sql = SQLTranslator.auto_increment_syntax(sql, translator_engine)
 
-        # Don't claim success when the DDL failed. db.execute() swallows the
-        # driver error into get_error() and returns false, so a bad type (or
-        # any DDL error) used to leave create_table returning true while no
-        # table was actually created.
-        ok = db.execute(sql)
-        db.commit
-        if ok == false
-          Tina4::Log.error("create_table failed for #{table_name}: #{db.get_error}", { sql: sql })
-          return false
+        # Don't claim success when the DDL failed. db.execute() now RAISES on a
+        # SQL error (it no longer swallows it into get_error() and returns
+        # false), so a bad type (or any DDL error) surfaces here as an
+        # exception. create_table keeps its documented bool contract: catch the
+        # raise, log the cause, and return false so callers that test the return
+        # still see a clean failure instead of a thrown error.
+        begin
+          db.execute(sql)
+          db.commit
+          true
+        rescue => e
+          Tina4::Log.error("create_table failed for #{table_name}: #{db.get_error || e.message}", { sql: sql })
+          false
         end
-        true
       end
 
       def scope(name, filter_sql, params = [])

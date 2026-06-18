@@ -1346,6 +1346,7 @@ module Tina4
       unless File.exist?(File.join(dir, ".gitignore"))
         File.write(File.join(dir, ".gitignore"), <<~TEXT)
           .env
+          .env.local
           .keys/
           logs/
           sessions/

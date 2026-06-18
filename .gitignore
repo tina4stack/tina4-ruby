@@ -1,5 +1,7 @@
 # Environment & secrets
 .env
+/.env.local
+.env.local
 .keys/
 
 # Logs & sessions

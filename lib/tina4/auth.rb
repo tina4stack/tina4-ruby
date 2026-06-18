@@ -3,16 +3,73 @@ require "openssl"
 require "base64"
 require "json"
 require "fileutils"
+require "securerandom"
 
 module Tina4
   module Auth
     KEYS_DIR = ".keys"
+
+    # Single source of truth for the blank-secret warning, emitted identically
+    # from both the CI/prod boot path (ensure_dev_secret) and the lazy
+    # per-call resolver (hmac_secret). Actionable: names exactly what to set.
+    BLANK_SECRET_WARNING =
+      "Auth: TINA4_SECRET is not set — JWT signing is insecure. Set TINA4_SECRET " \
+      "to a random value (e.g. `openssl rand -hex 32`) in your environment or " \
+      ".env before serving traffic."
 
     class << self
       def setup(root_dir = Dir.pwd)
         @keys_dir = File.join(root_dir, KEYS_DIR)
         FileUtils.mkdir_p(@keys_dir)
         ensure_keys
+      end
+
+      # Boot-time bootstrap (run once after env load, before auth is used).
+      #
+      # Mirrors the Python master's tina4_python.auth.ensure_dev_secret:
+      #   - If TINA4_SECRET is already set → no-op (returns nil).
+      #   - Else if NOT dev, OR CI, OR production → emit the actionable
+      #     blank-secret warning and return nil. NEVER generates or persists a
+      #     secret in CI or production. (Hard security constraint.)
+      #   - Else (dev, not CI, not prod, blank secret) → mint a 32-byte
+      #     (64 hex char) random secret, set it in the process env immediately,
+      #     then APPEND it to <root_dir>/.env.local (gitignored, created if
+      #     missing). On ANY write failure keep the in-memory secret and warn —
+      #     never raise (boot must not crash).
+      #
+      # `root_dir` exists only so tests can target a temp dir without chdir;
+      # production callers pass nothing (defaults to Dir.pwd).
+      #
+      # Returns the generated secret (String) when it mints one, else nil.
+      def ensure_dev_secret(root_dir = Dir.pwd)
+        existing = ENV["TINA4_SECRET"]
+        return nil if existing && !existing.empty?
+
+        unless dev? && !ci? && !production?
+          warn_blank_secret
+          return nil
+        end
+
+        new_secret = SecureRandom.hex(32) # 32 bytes -> 64 hex chars
+        ENV["TINA4_SECRET"] = new_secret  # available for this run immediately
+
+        begin
+          local_path = File.join(root_dir, ".env.local")
+          # If the file exists and does not end in a newline, prepend one so the
+          # new key lands on its own line rather than gluing onto the last value.
+          prefix = ""
+          if File.exist?(local_path)
+            content = File.read(local_path)
+            prefix = "\n" if !content.empty? && !content.end_with?("\n")
+          end
+          File.open(local_path, "a") { |f| f.write("#{prefix}TINA4_SECRET=#{new_secret}\n") }
+          log_info("Auth: generated a development secret, saved to .env.local (gitignored)")
+        rescue StandardError => e
+          # Keep the in-memory secret for this run; just warn. Never crash boot.
+          log_warning("Auth: generated a development secret but could not write .env.local (#{e.message}); using it for this run only")
+        end
+
+        new_secret
       end
 
       # ── HS256 helpers (stdlib only, no gem) ──────────────────────
@@ -28,8 +85,13 @@ module Tina4
           File.exist?(File.join(@keys_dir, "public.pem")))
       end
 
+      # Lazy per-call secret resolver. When the secret is blank, emit the
+      # actionable blank-secret warning (the same text the CI/prod bootstrap
+      # path uses) before returning. Parity with Python's _resolve_secret.
       def hmac_secret
-        ENV["TINA4_SECRET"]
+        secret = ENV["TINA4_SECRET"]
+        warn_blank_secret if secret.nil? || secret.empty?
+        secret
       end
 
       # Base64url-encode without padding (JWT spec)
@@ -270,6 +332,49 @@ module Tina4
       end
 
       private
+
+      # ── Dev-secret bootstrap helpers (parity with Python master) ──
+
+      # Dev when the framework debug flag is truthy (TINA4_DEBUG).
+      def dev?
+        Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
+      end
+
+      # CI when the de-facto CI env var is truthy.
+      def ci?
+        Tina4::Env.is_truthy(ENV["CI"])
+      end
+
+      # Production when TINA4_ENV (default "development") is "production".
+      def production?
+        (ENV["TINA4_ENV"] || "development").to_s.strip.downcase == "production"
+      end
+
+      # Emit the single actionable blank-secret warning. Same text from the
+      # CI/prod bootstrap path and the lazy per-call resolver.
+      def warn_blank_secret
+        log_warning(BLANK_SECRET_WARNING)
+      end
+
+      def log_info(message)
+        if defined?(Tina4::Log)
+          Tina4::Log.info(message)
+        else
+          warn(message)
+        end
+      rescue StandardError
+        warn(message)
+      end
+
+      def log_warning(message)
+        if defined?(Tina4::Log)
+          Tina4::Log.warning(message)
+        else
+          warn(message)
+        end
+      rescue StandardError
+        warn(message)
+      end
 
       def ensure_keys
         @keys_dir ||= File.join(Dir.pwd, KEYS_DIR)

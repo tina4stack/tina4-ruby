@@ -188,12 +188,18 @@ module Tina4
       # Print banner
       print_banner
 
-      # Load environment
+      # Load environment (.env, then .env.local as an override)
       Tina4::Env.load_env(root_dir)
 
       # Setup debug logging
       Tina4::Log.configure(root_dir)
       Tina4::Log.info("Tina4 Ruby v#{VERSION} initializing...")
+
+      # Fail-safe dev secret: in dev (and NOT CI/prod) mint a per-machine
+      # random TINA4_SECRET into gitignored .env.local if it is blank; in
+      # CI/prod with a blank secret, emit the actionable warning. Runs once at
+      # boot after env load, before any auth use. Never crashes boot.
+      Tina4::Auth.ensure_dev_secret(root_dir)
 
       # Setup auth keys
       Tina4::Auth.setup(root_dir)
