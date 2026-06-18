@@ -347,18 +347,38 @@ module Tina4
         gen = @_stream_generator
         blk = @_stream_block
         body = Enumerator.new do |yielder|
-          if gen
-            if gen.respond_to?(:each)
-              # Enumerator / array / any Enumerable of string chunks
-              gen.each { |chunk| yielder << chunk }
-            elsif gen.respond_to?(:call)
-              # Callable that receives the yielder, like the block form
-              gen.call(yielder)
-            else
-              yielder << gen.to_s
+          # SSE hardening: a streaming source that raises mid-stream (a
+          # generator/block error, or the client disconnecting and the server
+          # tearing the body down) must NEVER crash the worker. We catch the
+          # error, log it, and end the stream cleanly — the chunks emitted
+          # before the failure are still delivered.
+          #
+          # A client disconnect surfaces in a hijack/Puma streaming body as a
+          # write-side IOError/Errno on the socket; that is propagated up as a
+          # normal stop and re-raised so Rack/Puma can close the connection,
+          # while a *source* error is swallowed after logging.
+          begin
+            if gen
+              if gen.respond_to?(:each)
+                # Enumerator / array / any Enumerable of string chunks
+                gen.each { |chunk| yielder << chunk }
+              elsif gen.respond_to?(:call)
+                # Callable that receives the yielder, like the block form
+                gen.call(yielder)
+              else
+                yielder << gen.to_s
+              end
+            elsif blk
+              blk.call(yielder)
             end
-          elsif blk
-            blk.call(yielder)
+          rescue IOError, Errno::EPIPE, Errno::ECONNRESET => e
+            # Client disconnected mid-stream — stop cleanly, do not crash, and
+            # do not log loudly (a normal browser closing an SSE stream).
+            Tina4::Log.debug("SSE/stream client disconnected: #{e.class}: #{e.message}") if defined?(Tina4::Log)
+          rescue StandardError => e
+            # The source (generator/block) itself raised mid-stream. Log it and
+            # end the stream cleanly rather than crashing the handler/worker.
+            Tina4::Log.error("SSE/stream source error: #{e.class}: #{e.message}") if defined?(Tina4::Log)
           end
         end
         return [@status_code, final_headers, body]

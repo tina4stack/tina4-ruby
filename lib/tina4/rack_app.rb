@@ -888,18 +888,23 @@ module Tina4
       # Wire the route handler into the WebSocket engine events
       handler = ws_route.handler
 
-      # Create a dedicated WebSocket engine for this route so handlers stay isolated
+      # Create a dedicated WebSocket *event* engine for this route so each
+      # upgrade keeps its own isolated open/message/close handlers (the engine's
+      # on() appends handlers, so a single shared event engine would cross-wire
+      # routes).
       ws = Tina4::WebSocket.new
 
-      # The dev-reload channel is held by a process-wide shared manager so a
-      # broadcast from POST /__dev/api/reload reaches every browser, not just
-      # the connections of this one isolated per-socket engine. Mirrors
-      # Python's single _ws_manager keyed on the /__dev_reload path.
+      # The connection itself is OWNED by a process-wide shared manager so that
+      # broadcasts, rooms, the multi-instance backplane and the idle reaper span
+      # every route's connections — not just this one per-socket event engine.
+      # Mirrors Python's single WebSocketManager. The dev-reload channel uses its
+      # own shared manager (Tina4::DevReload) so POST /__dev/api/reload reaches
+      # every browser.
       dev_reload = ws_route.path == "/__dev_reload"
+      manager = dev_reload ? Tina4::DevReload.manager : @websocket_engine
 
       ws.on(:open) do |connection|
         connection.params = ws_params
-        Tina4::DevReload.add(connection) if dev_reload
         handler.call(connection, :open, nil)
       end
 
@@ -908,7 +913,6 @@ module Tina4
       end
 
       ws.on(:close) do |connection|
-        Tina4::DevReload.remove(connection) if dev_reload
         handler.call(connection, :close, nil)
       end
 
@@ -916,7 +920,7 @@ module Tina4
         Tina4::Log.error("WebSocket error on #{ws_route.path}: #{error.message}")
       end
 
-      ws.handle_upgrade(env, socket)
+      ws.handle_upgrade(env, socket, manager: manager)
 
       # Return async response (-1 signals Rack the response is handled via hijack)
       [-1, {}, []]
