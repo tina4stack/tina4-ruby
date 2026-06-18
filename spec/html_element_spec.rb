@@ -90,6 +90,72 @@ RSpec.describe Tina4::HtmlElement do
     el.call("child")
     expect(el.to_s).to eq("<div></div>")
   end
+
+  # -- XSS escaping (lock-in) -------------------------------------------------
+
+  it "escapes a plain string child (defeats XSS)" do
+    el = described_class.new("div").call("<script>alert(1)</script>")
+    html = el.to_s
+    expect(html).to include("&lt;script&gt;alert(1)&lt;/script&gt;")
+    expect(html).not_to include("<script>")
+  end
+
+  it "escapes a plain string child passed via the children array" do
+    el = described_class.new("div", {}, ["<script>alert(1)</script>"])
+    html = el.to_s
+    expect(html).to include("&lt;script&gt;alert(1)&lt;/script&gt;")
+    expect(html).not_to include("<script>")
+  end
+
+  it "renders a Raw child unescaped (explicit opt-in)" do
+    el = described_class.new("div").call(Tina4::Raw.new("<b>x</b>"))
+    expect(el.to_s).to eq("<div><b>x</b></div>")
+  end
+
+  it "renders a Tina4.Raw(...) child unescaped" do
+    el = described_class.new("div").call(Tina4.Raw("<b>x</b>"))
+    expect(el.to_s).to eq("<div><b>x</b></div>")
+  end
+
+  it "renders a SafeString alias child unescaped" do
+    el = described_class.new("div").call(Tina4::SafeString.new("<b>x</b>"))
+    expect(el.to_s).to eq("<div><b>x</b></div>")
+  end
+
+  it "Raw and SafeString are the same class" do
+    expect(Tina4::Raw).to equal(Tina4::SafeString)
+  end
+
+  it "renders a nested element child as-is (no double-escape)" do
+    el = described_class.new("div").call(
+      described_class.new("p").call("<b>safe</b>")
+    )
+    # The nested <p> tag itself is emitted as-is; its string child is escaped once.
+    expect(el.to_s).to eq("<div><p>&lt;b&gt;safe&lt;/b&gt;</p></div>")
+  end
+
+  it "handles mixed escaped, raw, and nested children" do
+    el = described_class.new("div").call(
+      "<i>plain</i>",
+      Tina4::Raw.new("<b>raw</b>"),
+      described_class.new("span").call("kid")
+    )
+    expect(el.to_s).to eq(
+      "<div>&lt;i&gt;plain&lt;/i&gt;<b>raw</b><span>kid</span></div>"
+    )
+  end
+
+  it "escapes an attribute value containing a quote" do
+    el = described_class.new("a", { title: 'say "hi"' })
+    expect(el.to_s).to include('title="say &quot;hi&quot;"')
+  end
+
+  it "escapes an attribute value containing a less-than sign" do
+    el = described_class.new("div", { "data-x" => "<script>" })
+    html = el.to_s
+    expect(html).to include('data-x="&lt;script&gt;"')
+    expect(html).not_to include("data-x=\"<script>")
+  end
 end
 
 RSpec.describe Tina4::HtmlHelpers do

@@ -13,8 +13,44 @@ end
 require "base64"
 require "securerandom"
 require "time"
+require "socket"
+require "timeout"
+begin
+  require "openssl"
+rescue LoadError
+  # openssl is part of stdlib; absence only affects TLS error classification
+end
 
 module Tina4
+  # Raised on a messenger failure (base class).
+  class MessengerError < StandardError; end
+
+  # Raised when an IMAP read fails to connect, authenticate, or speak the
+  # protocol. Distinct from a successful fetch that simply has no messages —
+  # that still returns an empty result ([]/nil/0/{}), NOT an error.
+  #
+  # Subclasses MessengerError so existing `rescue Tina4::MessengerError`
+  # handlers still catch it.
+  class MessengerConnectionError < MessengerError; end
+
+  # Errors that mean "we could not talk to the mail server", as opposed to
+  # "we talked fine and the mailbox is empty". These must fail loud — LOG and
+  # RAISE — never be silently swallowed into an empty result. Mirrors the
+  # Python master's _IMAP_CONNECTION_ERRORS tuple.
+  #
+  # Built lazily so a missing net/imap gem (LoadError above) doesn't break
+  # loading this file.
+  IMAP_CONNECTION_ERRORS = [
+    SocketError,            # DNS / host resolution failures
+    IOError,                # closed/broken stream, EOF mid-conversation
+    SystemCallError,        # Errno::ECONNREFUSED / ECONNRESET / ETIMEDOUT etc.
+    Timeout::Error,         # connect/read timeout (Net::OpenTimeout descends from this)
+    MessengerError          # our own protocol-failure signal (re-raised as-is)
+  ].tap do |errors|
+    errors << Net::IMAP::Error if defined?(Net::IMAP::Error)
+    errors << OpenSSL::SSL::SSLError if defined?(OpenSSL::SSL::SSLError)
+  end.freeze
+
   # Tina4 Messenger — Email sending (SMTP) and reading (IMAP).
   #
   # Unified .env-driven configuration with constructor override.
@@ -120,9 +156,14 @@ module Tina4
 
     # ── IMAP operations ──────────────────────────────────────────────────
 
-    # List messages in a folder
+    # List messages in a folder.
+    #
+    # Raises Tina4::MessengerConnectionError on a connection/auth/protocol
+    # failure (FAILS LOUD — never returns [] to hide it). A successful fetch
+    # from an empty folder returns [] (that is NOT an error).
     def inbox(folder: "INBOX", limit: 20, offset: 0)
-      imap_connect do |imap|
+      imap = imap_open("inbox")
+      begin
         imap.select(folder)
         uids = imap.uid_search(["ALL"])
         uids = uids.reverse # newest first
@@ -131,15 +172,20 @@ module Tina4
 
         envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "RFC822.SIZE"])
         (envelopes || []).map { |msg| parse_envelope(msg) }
+      rescue *IMAP_CONNECTION_ERRORS => e
+        raise imap_fail("inbox", e)
+      ensure
+        imap_cleanup(imap)
       end
-    rescue => e
-      Tina4::Log.error("IMAP inbox failed: #{e.message}")
-      []
     end
 
-    # Read a single message by UID
+    # Read a single message by UID.
+    #
+    # Raises Tina4::MessengerConnectionError on a connection/protocol failure.
+    # A successful fetch for a non-existent UID returns nil (that is NOT an error).
     def read(uid, folder: "INBOX", mark_read: true)
-      imap_connect do |imap|
+      imap = imap_open("read")
+      begin
         imap.select(folder)
         data = imap.uid_fetch(uid, ["ENVELOPE", "FLAGS", "BODY[]", "RFC822.SIZE"])
         return nil if data.nil? || data.empty?
@@ -150,28 +196,38 @@ module Tina4
 
         msg = data.first
         parse_full_message(msg)
+      rescue *IMAP_CONNECTION_ERRORS => e
+        raise imap_fail("read", e)
+      ensure
+        imap_cleanup(imap)
       end
-    rescue => e
-      Tina4::Log.error("IMAP read failed: #{e.message}")
-      nil
     end
 
-    # Count unread messages
+    # Count unread messages.
+    #
+    # Raises Tina4::MessengerConnectionError on a connection/protocol failure.
+    # A successful query with no unseen messages returns 0 (NOT an error).
     def unread(folder: "INBOX")
-      imap_connect do |imap|
+      imap = imap_open("unread")
+      begin
         imap.select(folder)
         uids = imap.uid_search(["UNSEEN"])
         uids.length
+      rescue *IMAP_CONNECTION_ERRORS => e
+        raise imap_fail("unread", e)
+      ensure
+        imap_cleanup(imap)
       end
-    rescue => e
-      Tina4::Log.error("IMAP unread count failed: #{e.message}")
-      0
     end
 
-    # Search messages with filters
+    # Search messages with filters.
+    #
+    # Raises Tina4::MessengerConnectionError on a connection/protocol failure.
+    # A successful search with no matches returns [] (NOT an error).
     def search(folder: "INBOX", subject: nil, sender: nil, since: nil,
                before: nil, unseen_only: false, limit: 20)
-      imap_connect do |imap|
+      imap = imap_open("search")
+      begin
         imap.select(folder)
         criteria = build_search_criteria(
           subject: subject, sender: sender, since: since,
@@ -184,21 +240,26 @@ module Tina4
 
         envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "RFC822.SIZE"])
         (envelopes || []).map { |msg| parse_envelope(msg) }
+      rescue *IMAP_CONNECTION_ERRORS => e
+        raise imap_fail("search", e)
+      ensure
+        imap_cleanup(imap)
       end
-    rescue => e
-      Tina4::Log.error("IMAP search failed: #{e.message}")
-      []
     end
 
-    # List all IMAP folders
+    # List all IMAP folders.
+    #
+    # Raises Tina4::MessengerConnectionError on a connection/protocol failure.
     def folders
-      imap_connect do |imap|
+      imap = imap_open("folders")
+      begin
         boxes = imap.list("", "*")
         (boxes || []).map(&:name)
+      rescue *IMAP_CONNECTION_ERRORS => e
+        raise imap_fail("folders", e)
+      ensure
+        imap_cleanup(imap)
       end
-    rescue => e
-      Tina4::Log.error("IMAP folders failed: #{e.message}")
-      []
     end
 
     # Mark a message as read (set \Seen flag).
@@ -393,6 +454,50 @@ module Tina4
 
     # ── IMAP helpers ─────────────────────────────────────────────────────
 
+    # Open and authenticate an IMAP connection. On a connection/auth/protocol
+    # failure this FAILS LOUD — logs and raises MessengerConnectionError —
+    # rather than swallowing the error into an empty result.
+    def imap_open(method)
+      imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
+      imap.login(@username, @password)
+      imap
+    rescue *IMAP_CONNECTION_ERRORS => e
+      raise imap_fail(method, e)
+    end
+
+    # Best-effort teardown of an IMAP connection. Never raises.
+    def imap_cleanup(imap)
+      return if imap.nil?
+
+      begin
+        imap.logout
+      rescue StandardError
+        # ignore — already closing
+      end
+      begin
+        imap.disconnect
+      rescue StandardError
+        # ignore — already closed
+      end
+    end
+
+    # Log an IMAP connection/protocol failure and return the error to raise.
+    # A genuinely empty mailbox is NOT an error and never reaches here.
+    # Re-raises a MessengerError as-is; otherwise wraps in
+    # MessengerConnectionError. Callers do `raise imap_fail(name, exc)`.
+    def imap_fail(method, exc)
+      Tina4::Log.error(
+        "Messenger IMAP #{method}() failed: #{exc.class}: #{exc.message}"
+      )
+      return exc if exc.is_a?(MessengerError)
+
+      MessengerConnectionError.new("IMAP #{method} failed: #{exc.message}")
+    end
+
+    # Connect, yield, then tear down — used by the mutators / connectivity test
+    # that keep their own result-style error handling (mark_read,
+    # test_imap_connection). Read methods use imap_open + ensure directly so
+    # they can fail loud.
     def imap_connect(&block)
       imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
       imap.login(@username, @password)

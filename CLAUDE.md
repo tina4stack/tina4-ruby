@@ -811,6 +811,19 @@ html = _div({ class: "card" }, _p("Hello"), _a({ href: "/" }, "Home"))
 html.to_s
 ```
 
+**XSS-safe by default.** String/scalar children are HTML-escaped on render
+(`< > & " '` encoded) to defeat stored/reflected XSS; attribute values are
+escaped too. Nested `HtmlElement` children render themselves (already escaped —
+no double-escape). To emit trusted, pre-sanitised markup verbatim, wrap it in
+`Tina4::Raw` (primary name) or its alias `Tina4::SafeString` — both are the
+same class Frond uses to mark safe output.
+
+```ruby
+Tina4::HtmlElement.new("div").call("<b>x</b>")               # <div>&lt;b&gt;x&lt;/b&gt;</div>  (escaped)
+Tina4::HtmlElement.new("div").call(Tina4::Raw.new("<b>x</b>"))   # <div><b>x</b></div>          (raw)
+Tina4::HtmlElement.new("div").call(Tina4.Raw("<b>x</b>"))        # convenience constructor
+```
+
 ### Testing — Inline test framework
 
 ```ruby
@@ -925,7 +938,7 @@ Tina4::DevAdmin.request_inspector.clear
 - Health check endpoint
 - HTTP status code constants (`Tina4::HTTP_OK`, `Tina4::HTTP_NOT_FOUND`, etc.)
 - Default host: 0.0.0.0, default port: 7147
-- Messenger (.env driven SMTP/IMAP)
+- Messenger (.env driven SMTP/IMAP). IMAP reads FAIL LOUD: `inbox`/`read`/`unread`/`search`/`folders` LOG and RAISE `Tina4::MessengerConnectionError` (a `Tina4::MessengerError` subclass) on a connection/auth/protocol failure instead of returning empty — empty would be indistinguishable from a genuinely empty mailbox. A successful fetch with no messages still returns empty (`[]`/`nil`/`0`) normally. `send` is unchanged — it keeps returning `{success, message, id}` and logging.
 - CLI scaffolding: `tina4ruby generate model/route/migration/middleware`
 - Production server auto-detect: `tina4ruby serve --production` (auto-installs Puma, 2.8x improvement)
 - Frond pre-compilation for 2.8x template render improvement

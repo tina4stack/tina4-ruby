@@ -1,6 +1,30 @@
 # frozen_string_literal: true
 
 module Tina4
+  # Marker for trusted, pre-sanitised HTML that must render UNESCAPED.
+  #
+  # String/scalar children of an HtmlElement are HTML-escaped by default to
+  # prevent stored/reflected XSS. Wrap a value in Raw to opt out of escaping
+  # when (and only when) you have already sanitised it yourself.
+  #
+  #   Tina4::HtmlElement.new("div").call("<b>x</b>")             # &lt;b&gt;x&lt;/b&gt;  (escaped)
+  #   Tina4::HtmlElement.new("div").call(Tina4::Raw.new("<b>x</b>"))  # <b>x</b>         (raw)
+  #
+  # Raw is the primary name; SafeString is the alias (and is the same class
+  # Frond already uses to mark trusted output, so a SafeString returned by a
+  # Frond filter also renders raw as an HtmlElement child). Defined defensively
+  # in case this file is ever loaded before Frond.
+  SafeString = Class.new(String) unless defined?(Tina4::SafeString)
+
+  # Primary name for the trusted-markup wrapper — an alias of SafeString.
+  Raw = SafeString
+
+  # Convenience constructor so callers can write Tina4::Raw("<b>x</b>")
+  # in addition to Tina4::Raw.new("<b>x</b>").
+  def self.Raw(value)
+    Raw.new(value.to_s)
+  end
+
   # Programmatic HTML builder — avoids string concatenation.
   #
   # Usage:
@@ -14,6 +38,9 @@ module Tina4
   #   include Tina4::HtmlHelpers
   #   html = _div({ class: "card" }, _p("Hello"))
   #
+  # String/scalar children are HTML-escaped by default to defeat XSS; nested
+  # HtmlElement children render themselves (already escaped, no double-escape);
+  # a Raw / SafeString child renders verbatim (explicit opt-in for trusted markup).
   class HtmlElement
     VOID_TAGS = %w[
       area base br col embed hr img input
@@ -90,12 +117,7 @@ module Tina4
         when false, nil
           next
         else
-          escaped = value.to_s
-            .gsub("&", "&amp;")
-            .gsub('"', "&quot;")
-            .gsub("<", "&lt;")
-            .gsub(">", "&gt;")
-          html << " #{key}=\"#{escaped}\""
+          html << " #{key}=\"#{escape_text(value.to_s)}\""
         end
       end
 
@@ -107,11 +129,37 @@ module Tina4
       html << ">"
 
       @children.each do |child|
-        html << child.to_s
+        case child
+        when HtmlElement
+          # Nested elements render themselves (they already escape their own
+          # children) — emit as-is to avoid double-escaping.
+          html << child.to_s
+        when Raw
+          # Explicitly trusted markup — emit unescaped. Raw subclasses String,
+          # so this branch MUST come before the generic scalar escape below.
+          html << child.to_s
+        else
+          # Plain string/scalar child — escape to defeat stored/reflected XSS.
+          html << escape_text(child.to_s)
+        end
       end
 
       html << "</#{@tag}>"
       html
+    end
+
+    private
+
+    # HTML-escape a string for safe inclusion in text content or a
+    # double-quoted attribute value. Mirrors Python's html.escape(quote=True):
+    # & < > " ' are all encoded.
+    def escape_text(value)
+      value
+        .gsub("&", "&amp;")
+        .gsub("<", "&lt;")
+        .gsub(">", "&gt;")
+        .gsub('"', "&quot;")
+        .gsub("'", "&#x27;")
     end
   end
 

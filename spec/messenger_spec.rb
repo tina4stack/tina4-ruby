@@ -416,6 +416,137 @@ RSpec.describe Tina4::Messenger do
       expect(text).to eq("Decoded content")
     end
   end
+
+  # -- IMAP fail-loud (lock-in) -----------------------------------------------
+  #
+  # On a connection/auth/protocol failure the read methods must LOG and RAISE
+  # (MessengerConnectionError), NOT return [] / nil / 0 — those are
+  # indistinguishable from a genuinely empty mailbox. A successful fetch with
+  # no messages still returns empty normally.
+  describe "IMAP fail-loud" do
+    let(:messenger) do
+      described_class.new(
+        imap_host: "imap.example.com",
+        imap_port: 993,
+        username: "user@example.com",
+        password: "secret"
+      )
+    end
+
+    # A fake IMAP connection whose calls behave according to the configured
+    # script — lets us simulate "connected fine, empty mailbox" and
+    # "connected fine, protocol error mid-conversation".
+    def fake_imap(uid_search: [], list: [], uid_fetch: [], raise_on: nil)
+      conn = double("Net::IMAP")
+      allow(conn).to receive(:select)
+      allow(conn).to receive(:logout)
+      allow(conn).to receive(:disconnect)
+      allow(conn).to receive(:uid_store)
+
+      if raise_on
+        # Net::IMAP raises a Net::IMAP::Error subclass on a protocol/"NO"
+        # response — the base class instantiates cleanly with just a message.
+        allow(conn).to receive(raise_on).and_raise(Net::IMAP::Error.new("command failed (NO)"))
+      end
+      allow(conn).to receive(:uid_search).and_return(uid_search) unless raise_on == :uid_search
+      allow(conn).to receive(:list).and_return(list) unless raise_on == :list
+      allow(conn).to receive(:uid_fetch).and_return(uid_fetch) unless raise_on == :uid_fetch
+      conn
+    end
+
+    context "when the connection cannot be established" do
+      before do
+        allow(Net::IMAP).to receive(:new).and_raise(
+          Errno::ECONNREFUSED.new("connection refused")
+        )
+        allow(Tina4::Log).to receive(:error)
+      end
+
+      it "inbox raises instead of returning []" do
+        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "read raises instead of returning nil" do
+        expect { messenger.read("1") }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "unread raises instead of returning 0" do
+        expect { messenger.unread }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "search raises instead of returning []" do
+        expect { messenger.search(subject: "hi") }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "folders raises instead of returning []" do
+        expect { messenger.folders }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "logs the failure before raising" do
+        expect(Tina4::Log).to receive(:error).with(/Messenger IMAP inbox\(\) failed/)
+        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "MessengerConnectionError is a MessengerError" do
+        expect { messenger.inbox }.to raise_error(Tina4::MessengerError)
+      end
+    end
+
+    context "when authentication fails" do
+      before do
+        allow(Tina4::Log).to receive(:error)
+        conn = double("Net::IMAP")
+        allow(conn).to receive(:login).and_raise(Net::IMAP::Error.new("auth failed (NO)"))
+        allow(conn).to receive(:logout)
+        allow(conn).to receive(:disconnect)
+        allow(Net::IMAP).to receive(:new).and_return(conn)
+      end
+
+      it "inbox raises on a login/auth failure" do
+        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
+      end
+    end
+
+    context "when the server raises a protocol error mid-conversation" do
+      before do
+        allow(Tina4::Log).to receive(:error)
+        conn = fake_imap(raise_on: :uid_search)
+        allow(conn).to receive(:login)
+        allow(Net::IMAP).to receive(:new).and_return(conn)
+      end
+
+      it "inbox raises rather than swallowing the protocol error" do
+        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
+      end
+    end
+
+    context "when the mailbox is genuinely empty (successful fetch)" do
+      before do
+        conn = fake_imap(uid_search: [], list: [], uid_fetch: [])
+        allow(conn).to receive(:login)
+        allow(Net::IMAP).to receive(:new).and_return(conn)
+      end
+
+      it "inbox returns [] (NOT an error)" do
+        expect(messenger.inbox).to eq([])
+      end
+
+      it "unread returns 0 (NOT an error)" do
+        expect(messenger.unread).to eq(0)
+      end
+
+      it "search with no matches returns [] (NOT an error)" do
+        expect(messenger.search(subject: "nothing")).to eq([])
+      end
+
+      it "read of a missing UID returns nil (NOT an error)" do
+        conn = fake_imap(uid_fetch: nil)
+        allow(conn).to receive(:login)
+        allow(Net::IMAP).to receive(:new).and_return(conn)
+        expect(messenger.read("999")).to be_nil
+      end
+    end
+  end
 end
 
 RSpec.describe Tina4::DevMailbox do
