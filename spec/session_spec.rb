@@ -52,7 +52,7 @@ RSpec.describe Tina4::Session do
       expect(session.data).to eq({})
     end
 
-    it "uses default secret when none provided" do
+    it "constructs without a secret when none provided (no guessable default)" do
       session = Tina4::Session.new(env, { handler: :file, handler_options: { dir: tmp_dir } })
       expect(session).not_to be_nil
     end

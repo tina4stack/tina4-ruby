@@ -21,7 +21,16 @@ module Tina4
       if !options.key?(:cookie_name) && env_name && !env_name.empty?
         @options[:cookie_name] = env_name
       end
-      @options[:secret] ||= ENV["TINA4_SECRET"] || "tina4-default-secret"
+      # No guessable built-in secret. The session never signs with this value
+      # (IDs are SecureRandom.hex(32)), so we resolve it from TINA4_SECRET only
+      # — nil when unset. This honours the framework's blank-secret discipline
+      # (Auth.ensure_dev_secret never uses a guessable default); Python/Node
+      # sessions carry no secret field at all.
+      @options[:secret] ||= ENV["TINA4_SECRET"]
+      # Backend-failure policy strict flag (parity with Python's
+      # TINA4_SESSION_STRICT). When truthy, read/write/destroy/gc failures
+      # RE-RAISE instead of logging + degrading.
+      @strict = Tina4::Env.is_truthy(ENV["TINA4_SESSION_STRICT"])
       @handler = create_handler
       @id = extract_session_id(env) || SecureRandom.hex(32)
       @data = load_session
@@ -51,14 +60,23 @@ module Tina4
       @data.dup
     end
 
+    # Persist the session if dirty. On a backend write failure the error is
+    # logged and false is returned — the @modified (dirty) flag is RETAINED so
+    # a later save can retry. Returns true on a successful (or no-op) write.
     def save
-      return unless @modified
-      @handler.write(@id, @data)
-      @modified = false
+      return true unless @modified
+      if safe_write(@id, @data)
+        @modified = false
+        true
+      else
+        false # dirty flag retained for retry
+      end
     end
 
+    # Destroy the current session. Should be called right after login or any
+    # privilege change to defend against session fixation (see #regenerate).
     def destroy
-      @handler.destroy(@id)
+      safe_destroy(@id)
       @data = {}
     end
 
@@ -104,12 +122,17 @@ module Tina4
       result.nil? ? default : result
     end
 
-    # Regenerate the session ID while preserving data — returns new ID
+    # Regenerate the session ID while preserving data — returns the new ID.
+    # Call this right after login or any privilege change to defend against
+    # session fixation (a pre-auth session ID must not survive into the
+    # authenticated session). Destroys the old backend record (best-effort)
+    # and persists under the new ID.
     def regenerate
       old_id = @id
       @id = SecureRandom.hex(32)
-      @handler.destroy(old_id)
+      safe_destroy(old_id)
       @modified = true
+      save
       @id
     end
 
@@ -133,24 +156,27 @@ module Tina4
     end
 
     # Reads raw session data for a given session ID from backend storage.
-    # Returns the data hash or nil.
+    # Returns the data hash, or {} on a backend failure (logged + degraded).
     def read(session_id)
-      @handler.read(session_id)
+      safe_read(session_id)
     end
 
     # Writes raw session data for a given session ID to backend storage.
+    # Returns true on success, false on a backend failure (logged + degraded).
     def write(session_id, data, ttl = nil)
-      if ttl
-        @handler.write(session_id, data, ttl)
-      else
-        @handler.write(session_id, data)
-      end
+      safe_write(session_id, data, ttl)
     end
 
-    # Garbage collection: remove expired sessions from the handler
+    # Garbage collection: remove expired sessions from the handler.
+    # A backend failure is logged and swallowed (never crashes the request).
     def gc(max_lifetime = nil)
+      return unless @handler.respond_to?(:gc)
       max_lifetime ||= @options[:max_age]
-      @handler.gc(max_lifetime) if @handler.respond_to?(:gc)
+      @handler.gc(max_lifetime)
+    rescue StandardError => e
+      log_backend_error("gc", e)
+      raise if @strict
+      nil
     end
 
     def cookie_header(cookie_name = nil)
@@ -181,8 +207,59 @@ module Tina4
     end
 
     def load_session
-      existing = @handler.read(@id)
+      safe_read(@id)
+    end
+
+    # ── Backend-failure policy (parity with Python's Session boundary) ──
+    #
+    # Centralised here, NOT in each handler, so every backend (file, redis,
+    # valkey, mongo, database) shares one policy. The rule:
+    #   read   failure → log + return {} (empty session, never a 500)
+    #   write  failure → log + return false (caller retains dirty for retry)
+    #   destroy failure → log + swallow (return false)
+    #   gc     failure → log + swallow (see #gc)
+    # A genuinely-empty but HEALTHY backend (handler returns nil/{} WITHOUT
+    # raising) is NOT a failure and logs nothing. TINA4_SESSION_STRICT=true
+    # re-raises instead of degrading.
+
+    def safe_read(session_id)
+      existing = @handler.read(session_id)
       existing || {}
+    rescue StandardError => e
+      log_backend_error("read", e)
+      raise if @strict
+      {}
+    end
+
+    def safe_write(session_id, data, ttl = nil)
+      if ttl
+        @handler.write(session_id, data, ttl)
+      else
+        @handler.write(session_id, data)
+      end
+      true
+    rescue StandardError => e
+      log_backend_error("write", e)
+      raise if @strict
+      false
+    end
+
+    def safe_destroy(session_id)
+      @handler.destroy(session_id)
+      true
+    rescue StandardError => e
+      log_backend_error("destroy", e)
+      raise if @strict
+      false
+    end
+
+    # Single source of the backend-failure log line. Names the operation and
+    # the concrete handler class so ops can see WHICH backend failed.
+    def log_backend_error(operation, error)
+      handler_class = @handler.class.name
+      Tina4::Log.error("Session #{operation} failed (#{handler_class}): #{error.message}")
+    rescue StandardError
+      warn("Session #{operation} failed: #{error.message}")
     end
 
     def create_handler

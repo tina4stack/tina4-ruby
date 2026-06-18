@@ -258,9 +258,12 @@ module Tina4
 
         token = Regexp.last_match(1)
 
-        # API_KEY bypass — matches tina4_python behavior
-        api_key = ENV["TINA4_API_KEY"]
-        if api_key && !api_key.empty? && token == api_key
+        # API_KEY bypass — timing-safe comparison via validate_api_key
+        # (OpenSSL.fixed_length_secure_compare). Parity with Python's
+        # authenticate_request (validate_api_key), PHP (hash_equals) and
+        # Node (timingSafeEqual). Never use a plain `==` here — that leaks the
+        # key length/prefix through comparison timing.
+        if validate_api_key(token)
           return { "api_key" => true }
         end
 
@@ -297,9 +300,12 @@ module Tina4
 
           token = Regexp.last_match(1)
 
-          # API_KEY bypass — matches tina4_python behavior
-          api_key = ENV["TINA4_API_KEY"]
-          if api_key && !api_key.empty? && token == api_key
+          # API_KEY bypass — timing-safe comparison via validate_api_key
+          # (OpenSSL.fixed_length_secure_compare). Parity with Python's
+          # authenticate_request (validate_api_key), PHP (hash_equals) and
+          # Node (timingSafeEqual). Never use a plain `==` here — that leaks the
+          # key length/prefix through comparison timing.
+          if validate_api_key(token)
             env["tina4.auth"] = { "api_key" => true }
             return true
           end

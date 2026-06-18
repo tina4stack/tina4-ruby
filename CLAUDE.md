@@ -398,6 +398,8 @@ session.gc(max_age = nil)
 
 Backends: file, redis, valkey, mongodb, database.
 
+**Backend-failure policy (all 4 frameworks): log-loud + degrade.** A backend (Redis/Valkey/Mongo/DB) that becomes unreachable mid-request is logged via `Tina4::Log.error` and degraded rather than crashing the app or losing data silently: a read failure yields an empty session (the request still serves), and `save` returns `false` (best-effort, the modified flag retained for a later retry). A genuinely empty session (no data yet) is NOT an error and is never logged. Set `TINA4_SESSION_STRICT=true` to re-raise instead. Call `regenerate` right after a successful login or privilege change to defeat session fixation. (`authenticate_request`/`bearer_auth` route the API-key fast-path through the timing-safe `validate_api_key`, and the session no longer carries a guessable default secret.)
+
 ### Database extras
 
 ```ruby
