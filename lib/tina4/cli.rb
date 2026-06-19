@@ -5,7 +5,7 @@ require "fileutils"
 
 module Tina4
   class CLI
-    COMMANDS = %w[init start migrate migrate:status migrate:rollback seed seed:create test version routes console generate ai help].freeze
+    COMMANDS = %w[init start migrate migrate:status migrate:rollback seed seed:create test version routes console generate ai metrics help].freeze
 
     # ── Field type mapping ──────────────────────────────────────────────
     FIELD_TYPE_MAP = {
@@ -43,6 +43,7 @@ module Tina4
       when "console"    then cmd_console
       when "generate"   then cmd_generate(argv)
       when "ai"         then cmd_ai(argv)
+      when "metrics"    then cmd_metrics(argv)
       when "help", "-h", "--help" then cmd_help
       else
         puts "Unknown command: #{command}"
@@ -85,7 +86,7 @@ module Tina4
     # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
     def parse_flags(args)
       # Boolean-only flags that never take a value argument
-      boolean_flags = %w[no-browser no-reload production managed all clear dev]
+      boolean_flags = %w[no-browser no-reload production managed all clear dev json]
 
       flags = {}
       positional = []
@@ -486,6 +487,100 @@ module Tina4
         selection = Tina4::AI.show_menu(root_dir)
         Tina4::AI.install_selected(root_dir, selection) unless selection.empty?
       end
+    end
+
+    # ── metrics ───────────────────────────────────────────────────────────
+
+    # Report top code-quality offenders (complexity, size, maintainability,
+    # tests). Mirrors the Python-master `tina4python metrics` command.
+    #
+    #   tina4ruby metrics                       # human report, scans src/ (or framework)
+    #   tina4ruby metrics --top 10              # only the worst 10
+    #   tina4ruby metrics --path lib            # scan a specific directory
+    #   tina4ruby metrics --json                # machine-readable for CI
+    #   tina4ruby metrics --fail-on warn        # exit 1 if any warn/error offender
+    #   tina4ruby metrics --fail-on error       # exit 1 only on error-severity
+    def cmd_metrics(argv)
+      require "json"
+      require "set"
+      require_relative "metrics"
+
+      flags, _positional = parse_flags(argv)
+
+      top = (flags["top"].to_s =~ /\A\d+\z/) ? flags["top"].to_i : 20
+      as_json = flags.key?("json")
+      path = flags["path"].is_a?(String) ? flags["path"] : "src"
+      fail_on = flags["fail-on"].is_a?(String) ? flags["fail-on"] : nil
+
+      unless [nil, "warn", "error"].include?(fail_on)
+        puts "  invalid --fail-on '#{fail_on}' (use warn or error)"
+        exit 2
+      end
+
+      result = Tina4::Metrics.offenders(path, top)
+      summary = result["summary"]
+      found = result["offenders"]
+
+      if summary.key?("error")
+        puts "  metrics error: #{summary['error']}"
+        exit 2
+      end
+
+      # Decide exit code from the FULL offender set, not just the printed top-N.
+      # full_analysis is cached, so this reuses the same analysis.
+      all_offenders = Tina4::Metrics.offenders(path, [summary["total_offenders"], 1].max)["offenders"]
+      severities = all_offenders.map { |o| o["severity"] }.to_set
+      exit_code = 0
+      if fail_on == "warn" && !(severities & %w[warn error]).empty?
+        exit_code = 1
+      elsif fail_on == "error" && severities.include?("error")
+        exit_code = 1
+      end
+
+      if as_json
+        puts JSON.pretty_generate({ "summary" => summary, "offenders" => found })
+        exit exit_code
+      end
+
+      # ── Human report ──────────────────────────────────────────────────
+      use_color = $stdout.tty?
+      colorize = lambda do |text, code|
+        use_color ? "\e[#{code}m#{text}\e[0m" : text
+      end
+      sev_color = { "error" => "31", "warn" => "33", "info" => "2" } # red / yellow / dim
+
+      puts
+      puts "  Tina4 Metrics — #{summary['scan_mode']} scan (#{summary['scan_root']})"
+      puts "  files: #{summary['files_analyzed']}   " \
+           "functions: #{summary['total_functions']}   " \
+           "avg complexity: #{summary['avg_complexity']}   " \
+           "avg maintainability: #{summary['avg_maintainability']}"
+      showing = found.empty? ? "" : " (showing top #{found.length})"
+      puts "  offenders: #{summary['total_offenders']} total#{showing}"
+      puts
+
+      if found.empty?
+        puts "  " + colorize.call("✓ no offenders — clean", "32")
+        puts
+        exit exit_code
+      end
+
+      # Compute column widths so the table lines up.
+      locs = found.map { |o| "#{o['file']}:#{o['line']}" }
+      loc_w = [("FILE:LINE".length)].concat(locs.map(&:length)).max
+      kind_w = [("KIND".length)].concat(found.map { |o| o["kind"].length }).max
+
+      header = format("  %3s  %-8s  %-#{kind_w}s  %-#{loc_w}s  DETAIL", "#", "SEVERITY", "KIND", "FILE:LINE")
+      puts colorize.call(header, "1")
+      puts "  " + ("-" * (header.length - 2))
+      found.each_with_index do |o, i|
+        sev = o["severity"]
+        sev_cell = colorize.call(format("%-8s", sev), sev_color[sev])
+        puts format("  %3d  %s  %-#{kind_w}s  %-#{loc_w}s  %s",
+                    i + 1, sev_cell, o["kind"], locs[i], o["detail"])
+      end
+      puts
+      exit exit_code
     end
 
     # ── generate ────────────────────────────────────────────────────────
@@ -1225,6 +1320,7 @@ module Tina4
           routes             List all registered routes
           console            Start an interactive console
           ai                 Detect AI tools and install context files
+          metrics            Rank top code-quality offenders
           help               Show this help message
 
         Generators:
@@ -1237,6 +1333,13 @@ module Tina4
           generate form <Name> [--fields "..."]   Form template with inputs matching model fields
           generate view <Name> [--fields "..."]   List + detail templates for viewing records
           generate auth                           Login/register/logout routes + User model + templates
+
+        Metrics:
+          metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]
+            --top N        Show only the worst N offenders (default: 20)
+            --json         Print machine-readable JSON ({summary, offenders}) for CI
+            --fail-on      Exit 1 if any offender at/above this severity (warn|error)
+            --path DIR     Scan DIR (default: src/, auto-resolves to the framework)
 
         Field types: string, int, float, bool, text, datetime, blob
         Table names: singular by default (Product -> product)

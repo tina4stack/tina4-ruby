@@ -353,6 +353,124 @@ module Tina4
       result
     end
 
+    # ── Top Offenders (CLI + dashboard) ──────────────────────────
+
+    # Severity ranking for sorting (higher = more severe).
+    SEVERITY_RANK = { "error" => 2, "warn" => 1, "info" => 0 }.freeze
+
+    # Rank the worst code-quality issues into a single "top offenders" list.
+    #
+    # Reuses full_analysis (does NOT re-analyze). Each offender is a hash:
+    #   {"file", "line", "kind", "severity", "score", "detail"}
+    #
+    # Rules (one offender per matching condition):
+    #   - function complexity > 10  → kind "complexity"
+    #         severity "error" if >20 else "warn"; score = complexity
+    #   - file loc > 500            → kind "large_file" (warn); score = loc/100
+    #   - file functions > 20       → kind "too_many_functions" (warn); score = functions/4
+    #   - file maintainability < 40 → kind "low_maintainability"
+    #         severity "error" if <20 else "warn"; score = (50 - mi)
+    #   - file has_tests false      → kind "untested" (info); score = loc/100
+    #
+    # Sorted by (severity rank, score) DESCENDING and truncated to `top`.
+    #
+    # Returns {"offenders" => [...], "summary" => {...}} where summary carries
+    # the headline numbers the CLI prints (files_analyzed, total_functions,
+    # avg_complexity, avg_maintainability, scan_mode, scan_root, and the total
+    # offender count before truncation).
+    def self.offenders(root = 'src', top = 20)
+      analysis = full_analysis(root)
+      if analysis.key?("error")
+        return { "offenders" => [], "summary" => { "error" => analysis["error"] } }
+      end
+
+      items = []
+
+      # Function-level: cyclomatic complexity.
+      (analysis["most_complex_functions"] || []).each do |fn|
+        cc = fn["complexity"]
+        next unless cc > 10
+        items << {
+          "file" => fn["file"],
+          "line" => fn["line"],
+          "kind" => "complexity",
+          "severity" => cc > 20 ? "error" : "warn",
+          "score" => cc.to_f,
+          "detail" => "#{fn['name']} — cyclomatic complexity #{cc}"
+        }
+      end
+
+      # File-level rules.
+      (analysis["file_metrics"] || []).each do |fm|
+        path = fm["path"]
+        loc = fm["loc"]
+        funcs = fm["functions"]
+        mi = fm["maintainability"]
+
+        if loc > 500
+          items << {
+            "file" => path,
+            "line" => 1,
+            "kind" => "large_file",
+            "severity" => "warn",
+            "score" => loc / 100.0,
+            "detail" => "#{loc} LOC (max 500)"
+          }
+        end
+
+        if funcs > 20
+          items << {
+            "file" => path,
+            "line" => 1,
+            "kind" => "too_many_functions",
+            "severity" => "warn",
+            "score" => funcs / 4.0,
+            "detail" => "#{funcs} functions (max 20)"
+          }
+        end
+
+        if mi < 40
+          items << {
+            "file" => path,
+            "line" => 1,
+            "kind" => "low_maintainability",
+            "severity" => mi < 20 ? "error" : "warn",
+            "score" => 50 - mi,
+            "detail" => "maintainability index #{mi} (min 40)"
+          }
+        end
+
+        if fm["has_tests"] == false
+          items << {
+            "file" => path,
+            "line" => 1,
+            "kind" => "untested",
+            "severity" => "info",
+            "score" => loc / 100.0,
+            "detail" => "no referencing test"
+          }
+        end
+      end
+
+      # Sort by (severity rank, score) DESCENDING — stable so insertion order
+      # breaks ties deterministically.
+      items = items.each_with_index.sort_by do |o, idx|
+        [-SEVERITY_RANK[o["severity"]], -o["score"], idx]
+      end.map(&:first)
+
+      summary = {
+        "files_analyzed" => analysis["files_analyzed"],
+        "total_functions" => analysis["total_functions"],
+        "avg_complexity" => analysis["avg_complexity"],
+        "avg_maintainability" => analysis["avg_maintainability"],
+        "scan_mode" => analysis["scan_mode"],
+        "scan_root" => analysis["scan_root"],
+        "total_offenders" => items.length
+      }
+
+      { "offenders" => items.first(top), "summary" => summary }
+    end
+
     # ── File Detail ─────────────────────────────────────────────
 
     def self.file_detail(file_path)
@@ -423,62 +541,135 @@ module Tina4
 
     private_class_method
 
+    # Check whether a source file has a test that actually exercises it.
+    #
+    # PRECISE detection (a bare word-mention is NOT enough — that over-reported
+    # badly: `sqlite3_adapter.rb` looked "tested" because some spec merely said
+    # "sqlite3_adapter"):
+    #
+    #   1. Filename — a dedicated `<module>_spec.rb` / `<module>_test.rb` /
+    #      `test_<module>.rb` for THIS exact module (NOT the parent directory —
+    #      one `database_spec.rb` must not mark every file under `database/`
+    #      tested).
+    #   2. Require — a spec that actually requires this file: its require path
+    #      (`require "tina4/database/sqlite"` / `require_relative ".../sqlite"`)
+    #      matched by the basename of a require target. A constant/class that is
+    #      genuinely DEFINED in this file (top-level class/module) referenced by
+    #      a spec also counts.
+    #
+    # Returns true only on a real, file-specific signal — so the "untested"
+    # offenders surfaced by `tina4 metrics` and the dashboard "T" badge are
+    # trustworthy. (If you wire real coverage data later, prefer it over this.)
     def self._has_matching_test(rel_path)
       require 'set'
 
       name = File.basename(rel_path, '.rb')
-      # Parent directory name (e.g. "database" from "database/sqlite3_adapter.rb")
-      parent_dir = File.dirname(rel_path)
-      parent_module = (parent_dir != '.' && !parent_dir.empty?) ? File.basename(parent_dir) : ''
 
-      # Stage 1: Filename matching — name_spec, name_test, test_name patterns
-      test_dirs = ['spec', 'spec/tina4', 'test', 'tests']
-      test_dirs.each do |td|
-        patterns = [
-          "#{td}/#{name}_spec.rb",
-          "#{td}/#{name}s_spec.rb",
-          "#{td}/#{name}_test.rb",
-          "#{td}/test_#{name}.rb",
-        ]
-        # Also check parent-named tests (spec/database_spec.rb covers database/sqlite3_adapter.rb)
-        if parent_module && !parent_module.empty? && parent_module != name
-          patterns << "#{td}/#{parent_module}_spec.rb"
-          patterns << "#{td}/#{parent_module}s_spec.rb"
-          patterns << "#{td}/#{parent_module}_test.rb"
-          patterns << "#{td}/test_#{parent_module}.rb"
+      # Require path WITHOUT extension, leading lib/ stripped:
+      # "lib/tina4/database/sqlite.rb" -> "tina4/database/sqlite"
+      require_path = rel_path.sub(/\.rb$/, '').sub(%r{^lib/}, '')
+
+      # Constants (classes/modules) DEFINED at the top level of this file — a
+      # spec referencing one of them genuinely exercises this file. Names only,
+      # distinctive (>3 chars, leading uppercase); bare module-name words and
+      # guessed CamelCase are too loose to trust.
+      defined_symbols = _defined_constants(rel_path)
+
+      # Search roots: CWD plus (in framework-fallback mode) the repo root that
+      # owns spec/ — walk up from the scan root to find it.
+      search_roots = ['.']
+      if @last_scan_root && !@last_scan_root.empty?
+        scan_root = @last_scan_root
+        5.times do
+          if %w[spec test tests].any? { |d| Dir.exist?(File.join(scan_root, d)) }
+            search_roots << scan_root
+            break
+          end
+          parent = File.dirname(scan_root)
+          break if parent == scan_root
+          scan_root = parent
         end
-        return true if patterns.any? { |p| File.exist?(p) }
+      end
+      search_roots.uniq!
+
+      test_dirs = %w[spec test tests]
+
+      # Stage 1: a dedicated spec/test FILE named for THIS module (no parent-dir
+      # blanket match).
+      filename_patterns = [
+        "#{name}_spec.rb",
+        "#{name}s_spec.rb",
+        "#{name}_test.rb",
+        "test_#{name}.rb",
+      ]
+      search_roots.each do |root|
+        test_dirs.each do |td|
+          filename_patterns.each do |fn|
+            return true if File.exist?(File.join(root, td, fn))
+          end
+        end
       end
 
-      # Build a dotted/slashed require path for import matching
-      # e.g. "lib/tina4/database/sqlite3_adapter.rb" → "tina4/database/sqlite3_adapter"
-      path_without_ext = rel_path.sub(/\.rb$/, '')
-      # Strip leading lib/ prefix if present
-      require_path = path_without_ext.sub(%r{^lib/}, '')
+      # Stage 2: a spec that actually REQUIRES this module (precise — matched by
+      # the require target's basename / tail of the require path), or references
+      # a constant defined in it. NO bare word-of-the-module-name match.
+      require_regexps = []
+      unless require_path.empty?
+        # require "…/<module>" or require_relative "…/<module>" — match the
+        # require string ending in this file's require path or basename.
+        rp = Regexp.escape(require_path)
+        nm = Regexp.escape(name)
+        require_regexps << /(?:require|require_relative)\s+['"][^'"]*#{rp}['"]/
+        require_regexps << %r{(?:require|require_relative)\s+['"][^'"]*/#{nm}['"]}
+      end
+      unless defined_symbols.empty?
+        sym_alt = defined_symbols.map { |s| Regexp.escape(s) }.join('|')
+        require_regexps << /\b(?:#{sym_alt})\b/
+      end
 
-      # Build CamelCase class name from snake_case module name
-      # e.g. "sqlite3_adapter" → "Sqlite3Adapter"
-      class_name = name.split('_').map(&:capitalize).join
+      return false if require_regexps.empty?
 
-      # Stage 2+3: Content scan — check if any spec/test file references this module
-      scan_dirs = ['spec', 'test', 'tests']
-      scan_dirs.each do |td|
-        next unless Dir.exist?(td)
-        Dir.glob(File.join(td, '**', '*.rb')).each do |test_file|
-          content = begin
-            File.read(test_file, encoding: 'utf-8')
-          rescue StandardError
-            next
+      search_roots.each do |root|
+        test_dirs.each do |td|
+          dir = File.join(root, td)
+          next unless Dir.exist?(dir)
+          Dir.glob(File.join(dir, '**', '*.rb')).each do |test_file|
+            content = begin
+              File.read(test_file, encoding: 'utf-8')
+            rescue StandardError
+              next
+            end
+            return true if require_regexps.any? { |re| content.match?(re) }
           end
-          # Stage 2: require/require_relative path matching
-          return true if !require_path.empty? && content.include?(require_path)
-          # Stage 3: class name or module name mention
-          return true if content.match?(/\b#{Regexp.escape(class_name)}\b/)
-          return true if content.match?(/\b#{Regexp.escape(name)}\b/i)
         end
       end
 
       false
+    end
+
+    # Top-level class/module names defined in the file at rel_path (resolved
+    # against the last scan root when present). Distinctive names only:
+    # leading-uppercase, longer than 3 chars.
+    def self._defined_constants(rel_path)
+      src_file = if @last_scan_root && !@last_scan_root.empty? && !File.exist?(rel_path)
+                   File.join(@last_scan_root, rel_path)
+                 else
+                   rel_path
+                 end
+      symbols = Set.new
+      content = begin
+        File.read(src_file, encoding: 'utf-8')
+      rescue StandardError
+        return symbols
+      end
+      content.each_line do |line|
+        stripped = line.strip
+        m = stripped.match(/\A(?:class|module)\s+([A-Z][A-Za-z0-9_]*)/)
+        next unless m
+        const = m[1]
+        symbols.add(const) if const.length > 3
+      end
+      symbols
     end
 
     def self._files_hash(root)
