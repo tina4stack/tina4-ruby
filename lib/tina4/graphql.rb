@@ -463,12 +463,33 @@ module Tina4
         arguments = parse_arguments
       end
 
+      # Directives (@skip, @include, @auth, @role, @guest, ...) appear after the
+      # field's arguments and before its selection set. Without parsing them the
+      # executor's check_directives never fires — @skip/@include are silently
+      # ignored. Each directive is { name:, arguments: } to match check_directives.
+      directives = parse_directives
+
       selection_set = nil
       if current&.value == "{"
         selection_set = parse_selection_set
       end
 
-      { kind: :field, name: field_name, alias: alias_name, arguments: arguments, selection_set: selection_set }
+      { kind: :field, name: field_name, alias: alias_name, arguments: arguments, directives: directives, selection_set: selection_set }
+    end
+
+    # Parse a run of leading @directive(args) tokens into an array of
+    # { name:, arguments: } hashes (the shape GraphQLExecutor#check_directives
+    # consumes). Returns [] when no directive is present.
+    def parse_directives
+      directives = []
+      while current && current.type == :punct && current.value == "@"
+        advance # consume '@'
+        name = expect(:name).value
+        args = {}
+        args = parse_arguments if current&.value == "("
+        directives << { name: name, arguments: args }
+      end
+      directives
     end
 
     def parse_arguments
@@ -575,8 +596,13 @@ module Tina4
   # ─── Executor ─────────────────────────────────────────────────────────
 
   class GraphQLExecutor
-    def initialize(schema)
+    # max_depth bounds selection-set nesting (DoS / stack-overflow guard).
+    # Threaded down from the owning GraphQL instance; <= 0 disables the guard.
+    attr_accessor :max_depth
+
+    def initialize(schema, max_depth: 50)
       @schema = schema
+      @max_depth = max_depth
     end
 
     def execute(document, variables: {}, context: {}, operation_name: nil)
@@ -618,8 +644,12 @@ module Tina4
       data = {}
       errors = []
 
+      # Top-level selections start at depth 1. Depth is incremented on every
+      # recursive entry (sub-selections, fragment spreads, inline fragments) so
+      # an over-deep query OR a circular fragment is caught before the
+      # interpreter stack overflows.
       operation[:selection_set].each do |selection|
-        resolve_selection(selection, root_fields, nil, resolved_vars, context, fragments, data, errors)
+        resolve_selection(selection, root_fields, nil, resolved_vars, context, fragments, data, errors, 1)
       end
 
       result = { "data" => data }
@@ -629,25 +659,31 @@ module Tina4
 
     private
 
-    def resolve_selection(selection, fields, parent, variables, context, fragments, data, errors)
+    def resolve_selection(selection, fields, parent, variables, context, fragments, data, errors, depth = 1)
+      # Depth guard — append a structured error and stop recursing this branch.
+      if @max_depth && @max_depth > 0 && depth > @max_depth
+        errors << { "message" => "Query exceeds maximum depth of #{@max_depth}" }
+        return
+      end
+
       case selection[:kind]
       when :field
-        resolve_field(selection, fields, parent, variables, context, fragments, data, errors)
+        resolve_field(selection, fields, parent, variables, context, fragments, data, errors, depth)
       when :fragment_spread
         frag = fragments[selection[:name]]
         if frag
           frag[:selection_set].each do |sel|
-            resolve_selection(sel, fields, parent, variables, context, fragments, data, errors)
+            resolve_selection(sel, fields, parent, variables, context, fragments, data, errors, depth + 1)
           end
         end
       when :inline_fragment
         selection[:selection_set].each do |sel|
-          resolve_selection(sel, fields, parent, variables, context, fragments, data, errors)
+          resolve_selection(sel, fields, parent, variables, context, fragments, data, errors, depth + 1)
         end
       end
     end
 
-    def resolve_field(selection, fields, parent, variables, context, fragments, data, errors)
+    def resolve_field(selection, fields, parent, variables, context, fragments, data, errors, depth = 1)
       field_name = selection[:name]
       output_name = selection[:alias] || field_name
 
@@ -687,7 +723,7 @@ module Tina4
               nested = {}
               sub_fields = item.is_a?(Hash) ? item_fields(item) : {}
               selection[:selection_set].each do |sel|
-                resolve_selection(sel, sub_fields, item, variables, context, fragments, nested, errors)
+                resolve_selection(sel, sub_fields, item, variables, context, fragments, nested, errors, depth + 1)
               end
               nested
             end
@@ -695,7 +731,7 @@ module Tina4
             nested = {}
             sub_fields = item_fields(value)
             selection[:selection_set].each do |sel|
-              resolve_selection(sel, sub_fields, value, variables, context, fragments, nested, errors)
+              resolve_selection(sel, sub_fields, value, variables, context, fragments, nested, errors, depth + 1)
             end
             data[output_name] = nested
           else
@@ -705,7 +741,12 @@ module Tina4
           data[output_name] = coerce_value(value)
         end
       rescue => e
-        errors << { "message" => e.message, "path" => [output_name] }
+        # Log the real cause; only surface the detail to the client in debug
+        # mode — a resolver exception can carry internal state (DB errors,
+        # credentials) that must not leak. Mirrors the Python master.
+        Tina4::Log.error("GraphQL resolver '#{field_name}' failed: #{e.message}")
+        detail = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"]) ? e.message : "Internal server error"
+        errors << { "message" => detail, "path" => [output_name] }
         data[output_name] = nil
       end
     end
@@ -845,6 +886,16 @@ module Tina4
   class GraphQL
     attr_reader :schema
 
+    # Maximum selection-set nesting depth (DoS / stack-overflow guard).
+    # Read from TINA4_GRAPHQL_MAX_DEPTH (default 50; <= 0 disables). Exposed so
+    # tests/app code can override it; the writer keeps the executor in sync.
+    attr_reader :max_depth
+
+    def max_depth=(value)
+      @max_depth = value
+      @executor&.max_depth = value
+    end
+
     # Class-level toggle for ORM auto-schema generation. Defaults to true,
     # can be disabled via TINA4_GRAPHQL_AUTO_SCHEMA=false. Initializers and
     # user app code can branch on this before calling `schema.from_orm(...)`.
@@ -912,7 +963,12 @@ module Tina4
 
     def initialize(schema = nil)
       @schema = schema || GraphQLSchema.new
-      @executor = GraphQLExecutor.new(@schema)
+      # Maximum selection-set nesting depth. A deeply nested query (or a
+      # circular fragment) would otherwise recurse without bound — a classic
+      # GraphQL DoS / stack-overflow vector. Default 50 is far beyond any
+      # legitimate query; TINA4_GRAPHQL_MAX_DEPTH <= 0 disables the guard.
+      @max_depth = Integer(ENV.fetch("TINA4_GRAPHQL_MAX_DEPTH", "50"), exception: false) || 50
+      @executor = GraphQLExecutor.new(@schema, max_depth: @max_depth)
       @field_resolvers = {}
 
       # Drain any resolvers registered via the class-level GraphQL.resolve()

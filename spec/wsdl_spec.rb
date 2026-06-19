@@ -240,18 +240,47 @@ RSpec.describe Tina4::WSDL do
       expect(resp).to include("Empty SOAP Body")
     end
 
-    it "returns SOAP fault when handler raises" do
-      klass = Class.new(Tina4::WSDL) do
-        wsdl_operation output: {}
-        def Boom
-          raise "kaboom"
+    it "returns a Server SOAP fault that MASKS the cause in production" do
+      # Production (TINA4_DEBUG unset/false): the real cause must never leak —
+      # a resolver exception can carry internal state (DB credentials, paths).
+      prev = ENV.delete("TINA4_DEBUG")
+      begin
+        klass = Class.new(Tina4::WSDL) do
+          wsdl_operation output: {}
+          def Boom
+            raise "kaboom"
+          end
         end
+        xml = soap_envelope("<Boom/>")
+        req = RequestStub.new("POST", xml, {}, "/test")
+        resp = klass.new(req).handle
+        expect(resp).to include("soap:Fault")
+        expect(resp).to include("<faultcode>Server</faultcode>")
+        expect(resp).to include("Internal server error")
+        expect(resp).not_to include("kaboom")
+      ensure
+        ENV["TINA4_DEBUG"] = prev unless prev.nil?
       end
-      xml = soap_envelope("<Boom/>")
-      req = RequestStub.new("POST", xml, {}, "/test")
-      resp = klass.new(req).handle
-      expect(resp).to include("soap:Fault")
-      expect(resp).to include("kaboom")
+    end
+
+    it "leaks the real operation cause ONLY under TINA4_DEBUG" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "true"
+      begin
+        klass = Class.new(Tina4::WSDL) do
+          wsdl_operation output: {}
+          def Boom
+            raise "kaboom"
+          end
+        end
+        xml = soap_envelope("<Boom/>")
+        req = RequestStub.new("POST", xml, {}, "/test")
+        resp = klass.new(req).handle
+        expect(resp).to include("soap:Fault")
+        expect(resp).to include("kaboom")
+      ensure
+        if prev.nil? then ENV.delete("TINA4_DEBUG") else ENV["TINA4_DEBUG"] = prev end
+      end
     end
 
     it "XML-escapes response values" do
@@ -362,6 +391,100 @@ RSpec.describe Tina4::WSDL do
       req = RequestStub.new("POST", xml, {}, "/calc")
       resp = TestCalculator.new(req).handle
       expect(resp).to include("<Result>30</Result>")
+    end
+  end
+
+  # ── SECURITY: SOAP 1.1 forbids DTDs; reject DOCTYPE before parsing to close
+  #    the billion-laughs (internal-entity expansion) and XXE attack surface.
+  describe "DOCTYPE / DTD rejection (security)" do
+    def envelope(body_content)
+      "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Body>#{body_content}</soap:Body></soap:Envelope>"
+    end
+
+    it "rejects a DOCTYPE with a Client fault and NEVER runs the operation" do
+      ran = false
+      klass = Class.new(Tina4::WSDL) do
+        wsdl_operation output: { Result: :int }
+        define_method(:Add) do |a, b|
+          ran = true
+          { Result: a.to_i + b.to_i }
+        end
+      end
+      xml = "<?xml version=\"1.0\"?><!DOCTYPE foo>#{envelope('<Add><a>1</a><b>2</b></Add>')}"
+      req = RequestStub.new("POST", xml, {}, "/calc")
+      resp = klass.new(req).handle
+      expect(resp).to include("soap:Fault")
+      expect(resp).to include("<faultcode>Client</faultcode>")
+      expect(resp).to include("DOCTYPE")
+      expect(resp).not_to include("<AddResponse>")
+      expect(ran).to be(false) # NEGATIVE: operation must never be invoked
+    end
+
+    it "rejects an XXE external-entity payload (DOCTYPE) before parsing" do
+      ran = false
+      klass = Class.new(Tina4::WSDL) do
+        wsdl_operation output: { Greeting: :string }
+        define_method(:Greet) do |name|
+          ran = true
+          { Greeting: "Hello #{name}" }
+        end
+      end
+      xml = <<~XML
+        <?xml version="1.0"?>
+        <!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><Greet><name>&xxe;</name></Greet></soap:Body>
+        </soap:Envelope>
+      XML
+      req = RequestStub.new("POST", xml, {}, "/calc")
+      resp = klass.new(req).handle
+      expect(resp).to include("<faultcode>Client</faultcode>")
+      expect(resp).to include("DOCTYPE")
+      expect(resp).not_to include("/etc/passwd")
+      expect(ran).to be(false)
+    end
+
+    it "rejects a billion-laughs payload (DOCTYPE) before parsing" do
+      ran = false
+      klass = Class.new(Tina4::WSDL) do
+        wsdl_operation output: { Greeting: :string }
+        define_method(:Greet) do |name|
+          ran = true
+          { Greeting: "Hello #{name}" }
+        end
+      end
+      xml = <<~XML
+        <?xml version="1.0"?>
+        <!DOCTYPE lolz [
+          <!ENTITY lol "lol">
+          <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+          <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+        ]>
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body><Greet><name>&lol3;</name></Greet></soap:Body>
+        </soap:Envelope>
+      XML
+      req = RequestStub.new("POST", xml, {}, "/calc")
+      resp = klass.new(req).handle
+      expect(resp).to include("<faultcode>Client</faultcode>")
+      expect(resp).to include("DOCTYPE")
+      expect(ran).to be(false)
+    end
+
+    it "matches DOCTYPE case-insensitively (e.g. <!doctype)" do
+      xml = "<!doctype foo>#{envelope('<Add><a>1</a><b>2</b></Add>')}"
+      req = RequestStub.new("POST", xml, {}, "/calc")
+      resp = TestCalculator.new(req).handle
+      expect(resp).to include("DOCTYPE")
+      expect(resp).not_to include("<AddResponse>")
+    end
+
+    it "POSITIVE: a normal DOCTYPE-free request still works" do
+      xml = envelope("<Add><a>3</a><b>5</b></Add>")
+      req = RequestStub.new("POST", xml, {}, "/calc")
+      resp = TestCalculator.new(req).handle
+      expect(resp).to include("<AddResponse>")
+      expect(resp).to include("<Result>8</Result>")
     end
   end
 end
@@ -666,7 +789,25 @@ RSpec.describe Tina4::WSDL::Service do
       expect(response).to include("<result>hello</result>")
     end
 
-    it "handles handler exception as SOAP fault" do
+    it "handles handler exception as a masked SOAP fault in prod" do
+      prev = ENV.delete("TINA4_DEBUG")
+      svc = described_class.new(name: "Broken")
+      svc.add_operation("Fail", input_params: {}, output_params: {}) do |_|
+        raise "Something went wrong"
+      end
+
+      xml = '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><Fail></Fail></soap:Body></soap:Envelope>'
+      response = svc.handle_soap_request(xml)
+      expect(response).to include("soap:Fault")
+      expect(response).to include("Internal server error")
+      expect(response).not_to include("Something went wrong") # masked, not leaked
+    ensure
+      ENV["TINA4_DEBUG"] = prev unless prev.nil?
+    end
+
+    it "leaks the legacy handler exception cause ONLY under TINA4_DEBUG" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "true"
       svc = described_class.new(name: "Broken")
       svc.add_operation("Fail", input_params: {}, output_params: {}) do |_|
         raise "Something went wrong"
@@ -676,6 +817,8 @@ RSpec.describe Tina4::WSDL::Service do
       response = svc.handle_soap_request(xml)
       expect(response).to include("soap:Fault")
       expect(response).to include("Something went wrong")
+    ensure
+      if prev.nil? then ENV.delete("TINA4_DEBUG") else ENV["TINA4_DEBUG"] = prev end
     end
 
     it "extracts multiple params from XML" do
@@ -700,6 +843,20 @@ RSpec.describe Tina4::WSDL::Service do
       response = svc.handle_soap_request(xml)
       expect(response).not_to include("<script>")
       expect(response).to include("&lt;script&gt;")
+    end
+
+    it "rejects a DOCTYPE/DTD before parsing and never runs the handler" do
+      ran = false
+      svc = described_class.new(name: "Calc")
+      svc.add_operation("Add", input_params: { a: "integer", b: "integer" }, output_params: {}) do |_p|
+        ran = true
+        { result: 0 }
+      end
+      xml = '<!DOCTYPE foo [ <!ENTITY x "y"> ]><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><Add><a>1</a><b>2</b></Add></soap:Body></soap:Envelope>'
+      response = svc.handle_soap_request(xml)
+      expect(response).to include("soap:Fault")
+      expect(response).to include("DOCTYPE")
+      expect(ran).to be(false)
     end
   end
 end

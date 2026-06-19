@@ -282,12 +282,34 @@ RSpec.describe Tina4::GraphQL do
       expect(result["data"]["greeting"]).to eq("Hello, World!")
     end
 
-    it "handles resolver errors gracefully" do
-      gql.schema.add_query("broken", {}, "String") { |_r, _a, _c| raise "boom" }
-      result = gql.execute('{ broken }')
-      expect(result["errors"]).not_to be_nil
-      expect(result["errors"].first["message"]).to eq("boom")
-      expect(result["data"]["broken"]).to be_nil
+    it "handles resolver errors gracefully and MASKS the cause in production" do
+      # Production (TINA4_DEBUG unset/false): the real cause must never leak to
+      # the client — a resolver exception can carry DB errors / credentials.
+      prev = ENV.delete("TINA4_DEBUG")
+      begin
+        gql.schema.add_query("broken", {}, "String") { |_r, _a, _c| raise "boom" }
+        result = gql.execute('{ broken }')
+        expect(result["errors"]).not_to be_nil
+        expect(result["errors"].first["message"]).to eq("Internal server error")
+        expect(result["errors"].first["message"]).not_to include("boom")
+        expect(result["errors"].first["path"]).to eq(["broken"])
+        expect(result["data"]["broken"]).to be_nil
+      ensure
+        ENV["TINA4_DEBUG"] = prev unless prev.nil?
+      end
+    end
+
+    it "leaks the real resolver cause ONLY under TINA4_DEBUG" do
+      prev = ENV["TINA4_DEBUG"]
+      ENV["TINA4_DEBUG"] = "true"
+      begin
+        gql.schema.add_query("broken", {}, "String") { |_r, _a, _c| raise "boom" }
+        result = gql.execute('{ broken }')
+        expect(result["errors"].first["message"]).to eq("boom")
+        expect(result["errors"].first["path"]).to eq(["broken"])
+      ensure
+        if prev.nil? then ENV.delete("TINA4_DEBUG") else ENV["TINA4_DEBUG"] = prev end
+      end
     end
 
     it "handles parse errors" do
@@ -367,6 +389,119 @@ RSpec.describe Tina4::GraphQL do
       result = gql.handle_request("not json")
       expect(result["errors"]).not_to be_nil
       expect(result["errors"].first["message"]).to include("Invalid JSON")
+    end
+  end
+
+  # ── SECURITY: recursion depth guard (DoS / stack-overflow protection) ──────
+  describe "selection-set depth guard (TINA4_GRAPHQL_MAX_DEPTH)" do
+    it "defaults to 50" do
+      expect(gql.max_depth).to eq(50)
+    end
+
+    it "reads TINA4_GRAPHQL_MAX_DEPTH from the environment" do
+      prev = ENV["TINA4_GRAPHQL_MAX_DEPTH"]
+      ENV["TINA4_GRAPHQL_MAX_DEPTH"] = "3"
+      begin
+        expect(Tina4::GraphQL.new.max_depth).to eq(3)
+      ensure
+        if prev.nil? then ENV.delete("TINA4_GRAPHQL_MAX_DEPTH") else ENV["TINA4_GRAPHQL_MAX_DEPTH"] = prev end
+      end
+    end
+
+    it "POSITIVE: a shallow query within the limit succeeds" do
+      gql.max_depth = 5
+      gql.schema.add_query("author", { "id" => { type: "ID!" } }, "Author") do |_r, args, _c|
+        { "id" => args["id"], "name" => "Jane", "posts" => [{ "id" => "p1", "title" => "First" }] }
+      end
+      result = gql.execute('{ author(id: "1") { name posts { title } } }')
+      expect(result["errors"]).to be_nil
+      expect(result["data"]["author"]["posts"].first["title"]).to eq("First")
+    end
+
+    it "NEGATIVE: an over-deep nested query is rejected with a depth error" do
+      gql.max_depth = 2
+      gql.schema.add_query("author", { "id" => { type: "ID!" } }, "Author") do |_r, args, _c|
+        { "id" => args["id"], "name" => "Jane",
+          "posts" => [{ "id" => "p1", "title" => "First", "comments" => [{ "id" => "c1", "body" => "Hi" }] }] }
+      end
+      # author(1) -> posts(2) -> comments(3) exceeds max_depth=2
+      result = gql.execute('{ author(id: "1") { posts { comments { body } } } }')
+      expect(result["errors"]).not_to be_nil
+      expect(result["errors"].map { |e| e["message"] }).to include("Query exceeds maximum depth of 2")
+    end
+
+    it "NEGATIVE: a circular fragment is caught by the depth guard (no stack overflow)" do
+      gql.max_depth = 10
+      # A self-referential record so the recursion is bounded ONLY by the depth
+      # guard — without it a circular fragment would recurse until the stack
+      # overflows. Each `friend` resolves back to the same record.
+      me = { "id" => "1", "name" => "Alice" }
+      me["friend"] = me
+      gql.schema.add_query("me", {}, "User") { |_r, _a, _c| me }
+      query = <<~GQL
+        query { me { ...A } }
+        fragment A on User { name friend { ...B } }
+        fragment B on User { name friend { ...A } }
+      GQL
+      result = gql.execute(query)
+      expect(result["errors"]).not_to be_nil
+      expect(result["errors"].map { |e| e["message"] }).to include("Query exceeds maximum depth of 10")
+    end
+
+    it "max_depth <= 0 DISABLES the guard (deep query allowed)" do
+      gql.max_depth = 0
+      gql.schema.add_query("author", { "id" => { type: "ID!" } }, "Author") do |_r, args, _c|
+        { "id" => args["id"], "name" => "Jane",
+          "posts" => [{ "id" => "p1", "title" => "First", "comments" => [{ "id" => "c1", "body" => "Hi" }] }] }
+      end
+      result = gql.execute('{ author(id: "1") { posts { comments { body } } } }')
+      expect(result["errors"]).to be_nil
+      expect(result["data"]["author"]["posts"].first["comments"].first["body"]).to eq("Hi")
+    end
+  end
+
+  # ── RUBY DIVERGENCE FIX PROOF: directives are now parsed and honored ───────
+  # Before the parse_field fix, parse_field never populated :directives, so
+  # check_directives received [] and @skip/@include were silently ignored.
+  describe "directives are parsed and honored (parse_field fix)" do
+    it "parses @directive(args) into the field's :directives array" do
+      doc = Tina4::GraphQLParser.new('{ user(id: "1") { name @skip(if: true) } }').parse
+      op = doc[:definitions].first
+      user_sel = op[:selection_set].first
+      name_sel = user_sel[:selection_set].first
+      expect(name_sel[:directives]).to eq([{ name: "skip", arguments: { "if" => true } }])
+    end
+
+    it "POSITIVE proof: @skip(if: true) OMITS the field" do
+      result = gql.execute('{ user(id: "1") { name email @skip(if: true) } }')
+      expect(result["errors"]).to be_nil
+      expect(result["data"]["user"]).to have_key("name")
+      expect(result["data"]["user"]).not_to have_key("email")
+    end
+
+    it "POSITIVE proof: @include(if: false) OMITS the field" do
+      result = gql.execute('{ user(id: "1") { name email @include(if: false) } }')
+      expect(result["errors"]).to be_nil
+      expect(result["data"]["user"]).to have_key("name")
+      expect(result["data"]["user"]).not_to have_key("email")
+    end
+
+    it "@skip(if: false) KEEPS the field" do
+      result = gql.execute('{ user(id: "1") { name email @skip(if: false) } }')
+      expect(result["data"]["user"]).to have_key("email")
+    end
+
+    it "@include(if: true) KEEPS the field" do
+      result = gql.execute('{ user(id: "1") { name email @include(if: true) } }')
+      expect(result["data"]["user"]).to have_key("email")
+    end
+
+    it "honors a directive with a variable argument" do
+      result = gql.execute(
+        'query($s: Boolean!) { user(id: "1") { name email @skip(if: $s) } }',
+        variables: { "s" => true }
+      )
+      expect(result["data"]["user"]).not_to have_key("email")
     end
   end
 end

@@ -273,6 +273,14 @@ module Tina4
     def process_soap(xml_body)
       on_request(@request)
 
+      # SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message.
+      # Rejecting any DOCTYPE/DTD up front also closes the XML entity-expansion
+      # (billion-laughs) and external-entity (XXE) attack surface — REXML expands
+      # internal entities, so a DTD is a live DoS vector. Reject before parsing.
+      if xml_body =~ /<!DOCTYPE/i
+        return soap_fault("Client", "DOCTYPE declarations are not allowed in SOAP messages")
+      end
+
       begin
         doc = REXML::Document.new(xml_body)
       rescue REXML::ParseException
@@ -309,7 +317,12 @@ module Tina4
         result = send(op_name.to_sym, *meta[:input].keys.map { |k| params[k.to_s] })
         result = on_result(result)
       rescue StandardError => e
-        return soap_fault("Server", e.message)
+        # Log the real cause, but only leak the detail to the client in debug
+        # mode — a resolver exception can carry internal state (DB credentials,
+        # file paths) that must not reach a SOAP client.
+        Tina4::Log.error("WSDL operation '#{op_name}' failed: #{e.message}")
+        detail = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"]) ? e.message : "Internal server error"
+        return soap_fault("Server", detail)
       end
 
       soap_response(op_name, result)
@@ -473,6 +486,11 @@ module Tina4
       end
 
       def handle_soap_request(xml_body)
+        # SOAP 1.1 (§3) forbids a DOCTYPE/DTD. Reject before parsing — this
+        # closes the REXML internal-entity expansion (billion-laughs) and XXE
+        # surface. Mirrors the class-based process_soap path.
+        return _soap_fault("DOCTYPE declarations are not allowed in SOAP messages") if xml_body =~ /<!DOCTYPE/i
+
         doc = REXML::Document.new(xml_body)
 
         # Find Body element (namespace-agnostic)
@@ -500,7 +518,12 @@ module Tina4
         # Build SOAP response
         _build_soap_response(op_name, result)
       rescue StandardError => e
-        _soap_fault(e.message)
+        # Mask the real cause in production (parity with process_soap) — a
+        # handler exception can carry internal state that must not reach a
+        # SOAP client. Detail is logged; only surfaced under TINA4_DEBUG.
+        Tina4::Log.error("WSDL operation '#{op_name}' failed: #{e.message}")
+        detail = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"]) ? e.message : "Internal server error"
+        _soap_fault(detail)
       end
 
       private
