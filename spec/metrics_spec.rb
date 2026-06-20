@@ -324,5 +324,32 @@ RSpec.describe Tina4::Metrics do
     it "returns false when no matching test exists" do
       expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/nonexistent.rb")).to eq(false)
     end
+
+    # Regression (mirrors the Python master fix): a file whose only distinctive
+    # top-level constant is <= 3 chars (e.g. `class ORM`) used to be mislabelled
+    # UNTESTED because the defined-constant gate excluded names of length <= 3.
+    # A spec referencing `Tina4::ORM` must mark orm.rb tested via the constant
+    # signal — even with NO dedicated <module>_spec.rb filename match.
+    it "detects a 3-char constant (ORM) referenced by a spec" do
+      # Source file: only distinctive constant is the 3-char ORM.
+      create_file("lib/tina4/orm.rb", <<~RUBY)
+        module Tina4
+          class ORM
+            def save; end
+          end
+        end
+      RUBY
+      # Spec references the constant but does NOT match the filename pattern
+      # (no orm_spec.rb / orm_test.rb / test_orm.rb) and does NOT require it.
+      create_file("spec/persistence_spec.rb", <<~RUBY)
+        it "saves" do
+          record = Tina4::ORM.new
+          record.save
+        end
+      RUBY
+
+      expect(Tina4::Metrics.send(:_defined_constants, "lib/tina4/orm.rb")).to include("ORM")
+      expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/orm.rb")).to eq(true)
+    end
   end
 end

@@ -649,7 +649,10 @@ module Tina4
 
     # Top-level class/module names defined in the file at rel_path (resolved
     # against the last scan root when present). Distinctive names only:
-    # leading-uppercase, longer than 3 chars.
+    # leading-uppercase, longer than 2 chars — so genuine 3-char constants like
+    # ORM (orm.rb) and API (api.rb), which specs reference as `Tina4::ORM` /
+    # `Tina4::API`, are detected as tested instead of being mislabelled
+    # untested. (Was > 3, which silently excluded every 3-char constant.)
     def self._defined_constants(rel_path)
       src_file = if @last_scan_root && !@last_scan_root.empty? && !File.exist?(rel_path)
                    File.join(@last_scan_root, rel_path)
@@ -667,7 +670,7 @@ module Tina4
         m = stripped.match(/\A(?:class|module)\s+([A-Z][A-Za-z0-9_]*)/)
         next unless m
         const = m[1]
-        symbols.add(const) if const.length > 3
+        symbols.add(const) if const.length > 2
       end
       symbols
     end
