@@ -20,8 +20,11 @@ module Tina4
           @table_name = name
         else
           base = self.name.split("::").last.downcase
-          # Pluralize by default (add "s") unless ORM_PLURAL_TABLE_NAMES is explicitly disabled
-          unless ENV.fetch("TINA4_ORM_PLURAL_TABLE_NAMES", "").match?(/\A(false|0|no)\z/i)
+          # Pluralization is OFF by default (canonical, matching the Python
+          # master): the table name is the bare class name lowercased. Opt in by
+          # setting TINA4_ORM_PLURAL_TABLE_NAMES to a truthy value (true/1/yes/on)
+          # to append "s".
+          if ENV.fetch("TINA4_ORM_PLURAL_TABLE_NAMES", "").match?(/\A(true|1|yes|on)\z/i)
             base += "s" unless base.end_with?("s")
           end
           @table_name || base

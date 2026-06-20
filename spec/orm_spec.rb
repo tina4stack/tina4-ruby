@@ -2,8 +2,14 @@
 
 require "spec_helper"
 
-# Define a test model
+# Define a test model.
+#
+# Pluralization is OFF by default (canonical, v3.13.39), so "TestUser" would map
+# to the bare table "testuser". This model and its specs use the "testusers"
+# table, so set the table name explicitly rather than relying on the (now
+# removed) auto-pluralization default.
 class TestUser < Tina4::ORM
+  table_name "testusers"
   integer_field :id, primary_key: true, auto_increment: true
   string_field :name, nullable: false
   string_field :email, length: 255
@@ -36,8 +42,17 @@ RSpec.describe Tina4::ORM do
       expect(TestUser.primary_key_field).to eq(:id)
     end
 
-    it "auto-generates table name" do
+    it "uses the explicitly set table name" do
       expect(TestUser.table_name).to eq("testusers")
+    end
+
+    it "auto-generates a NON-pluralized table name by default (v3.13.39)" do
+      model = Class.new(Tina4::ORM) do
+        def self.name
+          "Gadget"
+        end
+      end
+      expect(model.table_name).to eq("gadget")
     end
 
     it "sets default values" do

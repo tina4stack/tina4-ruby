@@ -3,7 +3,10 @@
 require "spec_helper"
 
 # Test model with soft delete
+# Pluralization is OFF by default (v3.13.39), so these fixtures pin their table
+# names explicitly to the plural tables the specs create below.
 class SoftDeleteUser < Tina4::ORM
+  table_name "softdeleteusers"
   self.soft_delete = true
   self.soft_delete_field = :is_deleted
 
@@ -15,6 +18,7 @@ end
 
 # Test model with field mapping
 class MappedUser < Tina4::ORM
+  table_name "mappedusers"
   self.field_mapping = { "user_name" => "name", "user_email" => "email" }
 
   integer_field :id, primary_key: true, auto_increment: true
@@ -24,6 +28,7 @@ end
 
 # Models for relationship testing
 class Author < Tina4::ORM
+  table_name "authors"
   integer_field :id, primary_key: true, auto_increment: true
   string_field :name, nullable: false
 
@@ -32,6 +37,7 @@ class Author < Tina4::ORM
 end
 
 class Book < Tina4::ORM
+  table_name "books"
   integer_field :id, primary_key: true, auto_increment: true
   string_field :title, nullable: false
   integer_field :author_id

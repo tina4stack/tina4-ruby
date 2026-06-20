@@ -255,6 +255,17 @@ module Tina4
         end
       end
 
+      # Autocommit is ON by default — parity with Python/PHP/Node. A standalone
+      # write (execute/insert/update/delete made OUTSIDE an explicit
+      # start_transaction()/commit() block) commits on its own connection before
+      # returning, so a write actually persists. An UNSET TINA4_AUTOCOMMIT is
+      # treated as TRUE; set TINA4_AUTOCOMMIT=false for strict manual mode (every
+      # write needs an explicit commit). Inside an explicit transaction the
+      # framework-issued commit is suppressed (gated on the thread tx-pin), so
+      # explicit transactions stay atomic. Mirrors Python's
+      # DatabaseAdapter._autocommit ("true"/"1"/"yes", default "true").
+      @autocommit = truthy?(ENV.fetch("TINA4_AUTOCOMMIT", "true"))
+
       # Register this connection so Tina4::Database.reset_request_caches can
       # clear its request-scoped entries at the start of every HTTP request.
       Tina4::Database.register_instance(self)
@@ -282,10 +293,11 @@ module Tina4
       @driver.connect(@connection_string, username: @username, password: @password)
       @connected = true
 
-      # Enable autocommit if TINA4_AUTOCOMMIT env var is set
-      if truthy?(ENV["TINA4_AUTOCOMMIT"]) && @driver.respond_to?(:autocommit=)
-        @driver.autocommit = true
-      end
+      # Push the resolved autocommit setting down to the driver when it exposes a
+      # native toggle (default ON — see @autocommit in #initialize). The
+      # framework-level commit in #autocommit_standalone_write covers drivers
+      # that have no native setter.
+      @driver.autocommit = @autocommit if @driver.respond_to?(:autocommit=)
 
       Tina4::Log.info("Database connected: #{@driver_name}")
     rescue => e
@@ -488,7 +500,9 @@ module Tina4
       placeholders = drv.placeholders(columns.length)
       sql = "INSERT INTO #{table} (#{columns.join(', ')}) VALUES (#{placeholders})"
       drv.execute(sql, data.values)
-      { success: true, last_id: drv.last_insert_id }
+      last_id = drv.last_insert_id
+      autocommit_standalone_write(drv)
+      { success: true, last_id: last_id }
     end
 
     def update(table, data, filter = {}, params = nil)
@@ -501,6 +515,7 @@ module Tina4
         sql = "UPDATE #{table} SET #{set_parts.join(', ')}"
         sql += " WHERE #{filter}" unless filter.empty?
         drv.execute(sql, data.values + Array(params))
+        autocommit_standalone_write(drv)
         return { success: true }
       end
 
@@ -510,6 +525,7 @@ module Tina4
       sql += " WHERE #{where_parts.join(' AND ')}" unless filter.empty?
       values = data.values + filter.values
       drv.execute(sql, values)
+      autocommit_standalone_write(drv)
       { success: true }
     end
 
@@ -528,6 +544,7 @@ module Tina4
         sql = "DELETE FROM #{table}"
         sql += " WHERE #{filter}" unless filter.empty?
         drv.execute(sql, Array(params))
+        autocommit_standalone_write(drv)
         return { success: true }
       end
 
@@ -536,6 +553,7 @@ module Tina4
       sql = "DELETE FROM #{table}"
       sql += " WHERE #{where_parts.join(' AND ')}" unless filter.empty?
       drv.execute(sql, filter.values)
+      autocommit_standalone_write(drv)
       { success: true }
     end
 
@@ -582,8 +600,10 @@ module Tina4
     # or a clean { error: } payload respectively.
     def execute(sql, params = [])
       cache_invalidate if @cache_enabled
-      result = current_driver.execute(sql, params)
+      drv = current_driver
+      result = drv.execute(sql, params)
       @last_error = nil
+      autocommit_standalone_write(drv)
       sql_upper = sql.strip.upcase
       if sql_upper.include?("RETURNING") || sql_upper.start_with?("CALL ") ||
          sql_upper.start_with?("EXEC ") || sql_upper.start_with?("SELECT ")
@@ -1102,6 +1122,31 @@ module Tina4
 
     def truthy?(val)
       %w[true 1 yes on].include?((val || "").to_s.strip.downcase)
+    end
+
+    # Durability: commit a standalone write so it actually persists.
+    #
+    # Called after a write (execute/insert/update/delete) issued OUTSIDE an
+    # explicit transaction. The commit is suppressed when autocommit is off
+    # (TINA4_AUTOCOMMIT=false, strict manual mode) OR when a transaction is open
+    # on this thread (the thread tx-pin is set) — so an explicit
+    # start_transaction()/commit() block stays atomic and is never broken up by
+    # a per-statement commit. A commit with no transaction in progress is a
+    # harmless no-op on every engine (SQLite swallows the specific
+    # "no transaction is active" error in its driver; PostgreSQL/MySQL/MSSQL emit
+    # at most a benign warning), so this never raises in the common case. Mirrors
+    # the `not self._in_transaction and self.autocommit` gate in the Python
+    # master and PHP's `autoCommit && transaction === null`.
+    def autocommit_standalone_write(drv)
+      return unless @autocommit
+      return unless Thread.current[@tx_pin_key].nil?
+
+      drv.commit
+    rescue StandardError => e
+      # A standalone write already succeeded; a follow-up commit failure here
+      # must not mask that. Capture for #get_error and log, but don't raise.
+      @last_error = e.message
+      Tina4::Log.warning("autocommit commit after standalone write failed: #{e.message}")
     end
 
     # "persistent" / "request" / "off" — mirrors Python connection.py.
