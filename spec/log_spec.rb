@@ -435,23 +435,94 @@ RSpec.describe Tina4::Log do
       end
     end
 
-    # Ruby's Log has no critical() method and no critical toggle (the
-    # @critical ivar is TINA4_LOG_CRITICAL = "raise on file-write failure",
-    # a different concept). So "critical" is a parity alias evaluated at
-    # ERROR severity — it tracks error visibility.
-    it "treats critical as error severity (parity alias)" do
+    # critical is a FIRST-CLASS top-level severity (4 — above error 3), not a
+    # parity alias for error. Ordinary threshold logic applies: critical
+    # passes at every TINA4_LOG_LEVEL except `none` (5). The none case is the
+    # regression test for the NONE-bump (none had to move 4 -> 5 so critical 4
+    # does NOT slip through at TINA4_LOG_LEVEL=none).
+    it "treats critical as a first-class top-level severity" do
       ENV["TINA4_LOG_LEVEL"] = "info"
       Tina4::Log.configure(tmpdir)
-      expect(Tina4::Log.enabled?("critical")).to eq(Tina4::Log.enabled?("error"))
+      expect(Tina4::Log.enabled?("critical")).to be true
       expect(Tina4::Log.enabled?(:critical)).to be true
 
       ENV["TINA4_LOG_LEVEL"] = "error"
       Tina4::Log.configure(tmpdir)
+      # critical (4) outranks error (3), so it stays enabled at the error gate.
       expect(Tina4::Log.enabled?("critical")).to be true
 
+      ENV["TINA4_LOG_LEVEL"] = "critical"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("critical")).to be true
+      expect(Tina4::Log.enabled?("error")).to be false
+
+      # NONE-bump regression: critical is silenced ONLY by `none` (5).
       ENV["TINA4_LOG_LEVEL"] = "none"
       Tina4::Log.configure(tmpdir)
       expect(Tina4::Log.enabled?("critical")).to be false
+    end
+
+    it "verifies the full severity ladder ALL/DEBUG=0 .. CRITICAL=4 .. NONE=5" do
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_ALL]"]).to eq(0)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_DEBUG]"]).to eq(0)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_INFO]"]).to eq(1)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_WARNING]"]).to eq(2)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_ERROR]"]).to eq(3)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_CRITICAL]"]).to eq(4)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_NONE]"]).to eq(5)
+      expect(Tina4::Log::SEVERITY_MAP[:critical]).to eq(4)
+    end
+
+    it "resolves TINA4_LOG_LEVEL=critical to 4" do
+      ENV["TINA4_LOG_LEVEL"] = "critical"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.send(:resolve_level)).to eq(4)
+    end
+  end
+
+  # critical() is a first-class log method — it ALWAYS emits (subject only to
+  # the threshold, which it passes at every level except none). The old
+  # TINA4_LOG_CRITICAL "enable critical()" opt-in toggle is gone: a critical
+  # log must never be a silent no-op. Mirrors the Python master.
+  describe ".critical (first-class top level)" do
+    around do |example|
+      saved = ENV["TINA4_LOG_LEVEL"]
+      example.run
+      saved.nil? ? ENV.delete("TINA4_LOG_LEVEL") : ENV["TINA4_LOG_LEVEL"] = saved
+    end
+
+    it "responds to .critical" do
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log).to respond_to(:critical)
+    end
+
+    it "ALWAYS writes a critical entry to the log file (no opt-in toggle)" do
+      ENV.delete("TINA4_LOG_LEVEL") # default INFO
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.critical("meltdown imminent")
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("meltdown imminent")
+      expect(log_content).to include("CRITICAL")
+    end
+
+    it "still writes critical to the file at the error threshold (4 >= 3)" do
+      ENV["TINA4_LOG_LEVEL"] = "error"
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.critical("critical at error gate")
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("critical at error gate")
+    end
+
+    it "does not raise when logging critical" do
+      Tina4::Log.configure(tmpdir)
+      expect { Tina4::Log.critical("safe") }.not_to raise_error
+    end
+
+    it "renders critical in magenta on the console" do
+      Tina4::Log.configure(tmpdir)
+      line = Tina4::Log.send(:colorize, :critical, "boom")
+      expect(line).to start_with(Tina4::Log::COLORS[:magenta])
+      expect(line).to end_with(Tina4::Log::COLORS[:reset])
     end
   end
 

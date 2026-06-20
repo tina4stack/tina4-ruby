@@ -670,8 +670,11 @@ Tina4::Log.info(message, *args)
 Tina4::Log.debug(message, *args)
 Tina4::Log.warning(message, *args)
 Tina4::Log.error(message, *args)
-Tina4::Log.enabled?(level) -> Boolean  # would a message at `level` pass the console TINA4_LOG_LEVEL? (String/Symbol, case-insensitive; reflects CONSOLE visibility only — the file records every level). "critical" is a parity alias evaluated at error severity.
-# Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], etc.
+Tina4::Log.critical(message, *args)  # HIGHEST severity (4, above error 3) — first-class, ALWAYS emits (subject only to the threshold); renders magenta. No opt-in toggle.
+Tina4::Log.enabled?(level) -> Boolean  # would a message at `level` pass the console TINA4_LOG_LEVEL? (String/Symbol, case-insensitive; reflects CONSOLE visibility only — the file records every level). "critical" is a first-class top level (severity 4), not an error alias — it passes at every threshold except none.
+# Severity ladder: debug(0) < info(1) < warning(2) < error(3) < critical(4); none = 5 (silences all).
+# Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], [TINA4_LOG_CRITICAL], etc.
+# TINA4_LOG_STRICT=true raises on a log-write failure (renamed from TINA4_LOG_CRITICAL in v3.13.39).
 # Tina4::Debug is a backward-compat alias for Tina4::Log
 ```
 

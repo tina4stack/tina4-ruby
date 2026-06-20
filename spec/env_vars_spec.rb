@@ -226,13 +226,17 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
     end
   end
 
-  describe "TINA4_LOG_CRITICAL" do
+  # TINA4_LOG_STRICT — the raise-on-write-failure flag. Renamed from the
+  # old TINA4_LOG_CRITICAL in v3.13.39 to free that env var: `critical` is now
+  # a first-class log LEVEL, not a write-failure toggle (Python-master parity).
+  describe "TINA4_LOG_STRICT" do
     it "defaults to false (silent on write failure)" do
       Dir.mktmpdir do |dir|
-        with_env("TINA4_LOG_CRITICAL" => nil) do
+        with_env("TINA4_LOG_STRICT" => nil) do
           Tina4::Log.configure(dir)
           # Silent — no exception.
           expect { Tina4::Log.info("ok") }.not_to raise_error
+          expect(Tina4::Log.instance_variable_get(:@strict)).to be false
         end
         Tina4::Log.close_file_logger
       end
@@ -240,12 +244,50 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
 
     it "is read as true when set" do
       Dir.mktmpdir do |dir|
-        with_env("TINA4_LOG_CRITICAL" => "true") do
+        with_env("TINA4_LOG_STRICT" => "true") do
           Tina4::Log.configure(dir)
-          # truthy? helper inside Log is private — confirm via behaviour:
-          # set @critical to true and a write_to_file IOError would propagate.
-          # We just confirm configure doesn't raise & the writer is set.
-          expect(Tina4::Log.instance_variable_get(:@critical)).to be true
+          # truthy? helper inside Log is private — confirm via the ivar:
+          # @strict true means a write_to_file IOError would propagate.
+          expect(Tina4::Log.instance_variable_get(:@strict)).to be true
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    it "raises on a log-write failure when strict, swallows when not" do
+      Dir.mktmpdir do |dir|
+        # strict ON: a write failure propagates.
+        with_env("TINA4_LOG_STRICT" => "true") do
+          Tina4::Log.configure(dir)
+          allow(Tina4::Log.instance_variable_get(:@file_logger))
+            .to receive(:<<).and_raise(IOError.new("disk full"))
+          expect { Tina4::Log.info("boom") }.to raise_error(IOError)
+        end
+        Tina4::Log.close_file_logger
+      end
+
+      Dir.mktmpdir do |dir|
+        # strict OFF: the same failure is swallowed.
+        with_env("TINA4_LOG_STRICT" => nil) do
+          Tina4::Log.configure(dir)
+          allow(Tina4::Log.instance_variable_get(:@file_logger))
+            .to receive(:<<).and_raise(IOError.new("disk full"))
+          expect { Tina4::Log.info("boom") }.not_to raise_error
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    it "TINA4_LOG_CRITICAL no longer controls strict write behaviour" do
+      Dir.mktmpdir do |dir|
+        # The retired env var must NOT flip @strict — it is now a no-op for
+        # write-failure handling (it no longer exists as a toggle).
+        with_env("TINA4_LOG_CRITICAL" => "true", "TINA4_LOG_STRICT" => nil) do
+          Tina4::Log.configure(dir)
+          expect(Tina4::Log.instance_variable_get(:@strict)).to be false
+          allow(Tina4::Log.instance_variable_get(:@file_logger))
+            .to receive(:<<).and_raise(IOError.new("disk full"))
+          expect { Tina4::Log.info("boom") }.not_to raise_error
         end
         Tina4::Log.close_file_logger
       end

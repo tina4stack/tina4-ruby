@@ -12,11 +12,12 @@ module Tina4
       "[TINA4_LOG_INFO]" => 1,
       "[TINA4_LOG_WARNING]" => 2,
       "[TINA4_LOG_ERROR]" => 3,
-      "[TINA4_LOG_NONE]" => 4
+      "[TINA4_LOG_CRITICAL]" => 4,
+      "[TINA4_LOG_NONE]" => 5
     }.freeze
 
     SEVERITY_MAP = {
-      debug: 0, info: 1, warn: 2, error: 3
+      debug: 0, info: 1, warn: 2, error: 3, critical: 4
     }.freeze
 
     COLORS = {
@@ -72,8 +73,8 @@ module Tina4
           @output = "both"
         end
 
-        # TINA4_LOG_CRITICAL — when true, raise on log write failures instead of swallowing.
-        @critical = truthy?(ENV["TINA4_LOG_CRITICAL"])
+        # TINA4_LOG_STRICT — when true, raise on log write failures instead of swallowing.
+        @strict = truthy?(ENV["TINA4_LOG_STRICT"])
 
         @console_level = resolve_level
         @request_id = nil
@@ -134,10 +135,10 @@ module Tina4
       # SEVERITY_MAP / resolve_level — it never re-implements level
       # comparison, so it can never disagree with what the logger prints.
       #
-      # "critical" is accepted for cross-framework parity (Python has a
-      # critical level) and is evaluated at ERROR severity. Ruby's Log has
-      # no critical() method and no critical toggle, so unlike Python there
-      # is nothing extra to gate on — it simply mirrors error visibility.
+      # "critical" is a FIRST-CLASS top-level severity (4 — above error 3),
+      # not a parity alias for error. It is evaluated with ordinary threshold
+      # logic (critical 4 >= @console_level), so it passes at every level
+      # except none (5) — matching the Python master.
       def enabled?(level)
         sym = normalize_level(level)
         severity = SEVERITY_MAP[sym] || 0
@@ -158,6 +159,14 @@ module Tina4
 
       def error(message, context = {})
         log(:error, message, context)
+      end
+
+      # critical is the HIGHEST severity (4, above error). Like every other
+      # level it ALWAYS emits, subject only to the TINA4_LOG_LEVEL threshold
+      # (which critical passes at every level except none). A critical log is
+      # never a silent no-op. Mirrors the Python master.
+      def critical(message, context = {})
+        log(:critical, message, context)
       end
 
       # Test/teardown helper — closes the underlying Logger so the file
@@ -213,14 +222,14 @@ module Tina4
 
       # Map a level (String or Symbol, case-insensitive) onto the symbol
       # space used by SEVERITY_MAP. Accepts the public method names
-      # (debug/info/warning/error) and the internal :warn symbol, plus
-      # "critical" (parity alias → error severity). Unknown levels fall
-      # through to their own symbol and resolve to severity 0 in `enabled?`.
+      # (debug/info/warning/error/critical) and the internal :warn symbol.
+      # critical is a FIRST-CLASS level (severity 4), not an alias for error.
+      # Unknown levels fall through to their own symbol and resolve to
+      # severity 0 in `enabled?`.
       def normalize_level(level)
         sym = level.to_s.strip.downcase.to_sym
         case sym
         when :warning then :warn
-        when :critical then :error
         else sym
         end
       end
@@ -243,6 +252,7 @@ module Tina4
         when :info  then "INFO"
         when :warn  then "WARNING"
         when :error then "ERROR"
+        when :critical then "CRITICAL"
         else level.to_s.upcase
         end
       end
@@ -322,6 +332,7 @@ module Tina4
                 when :info    then COLORS[:green]
                 when :warn    then COLORS[:yellow]
                 when :error   then COLORS[:red]
+                when :critical then COLORS[:magenta]
                 else COLORS[:reset]
                 end
         "#{color}#{line}#{COLORS[:reset]}"
@@ -332,7 +343,7 @@ module Tina4
         # Use << to bypass Logger's severity filtering — we already filtered above.
         @file_logger << "#{line}\n"
       rescue IOError, SystemCallError => e
-        raise if @critical
+        raise if @strict
         # Don't crash on log write failure
       end
     end
