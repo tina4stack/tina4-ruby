@@ -648,6 +648,19 @@ migration.status -> Array
 migration.create(name) -> String
 ```
 
+**Auto-run on startup (`TINA4_AUTO_MIGRATE`, default on).** When a `migrations/`
+folder (or `src/migrations/`) exists with at least one `.sql` file, boot
+(`initialize!` → `run!`, after route discovery / DB bind, before serving) calls
+`Tina4.auto_migrate_on_startup!` to apply pending migrations — no manual
+`tina4ruby migrate` step. It is **non-breaking**: a failure (a raise from the
+runner, or a recorded `failed` migration) is logged (`Tina4::Log.error`) and the
+service still starts (a bad migration must never take the backend down — the
+hook never re-raises). Set `TINA4_AUTO_MIGRATE=false` (also `0`/`no`/`off`) to
+disable — e.g. multi-instance production that migrates as a separate deploy step
+(concurrent first-apply can race). The explicit `tina4ruby migrate` CLI is
+unaffected and stays **fail-fast** (a failed migration → non-zero exit) so CI
+keeps the exit code.
+
 ### Auth — JWT authentication & password hashing
 
 ```ruby
