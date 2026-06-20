@@ -650,13 +650,16 @@ module Tina4
           body = read_json_body(env) || {}
           json_response(mcp_tool_call(body))
         # JSON-RPC + SSE endpoints that real MCP clients (Claude Code/Desktop)
-        # speak. Mounted on the same dispatch as the REST shim above and gated
-        # on the same enabled? (TINA4_DEBUG) check, so disabled → 404. They
+        # speak. The dev tools expose powerful ops (DB query, file read/WRITE,
+        # route listing), so beyond the dev-toolbar's TINA4_DEBUG check they are
+        # gated on Tina4.mcp_enabled? — explicit TINA4_MCP wins on any host, else
+        # dev auto-enable is LOCALHOST-ONLY unless TINA4_MCP_REMOTE=true. Not
+        # enabled → falls through to the `else` (nil), so RackApp 404s it. They
         # share the default MCP server's tool registry with the REST shim.
         when ["POST", "/__dev/mcp"], ["POST", "/__dev/mcp/message"]
-          mcp_jsonrpc(env)
+          Tina4.mcp_enabled? ? mcp_jsonrpc(env) : nil
         when ["GET", "/__dev/mcp/sse"]
-          mcp_sse_handshake
+          Tina4.mcp_enabled? ? mcp_sse_handshake : nil
         when ["GET", "/__dev/api/scaffold"]
           json_response(scaffold_templates)
         when ["POST", "/__dev/api/scaffold/run"]

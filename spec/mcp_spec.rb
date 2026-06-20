@@ -363,6 +363,62 @@ RSpec.describe "Tina4 MCP" do
     end
   end
 
+  # ── Enable gate (TINA4_MCP / TINA4_DEBUG / localhost / TINA4_MCP_REMOTE) ──
+  #
+  # Mirrors the Python master's is_enabled() matrix
+  # (tina4_python/mcp/__init__.py). The MCP dev tools expose powerful ops
+  # (DB query, file read/WRITE, route list), so dev auto-enable is
+  # localhost-only unless explicitly opted into remote, and an explicit
+  # TINA4_MCP wins on ANY host (sysadmin opt-in/out).
+  describe "Tina4.mcp_enabled?" do
+    around(:each) do |example|
+      saved = %w[TINA4_MCP TINA4_DEBUG TINA4_HOST_NAME TINA4_MCP_REMOTE]
+              .each_with_object({}) { |k, h| h[k] = ENV[k] }
+      saved.each_key { |k| ENV.delete(k) }
+      example.run
+      saved.each { |k, v| v.nil? ? ENV.delete(k) : (ENV[k] = v) }
+    end
+
+    it "explicit TINA4_MCP=true wins on a remote, debug-off host" do
+      ENV["TINA4_MCP"] = "true"
+      ENV["TINA4_DEBUG"] = "false"
+      ENV["TINA4_HOST_NAME"] = "myserver.example.com:7145"
+      expect(Tina4.mcp_enabled?).to be true
+    end
+
+    it "explicit TINA4_MCP=false wins even on debug localhost" do
+      ENV["TINA4_MCP"] = "false"
+      ENV["TINA4_DEBUG"] = "true"
+      ENV["TINA4_HOST_NAME"] = "localhost:7145"
+      expect(Tina4.mcp_enabled?).to be false
+    end
+
+    it "is off when TINA4_DEBUG is not truthy and TINA4_MCP unset" do
+      ENV["TINA4_DEBUG"] = "false"
+      ENV["TINA4_HOST_NAME"] = "localhost:7145"
+      expect(Tina4.mcp_enabled?).to be false
+    end
+
+    it "dev auto-enables on localhost when TINA4_DEBUG=true" do
+      ENV["TINA4_DEBUG"] = "true"
+      ENV["TINA4_HOST_NAME"] = "localhost:7145"
+      expect(Tina4.mcp_enabled?).to be true
+    end
+
+    it "does NOT auto-enable on a remote host even with TINA4_DEBUG=true" do
+      ENV["TINA4_DEBUG"] = "true"
+      ENV["TINA4_HOST_NAME"] = "myserver.example.com:7145"
+      expect(Tina4.mcp_enabled?).to be false
+    end
+
+    it "TINA4_MCP_REMOTE=true opens the remote host under TINA4_DEBUG=true" do
+      ENV["TINA4_DEBUG"] = "true"
+      ENV["TINA4_HOST_NAME"] = "myserver.example.com:7145"
+      ENV["TINA4_MCP_REMOTE"] = "true"
+      expect(Tina4.mcp_enabled?).to be true
+    end
+  end
+
   # ── File sandbox ──────────────────────────────────────────────
 
   describe "File sandbox" do
