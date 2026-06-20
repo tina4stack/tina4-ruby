@@ -702,8 +702,61 @@ module Tina4
       imports
     end
 
-    def self._extract_functions(source, tokens, lines)
+    # Replace the CONTENT of Ruby string literals, regex literals, and comments
+    # with neutral spaces — keeping every line's length and the line count
+    # identical to the original — so decision-point keywords and method-shaped
+    # text that live INSIDE strings/comments are never miscounted. Returns an
+    # array of cleaned lines (chomped) aligned 1:1 with the original lines.
+    #
+    # Ruby's own lexer (Ripper) does the hard parsing: it tags string/heredoc/
+    # regex bodies as :on_tstring_content (and :on_comment, :on_embdoc — the
+    # =begin/=end block-comment body), which we blank out positionally. The
+    # surrounding code structure (def/if/end keywords, operators) is left intact.
+    NOISE_TOKEN_TYPES = %i[
+      on_tstring_content on_comment on_embdoc on_embdoc_beg on_embdoc_end
+    ].freeze
+
+    def self._clean_source(source)
+      lines = source.lines.map(&:chomp)
+      # Mutable per-line character buffers we can blank out by column range.
+      buffers = lines.map(&:dup)
+
+      tokens = begin
+        Ripper.lex(source)
+      rescue StandardError
+        return lines
+      end
+
+      tokens.each do |(pos, type, token)|
+        next unless NOISE_TOKEN_TYPES.include?(type)
+
+        row = pos[0] - 1
+        col = pos[1]
+        # A noise token may span multiple physical lines (heredocs, block
+        # comments, multi-line strings). Blank each covered line segment.
+        token.to_s.each_line.with_index do |seg, offset|
+          line_idx = row + offset
+          next if line_idx.negative? || line_idx >= buffers.length
+
+          buf = buffers[line_idx]
+          # On the token's first line the content starts at `col`; on
+          # continuation lines it starts at column 0.
+          start = offset.zero? ? col : 0
+          seg_len = seg.chomp.length
+          stop = [start + seg_len, buf.length].min
+          (start...stop).each { |c| buf[c] = ' ' } if stop > start
+        end
+      end
+
+      buffers
+    end
+
+    def self._extract_functions(source, _tokens, _lines)
       functions = []
+      # Operate on a neutralised copy: string/regex/comment CONTENT is blanked
+      # so keywords inside them are never read as real code (line numbers, line
+      # count and column widths are preserved).
+      lines = _clean_source(source)
       # Track class/module nesting for method names
       context_stack = []
       i = 0
@@ -718,7 +771,8 @@ module Tina4
           context_stack.push(class_name) unless class_name.empty?
         end
 
-        # Detect method definitions
+        # Detect method definitions — require a real `def ` declaration so a
+        # `def`-shaped substring inside a (now-blanked) string is never a method.
         if stripped.match?(/\Adef\s+/)
           method_match = stripped.match(/\Adef\s+(self\.)?(\S+?)(\(.*\))?\s*$/)
           if method_match
@@ -779,41 +833,71 @@ module Tina4
       functions
     end
 
+    # Keywords that ALWAYS open a block needing a matching `end`.
+    BLOCK_OPENERS = %w[def class module begin case].freeze
+    # Keywords that open a block ONLY in statement-leading position; in trailing
+    # position they are modifiers (`return x if y`) and need no `end`.
+    CONDITIONAL_OPENERS = %w[if unless while until for].freeze
+
+    # Find the line index where the method that starts at `start_index` ends.
+    #
+    # Token-driven (Ripper) so it is immune to the line-regex footguns that made
+    # this over-run to end-of-file (CC 496 on tiny methods):
+    #   * `self.class` — `class` after a `.` is an identifier, not a block opener
+    #     (Ripper tags it :on_ident), so it no longer bumps depth.
+    #   * modifier `if/unless/while/until/for` (`return x if y`) — only counted
+    #     as an opener in statement-LEADING position (first real token of a
+    #     statement), never trailing.
+    #   * `lines` are already string/comment-cleaned, so keywords inside string
+    #     bodies are gone too.
+    # Falls back to the last line only if no matching `end` is found.
     def self._find_method_end(lines, start_index)
+      source = lines[start_index..].join("\n")
+      tokens = begin
+        Ripper.lex(source)
+      rescue StandardError
+        return lines.length - 1
+      end
+
       depth = 0
-      i = start_index
-      base_indent = lines[i].length - lines[i].lstrip.length
+      # A keyword is a block opener only when it leads a statement. Track that:
+      # we are at statement start initially and right after a newline / `;`.
+      at_statement_start = true
+      seen_opener = false
 
-      while i < lines.length
-        stripped = lines[i].strip
-
-        unless stripped.empty? || stripped.start_with?('#')
-          # Count block openers
-          if stripped.match?(/\b(def|class|module|if|unless|case|while|until|for|begin|do)\b/) &&
-             !stripped.match?(/\bend\b/) &&
-             !stripped.end_with?(' if ', ' unless ', ' while ', ' until ') &&
-             !(stripped.match?(/\bif\b|\bunless\b|\bwhile\b|\buntil\b/) && i != start_index && _is_modifier?(stripped))
+      tokens.each do |(pos, type, token)|
+        case type
+        when :on_kw
+          if BLOCK_OPENERS.include?(token)
             depth += 1
-          end
-
-          if stripped == 'end' || stripped.start_with?('end ') || stripped.start_with?('end;')
+            seen_opener = true
+          elsif token == 'do'
+            depth += 1
+            seen_opener = true
+          elsif CONDITIONAL_OPENERS.include?(token)
+            # Leading => real block opener; trailing => modifier (no end).
+            if at_statement_start
+              depth += 1
+              seen_opener = true
+            end
+          elsif token == 'end'
             depth -= 1
-            return i if depth <= 0
+            if seen_opener && depth <= 0
+              return start_index + (pos[0] - 1)
+            end
           end
+          at_statement_start = false
+        when :on_nl, :on_ignored_nl, :on_semicolon
+          at_statement_start = true
+        when :on_sp, :on_comment, :on_embdoc, :on_embdoc_beg, :on_embdoc_end
+          # whitespace/comments don't change statement-start state
+        else
+          at_statement_start = false
         end
-
-        i += 1
       end
 
       # If we never found the end, return last line
       lines.length - 1
-    end
-
-    def self._is_modifier?(line)
-      # A rough check: if the keyword is not at the start of the meaningful content,
-      # it's likely a modifier (e.g., "return x if condition")
-      stripped = line.strip
-      !stripped.match?(/\A(if|unless|while|until)\b/)
     end
 
     def self._cyclomatic_complexity_from_source(source)

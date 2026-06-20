@@ -758,6 +758,22 @@ RSpec.describe Tina4::DevMailbox do
   end
 
   describe "#seed" do
+    # Isolation: these examples assert on the contents of THIS mailbox only.
+    # The flake (observed under the full randomized suite, e.g. --seed 24846,
+    # green in isolation) was cross-spec contamination of the shared DevAdmin
+    # mailbox singleton / a leaked TINA4_MAILBOX_DIR env override leaking a
+    # foreign default-dir mailbox into a later read. spec_helper now resets the
+    # singleton + scrubs the env after every example; this local hook makes the
+    # affected specs self-defending too (resets BEFORE they run regardless of
+    # ordering), and the count assertion below stops a contaminated/empty read
+    # from passing vacuously.
+    before(:each) do
+      if defined?(Tina4::DevAdmin) && Tina4::DevAdmin.respond_to?(:reset_singletons!)
+        Tina4::DevAdmin.reset_singletons!
+      end
+      ENV.delete("TINA4_MAILBOX_DIR")
+    end
+
     it "creates seeded messages" do
       mailbox.seed(count: 3)
       expect(mailbox.inbox.length).to eq(3)
@@ -765,7 +781,11 @@ RSpec.describe Tina4::DevMailbox do
 
     it "creates messages with subjects" do
       mailbox.seed(count: 2)
-      mailbox.inbox.each do |msg|
+      messages = mailbox.inbox
+      # Guard against a vacuous pass / contaminated read: the count must match
+      # exactly what we just seeded into THIS mailbox.
+      expect(messages.length).to eq(2)
+      messages.each do |msg|
         expect(msg[:subject]).to be_a(String)
         expect(msg[:subject]).not_to be_empty
       end

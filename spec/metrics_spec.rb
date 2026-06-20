@@ -175,6 +175,136 @@ RSpec.describe Tina4::Metrics do
     end
   end
 
+  # Lock-in for the cyclomatic-complexity / method-extraction accuracy fix
+  # (mirrors the Python AST analyzer's intent: count REAL branches only, never
+  # text inside string/regex/comment literals). Before the fix, decision-point
+  # keywords inside strings/comments inflated CC and the method-end finder ran
+  # past the real `end` (tiny methods reported CC ~496).
+  describe "complexity accuracy (strings/comments/regex are neutralised)" do
+    def detail_for(content)
+      path = create_file("src/sample.rb", content)
+      Tina4::Metrics.file_detail(path)
+    end
+
+    def func(detail, name_suffix)
+      detail["functions"].find { |f| f["name"].end_with?(name_suffix) }
+    end
+
+    it "ignores && / || / if that live inside a STRING literal" do
+      detail = detail_for(<<~RUBY)
+        class Calc
+          def describe_rules
+            msg = "use if a && b || c and if d || e while running"
+            msg
+          end
+        end
+      RUBY
+      f = func(detail, "describe_rules")
+      # 1 real branch path only (no decision points) -> CC 1, not inflated.
+      expect(f["complexity"]).to eq(1)
+      expect(f["loc"]).to eq(4)
+    end
+
+    it "ignores decision keywords inside a COMMENT" do
+      detail = detail_for(<<~RUBY)
+        class Calc
+          def plain
+            # if this && that || other, while looping unless stopped
+            42
+          end
+        end
+      RUBY
+      f = func(detail, "plain")
+      expect(f["complexity"]).to eq(1)
+    end
+
+    it "ignores keywords inside a REGEX literal and a heredoc" do
+      detail = detail_for(<<~'RUBY')
+        class Calc
+          def scan
+            re = /if|while|unless|&&|\|\|/
+            doc = <<~TXT
+              if a && b
+              while c || d
+            TXT
+            [re, doc]
+          end
+        end
+      RUBY
+      f = func(detail, "scan")
+      expect(f["complexity"]).to eq(1)
+    end
+
+    it "does NOT extract a method-shaped substring inside a string" do
+      detail = detail_for(<<~RUBY)
+        class Holder
+          def real_method
+            snippet = "def fake_method(x); something(x); end"
+            snippet
+          end
+        end
+      RUBY
+      names = detail["functions"].map { |f| f["name"] }
+      expect(names).to include("Holder.real_method")
+      expect(names).not_to include("Holder.fake_method")
+      # A bare `something(...)` call inside a string is never a method either.
+      expect(names.none? { |n| n.include?("fake_method") }).to be true
+      expect(detail["functions"].length).to eq(1)
+    end
+
+    it "does NOT over-run the method end on `self.class` (regression: CC ~496)" do
+      detail = detail_for(<<~RUBY)
+        class Registry
+          def add_thing(name, &blk)
+            self.class.add_thing(name, &blk)
+            @things[name.to_s] = blk
+            self
+          end
+
+          def add_other(name, value)
+            self.class.add_other(name, value)
+            @others[name.to_s] = value
+            self
+          end
+        end
+      RUBY
+      add_thing = func(detail, "add_thing")
+      expect(add_thing["complexity"]).to eq(1)
+      expect(add_thing["loc"]).to eq(5)
+      # Both methods are still detected as separate functions.
+      expect(detail["functions"].map { |f| f["name"] }).to contain_exactly(
+        "Registry.add_thing", "Registry.add_other"
+      )
+    end
+
+    it "still reports HIGH complexity for a genuinely branchy method (no real loss)" do
+      detail = detail_for(<<~RUBY)
+        class Decider
+          def classify(a, b, c, d)
+            if a && b
+              return 1
+            elsif c || d
+              return 2
+            end
+            case a
+            when 1 then 10
+            when 2 then 20
+            else
+              30
+            end
+            x = a > 0 ? b : c
+            d.times { |i| puts i if i.even? }
+            x
+          end
+        end
+      RUBY
+      f = func(detail, "classify")
+      # if(1) + && (1) + elsif (1) + || (1) + when*2 (2) + ternary (1)
+      # + the `if` modifier inside the block (1) = well above 5.
+      expect(f["complexity"]).to be >= 8
+    end
+  end
+
   describe "._has_matching_test" do
     it "finds spec files in spec/ directory" do
       create_file("spec/router_spec.rb", "# test\n")

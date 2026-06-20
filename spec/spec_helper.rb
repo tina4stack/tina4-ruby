@@ -43,5 +43,18 @@ RSpec.configure do |config|
     # ServiceRunner.list.first sees a stale entry instead of its own. Reproduces
     # under seed 27302 with the full suite; passes in isolation.
     Tina4::ServiceRunner.clear! if defined?(Tina4::ServiceRunner) && Tina4::ServiceRunner.respond_to?(:clear!)
+    # DevAdmin lazily memoizes process-wide singletons (message_log,
+    # request_inspector, mailbox, error_tracker). The mailbox in particular
+    # resolves its dir from TINA4_MAILBOX_DIR / data/mailbox AT CONSTRUCTION, so
+    # a singleton built in one spec must not leak captured state (or a stale
+    # dir) into a later spec. This made DevMailbox#seed flaky under the full
+    # randomized suite (e.g. --seed 24846): a contaminating spec left the shared
+    # singleton (or a TINA4_MAILBOX_DIR override) in place, so a later mailbox
+    # read surfaced foreign messages instead of its own. Reset the singletons
+    # AND scrub the env override after every example (parity with the Frond /
+    # ServiceRunner resets above; Python uses an autouse fixture for the same
+    # isolation).
+    Tina4::DevAdmin.reset_singletons! if defined?(Tina4::DevAdmin) && Tina4::DevAdmin.respond_to?(:reset_singletons!)
+    ENV.delete("TINA4_MAILBOX_DIR") if ENV.key?("TINA4_MAILBOX_DIR")
   end
 end

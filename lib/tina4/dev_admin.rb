@@ -312,6 +312,19 @@ module Tina4
         @error_tracker ||= ErrorTracker.new
       end
 
+      # Drop the lazily-memoized dev singletons so the next access rebuilds
+      # them from the CURRENT environment. The mailbox in particular resolves
+      # its directory from `TINA4_MAILBOX_DIR`/`data/mailbox` at construction
+      # time, so a singleton built under one env must not leak into a later
+      # caller (or test) running under a different env. Safe to call anytime —
+      # it only nils the caches.
+      def reset_singletons!
+        @message_log = nil
+        @request_inspector = nil
+        @mailbox = nil
+        @error_tracker = nil
+      end
+
       def enabled?
         Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
       end
