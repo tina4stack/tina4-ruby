@@ -564,6 +564,8 @@ eq(5)`) still holds while `summary.seeded` / `summary.failed` / `summary.errors`
 
 ### Api — External HTTP client
 
+`Tina4::API.new(..., verify_ssl: false)` now actually disables TLS verification (it was a stored-but-unused kwarg before — `verify_ssl: false` silently did nothing). Opt-in retry/backoff: `max_retries:` (default `0` = off) + `retry_backoff:` (default `0.5`s base, exponential) — retries a transport error (`status == 0`) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in). Ruby's `Net::HTTP` doesn't auto-follow redirects, so there's no cross-host Authorization-leak surface (the redirect auth-strip is Python-only).
+
 ```ruby
 api = Tina4::Api.new("https://api.example.com", headers: {}, timeout: 30)
 api.get(path, params: {}) -> ApiResponse
