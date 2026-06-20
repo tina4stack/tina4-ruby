@@ -5,6 +5,23 @@ require "spec_helper"
 RSpec.describe Tina4::Log do
   let(:tmpdir) { Dir.mktmpdir }
 
+  # v3.13.39: the default log output is now dev-gated — with TINA4_LOG_OUTPUT
+  # unset the log FILE is written ONLY when TINA4_DEBUG is truthy (dev). In a
+  # bare test env (no TINA4_DEBUG) the default is stdout-only, so every example
+  # here that reads logs/tina4.log would otherwise find no file. Pin
+  # TINA4_DEBUG=true for the whole block so these existing file-output assertions
+  # run in "development" — mirrors how the Python master pins TINA4_DEBUG=true in
+  # its test_log autouse fixture. The dedicated default-output behaviour (prod =
+  # no file, dev = file, explicit-output wins) is covered in its own block below
+  # which manages TINA4_DEBUG itself.
+  around do |example|
+    saved = ENV.key?("TINA4_DEBUG") ? ENV["TINA4_DEBUG"] : :__unset__
+    ENV["TINA4_DEBUG"] = "true"
+    example.run
+  ensure
+    saved == :__unset__ ? ENV.delete("TINA4_DEBUG") : ENV["TINA4_DEBUG"] = saved
+  end
+
   after { FileUtils.rm_rf(tmpdir) }
 
   describe ".setup" do

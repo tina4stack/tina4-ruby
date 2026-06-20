@@ -675,6 +675,11 @@ Tina4::Log.enabled?(level) -> Boolean  # would a message at `level` pass the con
 # Severity ladder: debug(0) < info(1) < warning(2) < error(3) < critical(4); none = 5 (silences all).
 # Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], [TINA4_LOG_CRITICAL], etc.
 # TINA4_LOG_STRICT=true raises on a log-write failure (renamed from TINA4_LOG_CRITICAL in v3.13.39).
+# TINA4_LOG_OUTPUT (stdout|file|both) — stdout is ALWAYS on. When UNSET the log FILE is
+#   dev-gated: written only in development (TINA4_DEBUG truthy); production/containers are
+#   stdout-only (NO file — a container log file bloats the writable layer; 12-factor wants stdout).
+#   An explicit TINA4_LOG_OUTPUT=file/both OR an explicit TINA4_LOG_FILE path always wins and forces
+#   a file regardless of TINA4_DEBUG. Mirrors the Python master (v3.13.39).
 # Tina4::Debug is a backward-compat alias for Tina4::Log
 ```
 

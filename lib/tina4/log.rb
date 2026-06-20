@@ -66,12 +66,33 @@ module Tina4
         @format = format_env && !format_env.empty? ? format_env.downcase : (production? ? "json" : "text")
         @json_mode = @format == "json"
 
-        # TINA4_LOG_OUTPUT — "stdout", "file", or "both". Defaults to "both".
+        # TINA4_LOG_OUTPUT — "stdout", "file", or "both".
+        #
+        # Default (UNSET): stdout is ALWAYS on. The log FILE (tina4.log + any
+        # error log) is written ONLY in development — i.e. when TINA4_DEBUG is
+        # truthy. In production / containers (TINA4_DEBUG falsy) the logger is
+        # stdout-only: writing a log file inside a container just bloats the
+        # writable layer + disk, and 12-factor wants logs on stdout for the
+        # platform to capture. An explicit TINA4_LOG_OUTPUT=file/both (or an
+        # explicit TINA4_LOG_FILE path) overrides this and STILL writes a file.
+        # Mirrors the Python master (debug/__init__.py configure()).
+        # An explicit TINA4_LOG_FILE always wins: a path the operator named must
+        # be written even in production (parity with the Python master, where an
+        # explicit log_file builds a writer unconditionally), so the dev-gated
+        # default below resolves to "both" (stdout + file) rather than "stdout".
+        explicit_file = !(log_file_env.nil? || log_file_env.empty?)
+        default_output = if explicit_file || truthy?(ENV["TINA4_DEBUG"])
+                           "both"
+                         else
+                           "stdout"
+                         end
         output_env = ENV["TINA4_LOG_OUTPUT"]
-        @output = output_env && !output_env.empty? ? output_env.downcase : "both"
-        unless %w[stdout file both].include?(@output)
-          @output = "both"
-        end
+        @output = if output_env && !output_env.empty?
+                    output_env.downcase
+                  else
+                    default_output
+                  end
+        @output = default_output unless %w[stdout file both].include?(@output)
 
         # TINA4_LOG_STRICT — when true, raise on log write failures instead of swallowing.
         @strict = truthy?(ENV["TINA4_LOG_STRICT"])
