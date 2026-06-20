@@ -383,9 +383,17 @@ module Tina4
       Tina4::Router.group(prefix, auth_handler: auth, &block)
     end
 
-    # WebSocket route registration
-    def websocket(path, &block)
-      Tina4::Router.websocket(path, &block)
+    # WebSocket route registration. PUBLIC by default (mirrors GET). Pass
+    # secure: true OR chain .secure on the returned route to require a valid JWT
+    # on the upgrade.
+    def websocket(path, secure: false, &block)
+      Tina4::Router.websocket(path, secure: secure, &block)
+    end
+
+    # Register a SECURED WebSocket route — declarative sibling of
+    # Tina4.websocket(...).secure, mirroring secure_get/secure_post.
+    def secure_websocket(path, &block)
+      Tina4::Router.secure_websocket(path, &block)
     end
 
     # Middleware hooks

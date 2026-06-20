@@ -214,13 +214,31 @@ module Tina4
   # A registered WebSocket route with path pattern matching (reuses Route's compile logic)
   class WebSocketRoute
     attr_reader :path, :handler, :path_regex, :param_names
+    # PUBLIC by default (mirrors GET). Flip to true with #secure (or via
+    # Tina4.secure_websocket) to require a valid JWT on the upgrade. Mirrors the
+    # HTTP Route's auth_required so the upgrade path enforces it identically.
+    attr_accessor :auth_required
 
-    def initialize(path, handler)
+    def initialize(path, handler, auth_required: false)
       @path = normalize_path(path).freeze
       @handler = handler
+      @auth_required = auth_required
       @param_names = []
       @path_regex = compile_pattern(@path)
       @param_names.freeze
+    end
+
+    # Mark this WebSocket route as requiring bearer-token auth on the upgrade.
+    # Returns self for chaining: Tina4::Router.websocket("/chat") { ... }.secure
+    def secure
+      @auth_required = true
+      self
+    end
+
+    # Opt back out (the default). Returns self for chaining.
+    def no_auth
+      @auth_required = false
+      self
     end
 
     # Returns params hash if matched, false otherwise
@@ -295,11 +313,23 @@ module Tina4
       #   connection — WebSocketConnection with #send, #broadcast, #close, #params
       #   event      — :open, :message, or :close
       #   data       — String payload for :message, nil for :open/:close
-      def websocket(path, &block)
-        ws_route = WebSocketRoute.new(path, block)
+      #
+      # PUBLIC by default (mirrors GET). Pass secure: true (the declarative way)
+      # OR chain .secure on the returned route (the imperative way) to require a
+      # valid JWT on the upgrade — both set the same auth_required flag, exactly
+      # like the HTTP routes support both a decorator/docblock and .secure.
+      def websocket(path, secure: false, &block)
+        ws_route = WebSocketRoute.new(path, block, auth_required: secure)
         ws_routes << ws_route
-        Tina4::Log.debug("WebSocket route registered: #{path}")
+        Tina4::Log.debug("WebSocket route registered: #{path}#{secure ? ' (secured)' : ''}")
         ws_route
+      end
+
+      # Register a SECURED WebSocket route (auth required on the upgrade). The
+      # declarative sibling of Tina4::Router.websocket(...).secure — mirrors the
+      # secure_get/secure_post pair for HTTP routes.
+      def secure_websocket(path, &block)
+        websocket(path, secure: true, &block)
       end
 
       # Find a matching WebSocket route for a given path.

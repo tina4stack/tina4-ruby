@@ -920,7 +920,12 @@ module Tina4
         Tina4::Log.error("WebSocket error on #{ws_route.path}: #{error.message}")
       end
 
-      ws.handle_upgrade(env, socket, manager: manager)
+      # Per-route auth on the upgrade: a secured WS route (auth_required) needs a
+      # valid JWT or the handshake is rejected (401, not accepted) by
+      # handle_upgrade — after the origin allow-list, before the handshake. The
+      # dev-reload channel is always public.
+      auth_required = !dev_reload && ws_route.respond_to?(:auth_required) && ws_route.auth_required
+      ws.handle_upgrade(env, socket, manager: manager, auth_required: auth_required)
 
       # Return async response (-1 signals Rack the response is handled via hijack)
       [-1, {}, []]
