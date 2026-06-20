@@ -661,6 +661,37 @@ disable — e.g. multi-instance production that migrates as a separate deploy st
 unaffected and stays **fail-fast** (a failed migration → non-zero exit) so CI
 keeps the exit code.
 
+**How migrations work internally.**
+
+- SQL/Ruby files live in the `migrations/` (or `src/migrations/`) folder, named
+  `NNNNNN_description.sql` (sequential) or `YYYYMMDDHHMMSS_description.sql`
+  (timestamp). Files are discovered in **numeric-prefix order** (`9_` before
+  `10_`) via a numeric-aware sort key — a plain lexical sort misorders unpadded
+  prefixes. A file with no numeric/timestamp prefix logs a **WARNING** (its order
+  relative to numbered files is undefined) and sorts after them. SQL is split on
+  the `;` delimiter; `$$ … $$` / `// … //` stored-proc blocks are kept intact (a
+  `://` URL literal is NOT mistaken for a `//` block).
+- State is tracked by **ROW EXISTENCE** in the `tina4_migration` table
+  (auto-created per engine, `migration_name` UNIQUE): a migration runs once — if
+  a success row exists it is skipped. **Failures are never written** (no
+  `passed = 0` row), nothing is deleted; the file rolls back and the failure is
+  surfaced (a `failed` result entry; the explicit `tina4ruby migrate` CLI exits
+  non-zero). A vestigial `passed` column exists for back-compat, but only applied
+  rows (`passed = 1`) are ever written. Already-applied files stay applied — fix
+  the bad file and re-run.
+- **Each migration FILE is wrapped in its own transaction** (`start_transaction`
+  / `commit`, `rollback` on error). On a failure the file rolls back as a unit.
+- **Atomicity caveat:** the per-file transaction is truly atomic only on engines
+  with **transactional DDL (PostgreSQL)**. MySQL, Firebird, and SQLite
+  auto-commit DDL, so a multi-statement migration that fails midway on those
+  engines leaves earlier statements applied — keep one logical change per file.
+- **Idempotency on engines lacking `IF NOT EXISTS`:** on Firebird, `ALTER TABLE
+  … ADD <column>` is existence-checked against `RDB$RELATION_FIELDS`; on Firebird
+  AND MSSQL, a raw `CREATE TABLE` is skipped when the table already exists
+  (`table_exists?`), so a re-run doesn't error object-already-exists.
+  SQLite/MySQL/PostgreSQL support `IF NOT EXISTS` and are left to the engine.
+  Only a genuine already-exists is skipped — every other error still raises.
+
 ### Auth — JWT authentication & password hashing
 
 ```ruby

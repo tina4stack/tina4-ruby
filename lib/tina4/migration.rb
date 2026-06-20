@@ -179,10 +179,12 @@ module Tina4
           rescue
             # Generator may already exist
           end
+          # migration_name is UNIQUE: a migration is "applied" iff a success row
+          # exists, so a re-applied name must never duplicate a tracking row.
           @db.execute(<<~SQL)
             CREATE TABLE #{TRACKING_TABLE} (
               id INTEGER NOT NULL PRIMARY KEY,
-              migration_name VARCHAR(500) NOT NULL,
+              migration_name VARCHAR(500) NOT NULL UNIQUE,
               description VARCHAR(500) DEFAULT '',
               batch INTEGER NOT NULL DEFAULT 1,
               executed_at VARCHAR(50) DEFAULT CURRENT_TIMESTAMP,
@@ -190,10 +192,12 @@ module Tina4
             )
           SQL
         else
+          # migration_name is UNIQUE: a migration is "applied" iff a success row
+          # exists, so a re-applied name must never duplicate a tracking row.
           @db.execute(<<~SQL)
             CREATE TABLE #{TRACKING_TABLE} (
               id INTEGER PRIMARY KEY,
-              migration_name VARCHAR(255) NOT NULL,
+              migration_name VARCHAR(255) NOT NULL UNIQUE,
               description VARCHAR(255) DEFAULT '',
               batch INTEGER NOT NULL DEFAULT 1,
               executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -224,22 +228,37 @@ module Tina4
       return [] unless Dir.exist?(@migrations_dir)
 
       completed = completed_migrations
-      # Support both .rb and .sql migration files
-      # Accept both 000001_name.sql (sequential) and YYYYMMDDHHMMSS_name.sql (timestamp) patterns
-      Dir.glob(File.join(@migrations_dir, "*.{rb,sql}"))
-         .reject { |f| f.end_with?(".down.sql") }
-         .sort_by { |f| migration_sort_key(File.basename(f)) }
-         .reject { |f| completed.include?(File.basename(f)) }
+      # Support both .rb and .sql migration files. Accept both 000001_name.sql
+      # (sequential) and YYYYMMDDHHMMSS_name.sql (timestamp) patterns. Sort by a
+      # leading numeric/timestamp prefix (numeric-aware) so `9_*` applies before
+      # `10_*` — a plain lexical sort misorders unpadded prefixes ("10" < "9").
+      # Files with no numeric prefix sort after the numbered ones, lexically.
+      files = Dir.glob(File.join(@migrations_dir, "*.{rb,sql}"))
+                 .reject { |f| f.end_with?(".down.sql") }
+                 .sort_by { |f| migration_sort_key(File.basename(f)) }
+
+      # Warn about filenames without a recognized NNNNNN_/timestamp prefix —
+      # their ordering relative to numbered migrations is undefined, a silent
+      # out-of-order-apply footgun.
+      unprefixed = files.map { |f| File.basename(f) }.reject { |n| n =~ /\A\d+[_-]/ }
+      unless unprefixed.empty?
+        Tina4::Log.warning(
+          "Migration file(s) without a numeric/timestamp prefix may apply out of order: " +
+          unprefixed.join(", ")
+        )
+      end
+
+      files.reject { |f| completed.include?(File.basename(f)) }
     end
 
-    # Sort key that handles both 000001_name.sql and 20240315120000_name.sql patterns.
-    # Both are zero-padded numeric prefixes so alphabetical sorting works, but we
-    # extract the prefix explicitly to guarantee correct ordering when mixed.
+    # Numeric-aware sort key so `9_name.sql` sorts before `10_name.sql` (plain
+    # lexical sort puts "10" before "9"). Files with a leading numeric/timestamp
+    # prefix sort first by that number; the rest sort after, lexically.
     def migration_sort_key(filename)
       if filename =~ /\A(\d+)/
-        [$1.to_i, filename]
+        [0, $1.to_i, filename]
       else
-        [0, filename]
+        [1, 0, filename]
       end
     end
 
@@ -247,16 +266,27 @@ module Tina4
       name = File.basename(file)
       Tina4::Log.info("Running migration: #{name}")
       begin
+        # Wrap each migration FILE in its own transaction so a multi-statement
+        # file that fails midway rolls back as a unit. Truly atomic only on
+        # engines with transactional DDL (PostgreSQL); MySQL/Firebird/SQLite
+        # auto-commit DDL, so earlier statements may persist there — keep one
+        # logical change per file.
+        @db.start_transaction
         if file.end_with?(".rb")
           execute_ruby_migration(file, :up)
         else
           execute_sql_file(file)
         end
+        # ROW-EXISTENCE tracking: only a SUCCESS row is ever written. A
+        # migration is "applied" iff a success row exists — failures are never
+        # recorded, nothing is deleted, the file rolls back and we surface the
+        # error. Fix the bad file and re-run.
         _record_migration(name, batch, passed: 1)
+        @db.commit
         { name: name, status: "success" }
       rescue => e
+        @db.rollback rescue nil
         Tina4::Log.error("Migration failed: #{name} - #{e.message}")
-        _record_migration(name, batch, passed: 0)
         { name: name, status: "failed", error: e.message }
       end
     end
@@ -311,8 +341,12 @@ module Tina4
         "__BLOCK_#{blocks.length - 1}__"
       end
 
-      # Extract // ... // blocks
-      processed = processed.gsub(/\/\/(.*?)\/\//m) do
+      # Extract // ... // blocks (stored procedures, triggers, etc.). The `//`
+      # delimiters must NOT be preceded by a colon, so a URL scheme
+      # (`https://…`) or other `://` literal inside a migration is never
+      # captured as an opaque stored-proc block (it would otherwise swallow
+      # everything between two `//` occurrences and skip statement splitting).
+      processed = processed.gsub(/(?<!:)\/\/(.*?)(?<!:)\/\//m) do
         blocks << $~.to_s
         "__BLOCK_#{blocks.length - 1}__"
       end
@@ -348,10 +382,11 @@ module Tina4
       sql = File.read(file)
       statements = split_sql_statements(sql)
       statements.each do |stmt|
-        # Firebird lacks IF NOT EXISTS for ALTER TABLE ADD.
-        # Pre-check the system catalogue so duplicate columns are
-        # silently skipped instead of raising an error.
-        skip_reason = should_skip_for_firebird(stmt)
+        # Idempotency on engines lacking IF NOT EXISTS: Firebird ALTER-TABLE-ADD
+        # (pre-check the system catalogue for a duplicate column), and CREATE
+        # TABLE on Firebird/MSSQL (pre-check the table exists). Only a genuine
+        # already-exists is skipped — every other error still raises.
+        skip_reason = should_skip_for_firebird(stmt) || should_skip_create_table(stmt)
         if skip_reason
           Tina4::Log.info("Migration #{File.basename(file)}: #{skip_reason}")
           next
@@ -396,6 +431,34 @@ module Tina4
       if firebird_column_exists?(table, column)
         "Column #{column} already exists in #{table}, skipping"
       end
+    end
+
+    # CREATE TABLE <name> — name may be quoted ("x"), bracketed ([x] MSSQL), or bare.
+    CREATE_TABLE_RE = /\A\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|\[([^\]]+)\]|(\w+))/i
+
+    # Make CREATE TABLE idempotent on engines lacking IF NOT EXISTS.
+    #
+    # Firebird and MSSQL do not support `CREATE TABLE IF NOT EXISTS`, so a raw
+    # CREATE in a re-run migration raises "object already exists". When the
+    # target table already exists on those engines, returns a skip reason so the
+    # statement is skipped (mirrors the Firebird ALTER-TABLE-ADD idempotency
+    # guard). SQLite/MySQL/PostgreSQL support IF NOT EXISTS and are left to the
+    # engine. Only a genuine already-exists is skipped — every other error still
+    # raises. Returns nil if the statement should execute normally.
+    def should_skip_create_table(stmt)
+      engine = @db.get_database_type rescue nil
+      return nil unless %w[firebird mssql].include?(engine)
+
+      m = stmt.match(CREATE_TABLE_RE)
+      return nil unless m
+
+      table = m[1] || m[2] || m[3]
+      begin
+        return "Table #{table} already exists, skipping CREATE TABLE" if @db.table_exists?(table)
+      rescue
+        return nil
+      end
+      nil
     end
 
     def _record_migration(name, batch, passed: 1)
