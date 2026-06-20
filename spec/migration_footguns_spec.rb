@@ -49,6 +49,29 @@ RSpec.describe "Tina4::Migration footguns" do
     end
   end
 
+  # ── smart/curly quotes normalized so the SQL runs ───────────────────────
+
+  describe "smart/curly quotes normalized before split" do
+    it "normalizes smart quotes before splitting so the statement runs" do
+      # Smart double quotes around an identifier + smart single quotes around a
+      # value — as an editor/doc would produce. They must become straight ASCII
+      # so the statement actually runs.
+      sql = "CREATE TABLE “users” (name TEXT DEFAULT ‘guest’);"
+      joined = migration.send(:split_sql_statements, sql, ";").join(" ")
+      ["“", "”", "‘", "’", "′", "″"].each do |smart|
+        expect(joined).not_to include(smart), "smart quote #{smart.inspect} survived"
+      end
+      expect(joined).to include('"users"')
+      expect(joined).to include("'guest'")
+    end
+
+    it "leaves a plain statement with straight quotes unchanged" do
+      # Straight quotes and ordinary apostrophe-free content are untouched.
+      sql = "INSERT INTO t (v) VALUES ('plain');"
+      expect(migration.send(:normalize_quotes, sql)).to eq(sql)
+    end
+  end
+
   # ── [8] numeric-aware discovery order ───────────────────────────────────
 
   describe "migration_sort_key is numeric-aware" do

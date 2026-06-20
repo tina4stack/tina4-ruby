@@ -326,6 +326,26 @@ module Tina4
       migration.__send__(direction, @db)
     end
 
+    # Smart/curly quotes — editors, word processors, docs and chat apps silently
+    # convert a straight " to “ ” and a straight ' to ‘ ’ (plus primes ′ ″). Those
+    # characters are NOT valid SQL string/identifier delimiters, so a pasted-in
+    # migration fails to run ("syntax error near …"). Map them back to straight
+    # ASCII quotes. (Real string CONTENTS are unaffected by intent — we only swap
+    # the lookalike code points for their ASCII equivalents.)
+    SMART_QUOTES = {
+      "“" => '"', "”" => '"', "„" => '"', "‟" => '"', "″" => '"', # “ ” „ ‟ ″
+      "‘" => "'", "’" => "'", "‚" => "'", "‛" => "'", "′" => "'"  # ‘ ’ ‚ ‛ ′
+    }.freeze
+    SMART_QUOTE_RE = Regexp.union(SMART_QUOTES.keys)
+
+    # Replace smart/curly quotes with straight ASCII quotes so migration SQL
+    # authored or pasted from an editor/doc actually runs (those code points are
+    # not valid SQL delimiters). Already-straight quotes and ordinary content are
+    # returned byte-for-byte unchanged.
+    def normalize_quotes(sql)
+      sql.gsub(SMART_QUOTE_RE, SMART_QUOTES)
+    end
+
     # Split SQL into individual statements, handling:
     # - $$ delimited stored procedure blocks
     # - // delimited blocks
@@ -333,6 +353,10 @@ module Tina4
     # - Line comments -- ...
     # Matches the Python/Node.js approach: extract blocks first, split on ;, restore blocks.
     def split_sql_statements(sql, delimiter = ";")
+      # Normalize smart/curly quotes to straight ASCII first, so SQL pasted from
+      # an editor/doc (which converts " → “ ” and ' → ‘ ’) actually runs.
+      sql = normalize_quotes(sql)
+
       blocks = []
 
       # Extract $$ ... $$ blocks (stored procedures, triggers, etc.)
