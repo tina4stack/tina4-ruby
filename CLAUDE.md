@@ -670,6 +670,7 @@ Tina4::Log.info(message, *args)
 Tina4::Log.debug(message, *args)
 Tina4::Log.warning(message, *args)
 Tina4::Log.error(message, *args)
+Tina4::Log.enabled?(level) -> Boolean  # would a message at `level` pass the console TINA4_LOG_LEVEL? (String/Symbol, case-insensitive; reflects CONSOLE visibility only — the file records every level). "critical" is a parity alias evaluated at error severity.
 # Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], etc.
 # Tina4::Debug is a backward-compat alias for Tina4::Log
 ```

@@ -122,6 +122,28 @@ module Tina4
         @json_mode
       end
 
+      # Would a message at `level` pass the configured MINIMUM CONSOLE LEVEL
+      # (TINA4_LOG_LEVEL)? Returns true iff `log` would print it to stdout —
+      # it reflects CONSOLE visibility only. The log FILE records every level
+      # regardless of this threshold, so this never gates file output.
+      #
+      # `level` accepts a String or Symbol and is case-insensitive
+      # ("INFO", :info, "Warning", :warning all work). Mirrors Python's
+      # Log.is_enabled. It REUSES the exact severity >= @console_level
+      # comparison the console branch in `log` uses (line ~167) via
+      # SEVERITY_MAP / resolve_level — it never re-implements level
+      # comparison, so it can never disagree with what the logger prints.
+      #
+      # "critical" is accepted for cross-framework parity (Python has a
+      # critical level) and is evaluated at ERROR severity. Ruby's Log has
+      # no critical() method and no critical toggle, so unlike Python there
+      # is nothing extra to gate on — it simply mirrors error visibility.
+      def enabled?(level)
+        sym = normalize_level(level)
+        severity = SEVERITY_MAP[sym] || 0
+        severity >= console_level
+      end
+
       def info(message, context = {})
         log(:info, message, context)
       end
@@ -179,6 +201,28 @@ module Tina4
         end
 
         @current_context = {}
+      end
+
+      # The current minimum console level as an integer (the same value
+      # the console branch in `log` compares against). Ensures the logger
+      # is configured so `enabled?` works before any log call has run.
+      def console_level
+        configure unless @initialized
+        @console_level
+      end
+
+      # Map a level (String or Symbol, case-insensitive) onto the symbol
+      # space used by SEVERITY_MAP. Accepts the public method names
+      # (debug/info/warning/error) and the internal :warn symbol, plus
+      # "critical" (parity alias → error severity). Unknown levels fall
+      # through to their own symbol and resolve to severity 0 in `enabled?`.
+      def normalize_level(level)
+        sym = level.to_s.strip.downcase.to_sym
+        case sym
+        when :warning then :warn
+        when :critical then :error
+        else sym
+        end
       end
 
       def resolve_level
