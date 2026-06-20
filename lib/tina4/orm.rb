@@ -13,6 +13,26 @@ module Tina4
     name.to_s.gsub(/([A-Z])/) { "_#{$1.downcase}" }.sub(/^_/, "")
   end
 
+  # Singularize a plural relationship name to derive a class name.
+  #
+  # has_many :posts → "Post", has_many :categories → "Category". The old
+  # derivation was a naive sub(/s$/) that turned "categories" into
+  # "Categorie" — a NameError waiting to happen. This handles the common
+  # English plural endings before falling back to stripping a trailing "s".
+  # (When class_name: is passed explicitly, this is never consulted.)
+  def self.singularize(word)
+    s = word.to_s
+    if s =~ /ies\z/i
+      s.sub(/ies\z/i, "y")
+    elsif s =~ /(ss|sh|ch|x|z)es\z/i
+      s.sub(/es\z/i, "")
+    elsif s =~ /s\z/i && s !~ /ss\z/i
+      s.sub(/s\z/i, "")
+    else
+      s
+    end
+  end
+
   class ORM
     include Tina4::FieldTypes
 
@@ -144,7 +164,12 @@ module Tina4
       def has_many(name, class_name: nil, foreign_key: nil)
         relationship_definitions[name] = {
           type: :has_many,
-          class_name: class_name || name.to_s.sub(/s$/, "").split("_").map(&:capitalize).join,
+          # Derive the target class from the (plural) relationship name via a
+          # proper singularizer — "posts" → "Post", "categories" → "Category"
+          # — instead of the naive sub(/s$/) that produced "Categorie". The FK
+          # auto-wire path (foreign_key_field) always passes class_name:
+          # explicitly, so this default only applies to a hand-written has_many.
+          class_name: class_name || Tina4.singularize(name).split("_").map(&:capitalize).join,
           foreign_key: foreign_key
         }
 
@@ -326,9 +351,17 @@ module Tina4
         result[:cnt].to_i
       end
 
+      # Create a new instance, save it, and return it.
+      #
+      # Returns the saved instance on success. v3.13.39: if the underlying #save
+      # fails (validation errors or a driver error), create returns false — it
+      # does NOT hand back a possibly-unsaved instance, so a failed insert can
+      # never masquerade as a success. The failure cause is logged and available
+      # on the (discarded) instance's #get_error via the same path save uses.
+      # Parity with the Python master.
       def create(attributes = {})
         instance = new(attributes)
-        instance.save
+        return false if instance.save == false
         instance
       end
 
@@ -473,6 +506,17 @@ module Tina4
         select_one(sql, [id])
       end
 
+      # Return true if a record with the given primary key exists.
+      #
+      # Cross-framework parity with Python's MyModel.exists(pk_value),
+      # PHP's Model::exists($id), and Node's Model.exists(pk). Honours the
+      # soft-delete filter the same way find_by_id does (it routes through it).
+      # Used by #save to decide INSERT vs UPDATE for natural (non-auto-increment)
+      # primary keys — see the note on #save.
+      def exists(id)
+        !find_by_id(id).nil?
+      end
+
       # Clear the relationship cache on all loaded instances (class-level helper).
       # Useful after bulk operations when you want to force relationship re-loads.
       def clear_rel_cache # -> nil
@@ -536,6 +580,11 @@ module Tina4
     def initialize(attributes = {})
       @persisted = false
       @errors = []
+      # Cause of the most recent failed #save (validation message or DB error).
+      # nil when the most recent save succeeded. Mirrors db.get_error so a caller
+      # that checks `return false unless model.save` can still recover the real
+      # cause via #get_error / #last_error — the failure never vanishes silently.
+      @last_error = nil
       @relationship_cache = {}
       # Accept a JSON object string (parity with Python/PHP/Node):
       #   Widget.new('{"id":1,"name":"alpha"}')
@@ -566,42 +615,137 @@ module Tina4
       end
     end
 
+    # Insert or update. Returns self on success (fluent), false on failure.
+    #
+    # Fails loud, never silent (the same principle db.execute already follows
+    # by raising). On *any* failure path save returns false — keeping the
+    # contract callers rely on (`return false unless model.save`) — but it also
+    # (a) logs the real cause via Tina4::Log.error with model/table context and
+    # (b) records the cause on a retrievable per-model error (#last_error /
+    # #get_error, mirroring db.get_error) plus #errors, so a caller can recover
+    # it after the fact. It never raises and never changes the self/false
+    # return shape. On success it returns self (was `true` pre-v3.13.39 — Ruby
+    # was the sole framework returning a bare boolean here) and clears the
+    # error.
+    #
+    # Two distinct failure paths, both loud:
+    #
+    #   * Validation (v3.13.39): #validate runs FIRST. If it returns errors,
+    #     save records them on @errors + @last_error, logs them, and returns
+    #     false WITHOUT touching the database — an invalid model never reaches
+    #     the driver. (Ruby already enforced validate-on-save; this adds the
+    #     loud log + recoverable last_error to the failure path.)
+    #   * Database (v3.13.39): a driver error (NOT NULL, duplicate PK, missing
+    #     table, …) is rolled back by db.transaction, then captured (db.get_error
+    #     falling back to the exception text) onto @last_error, logged with
+    #     model/table context, and returns false — the cause is no longer
+    #     swallowed silently.
+    #
+    # INSERT vs UPDATE (bug B, parity with the Python master): for a NATURAL
+    # (non-auto-increment) primary key that is set, the decision is made on
+    # whether the ROW EXISTS (via self.class.exists), not on @persisted alone.
+    # Pre-v3.13.39 a re-save of a manually-PK'd record that had @persisted set
+    # would UPDATE — but a freshly built (not-yet-persisted) natural-key record
+    # whose row already existed could double-INSERT, or a `new`-then-`save` of a
+    # natural key would INSERT then a second save UPDATE a phantom. Probing
+    # existence makes the choice correct regardless of @persisted. Auto-increment
+    # PKs keep the legacy @persisted-based decision (a nil PK means "new row,
+    # let the engine assign an id").
     def save
       @errors = []
       @relationship_cache = {} # Clear relationship cache on save
-      validate_fields
-      return false unless @errors.empty?
+
+      # ── validate() is ENFORCED. An invalid model never reaches the driver —
+      # fail loud (record + log), return false. ──
+      validation_errors = validate
+      unless validation_errors.empty?
+        @errors = validation_errors
+        @last_error = validation_errors.join("; ")
+        Tina4::Log.error(
+          "#{self.class.name}.save refused: validation failed — #{@last_error}"
+        )
+        return false
+      end
 
       data = to_db_hash(exclude_nil: true)
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
+      pk_opts = self.class.field_definitions[pk] || {}
+      auto_increment = pk_opts[:auto_increment]
 
-      self.class.db.transaction do |db|
-        if @persisted && pk_value
-          filter = { pk => pk_value }
-          data.delete(pk)
-          # Remove mapped primary key too
-          mapped_pk = self.class.field_mapping[pk.to_s]
-          data.delete(mapped_pk.to_sym) if mapped_pk
-          db.update(self.class.table_name, data, filter)
+      # Decide INSERT vs UPDATE.
+      is_update =
+        if pk_value.nil?
+          false
+        elsif auto_increment
+          # Auto-increment: legacy behaviour — a set PK on a persisted instance
+          # means UPDATE.
+          @persisted ? true : false
         else
-          result = db.insert(self.class.table_name, data)
-          if result[:last_id] && respond_to?("#{pk}=")
-            __send__("#{pk}=", result[:last_id])
+          # Natural key: probe row existence so a re-save never double-inserts
+          # and a first save of a never-seen key still inserts. If the probe
+          # itself fails (e.g. table missing), fall back to INSERT so the caller
+          # sees the real driver error rather than a silent no-op UPDATE.
+          begin
+            self.class.exists(pk_value)
+          rescue StandardError
+            false
           end
-          @persisted = true
         end
+
+      begin
+        self.class.db.transaction do |db|
+          if is_update
+            filter = { pk => pk_value }
+            data.delete(pk)
+            # Remove mapped primary key too
+            mapped_pk = self.class.field_mapping[pk.to_s]
+            data.delete(mapped_pk.to_sym) if mapped_pk
+            db.update(self.class.table_name, data, filter)
+          else
+            result = db.insert(self.class.table_name, data)
+            # Only adopt the engine-assigned id for an auto-increment PK. A
+            # natural-key PK was set by the caller; don't overwrite it with the
+            # driver's last_insert_id (which may be a sequence value that
+            # doesn't apply here).
+            if auto_increment && result[:last_id] && respond_to?("#{pk}=")
+              __send__("#{pk}=", result[:last_id])
+            end
+          end
+        end
+      rescue => e
+        # ── Fail loud, never silent. db.transaction already rolled back and
+        # re-raised. Keep the false return contract, but capture the REAL cause
+        # (prefer db.get_error, which insert/update/execute populate, falling
+        # back to the exception text) on @last_error + @errors so it survives,
+        # and log it with model/table context. ──
+        cause = (self.class.db.get_error rescue nil) || e.message
+        @last_error = cause
+        @errors = [cause]
+        Tina4::Log.error(
+          "#{self.class.name}.save failed for table " \
+          "'#{self.class.table_name}': #{cause}"
+        )
+        return false
       end
-      true
-    rescue => e
-      @errors << e.message
-      false
+
+      @persisted = true
+      @last_error = nil
+      self
     end
 
+    # Delete this record (soft or hard).
+    #
+    # v3.13.39 (bug D): RAISES on a missing primary key, matching #force_delete
+    # (which already raised). Previously delete returned false on a nil PK while
+    # force_delete raised — an inconsistent contract where "couldn't delete" and
+    # "deleted nothing" were indistinguishable on one path but loud on the other.
+    # Both now fail loud: deleting a record with no PK is a programmer error, not
+    # a quiet no-op. Returns true on a successful delete.
     def delete
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
-      return false unless pk_value
+      raise "Cannot delete: no primary key value" unless pk_value
 
       self.class.db.transaction do |db|
         if self.class.soft_delete
@@ -701,6 +845,23 @@ module Tina4
 
     def errors
       @errors
+    end
+
+    # Cause of the most recent failed #save (validation message or DB error),
+    # or nil when the last save succeeded.
+    def last_error
+      @last_error
+    end
+
+    # Return the cause of the most recent failed #save, or nil.
+    #
+    # Mirrors db.get_error. After save returns false — whether from validation
+    # or a driver error — the real cause is retrievable here (and on
+    # #last_error) so a caller using the `return false unless model.save`
+    # contract can still surface it. Cleared to nil on a successful save.
+    # Cross-framework parity with Python/PHP/Node get_error().
+    def get_error
+      @last_error
     end
 
     # Convert to hash using Ruby attribute names.
