@@ -2,7 +2,7 @@
   <img src="https://tina4.com/logo.svg" alt="Tina4" width="200">
 </p>
 <h1 align="center">Tina4 Ruby</h1>
-<h3 align="center">TINA4 — The Intelligent Native Application 4ramework</h3>
+<h3 align="center">TINA4: The Intelligent Native Application 4ramework</h3>
 <p align="center"><em>Simple. Fast. Human. &nbsp;|&nbsp; Built for AI. Built for you.</em></p>
 <p align="center">55 built-in features. Zero runtime dependencies. One require, everything works.</p>
 <p align="center">
@@ -18,7 +18,7 @@
 ## Quick Start
 
 ```bash
-# With the Tina4 CLI (recommended — enables SCSS + live reload)
+# With the Tina4 CLI (recommended, enables SCSS + live reload)
 cargo install tina4    # or grab a binary from https://github.com/tina4stack/tina4/releases
 tina4 init ruby ./my-app
 cd my-app && tina4 serve
@@ -56,12 +56,12 @@ db = Tina4::Database.new("sqlite://app.db")
 | Category | Features |
 |----------|----------|
 | **Core HTTP** (7) | Router with path params (`{id:int}`, `{p:path}`), Server, Request/Response, Middleware pipeline, Static file serving, CORS |
-| **Database** (6) | SQLite, PostgreSQL, MySQL, MSSQL, Firebird — unified adapter, connection pooling, query cache, transactions, race-safe ID generation, SQL dialect translation |
+| **Database** (6) | SQLite, PostgreSQL, MySQL, MSSQL, Firebird: unified adapter, connection pooling, query cache, transactions, race-safe ID generation, SQL dialect translation |
 | **ORM** (7) | Active Record with typed fields, relationships (`has_one`/`has_many`/`belongs_to`), soft delete, QueryBuilder + MongoDB support, Auto-CRUD generator, migrations with rollback |
 | **Auth & Security** (5) | JWT (HS256/RS256), password hashing (PBKDF2-SHA256), API key validation, rate limiting, CSRF form tokens |
 | **Templating** (3) | Frond engine (Twig/Jinja2-compatible, pre-compiled 2.8× faster), SCSS auto-compilation, built-in CSS (~24 KB) |
 | **API & Integration** (5) | HTTP client (zero-dep), GraphQL with ORM auto-schema + GraphiQL IDE, WSDL/SOAP with auto WSDL, WebSocket (RFC 6455) + Redis backplane, MCP server (24 dev tools) |
-| **Background** (3) | Job queue (File/RabbitMQ/Kafka/MongoDB) with priority, delay, retry, dead letters — service runner — event system (on/emit/once/off) |
+| **Background** (3) | Job queue (File/RabbitMQ/Kafka/MongoDB) with priority, delay, retry, dead letters; service runner; event system (on/emit/once/off) |
 | **Data & Storage** (4) | Session (File/Redis/Valkey/MongoDB/DB), response cache (LRU, TTL), seeder + 50+ fake data generators, messenger (SMTP/IMAP) |
 | **Developer Tools** (7) | Dev dashboard (11 tabs), dev toolbar, error overlay (Catppuccin Mocha), dev mailbox, hot reload + CSS hot-reload, code metrics (complexity, coupling, maintainability), AI context installer (7 tools) |
 | **Utilities** (7) | DI container (transient + singleton), HtmlElement builder, inline testing (`@tests` decorator), i18n (6 languages), Swagger/OpenAPI auto-generation, CLI scaffolding (`generate model/route/migration/middleware`), structured logging |
@@ -84,14 +84,14 @@ tina4ruby generate model <name>
 
 ## Performance
 
-Benchmarked with `wrk` — 5,000 requests, 50 concurrent, median of 3 runs:
+Benchmarked with `wrk`: 5,000 requests, 50 concurrent, median of 3 runs:
 
 | Framework | JSON req/s | Deps | Features |
 |-----------|-----------|------|----------|
 | **Tina4 Ruby** | **10,243** | 0 | 55 |
 | Sinatra | 9,548 | 5+ | ~4 |
 
-Tina4 Ruby outperforms Sinatra while delivering **55 features vs ~4** — with zero runtime dependencies.
+Tina4 Ruby outperforms Sinatra while delivering **55 features vs ~4**, with zero runtime dependencies.
 
 **Across all 4 Tina4 implementations:**
 
@@ -105,7 +105,7 @@ Tina4 Ruby outperforms Sinatra while delivering **55 features vs ~4** — with z
 
 ## Cross-Framework Parity
 
-Tina4 ships identical features across four languages — same architecture, same conventions, same 55 features:
+Tina4 ships identical features across four languages: same architecture, same conventions, same 55 features:
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|
