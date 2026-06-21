@@ -42,6 +42,79 @@ module Tina4
     allowed.include?(origin)
   end
 
+  # Extract a bearer token from a WebSocket upgrade handshake.
+  #
+  # Order (mirrors Python's tina4_python.websocket.ws_token):
+  #   1. the Authorization: Bearer <jwt> header (server/CLI/mobile clients)
+  #   2. the Sec-WebSocket-Protocol subprotocol in the form "bearer, <jwt>"
+  #      (the only way a *browser* can pass a token — new WebSocket() cannot set
+  #      headers, but it CAN offer subprotocols)
+  #   3. a ?token=<jwt> query-string param
+  # Returns the token String, or nil.
+  #
+  # +headers+ is a Hash. Lookups are case-insensitive across both the Rack-style
+  # "HTTP_AUTHORIZATION"/"HTTP_SEC_WEBSOCKET_PROTOCOL" keys and plain
+  # "authorization"/"Authorization"/"sec-websocket-protocol" keys so the same
+  # helper serves the rack_app upgrade path and direct callers/tests.
+  def self.ws_token(headers, query_string = "", subprotocol = "")
+    headers ||= {}
+    auth = headers["HTTP_AUTHORIZATION"] || headers["authorization"] || headers["Authorization"] || ""
+    if auth[0, 7].to_s.downcase == "bearer "
+      tok = auth[7..].to_s.strip
+      return tok.empty? ? nil : tok
+    end
+
+    proto = subprotocol.to_s
+    proto = headers["HTTP_SEC_WEBSOCKET_PROTOCOL"] || headers["sec-websocket-protocol"] ||
+            headers["Sec-WebSocket-Protocol"] || "" if proto.empty?
+    parts = proto.to_s.split(",").map(&:strip).reject(&:empty?)
+    if parts.length >= 2 && parts[0].downcase == "bearer"
+      return parts[1].empty? ? nil : parts[1]
+    end
+
+    qs = query_string.to_s
+    qs = headers["QUERY_STRING"].to_s if qs.empty?
+    unless qs.empty?
+      tok = qs.split("&").each_with_object(nil) do |pair, _acc|
+        k, v = pair.split("=", 2)
+        break v if k == "token"
+      end
+      return tok unless tok.nil? || tok.to_s.empty?
+    end
+
+    nil
+  end
+
+  # Per-route WebSocket authentication, checked on the upgrade.
+  #
+  # A route is secured when it requires auth (the WebSocketRoute's #auth_required
+  # is truthy — set by .secure on the route or by Tina4.secure_websocket). Public
+  # routes (the default) always pass. A secured route needs a valid JWT via the
+  # Authorization header, the "bearer" subprotocol, or ?token=.
+  #
+  # Returns [payload, ok] — the verified token payload (or nil) and whether the
+  # upgrade may proceed. Mirrors Python's ws_authorized.
+  def self.ws_authorized(auth_required, headers, query_string = "", subprotocol = "")
+    return [nil, true] unless auth_required
+
+    token = ws_token(headers, query_string, subprotocol)
+    return [nil, false] unless token
+
+    payload = Tina4::Auth.valid_token(token)
+    [payload, !payload.nil?]
+  end
+
+  # Whether the client offered the "bearer" subprotocol — in which case the
+  # handshake response must echo "bearer" as the accepted subprotocol (browsers
+  # reject a 101 that doesn't echo back a subprotocol they offered).
+  def self.ws_bearer_subprotocol_offered?(headers)
+    headers ||= {}
+    proto = headers["HTTP_SEC_WEBSOCKET_PROTOCOL"] || headers["sec-websocket-protocol"] ||
+            headers["Sec-WebSocket-Protocol"] || ""
+    parts = proto.to_s.split(",").map(&:strip).reject(&:empty?)
+    !parts.empty? && parts[0].downcase == "bearer"
+  end
+
   # Build a WebSocket frame (server→client, never masked).
   def self.build_frame(opcode, data, fin: true)
     first_byte = (fin ? 0x80 : 0x00) | opcode
@@ -451,7 +524,9 @@ module Tina4
     #     conn.on_close   { puts "bye" }
     #   end
     #
-    def self.route(path, &block)
+    # PUBLIC by default (mirrors GET). Pass secure: true to require a valid JWT
+    # on the upgrade (or chain .secure on the returned route).
+    def self.route(path, secure: false, &block)
       @route_handlers ||= {}
       @route_handlers[path] = block
 
@@ -467,7 +542,7 @@ module Tina4
         end
       end
 
-      Tina4::Router.websocket(path, &adapter)
+      Tina4::Router.websocket(path, secure: secure, &adapter)
     end
 
     # Upgrade a raw socket to a WebSocket connection and run its frame loop.
@@ -477,7 +552,7 @@ module Tina4
     # (Rack) mode the rack_app passes a process-wide shared engine here so that
     # broadcasts, rooms and the backplane span every route's connections even
     # though each upgrade keeps its own isolated event handlers on +self+.
-    def handle_upgrade(env, socket, manager: self)
+    def handle_upgrade(env, socket, manager: self, auth_required: false)
       key = env["HTTP_SEC_WEBSOCKET_KEY"]
       return unless key
 
@@ -490,11 +565,30 @@ module Tina4
         return
       end
 
+      # Per-route auth — checked AFTER the origin allow-list and BEFORE we accept
+      # the handshake. A PUBLIC route (the default, mirrors GET) always passes; a
+      # secured route (auth_required) needs a valid JWT via the Authorization
+      # header, the "bearer" subprotocol, or ?token=. Missing/invalid → reject
+      # the upgrade with a 401 (close code 1008 equivalent) and never accept.
+      payload, ok = Tina4.ws_authorized(auth_required, env, env["QUERY_STRING"].to_s)
+      unless ok
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n") rescue nil
+        socket.close rescue nil
+        return
+      end
+
       accept = Tina4.compute_accept_key(key)
+
+      # When the client offered the "bearer" subprotocol (the browser transport,
+      # since new WebSocket() can't set headers), echo "bearer" back as the
+      # accepted subprotocol — browsers reject a 101 that doesn't echo a
+      # subprotocol they offered. Mirrors Python's accept-subprotocol behaviour.
+      subproto_header = Tina4.ws_bearer_subprotocol_offered?(env) ? "Sec-WebSocket-Protocol: bearer\r\n" : ""
 
       response = "HTTP/1.1 101 Switching Protocols\r\n" \
                  "Upgrade: websocket\r\n" \
                  "Connection: Upgrade\r\n" \
+                 "#{subproto_header}" \
                  "Sec-WebSocket-Accept: #{accept}\r\n\r\n"
 
       socket.write(response)
@@ -502,6 +596,9 @@ module Tina4
       conn_id = SecureRandom.hex(16)
       ws_path = env["REQUEST_PATH"] || env["PATH_INFO"] || "/"
       connection = WebSocketConnection.new(conn_id, socket, ws_server: manager, path: ws_path)
+      # Expose the verified token payload on the connection (nil on public
+      # routes). Mirrors Python's connection.auth = payload.
+      connection.auth = payload
       manager.register_connection(connection)
 
       # Start the idle reaper lazily once we actually have a connection (opt-in
@@ -548,7 +645,8 @@ module Tina4
 
   class WebSocketConnection
     attr_reader :id, :rooms, :last_activity
-    attr_accessor :params, :path, :on_message_handler, :on_close_handler, :on_error_handler
+    attr_accessor :params, :path, :on_message_handler, :on_close_handler, :on_error_handler,
+                  :auth
 
     def initialize(id, socket, ws_server: nil, path: "/")
       @id = id
@@ -556,6 +654,9 @@ module Tina4
       @params = {}
       @ws_server = ws_server
       @path = path
+      # Verified JWT payload on a secured WS route, else nil (public route).
+      # Mirrors Python's connection.auth.
+      @auth = nil
       @rooms = Set.new
       @on_message_handler = nil
       @on_close_handler = nil

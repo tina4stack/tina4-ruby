@@ -112,6 +112,8 @@ Tina4.delete(path, swagger_meta: {}, &handler)
 Tina4.any(path, swagger_meta: {}, &handler)
 Tina4.secure_get(path, auth: nil, swagger_meta: {}, &handler)
 Tina4.secure_post(path, auth: nil, swagger_meta: {}, &handler)
+Tina4.websocket(path, secure: false, &handler)        # WS route — PUBLIC by default (mirrors GET)
+Tina4.secure_websocket(path, &handler)                # WS route requiring a valid JWT on the upgrade
 Tina4.group(prefix, auth_handler: nil, &block)
 
 # Direct Router class methods (preferred in v3)
@@ -564,6 +566,8 @@ eq(5)`) still holds while `summary.seeded` / `summary.failed` / `summary.errors`
 
 ### Api — External HTTP client
 
+`Tina4::API.new(..., verify_ssl: false)` now actually disables TLS verification (it was a stored-but-unused kwarg before — `verify_ssl: false` silently did nothing). Opt-in retry/backoff: `max_retries:` (default `0` = off) + `retry_backoff:` (default `0.5`s base, exponential) — retries a transport error (`status == 0`) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in). Ruby's `Net::HTTP` doesn't auto-follow redirects, so there's no cross-host Authorization-leak surface (the redirect auth-strip is Python-only).
+
 ```ruby
 api = Tina4::Api.new("https://api.example.com", headers: {}, timeout: 30)
 api.get(path, params: {}) -> ApiResponse
@@ -644,6 +648,50 @@ migration.status -> Array
 migration.create(name) -> String
 ```
 
+**Auto-run on startup (`TINA4_AUTO_MIGRATE`, default on).** When a `migrations/`
+folder (or `src/migrations/`) exists with at least one `.sql` file, boot
+(`initialize!` → `run!`, after route discovery / DB bind, before serving) calls
+`Tina4.auto_migrate_on_startup!` to apply pending migrations — no manual
+`tina4ruby migrate` step. It is **non-breaking**: a failure (a raise from the
+runner, or a recorded `failed` migration) is logged (`Tina4::Log.error`) and the
+service still starts (a bad migration must never take the backend down — the
+hook never re-raises). Set `TINA4_AUTO_MIGRATE=false` (also `0`/`no`/`off`) to
+disable — e.g. multi-instance production that migrates as a separate deploy step
+(concurrent first-apply can race). The explicit `tina4ruby migrate` CLI is
+unaffected and stays **fail-fast** (a failed migration → non-zero exit) so CI
+keeps the exit code.
+
+**How migrations work internally.**
+
+- SQL/Ruby files live in the `migrations/` (or `src/migrations/`) folder, named
+  `NNNNNN_description.sql` (sequential) or `YYYYMMDDHHMMSS_description.sql`
+  (timestamp). Files are discovered in **numeric-prefix order** (`9_` before
+  `10_`) via a numeric-aware sort key — a plain lexical sort misorders unpadded
+  prefixes. A file with no numeric/timestamp prefix logs a **WARNING** (its order
+  relative to numbered files is undefined) and sorts after them. SQL is split on
+  the `;` delimiter; `$$ … $$` / `// … //` stored-proc blocks are kept intact (a
+  `://` URL literal is NOT mistaken for a `//` block).
+- State is tracked by **ROW EXISTENCE** in the `tina4_migration` table
+  (auto-created per engine, `migration_name` UNIQUE): a migration runs once — if
+  a success row exists it is skipped. **Failures are never written** (no
+  `passed = 0` row), nothing is deleted; the file rolls back and the failure is
+  surfaced (a `failed` result entry; the explicit `tina4ruby migrate` CLI exits
+  non-zero). A vestigial `passed` column exists for back-compat, but only applied
+  rows (`passed = 1`) are ever written. Already-applied files stay applied — fix
+  the bad file and re-run.
+- **Each migration FILE is wrapped in its own transaction** (`start_transaction`
+  / `commit`, `rollback` on error). On a failure the file rolls back as a unit.
+- **Atomicity caveat:** the per-file transaction is truly atomic only on engines
+  with **transactional DDL (PostgreSQL)**. MySQL, Firebird, and SQLite
+  auto-commit DDL, so a multi-statement migration that fails midway on those
+  engines leaves earlier statements applied — keep one logical change per file.
+- **Idempotency on engines lacking `IF NOT EXISTS`:** on Firebird, `ALTER TABLE
+  … ADD <column>` is existence-checked against `RDB$RELATION_FIELDS`; on Firebird
+  AND MSSQL, a raw `CREATE TABLE` is skipped when the table already exists
+  (`table_exists?`), so a re-run doesn't error object-already-exists.
+  SQLite/MySQL/PostgreSQL support `IF NOT EXISTS` and are left to the engine.
+  Only a genuine already-exists is skipped — every other error still raises.
+
 ### Auth — JWT authentication & password hashing
 
 ```ruby
@@ -668,7 +716,16 @@ Tina4::Log.info(message, *args)
 Tina4::Log.debug(message, *args)
 Tina4::Log.warning(message, *args)
 Tina4::Log.error(message, *args)
-# Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], etc.
+Tina4::Log.critical(message, *args)  # HIGHEST severity (4, above error 3) — first-class, ALWAYS emits (subject only to the threshold); renders magenta. No opt-in toggle.
+Tina4::Log.enabled?(level) -> Boolean  # would a message at `level` pass the console TINA4_LOG_LEVEL? (String/Symbol, case-insensitive; reflects CONSOLE visibility only — the file records every level). "critical" is a first-class top level (severity 4), not an error alias — it passes at every threshold except none.
+# Severity ladder: debug(0) < info(1) < warning(2) < error(3) < critical(4); none = 5 (silences all).
+# Controlled by TINA4_LOG_LEVEL env var: [TINA4_LOG_ALL], [TINA4_LOG_DEBUG], [TINA4_LOG_INFO], [TINA4_LOG_CRITICAL], etc.
+# TINA4_LOG_STRICT=true raises on a log-write failure (renamed from TINA4_LOG_CRITICAL in v3.13.39).
+# TINA4_LOG_OUTPUT (stdout|file|both) — stdout is ALWAYS on. When UNSET the log FILE is
+#   dev-gated: written only in development (TINA4_DEBUG truthy); production/containers are
+#   stdout-only (NO file — a container log file bloats the writable layer; 12-factor wants stdout).
+#   An explicit TINA4_LOG_OUTPUT=file/both OR an explicit TINA4_LOG_FILE path always wins and forces
+#   a file regardless of TINA4_DEBUG. Mirrors the Python master (v3.13.39).
 # Tina4::Debug is a backward-compat alias for Tina4::Log
 ```
 
@@ -951,7 +1008,8 @@ Tina4::DevAdmin.request_inspector.clear
 - Session handlers: file, Redis, MongoDB. `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
 - WebSocket backplane (Redis/NATS pub/sub) for horizontal scaling — **wired for real**: each `broadcast`/`broadcast_all`/`broadcast_to_room` delivers to LOCAL connections first (resilient — one dead/slow client never aborts the rest; it is logged + pruned), then publishes an envelope `{src,kind,exclude,room,path,+text|b64}` to the shared channel `tina4:ws`. A sibling instance's backplane listener thread relays it to its own LOCAL connections only (origin guard drops the instance's own echo by `src`; the relay never re-publishes, so no cluster loop). Lazily started on first broadcast (best-effort — a backplane failure logs + degrades to local-only, never crashes a broadcast). Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL`. Rooms API: `conn.join_room(name)`, `conn.leave_room(name)`, `conn.rooms`, `conn.broadcast_to_room(name, msg)`, `ws.room_count(name)`, `ws.get_room_connections(name)`, `ws.broadcast_to_room(name, msg, exclude: nil)`
-- WebSocket upgrade security — origin allow-list via `TINA4_WS_ALLOWED_ORIGINS` (comma-separated exact origins). Empty/unset = allow all (non-breaking, current behaviour); when set, an upgrade whose `Origin` isn't listed is refused 403. Enforced on every upgrade path (`Tina4.websocket_origin_allowed?`). Idle reaper via `TINA4_WS_IDLE_TIMEOUT` (seconds; 0/unset = disabled) — tracks last-activity per connection and closes/prunes connections idle past the timeout. (Per-route WS auth is a deliberate follow-up — the origin allow-list is the shipped control.) WS upgrades need a hijack-capable server (Puma); under WEBrick the upgrade is correctly rejected 426
+- WebSocket upgrade security — origin allow-list via `TINA4_WS_ALLOWED_ORIGINS` (comma-separated exact origins). Empty/unset = allow all (non-breaking, current behaviour); when set, an upgrade whose `Origin` isn't listed is refused 403. Enforced on every upgrade path (`Tina4.websocket_origin_allowed?`). Idle reaper via `TINA4_WS_IDLE_TIMEOUT` (seconds; 0/unset = disabled) — tracks last-activity per connection and closes/prunes connections idle past the timeout. WS upgrades need a hijack-capable server (Puma); under WEBrick the upgrade is correctly rejected 426
+- Per-route WebSocket auth — a WS route is **PUBLIC by default** (mirrors GET). Declare a route secured either way (both set the same `auth_required` flag): declaratively via `Tina4::Router.secure_websocket(path)` / `Tina4.secure_websocket(path)` / `Tina4::Router.websocket(path, secure: true)`, or imperatively by chaining `.secure` on the returned `WebSocketRoute` (`.no_auth` flips back). On EVERY upgrade (in `WebSocket#handle_upgrade`, after the origin allow-list, before accepting the handshake) a secured route requires a valid JWT — missing/invalid → the upgrade is **rejected with 401, never accepted**; public routes always pass. Token transports (checked in order, all three accepted): `Authorization: Bearer <jwt>` header, the `Sec-WebSocket-Protocol: "bearer, <jwt>"` subprotocol (browsers — `new WebSocket(url, ['bearer', token])`), and `?token=<jwt>`. Validated via `Tina4::Auth.valid_token` (the same one HTTP uses). When the client offered the `bearer` subprotocol, the handshake **echoes `Sec-WebSocket-Protocol: bearer`** back. The verified payload is exposed on `connection.auth` (a Hash; `nil` on public routes). Helpers: `Tina4.ws_token(headers, query_string, subprotocol)` and `Tina4.ws_authorized(auth_required, headers, query_string, subprotocol) -> [payload, ok]`
 - SameSite=Lax default on session cookies (`TINA4_SESSION_SAMESITE`)
 - `tina4 deploy docker` generates Dockerfile and .dockerignore
 - Gallery: 7 interactive examples with Try It deploy at `/__dev/`

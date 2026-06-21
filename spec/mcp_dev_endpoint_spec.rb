@@ -163,6 +163,38 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     end
   end
 
+  # The MCP dev tools expose powerful ops (DB query, file read/WRITE, route
+  # list), so even with TINA4_DEBUG=true the JSON-RPC/SSE endpoints are gated on
+  # Tina4.mcp_enabled? — dev auto-enable is LOCALHOST-ONLY unless opted into
+  # remote. A debug-on but non-localhost host must NOT expose them.
+  context "when debug mode is enabled on a NON-localhost host" do
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      allow(ENV).to receive(:[]).with("TINA4_MCP").and_return(nil)
+      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return(nil)
+      allow(ENV).to receive(:fetch).and_call_original
+      allow(ENV).to receive(:fetch)
+        .with("TINA4_HOST_NAME", anything).and_return("myserver.example.com:7145")
+    end
+
+    it "404s (returns nil) for POST /__dev/mcp/message — no localhost, no remote opt-in" do
+      expect(post_jsonrpc({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping" })).to be_nil
+    end
+
+    it "404s (returns nil) for GET /__dev/mcp/sse — no localhost, no remote opt-in" do
+      expect(get_path("/__dev/mcp/sse")).to be_nil
+    end
+
+    it "is exposed again once TINA4_MCP_REMOTE=true opts the remote host in" do
+      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
+      result = post_jsonrpc({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping", "params" => {} })
+      expect(result).not_to be_nil
+      status, = result
+      expect(status).to eq(200)
+    end
+  end
+
   # ── Tool coverage ──────────────────────────────────────────────
   #
   # Assert the core tool set is registered on the shared default server and

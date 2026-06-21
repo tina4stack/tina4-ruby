@@ -143,6 +143,73 @@ RSpec.describe "Queue Backends" do
       expect(instance_methods).to include(:dead_letter)
       expect(instance_methods).to include(:close)
     end
+
+    # Lock-in for KafkaBackend._security_config (TINA4_KAFKA_* alias parity with
+    # Python tina4_python KafkaConnector._security_config). SSL/SASL settings are
+    # read from the Tina4-namespaced env var first, then the bare librdkafka
+    # name; unset keys leave librdkafka's PLAINTEXT default.
+    describe "._security_config (TLS/SASL parity with Python)" do
+      vars = %w[
+        TINA4_KAFKA_SECURITY_PROTOCOL KAFKA_SECURITY_PROTOCOL
+        TINA4_KAFKA_SSL_CA_LOCATION KAFKA_SSL_CA_LOCATION
+        TINA4_KAFKA_SASL_MECHANISM KAFKA_SASL_MECHANISM
+        TINA4_KAFKA_SASL_USERNAME KAFKA_SASL_USERNAME
+        TINA4_KAFKA_SASL_PASSWORD KAFKA_SASL_PASSWORD
+      ]
+
+      around(:each) do |example|
+        saved = vars.each_with_object({}) { |v, h| h[v] = ENV.delete(v) }
+        begin
+          example.run
+        ensure
+          vars.each { |v| saved[v].nil? ? ENV.delete(v) : ENV[v] = saved[v] }
+        end
+      end
+
+      def security_config
+        Tina4::QueueBackends::KafkaBackend._security_config
+      end
+
+      it "returns an empty hash when no env is set (PLAINTEXT default)" do
+        # NEGATIVE: nothing set -> {} (librdkafka keeps its PLAINTEXT default).
+        expect(security_config).to eq({})
+      end
+
+      it "reads bare KAFKA_* names" do
+        # POSITIVE: the contributor's exact env (bare KAFKA_*) still works.
+        ENV["KAFKA_SECURITY_PROTOCOL"] = "SSL"
+        ENV["KAFKA_SSL_CA_LOCATION"] = "/etc/ssl/ca.pem"
+        expect(security_config).to eq(
+          "security.protocol" => "SSL",
+          "ssl.ca.location" => "/etc/ssl/ca.pem"
+        )
+      end
+
+      it "reads TINA4_KAFKA_* namespaced names" do
+        # POSITIVE: Tina4-namespaced env vars are honoured.
+        ENV["TINA4_KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
+        expect(security_config).to eq("security.protocol" => "SASL_SSL")
+      end
+
+      it "TINA4_KAFKA_* takes precedence over bare KAFKA_*" do
+        # PRECEDENCE: TINA4_KAFKA_* wins when both are set.
+        ENV["KAFKA_SECURITY_PROTOCOL"] = "SSL"
+        ENV["TINA4_KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
+        expect(security_config["security.protocol"]).to eq("SASL_SSL")
+      end
+
+      it "maps the SASL mechanism/username/password trio" do
+        # POSITIVE: optional SASL creds map to the rdkafka sasl.* keys.
+        ENV["TINA4_KAFKA_SASL_MECHANISM"] = "PLAIN"
+        ENV["KAFKA_SASL_USERNAME"] = "user"
+        ENV["KAFKA_SASL_PASSWORD"] = "secret"
+        expect(security_config).to eq(
+          "sasl.mechanism" => "PLAIN",
+          "sasl.username" => "user",
+          "sasl.password" => "secret"
+        )
+      end
+    end
   end
 
   describe Tina4::QueueBackends::MongoBackend do

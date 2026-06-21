@@ -333,6 +333,46 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
+  # Regression: the lazily-memoized dev singletons must be resettable so a
+  # mailbox built under one TINA4_MAILBOX_DIR can never leak into a later
+  # caller running under a different env. This is the root-cause guard for the
+  # DevMailbox#seed cross-spec flake (a foreign mailbox surfacing in a later
+  # read under the full randomized suite).
+  describe ".reset_singletons!" do
+    it "drops and rebuilds the memoized singletons" do
+      log1 = Tina4::DevAdmin.message_log
+      mb1 = Tina4::DevAdmin.mailbox
+      Tina4::DevAdmin.reset_singletons!
+      expect(Tina4::DevAdmin.message_log).not_to equal(log1)
+      expect(Tina4::DevAdmin.mailbox).not_to equal(mb1)
+    end
+
+    it "rebuilds the mailbox against the CURRENT TINA4_MAILBOX_DIR (no stale dir leak)" do
+      original = ENV["TINA4_MAILBOX_DIR"]
+      Dir.mktmpdir do |dir_a|
+        Dir.mktmpdir do |dir_b|
+          begin
+            ENV["TINA4_MAILBOX_DIR"] = dir_a
+            Tina4::DevAdmin.reset_singletons!
+            expect(Tina4::DevAdmin.mailbox.mailbox_dir).to eq(dir_a)
+
+            # A later context with a different dir must NOT keep the old one.
+            ENV["TINA4_MAILBOX_DIR"] = dir_b
+            Tina4::DevAdmin.reset_singletons!
+            expect(Tina4::DevAdmin.mailbox.mailbox_dir).to eq(dir_b)
+          ensure
+            if original
+              ENV["TINA4_MAILBOX_DIR"] = original
+            else
+              ENV.delete("TINA4_MAILBOX_DIR")
+            end
+            Tina4::DevAdmin.reset_singletons!
+          end
+        end
+      end
+    end
+  end
+
   describe ".handle_request" do
     before do
       allow(ENV).to receive(:[]).and_call_original

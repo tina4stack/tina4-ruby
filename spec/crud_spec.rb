@@ -4,6 +4,7 @@ require "spec_helper"
 
 # Test model for CRUD
 class CrudTestModel < Tina4::ORM
+  table_name "crudtestmodels"  # pluralization is OFF by default (v3.13.39)
   integer_field :id, primary_key: true, auto_increment: true
   string_field :name, nullable: false
   string_field :email

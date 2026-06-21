@@ -5,6 +5,7 @@ require "stringio"
 
 # Test model for auto-CRUD
 class CrudItem < Tina4::ORM
+  table_name "cruditems"  # pluralization is OFF by default (v3.13.39)
   integer_field :id, primary_key: true, auto_increment: true
   string_field :name, nullable: false
   integer_field :price, default: 0

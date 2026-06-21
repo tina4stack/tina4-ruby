@@ -392,10 +392,17 @@ RSpec.describe Tina4::QueryBuilder do
       expect(row.key?("name") || row.key?(:name)).to be true
     end
 
-    it "defaults limit to 100 when not set" do
-      # With only 5 rows this just verifies no error
+    it "returns ALL rows when no limit is set (no silent default LIMIT — v3.13.39)" do
+      # Pre-v3.13.39 get() applied a silent default LIMIT 100 — a data-loss-on-read
+      # footgun. With only 5 rows seeded here, get() with no .limit() returns all 5.
+      # The >100 truncation contract is locked in by spec/orm_contracts_spec.rb.
       result = Tina4::QueryBuilder.from_table("users", db: @db_shared).get
       expect(result.records.length).to eq(5)
+    end
+
+    it "to_sql injects no LIMIT clause on its own" do
+      sql = Tina4::QueryBuilder.from_table("users", db: @db_shared).to_sql.upcase
+      expect(sql).not_to include("LIMIT")
     end
   end
 

@@ -12,11 +12,12 @@ module Tina4
       "[TINA4_LOG_INFO]" => 1,
       "[TINA4_LOG_WARNING]" => 2,
       "[TINA4_LOG_ERROR]" => 3,
-      "[TINA4_LOG_NONE]" => 4
+      "[TINA4_LOG_CRITICAL]" => 4,
+      "[TINA4_LOG_NONE]" => 5
     }.freeze
 
     SEVERITY_MAP = {
-      debug: 0, info: 1, warn: 2, error: 3
+      debug: 0, info: 1, warn: 2, error: 3, critical: 4
     }.freeze
 
     COLORS = {
@@ -65,15 +66,36 @@ module Tina4
         @format = format_env && !format_env.empty? ? format_env.downcase : (production? ? "json" : "text")
         @json_mode = @format == "json"
 
-        # TINA4_LOG_OUTPUT — "stdout", "file", or "both". Defaults to "both".
+        # TINA4_LOG_OUTPUT — "stdout", "file", or "both".
+        #
+        # Default (UNSET): stdout is ALWAYS on. The log FILE (tina4.log + any
+        # error log) is written ONLY in development — i.e. when TINA4_DEBUG is
+        # truthy. In production / containers (TINA4_DEBUG falsy) the logger is
+        # stdout-only: writing a log file inside a container just bloats the
+        # writable layer + disk, and 12-factor wants logs on stdout for the
+        # platform to capture. An explicit TINA4_LOG_OUTPUT=file/both (or an
+        # explicit TINA4_LOG_FILE path) overrides this and STILL writes a file.
+        # Mirrors the Python master (debug/__init__.py configure()).
+        # An explicit TINA4_LOG_FILE always wins: a path the operator named must
+        # be written even in production (parity with the Python master, where an
+        # explicit log_file builds a writer unconditionally), so the dev-gated
+        # default below resolves to "both" (stdout + file) rather than "stdout".
+        explicit_file = !(log_file_env.nil? || log_file_env.empty?)
+        default_output = if explicit_file || truthy?(ENV["TINA4_DEBUG"])
+                           "both"
+                         else
+                           "stdout"
+                         end
         output_env = ENV["TINA4_LOG_OUTPUT"]
-        @output = output_env && !output_env.empty? ? output_env.downcase : "both"
-        unless %w[stdout file both].include?(@output)
-          @output = "both"
-        end
+        @output = if output_env && !output_env.empty?
+                    output_env.downcase
+                  else
+                    default_output
+                  end
+        @output = default_output unless %w[stdout file both].include?(@output)
 
-        # TINA4_LOG_CRITICAL — when true, raise on log write failures instead of swallowing.
-        @critical = truthy?(ENV["TINA4_LOG_CRITICAL"])
+        # TINA4_LOG_STRICT — when true, raise on log write failures instead of swallowing.
+        @strict = truthy?(ENV["TINA4_LOG_STRICT"])
 
         @console_level = resolve_level
         @request_id = nil
@@ -122,6 +144,28 @@ module Tina4
         @json_mode
       end
 
+      # Would a message at `level` pass the configured MINIMUM CONSOLE LEVEL
+      # (TINA4_LOG_LEVEL)? Returns true iff `log` would print it to stdout —
+      # it reflects CONSOLE visibility only. The log FILE records every level
+      # regardless of this threshold, so this never gates file output.
+      #
+      # `level` accepts a String or Symbol and is case-insensitive
+      # ("INFO", :info, "Warning", :warning all work). Mirrors Python's
+      # Log.is_enabled. It REUSES the exact severity >= @console_level
+      # comparison the console branch in `log` uses (line ~167) via
+      # SEVERITY_MAP / resolve_level — it never re-implements level
+      # comparison, so it can never disagree with what the logger prints.
+      #
+      # "critical" is a FIRST-CLASS top-level severity (4 — above error 3),
+      # not a parity alias for error. It is evaluated with ordinary threshold
+      # logic (critical 4 >= @console_level), so it passes at every level
+      # except none (5) — matching the Python master.
+      def enabled?(level)
+        sym = normalize_level(level)
+        severity = SEVERITY_MAP[sym] || 0
+        severity >= console_level
+      end
+
       def info(message, context = {})
         log(:info, message, context)
       end
@@ -136,6 +180,14 @@ module Tina4
 
       def error(message, context = {})
         log(:error, message, context)
+      end
+
+      # critical is the HIGHEST severity (4, above error). Like every other
+      # level it ALWAYS emits, subject only to the TINA4_LOG_LEVEL threshold
+      # (which critical passes at every level except none). A critical log is
+      # never a silent no-op. Mirrors the Python master.
+      def critical(message, context = {})
+        log(:critical, message, context)
       end
 
       # Test/teardown helper — closes the underlying Logger so the file
@@ -181,6 +233,28 @@ module Tina4
         @current_context = {}
       end
 
+      # The current minimum console level as an integer (the same value
+      # the console branch in `log` compares against). Ensures the logger
+      # is configured so `enabled?` works before any log call has run.
+      def console_level
+        configure unless @initialized
+        @console_level
+      end
+
+      # Map a level (String or Symbol, case-insensitive) onto the symbol
+      # space used by SEVERITY_MAP. Accepts the public method names
+      # (debug/info/warning/error/critical) and the internal :warn symbol.
+      # critical is a FIRST-CLASS level (severity 4), not an alias for error.
+      # Unknown levels fall through to their own symbol and resolve to
+      # severity 0 in `enabled?`.
+      def normalize_level(level)
+        sym = level.to_s.strip.downcase.to_sym
+        case sym
+        when :warning then :warn
+        else sym
+        end
+      end
+
       def resolve_level
         # v3.13.14: default is INFO (was ALL) so a deployed app surfaces
         # request/startup/warn/error without debug noise, matching
@@ -199,6 +273,7 @@ module Tina4
         when :info  then "INFO"
         when :warn  then "WARNING"
         when :error then "ERROR"
+        when :critical then "CRITICAL"
         else level.to_s.upcase
         end
       end
@@ -278,6 +353,7 @@ module Tina4
                 when :info    then COLORS[:green]
                 when :warn    then COLORS[:yellow]
                 when :error   then COLORS[:red]
+                when :critical then COLORS[:magenta]
                 else COLORS[:reset]
                 end
         "#{color}#{line}#{COLORS[:reset]}"
@@ -288,7 +364,7 @@ module Tina4
         # Use << to bypass Logger's severity filtering — we already filtered above.
         @file_logger << "#{line}\n"
       rescue IOError, SystemCallError => e
-        raise if @critical
+        raise if @strict
         # Don't crash on log write failure
       end
     end

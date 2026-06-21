@@ -200,13 +200,31 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
   end
 
   describe "TINA4_LOG_OUTPUT" do
-    it "defaults to both" do
+    # v3.13.39: the default (unset) is now DEV-GATED. stdout is always on; the
+    # log FILE is written only in development (TINA4_DEBUG truthy). In
+    # production / containers it's stdout-only — no file. Explicit
+    # file/both (or an explicit TINA4_LOG_FILE) still forces a file.
+    # Mirrors the Python master.
+    it "writes the file by default in development (TINA4_DEBUG truthy)" do
       Dir.mktmpdir do |dir|
-        with_env("TINA4_LOG_OUTPUT" => nil) do
+        with_env("TINA4_LOG_OUTPUT" => nil, "TINA4_DEBUG" => "true") do
           Tina4::Log.configure(dir)
-          # File output enabled — message should hit the file.
-          expect { Tina4::Log.info("both test") }.not_to raise_error
-          expect(File.read(Tina4::Log.log_file_path)).to include("both test")
+          # File output enabled in dev — message should hit the file.
+          expect { Tina4::Log.info("dev default test") }.not_to raise_error
+          expect(File.read(Tina4::Log.log_file_path)).to include("dev default test")
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    it "writes NO file by default in production (TINA4_DEBUG falsy)" do
+      Dir.mktmpdir do |dir|
+        with_env("TINA4_LOG_OUTPUT" => nil, "TINA4_DEBUG" => nil) do
+          Tina4::Log.configure(dir)
+          Tina4::Log.info("prod default test")
+          # Default resolves to stdout-only — no file logger, path empty/absent.
+          path = Tina4::Log.log_file_path
+          expect(File.exist?(path) ? File.size(path) : 0).to eq(0)
         end
         Tina4::Log.close_file_logger
       end
@@ -226,13 +244,107 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
     end
   end
 
-  describe "TINA4_LOG_CRITICAL" do
+  # ── Default log output is DEV-GATED (v3.13.39) ─────────────────────
+  #
+  # Unified contract (Python master 4c6d881, mirrored): when
+  # TINA4_LOG_OUTPUT is UNSET, stdout is ALWAYS on, but the log FILE is
+  # written ONLY in development (TINA4_DEBUG truthy). Production /
+  # containers (TINA4_DEBUG falsy) → stdout ONLY, NO file — a log file
+  # inside a container bloats the writable layer + disk and 12-factor
+  # wants logs on stdout. An explicit TINA4_LOG_OUTPUT=file/both still
+  # forces a file even with TINA4_DEBUG off (explicit always wins).
+  describe "default log output (dev-gated file, v3.13.39)" do
+    # (a) production / no TINA4_DEBUG → NO file written (neither tina4.log
+    #     nor any sibling error log — Ruby has a single tina4.log writer).
+    it "production (no TINA4_DEBUG): writes NO log file at all" do
+      Dir.mktmpdir do |dir|
+        with_env("TINA4_LOG_OUTPUT" => nil, "TINA4_DEBUG" => nil) do
+          Tina4::Log.configure(dir)
+          expect(Tina4::Log.instance_variable_get(:@output)).to eq("stdout")
+          # No file logger is constructed in stdout-only mode.
+          expect(Tina4::Log.instance_variable_get(:@file_logger)).to be_nil
+          Tina4::Log.error("prod error should not hit a file")
+          Tina4::Log.critical("prod critical should not hit a file")
+          path = Tina4::Log.log_file_path
+          expect(File.exist?(path) ? File.size(path) : 0).to eq(0)
+          # No stray *.log files at all under the log dir.
+          stray = Dir.glob(File.join(dir, "logs", "*.log"))
+          expect(stray.select { |f| File.size(f).positive? }).to be_empty
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    # (b) development / TINA4_DEBUG truthy → file IS written.
+    it "development (TINA4_DEBUG truthy): writes the log file" do
+      Dir.mktmpdir do |dir|
+        with_env("TINA4_LOG_OUTPUT" => nil, "TINA4_DEBUG" => "true") do
+          Tina4::Log.configure(dir)
+          expect(Tina4::Log.instance_variable_get(:@output)).to eq("both")
+          Tina4::Log.info("dev info hits the file")
+          expect(File.read(Tina4::Log.log_file_path)).to include("dev info hits the file")
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    # (c) explicit output=both with TINA4_DEBUG OFF → file STILL written
+    #     (explicit always wins over the dev gate).
+    it "explicit output=both wins even with TINA4_DEBUG off" do
+      Dir.mktmpdir do |dir|
+        with_env("TINA4_LOG_OUTPUT" => "both", "TINA4_DEBUG" => nil) do
+          Tina4::Log.configure(dir)
+          expect(Tina4::Log.instance_variable_get(:@output)).to eq("both")
+          Tina4::Log.info("explicit both in prod")
+          expect(File.read(Tina4::Log.log_file_path)).to include("explicit both in prod")
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    # An explicit TINA4_LOG_FILE path alone forces a file with debug off and
+    # TINA4_LOG_OUTPUT UNSET — "explicit always wins" (Python-master parity:
+    # an explicit log_file builds a writer unconditionally).
+    it "explicit TINA4_LOG_FILE forces a file with TINA4_DEBUG off and output unset" do
+      Dir.mktmpdir do |dir|
+        with_env("TINA4_LOG_OUTPUT" => nil, "TINA4_LOG_FILE" => "custom.log",
+                 "TINA4_DEBUG" => nil) do
+          Tina4::Log.configure(dir)
+          # Default resolves to "both" because an explicit file path was named.
+          expect(Tina4::Log.instance_variable_get(:@output)).to eq("both")
+          Tina4::Log.info("explicit file path in prod")
+          expect(File.read(Tina4::Log.log_file_path)).to include("explicit file path in prod")
+          expect(Tina4::Log.log_file_path).to end_with("custom.log")
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    # (d) stdout STILL receives logs in production (stdout is always on).
+    it "production: stdout still receives logs" do
+      Dir.mktmpdir do |dir|
+        with_env("TINA4_LOG_OUTPUT" => nil, "TINA4_DEBUG" => nil,
+                 "TINA4_LOG_LEVEL" => "info") do
+          Tina4::Log.configure(dir)
+          expect { Tina4::Log.info("prod stdout line") }
+            .to output(/prod stdout line/).to_stdout
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+  end
+
+  # TINA4_LOG_STRICT — the raise-on-write-failure flag. Renamed from the
+  # old TINA4_LOG_CRITICAL in v3.13.39 to free that env var: `critical` is now
+  # a first-class log LEVEL, not a write-failure toggle (Python-master parity).
+  describe "TINA4_LOG_STRICT" do
     it "defaults to false (silent on write failure)" do
       Dir.mktmpdir do |dir|
-        with_env("TINA4_LOG_CRITICAL" => nil) do
+        with_env("TINA4_LOG_STRICT" => nil) do
           Tina4::Log.configure(dir)
           # Silent — no exception.
           expect { Tina4::Log.info("ok") }.not_to raise_error
+          expect(Tina4::Log.instance_variable_get(:@strict)).to be false
         end
         Tina4::Log.close_file_logger
       end
@@ -240,12 +352,53 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
 
     it "is read as true when set" do
       Dir.mktmpdir do |dir|
-        with_env("TINA4_LOG_CRITICAL" => "true") do
+        with_env("TINA4_LOG_STRICT" => "true") do
           Tina4::Log.configure(dir)
-          # truthy? helper inside Log is private — confirm via behaviour:
-          # set @critical to true and a write_to_file IOError would propagate.
-          # We just confirm configure doesn't raise & the writer is set.
-          expect(Tina4::Log.instance_variable_get(:@critical)).to be true
+          # truthy? helper inside Log is private — confirm via the ivar:
+          # @strict true means a write_to_file IOError would propagate.
+          expect(Tina4::Log.instance_variable_get(:@strict)).to be true
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    it "raises on a log-write failure when strict, swallows when not" do
+      Dir.mktmpdir do |dir|
+        # strict ON: a write failure propagates. Force file output ("file")
+        # so a @file_logger exists to mock regardless of the dev-gated default.
+        with_env("TINA4_LOG_STRICT" => "true", "TINA4_LOG_OUTPUT" => "file") do
+          Tina4::Log.configure(dir)
+          allow(Tina4::Log.instance_variable_get(:@file_logger))
+            .to receive(:<<).and_raise(IOError.new("disk full"))
+          expect { Tina4::Log.info("boom") }.to raise_error(IOError)
+        end
+        Tina4::Log.close_file_logger
+      end
+
+      Dir.mktmpdir do |dir|
+        # strict OFF: the same failure is swallowed.
+        with_env("TINA4_LOG_STRICT" => nil, "TINA4_LOG_OUTPUT" => "file") do
+          Tina4::Log.configure(dir)
+          allow(Tina4::Log.instance_variable_get(:@file_logger))
+            .to receive(:<<).and_raise(IOError.new("disk full"))
+          expect { Tina4::Log.info("boom") }.not_to raise_error
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    it "TINA4_LOG_CRITICAL no longer controls strict write behaviour" do
+      Dir.mktmpdir do |dir|
+        # The retired env var must NOT flip @strict — it is now a no-op for
+        # write-failure handling (it no longer exists as a toggle). Force file
+        # output so a @file_logger exists to mock under the dev-gated default.
+        with_env("TINA4_LOG_CRITICAL" => "true", "TINA4_LOG_STRICT" => nil,
+                 "TINA4_LOG_OUTPUT" => "file") do
+          Tina4::Log.configure(dir)
+          expect(Tina4::Log.instance_variable_get(:@strict)).to be false
+          allow(Tina4::Log.instance_variable_get(:@file_logger))
+            .to receive(:<<).and_raise(IOError.new("disk full"))
+          expect { Tina4::Log.info("boom") }.not_to raise_error
         end
         Tina4::Log.close_file_logger
       end
@@ -544,7 +697,7 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
       Dir.mktmpdir do |dir|
         db_path = File.join(dir, "p.db")
         with_env("TINA4_DB_POOL" => nil) do
-          db = Tina4::Database.new("sqlite://#{db_path}")
+          db = Tina4::Database.new("sqlite:///#{db_path}")
           expect(db.instance_variable_get(:@pool_size)).to eq(0)
           db.close
         end
@@ -555,7 +708,7 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
       Dir.mktmpdir do |dir|
         db_path = File.join(dir, "p.db")
         with_env("TINA4_DB_POOL" => "4") do
-          db = Tina4::Database.new("sqlite://#{db_path}")
+          db = Tina4::Database.new("sqlite:///#{db_path}")
           expect(db.instance_variable_get(:@pool_size)).to eq(4)
           expect(db.pool).to be_a(Tina4::ConnectionPool)
           db.close

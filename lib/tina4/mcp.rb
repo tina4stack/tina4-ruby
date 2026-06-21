@@ -139,15 +139,35 @@ module Tina4
 
   # Resolve whether the built-in MCP dev server should be active.
   #
-  # Precedence:
-  #   * TINA4_MCP set explicitly → use that (truthy/falsey).
-  #   * Otherwise: enabled only when TINA4_DEBUG=true.
+  # Resolution order (highest priority first):
+  #   1. TINA4_MCP set explicitly → use that (truthy/falsey). Honoured on ANY
+  #      host. An explicit `true` is how a sysadmin opts a remote /
+  #      debug-disabled deployment in (e.g. for a remote AI assistant); an
+  #      explicit `false` force-disables it everywhere.
+  #   2. TINA4_DEBUG=true → implicit on for dev, but LOCALHOST-ONLY unless
+  #      TINA4_MCP_REMOTE=true. The MCP dev tools expose powerful operations
+  #      (DB query, file read/WRITE, route listing), so they never auto-expose
+  #      on a non-localhost host without an explicit opt-in.
+  #   3. Otherwise off.
+  #
+  # Mirrors the Python master (tina4_python/mcp/__init__.py is_enabled). Before
+  # v3.13.39 is_localhost? was dead code and TINA4_MCP_REMOTE was never read, so
+  # the documented localhost guard was not actually enforced — a non-localhost
+  # TINA4_DEBUG=true deployment auto-exposed the dev tools. This wires it.
   def self.mcp_enabled?
     explicit = ENV["TINA4_MCP"]
     if explicit && !explicit.empty?
-      return %w[true 1 yes on].include?(explicit.to_s.strip.downcase)
+      return truthy?(explicit)
     end
-    %w[true 1 yes on].include?(ENV.fetch("TINA4_DEBUG", "").to_s.strip.downcase)
+    return false unless truthy?(ENV["TINA4_DEBUG"])
+
+    # Dev auto-enable: localhost only, unless explicitly opted into remote.
+    is_localhost? || truthy?(ENV["TINA4_MCP_REMOTE"])
+  end
+
+  # Case-insensitive truthiness for env values: true/1/yes/on.
+  def self.truthy?(val)
+    %w[true 1 yes on].include?(val.to_s.strip.downcase)
   end
 
   # Resolve the dedicated MCP port. Defaults to (server port + 2000) — keeps

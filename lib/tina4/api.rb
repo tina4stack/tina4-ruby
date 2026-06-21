@@ -1,10 +1,17 @@
 # frozen_string_literal: true
 require "net/http"
+require "openssl"
 require "uri"
 require "json"
 require "base64"
 
 module Tina4
+  # Statuses that warrant an automatic retry when max_retries > 0: rate-limit
+  # (429) plus the transient server-side 5xx family. 4xx client errors (401,
+  # 404, …) are NOT retried — a repeat won't succeed. Parity with the Python
+  # master's _RETRY_STATUSES.
+  API_RETRY_STATUSES = [429, 500, 502, 503, 504].freeze
+
   class API
     attr_reader :base_url, :headers
 
@@ -18,9 +25,16 @@ module Tina4
     #     api = Tina4::API.new("https://self-signed.local", verify_ssl: false)
     #
     # Bearer wins over basic-auth when both are passed.
+    #
+    # 3.13.39: +max_retries / +retry_backoff enable opt-in automatic retry with
+    # exponential backoff (default max_retries: 0 = off, non-breaking) on a
+    # transport error (APIResponse#status == 0) or a retryable status
+    # (429/5xx). A retried non-idempotent request (POST/PUT/PATCH/DELETE) may be
+    # re-sent — retries are opt-in for exactly that reason. Parity with the
+    # Python master.
     def initialize(base_url, headers: {}, timeout: 30,
                    bearer_token: nil, username: nil, password: nil,
-                   verify_ssl: nil)
+                   verify_ssl: nil, max_retries: 0, retry_backoff: 0.5)
       @base_url = base_url.chomp("/")
       @headers = {
         "Content-Type" => "application/json",
@@ -28,6 +42,8 @@ module Tina4
       }.merge(headers)
       @timeout = timeout
       @verify_ssl = verify_ssl
+      @max_retries = [0, max_retries.to_i].max
+      @retry_backoff = retry_backoff.to_f
 
       # Bearer wins over basic-auth when both passed
       if bearer_token
@@ -142,9 +158,35 @@ module Tina4
       end
     end
 
+    # Execute the request with opt-in retry/backoff. Returns an APIResponse.
+    #
+    # With @max_retries > 0, a transport error (APIResponse#status == 0, the
+    # existing error sentinel) or a retryable status (429/5xx) is retried up to
+    # @max_retries times with exponential backoff (@retry_backoff seconds base,
+    # doubling each attempt); any other outcome (2xx, 3xx, other 4xx) returns at
+    # once. Parity with the Python master's _request.
     def execute(uri, request)
+      attempts = @max_retries + 1
+      response = nil
+      (0...attempts).each do |attempt|
+        response = attempt_request(uri, request)
+        code = response.status
+        retryable = code.zero? || API_RETRY_STATUSES.include?(code)
+        return response if !retryable || attempt == attempts - 1
+
+        sleep(@retry_backoff * (2**attempt))
+      end
+      response
+    end
+
+    # A single HTTP attempt. Returns the standardized APIResponse.
+    def attempt_request(uri, request)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
+      # 3.13.39: honour verify_ssl: false (the dead-since-3.13.1 kwarg). Only
+      # disable verification when EXPLICITLY false — nil/true keep the secure
+      # default (OpenSSL::SSL::VERIFY_PEER).
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE if @verify_ssl == false
       http.open_timeout = @timeout
       http.read_timeout = @timeout
 

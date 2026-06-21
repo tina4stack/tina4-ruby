@@ -5,6 +5,23 @@ require "spec_helper"
 RSpec.describe Tina4::Log do
   let(:tmpdir) { Dir.mktmpdir }
 
+  # v3.13.39: the default log output is now dev-gated — with TINA4_LOG_OUTPUT
+  # unset the log FILE is written ONLY when TINA4_DEBUG is truthy (dev). In a
+  # bare test env (no TINA4_DEBUG) the default is stdout-only, so every example
+  # here that reads logs/tina4.log would otherwise find no file. Pin
+  # TINA4_DEBUG=true for the whole block so these existing file-output assertions
+  # run in "development" — mirrors how the Python master pins TINA4_DEBUG=true in
+  # its test_log autouse fixture. The dedicated default-output behaviour (prod =
+  # no file, dev = file, explicit-output wins) is covered in its own block below
+  # which manages TINA4_DEBUG itself.
+  around do |example|
+    saved = ENV.key?("TINA4_DEBUG") ? ENV["TINA4_DEBUG"] : :__unset__
+    ENV["TINA4_DEBUG"] = "true"
+    example.run
+  ensure
+    saved == :__unset__ ? ENV.delete("TINA4_DEBUG") : ENV["TINA4_DEBUG"] = saved
+  end
+
   after { FileUtils.rm_rf(tmpdir) }
 
   describe ".setup" do
@@ -368,6 +385,161 @@ RSpec.describe Tina4::Log do
     it "falls back to INFO for an unknown value" do
       ENV["TINA4_LOG_LEVEL"] = "gibberish"
       expect(console_level).to eq(1)
+    end
+  end
+
+  # enabled?(level) — public level-check predicate. Mirrors Python's
+  # Log.is_enabled: returns true iff a message at `level` would pass the
+  # configured minimum CONSOLE level (TINA4_LOG_LEVEL). It reflects console
+  # visibility only — the log FILE records every level regardless. It REUSES
+  # the same severity >= console_level comparison the console branch uses, so
+  # it can never disagree with what the logger actually prints.
+  describe ".enabled? (console-level predicate)" do
+    around do |example|
+      saved = ENV["TINA4_LOG_LEVEL"]
+      example.run
+      saved.nil? ? ENV.delete("TINA4_LOG_LEVEL") : ENV["TINA4_LOG_LEVEL"] = saved
+    end
+
+    # The internal console-threshold check the console branch uses, so a
+    # drift in enabled?'s comparison logic is caught against this.
+    def console_gate(level)
+      sym = Tina4::Log.send(:normalize_level, level)
+      severity = Tina4::Log::SEVERITY_MAP[sym] || 0
+      severity >= Tina4::Log.send(:console_level)
+    end
+
+    it "at the info threshold: debug off, info/warning/error on" do
+      ENV["TINA4_LOG_LEVEL"] = "info"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("debug")).to be false
+      expect(Tina4::Log.enabled?("info")).to be true
+      expect(Tina4::Log.enabled?("warning")).to be true
+      expect(Tina4::Log.enabled?("error")).to be true
+    end
+
+    it "at the error threshold: info/warning off, error on" do
+      ENV["TINA4_LOG_LEVEL"] = "error"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("info")).to be false
+      expect(Tina4::Log.enabled?("warning")).to be false
+      expect(Tina4::Log.enabled?("error")).to be true
+    end
+
+    it "is case-insensitive (string)" do
+      ENV["TINA4_LOG_LEVEL"] = "info"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("INFO")).to be true
+      expect(Tina4::Log.enabled?("Debug")).to be false
+    end
+
+    it "accepts symbols too" do
+      ENV["TINA4_LOG_LEVEL"] = "info"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?(:info)).to be true
+      expect(Tina4::Log.enabled?(:debug)).to be false
+      expect(Tina4::Log.enabled?(:warning)).to be true
+    end
+
+    it "equals the internal console-threshold check for all standard levels" do
+      %w[all debug info warning error none].each do |threshold|
+        ENV["TINA4_LOG_LEVEL"] = threshold
+        Tina4::Log.configure(tmpdir)
+        %i[debug info warning error].each do |level|
+          expect(Tina4::Log.enabled?(level)).to eq(console_gate(level)),
+            "enabled?(#{level.inspect}) disagreed with the console gate at TINA4_LOG_LEVEL=#{threshold}"
+        end
+      end
+    end
+
+    # critical is a FIRST-CLASS top-level severity (4 — above error 3), not a
+    # parity alias for error. Ordinary threshold logic applies: critical
+    # passes at every TINA4_LOG_LEVEL except `none` (5). The none case is the
+    # regression test for the NONE-bump (none had to move 4 -> 5 so critical 4
+    # does NOT slip through at TINA4_LOG_LEVEL=none).
+    it "treats critical as a first-class top-level severity" do
+      ENV["TINA4_LOG_LEVEL"] = "info"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("critical")).to be true
+      expect(Tina4::Log.enabled?(:critical)).to be true
+
+      ENV["TINA4_LOG_LEVEL"] = "error"
+      Tina4::Log.configure(tmpdir)
+      # critical (4) outranks error (3), so it stays enabled at the error gate.
+      expect(Tina4::Log.enabled?("critical")).to be true
+
+      ENV["TINA4_LOG_LEVEL"] = "critical"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("critical")).to be true
+      expect(Tina4::Log.enabled?("error")).to be false
+
+      # NONE-bump regression: critical is silenced ONLY by `none` (5).
+      ENV["TINA4_LOG_LEVEL"] = "none"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.enabled?("critical")).to be false
+    end
+
+    it "verifies the full severity ladder ALL/DEBUG=0 .. CRITICAL=4 .. NONE=5" do
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_ALL]"]).to eq(0)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_DEBUG]"]).to eq(0)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_INFO]"]).to eq(1)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_WARNING]"]).to eq(2)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_ERROR]"]).to eq(3)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_CRITICAL]"]).to eq(4)
+      expect(Tina4::Log::LEVELS["[TINA4_LOG_NONE]"]).to eq(5)
+      expect(Tina4::Log::SEVERITY_MAP[:critical]).to eq(4)
+    end
+
+    it "resolves TINA4_LOG_LEVEL=critical to 4" do
+      ENV["TINA4_LOG_LEVEL"] = "critical"
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log.send(:resolve_level)).to eq(4)
+    end
+  end
+
+  # critical() is a first-class log method — it ALWAYS emits (subject only to
+  # the threshold, which it passes at every level except none). The old
+  # TINA4_LOG_CRITICAL "enable critical()" opt-in toggle is gone: a critical
+  # log must never be a silent no-op. Mirrors the Python master.
+  describe ".critical (first-class top level)" do
+    around do |example|
+      saved = ENV["TINA4_LOG_LEVEL"]
+      example.run
+      saved.nil? ? ENV.delete("TINA4_LOG_LEVEL") : ENV["TINA4_LOG_LEVEL"] = saved
+    end
+
+    it "responds to .critical" do
+      Tina4::Log.configure(tmpdir)
+      expect(Tina4::Log).to respond_to(:critical)
+    end
+
+    it "ALWAYS writes a critical entry to the log file (no opt-in toggle)" do
+      ENV.delete("TINA4_LOG_LEVEL") # default INFO
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.critical("meltdown imminent")
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("meltdown imminent")
+      expect(log_content).to include("CRITICAL")
+    end
+
+    it "still writes critical to the file at the error threshold (4 >= 3)" do
+      ENV["TINA4_LOG_LEVEL"] = "error"
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.critical("critical at error gate")
+      log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(log_content).to include("critical at error gate")
+    end
+
+    it "does not raise when logging critical" do
+      Tina4::Log.configure(tmpdir)
+      expect { Tina4::Log.critical("safe") }.not_to raise_error
+    end
+
+    it "renders critical in magenta on the console" do
+      Tina4::Log.configure(tmpdir)
+      line = Tina4::Log.send(:colorize, :critical, "boom")
+      expect(line).to start_with(Tina4::Log::COLORS[:magenta])
+      expect(line).to end_with(Tina4::Log::COLORS[:reset])
     end
   end
 

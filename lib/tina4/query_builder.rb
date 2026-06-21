@@ -155,6 +155,14 @@ module Tina4
 
     # Execute the query and return the database result.
     #
+    # v3.13.39: with no `.limit()` set, get returns ALL matching rows. It
+    # previously applied a silent default `LIMIT 100` — a data-loss-on-read
+    # footgun where the 101st row vanished without a trace. An explicit
+    # `.limit(n)` is still honoured; `to_sql` never injects a default LIMIT
+    # either. When no limit was requested we pass `limit: nil` to db.fetch —
+    # its "no truncation" sentinel (fetch only appends LIMIT when `limit` is
+    # truthy and the SQL doesn't already carry one).
+    #
     # @return [Object] The result from db.fetch.
     def get
       ensure_db!
@@ -164,7 +172,7 @@ module Tina4
       @db.fetch(
         sql,
         all_params.empty? ? [] : all_params,
-        limit: @limit_val || 100,
+        limit: @limit_val,
         offset: @offset_val || 0
       )
     end
@@ -322,8 +330,19 @@ module Tina4
         return [{ field => { mongo_op => val } }, param_index + 1]
       end
 
-      # Fallback
-      [{ "$where" => cond }, param_index]
+      # v3.13.39: no silent $where fallback. Previously an unparseable
+      # condition was wrapped as `{ "$where" => <raw condition string> }` — a
+      # raw-JS sink that is both injection-shaped (the WHERE string runs as
+      # JavaScript on the server) and silently different semantics from the
+      # SQL the caller wrote. Fail loud instead: name the clause so the caller
+      # fixes it rather than shipping a surprise $where.
+      raise ArgumentError,
+            "QueryBuilder#to_mongo: cannot translate WHERE clause to a " \
+            "MongoDB filter: #{cond.inspect}. Supported forms: " \
+            "'<field> <op> ?' (=, !=, <>, >, >=, <, <=), '<field> LIKE ?', " \
+            "'<field> [NOT] IN (?)', '<field> IS [NOT] NULL'. " \
+            "Rewrite the condition in one of those forms (to_mongo will not " \
+            "silently emit a raw $where JavaScript expression)."
     end
 
     # Merge multiple single-field mongo condition hashes into one.

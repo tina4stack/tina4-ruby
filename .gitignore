@@ -45,3 +45,7 @@ spec/integration/
 benchmark/
 *.gem
 .tina4/
+
+# macOS $TMPDIR leak guard: a spec mis-resolving an absolute tmp path relative
+# to cwd would create these under the repo. Never commit them.
+/var/folders/

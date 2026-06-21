@@ -287,6 +287,10 @@ module Tina4
             status_icon = r[:status] == "success" ? "OK" : "FAIL"
             puts "  [#{status_icon}] #{r[:name]}"
           end
+          # FAIL-FAST: a failed migration must give CI a non-zero exit (parity
+          # with the Python master). Only the startup auto-migration hook
+          # swallows failures; the explicit CLI does not.
+          exit 1 if results.any? { |r| r[:status] == "failed" }
         end
       end
     end

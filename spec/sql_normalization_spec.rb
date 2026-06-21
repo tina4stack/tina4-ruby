@@ -50,7 +50,7 @@ RSpec.describe "v3.13.12 SQL normalization + ORM binding" do
 
   describe "fetch survives a trailing ; on user SQL" do
     let(:db_file) { Tempfile.new(["tina4_sql_norm", ".db"]).tap(&:close).path }
-    let(:db) { Tina4::Database.new("sqlite://#{db_file}") }
+    let(:db) { Tina4::Database.new("sqlite:///#{db_file}") }
 
     before do
       db.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
@@ -107,7 +107,7 @@ RSpec.describe "v3.13.12 SQL normalization + ORM binding" do
     it "falls through to TINA4_DATABASE_URL when neither @db nor Tina4.database is set" do
       # Use a sqlite tempfile so we don't depend on PG/MySQL being up.
       tmp = Tempfile.new(["tina4_orm_implicit", ".db"]).tap(&:close)
-      ENV["TINA4_DATABASE_URL"] = "sqlite://#{tmp.path}"
+      ENV["TINA4_DATABASE_URL"] = "sqlite:///#{tmp.path}"
 
       # Reset any per-class @db; using a fresh anonymous class so the
       # spec doesn't depend on whichever models happen to be loaded.
@@ -128,7 +128,7 @@ RSpec.describe "v3.13.12 SQL normalization + ORM binding" do
 
   describe "fetch_all returns ALL rows by default (v3.13.12)" do
     let(:db_file) { Tempfile.new(["tina4_fetch_all", ".db"]).tap(&:close).path }
-    let(:db) { Tina4::Database.new("sqlite://#{db_file}") }
+    let(:db) { Tina4::Database.new("sqlite:///#{db_file}") }
 
     before do
       db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER)")

@@ -212,6 +212,10 @@ module Tina4
       # Auto-discover routes
       auto_discover(root_dir)
 
+      # Apply pending DB migrations on startup (non-breaking — see method doc).
+      # Runs AFTER route discovery / DB bind, BEFORE serving.
+      auto_migrate_on_startup!(root_dir)
+
       Tina4::Log.info("Tina4 initialized successfully")
     end
 
@@ -383,9 +387,17 @@ module Tina4
       Tina4::Router.group(prefix, auth_handler: auth, &block)
     end
 
-    # WebSocket route registration
-    def websocket(path, &block)
-      Tina4::Router.websocket(path, &block)
+    # WebSocket route registration. PUBLIC by default (mirrors GET). Pass
+    # secure: true OR chain .secure on the returned route to require a valid JWT
+    # on the upgrade.
+    def websocket(path, secure: false, &block)
+      Tina4::Router.websocket(path, secure: secure, &block)
+    end
+
+    # Register a SECURED WebSocket route — declarative sibling of
+    # Tina4.websocket(...).secure, mirroring secure_get/secure_post.
+    def secure_websocket(path, &block)
+      Tina4::Router.secure_websocket(path, &block)
     end
 
     # Middleware hooks
@@ -440,7 +452,72 @@ module Tina4
       Tina4::Container.get(name)
     end
 
+    # Apply pending DB migrations on startup — NON-BREAKING. Public so it can be
+    # called explicitly (and unit-tested) as `Tina4.auto_migrate_on_startup!`.
+    #
+    # When a migrations/ folder exists (with at least one .sql file) and
+    # TINA4_AUTO_MIGRATE is not disabled, pending migrations are applied during
+    # boot so the schema is current with no manual `tina4ruby migrate` step. A
+    # failure here is logged LOUD and the service STILL starts — a bad migration
+    # must never take the backend down. (The explicit `tina4ruby migrate` CLI
+    # stays fail-fast so CI still gets a non-zero exit.)
+    #
+    # Disable with TINA4_AUTO_MIGRATE=false (also 0/no/off) — e.g. multi-instance
+    # production that migrates as a separate deploy step (concurrent first-apply
+    # can race).
+    def auto_migrate_on_startup!(root_dir = Dir.pwd)
+      # Gate 1: a migrations folder with at least one .sql file must exist.
+      migrations_dir = resolve_startup_migrations_dir(root_dir)
+      return unless migrations_dir
+
+      # Gate 2: TINA4_AUTO_MIGRATE not disabled (default "true"; false/0/no/off off).
+      unless Tina4::Env.is_truthy(ENV.fetch("TINA4_AUTO_MIGRATE", "true"))
+        Tina4::Log.debug("TINA4_AUTO_MIGRATE is off — skipping startup migrations")
+        return
+      end
+
+      # Gate 3: a database must be resolvable.
+      db = Tina4.database
+      unless db
+        Tina4::Log.debug("Startup migrations skipped (no database configured)")
+        return
+      end
+
+      begin
+        migration = Tina4::Migration.new(db, migrations_dir: migrations_dir)
+        results = migration.run
+        applied = Array(results).count { |r| r[:status] == "success" }
+        Tina4::Log.info("Applied #{applied} pending migration(s) on startup") if applied.positive?
+        # A migration that records as "failed" surfaces in `run`'s results but
+        # does NOT raise from the runner; treat a recorded failure as loud-log too.
+        if Array(results).any? { |r| r[:status] == "failed" }
+          Tina4::Log.error(
+            "Startup auto-migration failed — the service is starting anyway. " \
+            "Run `tina4ruby migrate` to retry."
+          )
+        end
+      rescue => e
+        # NON-BREAKING: never re-raise out of the startup hook.
+        Tina4::Log.error(
+          "Startup auto-migration failed: #{e.message} — the service is starting " \
+          "anyway. Run `tina4ruby migrate` to retry."
+        )
+      end
+    end
+
     private
+
+    # Resolve the migrations directory for startup auto-migration, returning it
+    # only when it exists AND contains at least one .sql file. Prefers
+    # src/migrations, falls back to migrations/ (mirrors Migration#resolve_migrations_dir).
+    def resolve_startup_migrations_dir(root_dir)
+      %w[src/migrations migrations].each do |rel|
+        dir = File.join(root_dir, rel)
+        next unless Dir.exist?(dir)
+        return dir unless Dir.glob(File.join(dir, "*.sql")).empty?
+      end
+      nil
+    end
 
     # Resolve auth option for route registration
     # :default => use bearer auth (default for POST/PUT/PATCH/DELETE)
