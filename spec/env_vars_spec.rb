@@ -697,7 +697,7 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
       Dir.mktmpdir do |dir|
         db_path = File.join(dir, "p.db")
         with_env("TINA4_DB_POOL" => nil) do
-          db = Tina4::Database.new("sqlite://#{db_path}")
+          db = Tina4::Database.new("sqlite:///#{db_path}")
           expect(db.instance_variable_get(:@pool_size)).to eq(0)
           db.close
         end
@@ -708,7 +708,7 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
       Dir.mktmpdir do |dir|
         db_path = File.join(dir, "p.db")
         with_env("TINA4_DB_POOL" => "4") do
-          db = Tina4::Database.new("sqlite://#{db_path}")
+          db = Tina4::Database.new("sqlite:///#{db_path}")
           expect(db.instance_variable_get(:@pool_size)).to eq(4)
           expect(db.pool).to be_a(Tina4::ConnectionPool)
           db.close

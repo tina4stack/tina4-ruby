@@ -86,7 +86,7 @@ RSpec.describe Tina4::CacheBackends do
 
     it "database (sqlite) round-trips" do
       Dir.mktmpdir do |dir|
-        b = described_class.create_backend(backend: "database", url: "sqlite://#{dir}/cache.db")
+        b = described_class.create_backend(backend: "database", url: "sqlite:///#{dir}/cache.db")
         roundtrip(b, "database")
       end
     end
@@ -251,7 +251,7 @@ RSpec.describe "Persistent DB query cache backend" do
   end
 
   def make_db(dir, name = "qc.db")
-    db = Tina4::Database.new("sqlite://#{dir}/#{name}")
+    db = Tina4::Database.new("sqlite:///#{dir}/#{name}")
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)")
     db.execute("INSERT INTO t (n) VALUES ('a'), ('b')")
     db
@@ -294,7 +294,7 @@ RSpec.describe "Persistent DB query cache backend" do
     ENV["TINA4_DB_CACHE_URL"] = "redis://localhost:6379/2" # isolation: db index 2
     ENV.delete("TINA4_AUTO_CACHING")
     Dir.mktmpdir do |dir|
-      path = "sqlite://#{dir}/shared.db"
+      path = "sqlite:///#{dir}/shared.db"
       db1 = Tina4::Database.new(path)
       db1.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)")
       db1.execute("INSERT INTO t (n) VALUES ('x'), ('y')")
