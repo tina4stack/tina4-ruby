@@ -5,11 +5,16 @@ module Tina4
     class MongoBackend
       # Reservation/visibility + retry policy (settable so a Queue can propagate
       # its own onto a backend instance passed directly — legacy path).
-      attr_accessor :visibility_timeout, :max_retries
+      attr_accessor :visibility_timeout, :max_retries, :retry_backoff
 
       def initialize(options = {})
         require "mongo"
         @max_retries = options[:max_retries] || 3
+        # Seconds to delay a requeued (failed/retried) job before it is eligible
+        # again. Default 0 = available on the very next dequeue, so a fail()'d job
+        # retries immediately (matching the lite backend) instead of waiting out
+        # the visibility window.
+        @retry_backoff = (options[:retry_backoff] || 0).to_f
 
         uri = options[:uri] || ENV["TINA4_MONGO_URI"]
         host = options[:host] || ENV.fetch("TINA4_MONGO_HOST", "localhost")
@@ -134,10 +139,58 @@ module Tina4
         collection.delete_one(_id: message.id)
       end
 
+      # Terminal success — the job is done and removed (mirrors the lite
+      # backend's complete()). Without this, job.complete() was a no-op on
+      # MongoDB and the document stayed "processing" forever.
+      def complete(message)
+        collection.delete_one(_id: message.id)
+      end
+
+      # Record a failed attempt (mirrors the lite backend + the Python Mongo
+      # adapter). Increments attempts; while attempts < max_retries the job is
+      # re-queued to pending (visible again immediately, or after retry_backoff),
+      # otherwise it is dead-lettered. The Queue/Job lifecycle expects fail() to
+      # route the requeue here — previously MongoBackend had no fail(), so
+      # job.fail() degraded to in-memory bookkeeping and never touched Mongo.
+      def fail(job, error = "")
+        job.attempts += 1
+        if job.attempts >= @max_retries
+          collection.find_one_and_update(
+            { _id: job.id },
+            { "$set" => { status: "dead", topic: "#{job.topic}.dead_letter",
+                          error: error, reserved_at: nil } },
+            upsert: true
+          )
+        else
+          requeue_with_error(job, error)
+        end
+      end
+
+      # Explicit re-queue requested by the caller (job.retry()). Always
+      # re-enqueues regardless of the retry limit — a manual override, distinct
+      # from the automatic fail() path. Increments attempts, clears the error.
+      def retry(job, delay_seconds: 0)
+        job.attempts += 1
+        backoff = delay_seconds.to_f > 0 ? delay_seconds.to_f : @retry_backoff
+        collection.find_one_and_update(
+          { _id: job.id },
+          { "$set" => { status: "pending", error: nil, reserved_at: nil,
+                        available_at: requeue_available_at(backoff) } },
+          upsert: true
+        )
+      end
+
       def requeue(message)
+        # Reset available_at so the requeued job is visible again right away (or
+        # after retry_backoff) and clear reserved_at. dequeue() pushed
+        # available_at out to the reservation expiry; leaving it there stranded a
+        # requeued job for the full visibility window instead of retrying it on
+        # the next pop().
         collection.find_one_and_update(
           { _id: message.id },
-          { "$set" => { status: "pending" }, "$inc" => { attempts: 1 } },
+          { "$set" => { status: "pending", reserved_at: nil,
+                        available_at: requeue_available_at(@retry_backoff) },
+            "$inc" => { attempts: 1 } },
           upsert: true
         )
       end
@@ -172,7 +225,11 @@ module Tina4
       def retry_failed(topic, max_retries: 3)
         result = collection.update_many(
           { topic: topic, status: "failed", attempts: { "$lt" => max_retries } },
-          { "$set" => { status: "pending" } }
+          # Reset available_at so re-queued failed jobs are visible again — they
+          # were reserved with available_at in the future at dequeue. Clear
+          # reserved_at too. (Same Bug B reason as requeue/fail.)
+          { "$set" => { status: "pending", error: nil, reserved_at: nil,
+                        available_at: requeue_available_at(@retry_backoff) } }
         )
         result.modified_count
       end
@@ -182,6 +239,31 @@ module Tina4
       end
 
       private
+
+      # Re-queue a failed job to pending, carrying the failure reason and
+      # resetting available_at (now, or now + retry_backoff) + clearing
+      # reserved_at so the next dequeue picks it up.
+      def requeue_with_error(job, error)
+        collection.find_one_and_update(
+          { _id: job.id },
+          # Persist the incremented attempt count (fail() already did job.attempts
+          # += 1). Without this the doc's attempts stayed at its old value, so the
+          # next dequeue surfaced a stale count, fail()'s attempts >= max_retries
+          # check never tripped, and the job was re-queued forever instead of
+          # dead-lettering.
+          { "$set" => { status: "pending", error: error, reserved_at: nil,
+                        attempts: job.attempts,
+                        available_at: requeue_available_at(@retry_backoff) } },
+          upsert: true
+        )
+      end
+
+      # available_at for a re-queued job: now (immediately retryable) or
+      # now + backoff when a backoff is configured.
+      def requeue_available_at(backoff)
+        b = (backoff || 0).to_f
+        b > 0 ? (Time.now.utc + b) : Time.now.utc
+      end
 
       def collection
         @db[@collection_name]
