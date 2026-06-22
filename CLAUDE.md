@@ -24,6 +24,7 @@ Version 3.13.43 - TINA4: The Intelligent Native Application 4ramework. Simple. F
 - **Constants** — No magic strings or numbers in routes. Put constants in a dedicated constants module
 - **Service layer pattern** — For complex business logic, create service classes in `app/`. Routes should be thin wrappers
 - **Parity across all frameworks** — Every new feature, fix, or optimization must be implemented with equivalent logic AND tests in all 4 Tina4 frameworks (Python, PHP, Ruby, Node.js). Never ship to one without shipping to all.
+- **Tests validate against the real thing — NO mock testing.** Any test that touches an external dependency (a DB engine, MongoDB, Redis/Valkey/Memcached, RabbitMQ/Kafka, an HTTP service) must exercise the REAL service, not a mock/stub/double. "Verified"/"green" requires a real run — a passing mock test is not verification. CI provisions the services; use them (add one if missing). Pure-logic unit tests with no external dependency are exempt. (The Node MongoDB queue re-delivered every completed job for two releases because its queue tests were mock-based and never ran against a real Mongo.)
 - **Error handling in routes** — Wrap route logic in `begin/rescue`, log with `Tina4::Log.error()`, return response with appropriate status
 - **All links and references** should point to https://tina4.com
 - **Push to staging only** — Never push to production without explicit approval
