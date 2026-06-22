@@ -253,6 +253,57 @@ RSpec.describe Tina4::Queue do
     end
   end
 
+  # Contract: queues are isolated by topic and by storage path. A job pushed to
+  # one topic must never leak into another, and a queue on a fresh storage path
+  # must start empty. Locks in the per-topic layout so a backend change can't
+  # silently cross-contaminate.
+  describe "isolation contract" do
+    it "isolates topics on the same backend/path" do
+      topic_a = Tina4::Queue.new(topic: "topic_a", backend: backend)
+      topic_b = Tina4::Queue.new(topic: "topic_b", backend: backend)
+
+      topic_a.push({ to: "a" })
+      topic_a.push({ to: "a2" })
+
+      # topic_b shares the base path but must see none of topic_a's jobs.
+      expect(topic_b.size).to eq(0)
+      expect(topic_b.pop).to be_nil
+      expect(topic_a.size).to eq(2)
+    end
+
+    it "leaves the other topic intact when one is drained" do
+      topic_a = Tina4::Queue.new(topic: "topic_a", backend: backend)
+      topic_b = Tina4::Queue.new(topic: "topic_b", backend: backend)
+      topic_a.push({ to: "a" })
+      topic_b.push({ to: "b" })
+
+      expect(topic_a.pop.payload["to"]).to eq("a")
+      expect(topic_a.pop).to be_nil
+
+      # topic_b is untouched.
+      expect(topic_b.size).to eq(1)
+      expect(topic_b.pop.payload["to"]).to eq("b")
+    end
+
+    it "starts empty on a fresh storage path" do
+      first = Tina4::Queue.new(topic: "jobs", backend: backend)
+      first.push({ n: 1 })
+      first.push({ n: 2 })
+      expect(first.size).to eq(2)
+
+      # A second backend on a DIFFERENT base path sees zero jobs.
+      other_dir = Dir.mktmpdir("tina4_queue_iso_test")
+      begin
+        other_backend = Tina4::QueueBackends::LiteBackend.new(dir: other_dir)
+        second = Tina4::Queue.new(topic: "jobs", backend: other_backend)
+        expect(second.size).to eq(0)
+        expect(second.pop).to be_nil
+      ensure
+        FileUtils.rm_rf(other_dir)
+      end
+    end
+  end
+
   describe "backend auto-detection" do
     it "defaults to lite backend when no env set" do
       ENV.delete("TINA4_QUEUE_BACKEND")
