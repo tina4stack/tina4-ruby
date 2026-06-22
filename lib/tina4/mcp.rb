@@ -131,38 +131,71 @@ module Tina4
     schema
   end
 
-  # Check if the server is running on localhost.
+  # Informational only — whether the CONFIGURED host looks local.
+  #
+  # NOT the security gate. This reads TINA4_HOST_NAME (the configured bind
+  # address), which on a 0.0.0.0 bind looks "local" while still accepting
+  # remote clients. Trust decisions use {request_allowed?} with the RAW
+  # socket peer instead. Kept for diagnostics / back-compat.
   def self.is_localhost?
     host = ENV.fetch("TINA4_HOST_NAME", "localhost:7145").split(":").first
     ["localhost", "127.0.0.1", "0.0.0.0", "::1", ""].include?(host)
   end
 
-  # Resolve whether the built-in MCP dev server should be active.
+  # Whether an address is a loopback (in-process / same-host) peer.
   #
-  # Resolution order (highest priority first):
-  #   1. TINA4_MCP set explicitly → use that (truthy/falsey). Honoured on ANY
-  #      host. An explicit `true` is how a sysadmin opts a remote /
-  #      debug-disabled deployment in (e.g. for a remote AI assistant); an
-  #      explicit `false` force-disables it everywhere.
-  #   2. TINA4_DEBUG=true → implicit on for dev, but LOCALHOST-ONLY unless
-  #      TINA4_MCP_REMOTE=true. The MCP dev tools expose powerful operations
-  #      (DB query, file read/WRITE, route listing), so they never auto-expose
-  #      on a non-localhost host without an explicit opt-in.
+  # Operates on the RAW socket peer, never X-Forwarded-For. Empty means an
+  # in-process / synthetic request (no socket) and is trusted. The `::ffff:`
+  # IPv4-mapped prefix is stripped. NOTE: 0.0.0.0 is a BIND address, never a
+  # client address, so it is deliberately NOT loopback.
+  #
+  # Python master parity: tina4_python.mcp.is_loopback.
+  def self.is_loopback?(ip)
+    return true if ip.nil? || ip.to_s.empty?
+
+    addr = ip.to_s.strip.downcase
+    addr = addr[7..] if addr.start_with?("::ffff:")
+    addr == "::1" || addr == "localhost" || addr.start_with?("127.")
+  end
+
+  # Capability gate — whether the MCP subsystem may run at all.
+  #
+  # Pure capability, host-INDEPENDENT (Python master parity):
+  #   1. TINA4_MCP set explicitly → use it (sysadmin override, any host).
+  #   2. Else TINA4_DEBUG truthy → MCP is a capability of this deployment.
   #   3. Otherwise off.
   #
-  # Mirrors the Python master (tina4_python/mcp/__init__.py is_enabled). Before
-  # v3.13.39 is_localhost? was dead code and TINA4_MCP_REMOTE was never read, so
-  # the documented localhost guard was not actually enforced — a non-localhost
-  # TINA4_DEBUG=true deployment auto-exposed the dev tools. This wires it.
+  # This NO LONGER consults the host. A debug box bound to 0.0.0.0 still "has"
+  # the capability, but {request_allowed?} is what decides whether a given
+  # CALLER may use it — loopback always, remote only with an explicit opt-in
+  # plus a valid token. Splitting capability from per-request authorisation
+  # closes the hole where a 0.0.0.0 bind auto-exposed DB/file tools to remote
+  # unauthenticated callers (pre-3.13.40 is_localhost? treated 0.0.0.0 local).
   def self.mcp_enabled?
     explicit = ENV["TINA4_MCP"]
     if explicit && !explicit.empty?
       return truthy?(explicit)
     end
-    return false unless truthy?(ENV["TINA4_DEBUG"])
 
-    # Dev auto-enable: localhost only, unless explicitly opted into remote.
-    is_localhost? || truthy?(ENV["TINA4_MCP_REMOTE"])
+    truthy?(ENV["TINA4_DEBUG"])
+  end
+
+  # Per-request authorisation — whether THIS caller may use MCP.
+  #
+  # @param remote_ip [String] raw socket peer (env["REMOTE_ADDR"]), never XFF.
+  # @param has_valid_token [Boolean] true when the request carried a token
+  #   matching TINA4_MCP_TOKEN.
+  #
+  # Rules (Python master parity, tina4_python.mcp.is_request_allowed):
+  #   - Capability off ({mcp_enabled?} false) → deny.
+  #   - Loopback peer → allow.
+  #   - Remote peer → only when TINA4_MCP_REMOTE is truthy AND a valid token
+  #     was presented. No configured token ⇒ remote can never pass.
+  def self.request_allowed?(remote_ip, has_valid_token: false)
+    return false unless mcp_enabled?
+    return true if is_loopback?(remote_ip)
+
+    truthy?(ENV["TINA4_MCP_REMOTE"]) && has_valid_token
   end
 
   # Case-insensitive truthiness for env values: true/1/yes/on.
@@ -593,8 +626,26 @@ module Tina4
         err = looks_like_prose.call(rel_path)
         raise ArgumentError, "Invalid path #{rel_path.inspect}: #{err}" if err
         resolved = File.expand_path(rel_path, project_root)
-        unless resolved.start_with?(project_root)
+        # Compare against root + separator, not a bare prefix: a plain
+        # start_with?(project_root) would also accept a sibling like
+        # "<root>-evil". expand_path already resolves ".." so a climb-out
+        # lands outside root and is rejected here.
+        root_prefix = "#{project_root.chomp(File::SEPARATOR)}#{File::SEPARATOR}"
+        unless resolved == project_root || resolved.start_with?(root_prefix)
           raise ArgumentError, "Path escapes project directory: #{rel_path}"
+        end
+        # Belt-and-braces against symlink escapes: if the path already exists,
+        # canonicalise it and re-check containment. A symlink inside the tree
+        # pointing outside would otherwise slip past the textual check. New
+        # paths (parent not created yet) have no realpath and rely on the
+        # expand_path containment above.
+        if File.exist?(resolved)
+          real = File.realpath(resolved)
+          real_root = File.realpath(project_root)
+          real_prefix = "#{real_root.chomp(File::SEPARATOR)}#{File::SEPARATOR}"
+          unless real == real_root || real.start_with?(real_prefix)
+            raise ArgumentError, "Path escapes project directory: #{rel_path}"
+          end
         end
         resolved
       end
@@ -663,7 +714,22 @@ module Tina4
         db = Tina4.database
         return { "error" => "No database connection" } if db.nil?
         param_list = params.is_a?(String) ? JSON.parse(params) : params
-        result = db.fetch(sql, param_list)
+        param_list = [] unless param_list.is_a?(Array)
+        # Defense-in-depth: this tool is read-only. Strip comments, reject
+        # multiple statements, and require a leading SELECT/WITH so it can
+        # never mutate data even if reached (database_execute is the write
+        # surface, gated separately). Mirrors the Python master.
+        cleaned = sql.to_s.gsub(/--[^\r\n]*/, " ").gsub(%r{/\*.*?\*/}m, " ")
+        cleaned = cleaned.strip.sub(/[;\s]+\z/, "")
+        return { "error" => "database_query rejects multiple statements" } if cleaned.include?(";")
+        unless cleaned =~ /\A(select|with)\b/i
+          return { "error" => "database_query is read-only (SELECT/WITH only)" }
+        end
+        begin
+          result = db.fetch(cleaned, param_list)
+        rescue => e
+          return { "error" => (db.get_error rescue nil) || e.message }
+        end
         { "records" => result.to_a, "count" => result.count }
       }, "Execute a read-only SQL query (SELECT)")
 
@@ -692,6 +758,12 @@ module Tina4
       server.register_tool("database_columns", lambda { |table:|
         db = Tina4.database
         return { "error" => "No database connection" } if db.nil?
+        # Constrain the table name to a safe identifier (optionally
+        # schema-qualified) — defense-in-depth so it can never be abused for
+        # injection even if an adapter interpolates it. Parity with Python/PHP.
+        unless table.to_s =~ /\A[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?\z/
+          return { "error" => "Invalid table name" }
+        end
         db.columns(table)
       }, "Get column definitions for a table")
 

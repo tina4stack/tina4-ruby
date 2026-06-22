@@ -164,34 +164,82 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
   end
 
   # The MCP dev tools expose powerful ops (DB query, file read/WRITE, route
-  # list), so even with TINA4_DEBUG=true the JSON-RPC/SSE endpoints are gated on
-  # Tina4.mcp_enabled? — dev auto-enable is LOCALHOST-ONLY unless opted into
-  # remote. A debug-on but non-localhost host must NOT expose them.
-  context "when debug mode is enabled on a NON-localhost host" do
+  # list). After the 3.13.40 capability/per-request split, TINA4_DEBUG=true
+  # turns the capability ON regardless of host; what stops a REMOTE caller is
+  # the per-request gate driven by the RAW socket peer (REMOTE_ADDR), never
+  # X-Forwarded-For. A remote caller is denied unless TINA4_MCP_REMOTE=true AND
+  # a valid TINA4_MCP_TOKEN is presented.
+  context "when debug mode is enabled and the caller is REMOTE" do
+    # Build an env with an explicit raw socket peer + optional headers.
+    def post_remote(payload, remote_ip:, headers: {}, path: "/__dev/mcp/message")
+      env = {
+        "PATH_INFO"      => path,
+        "REQUEST_METHOD" => "POST",
+        "QUERY_STRING"   => "",
+        "REMOTE_ADDR"    => remote_ip,
+        "rack.input"     => StringIO.new(payload.is_a?(String) ? payload : JSON.generate(payload))
+      }.merge(headers)
+      Tina4::DevAdmin.handle_request(env)
+    end
+
+    def get_remote(path, remote_ip:, headers: {})
+      Tina4::DevAdmin.handle_request({
+        "PATH_INFO" => path, "REQUEST_METHOD" => "GET",
+        "QUERY_STRING" => "", "REMOTE_ADDR" => remote_ip
+      }.merge(headers))
+    end
+
     before do
       allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
       allow(ENV).to receive(:[]).with("TINA4_MCP").and_return(nil)
       allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return(nil)
-      allow(ENV).to receive(:fetch).and_call_original
-      allow(ENV).to receive(:fetch)
-        .with("TINA4_HOST_NAME", anything).and_return("myserver.example.com:7145")
+      allow(ENV).to receive(:[]).with("TINA4_MCP_TOKEN").and_return(nil)
+      allow(ENV).to receive(:[]).with("TINA4_API_KEY").and_return(nil)
     end
 
-    it "404s (returns nil) for POST /__dev/mcp/message — no localhost, no remote opt-in" do
-      expect(post_jsonrpc({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping" })).to be_nil
+    it "404s a remote caller with no opt-in (POST /__dev/mcp/message)" do
+      status, = post_remote({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping" }, remote_ip: "8.8.8.8")
+      expect(status).to eq(404)
     end
 
-    it "404s (returns nil) for GET /__dev/mcp/sse — no localhost, no remote opt-in" do
-      expect(get_path("/__dev/mcp/sse")).to be_nil
+    it "404s a remote caller for GET /__dev/mcp/sse" do
+      status, = get_remote("/__dev/mcp/sse", remote_ip: "8.8.8.8")
+      expect(status).to eq(404)
     end
 
-    it "is exposed again once TINA4_MCP_REMOTE=true opts the remote host in" do
+    it "ignores a spoofed X-Forwarded-For — the raw peer still governs" do
+      status, = post_remote(
+        { "jsonrpc" => "2.0", "id" => 1, "method" => "ping" },
+        remote_ip: "8.8.8.8", headers: { "HTTP_X_FORWARDED_FOR" => "127.0.0.1" }
+      )
+      expect(status).to eq(404)
+    end
+
+    it "still denies a remote opt-in WITHOUT a valid token" do
       allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
-      result = post_jsonrpc({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping", "params" => {} })
-      expect(result).not_to be_nil
-      status, = result
+      status, = post_remote({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping" }, remote_ip: "8.8.8.8")
+      expect(status).to eq(404)
+    end
+
+    it "allows a remote caller with TINA4_MCP_REMOTE + a valid bearer token" do
+      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
+      allow(ENV).to receive(:[]).with("TINA4_MCP_TOKEN").and_return("s3cr3t-token")
+      status, = post_remote(
+        { "jsonrpc" => "2.0", "id" => 1, "method" => "ping", "params" => {} },
+        remote_ip: "8.8.8.8", headers: { "HTTP_AUTHORIZATION" => "Bearer s3cr3t-token" }
+      )
       expect(status).to eq(200)
+    end
+
+    it "denies a remote caller presenting the WRONG token" do
+      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
+      allow(ENV).to receive(:[]).with("TINA4_MCP_TOKEN").and_return("s3cr3t-token")
+      status, = post_remote(
+        { "jsonrpc" => "2.0", "id" => 1, "method" => "ping" },
+        remote_ip: "8.8.8.8", headers: { "HTTP_AUTHORIZATION" => "Bearer wrong" }
+      )
+      expect(status).to eq(404)
     end
   end
 

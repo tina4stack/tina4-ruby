@@ -363,13 +363,14 @@ RSpec.describe "Tina4 MCP" do
     end
   end
 
-  # ── Enable gate (TINA4_MCP / TINA4_DEBUG / localhost / TINA4_MCP_REMOTE) ──
+  # ── Capability gate (TINA4_MCP / TINA4_DEBUG) ──
   #
-  # Mirrors the Python master's is_enabled() matrix
-  # (tina4_python/mcp/__init__.py). The MCP dev tools expose powerful ops
-  # (DB query, file read/WRITE, route list), so dev auto-enable is
-  # localhost-only unless explicitly opted into remote, and an explicit
-  # TINA4_MCP wins on ANY host (sysadmin opt-in/out).
+  # Mirrors the Python master's is_enabled() (tina4_python/mcp/__init__.py)
+  # after the 3.13.40 split: mcp_enabled? is a pure CAPABILITY gate, host
+  # INDEPENDENT. Explicit TINA4_MCP wins on any host, else TINA4_DEBUG. It no
+  # longer consults the host — per-request authorisation (request_allowed?)
+  # is what stops a remote caller. Locking host-independence here is the
+  # regression guard for the old 0.0.0.0-looks-local hole.
   describe "Tina4.mcp_enabled?" do
     around(:each) do |example|
       saved = %w[TINA4_MCP TINA4_DEBUG TINA4_HOST_NAME TINA4_MCP_REMOTE]
@@ -399,22 +400,25 @@ RSpec.describe "Tina4 MCP" do
       expect(Tina4.mcp_enabled?).to be false
     end
 
-    it "dev auto-enables on localhost when TINA4_DEBUG=true" do
+    it "the capability is on whenever TINA4_DEBUG=true (localhost)" do
       ENV["TINA4_DEBUG"] = "true"
       ENV["TINA4_HOST_NAME"] = "localhost:7145"
       expect(Tina4.mcp_enabled?).to be true
     end
 
-    it "does NOT auto-enable on a remote host even with TINA4_DEBUG=true" do
+    it "the capability is host-independent — on with TINA4_DEBUG even on a public host" do
+      # New behaviour: the capability is host-independent. A remote caller is
+      # stopped by request_allowed?, not by flipping the capability off.
       ENV["TINA4_DEBUG"] = "true"
       ENV["TINA4_HOST_NAME"] = "myserver.example.com:7145"
-      expect(Tina4.mcp_enabled?).to be false
+      expect(Tina4.mcp_enabled?).to be true
     end
 
-    it "TINA4_MCP_REMOTE=true opens the remote host under TINA4_DEBUG=true" do
+    it "a configured 0.0.0.0 host does NOT flip the gate (regression)" do
+      # Old bug: mcp_enabled? routed through is_localhost?, which treated
+      # 0.0.0.0 as local. It now ignores the host entirely.
       ENV["TINA4_DEBUG"] = "true"
-      ENV["TINA4_HOST_NAME"] = "myserver.example.com:7145"
-      ENV["TINA4_MCP_REMOTE"] = "true"
+      ENV["TINA4_HOST_NAME"] = "0.0.0.0:7145"
       expect(Tina4.mcp_enabled?).to be true
     end
   end

@@ -644,22 +644,25 @@ module Tina4
           json_response(deps_install(body))
         when ["GET", "/__dev/api/git/status"]
           json_response(git_status_payload)
+        # All four MCP surfaces (REST shim + JSON-RPC + SSE) go through
+        # with_mcp_gate: capability (Tina4.mcp_enabled?) decides whether MCP
+        # runs at all (off → route behaves as unmounted, nil → RackApp 404,
+        # no info leak); per-request authorisation on the RAW socket peer +
+        # token decides whether THIS caller may use it (loopback always,
+        # remote only with TINA4_MCP_REMOTE + a valid TINA4_MCP_TOKEN — denied
+        # → 404 mcp_forbidden). The dev tools expose powerful ops (DB query,
+        # file read/WRITE, route listing). Mirrors the Python master gate.
         when ["GET", "/__dev/api/mcp/tools"]
-          json_response(mcp_tools_list)
+          with_mcp_gate(env) { json_response(mcp_tools_list) }
         when ["POST", "/__dev/api/mcp/call"]
-          body = read_json_body(env) || {}
-          json_response(mcp_tool_call(body))
-        # JSON-RPC + SSE endpoints that real MCP clients (Claude Code/Desktop)
-        # speak. The dev tools expose powerful ops (DB query, file read/WRITE,
-        # route listing), so beyond the dev-toolbar's TINA4_DEBUG check they are
-        # gated on Tina4.mcp_enabled? — explicit TINA4_MCP wins on any host, else
-        # dev auto-enable is LOCALHOST-ONLY unless TINA4_MCP_REMOTE=true. Not
-        # enabled → falls through to the `else` (nil), so RackApp 404s it. They
-        # share the default MCP server's tool registry with the REST shim.
+          with_mcp_gate(env) do
+            body = read_json_body(env) || {}
+            json_response(mcp_tool_call(body))
+          end
         when ["POST", "/__dev/mcp"], ["POST", "/__dev/mcp/message"]
-          Tina4.mcp_enabled? ? mcp_jsonrpc(env) : nil
+          with_mcp_gate(env) { mcp_jsonrpc(env) }
         when ["GET", "/__dev/mcp/sse"]
-          Tina4.mcp_enabled? ? mcp_sse_handshake : nil
+          with_mcp_gate(env) { mcp_sse_handshake }
         when ["GET", "/__dev/api/scaffold"]
           json_response(scaffold_templates)
         when ["POST", "/__dev/api/scaffold/run"]
@@ -1584,6 +1587,70 @@ module Tina4
         rescue => e
           { error: "git unavailable: #{e.message}" }
         end
+      end
+
+      # Gate an MCP surface. Yields to the handler block only for an authorised
+      # caller. Returns:
+      #   nil            — capability off (route behaves as unmounted → 404, no
+      #                    "MCP exists" info leak; matches PHP not mounting it)
+      #   mcp_forbidden  — capability on but this caller is denied (explicit 404)
+      #   block result   — authorised caller proceeds
+      def with_mcp_gate(env)
+        return nil unless Tina4.mcp_enabled?
+        return mcp_forbidden unless mcp_request_allowed?(env)
+
+        yield
+      end
+
+      # 404 payload for a disallowed MCP request (parity with Python/PHP).
+      def mcp_forbidden
+        [404, { "content-type" => "application/json; charset=utf-8" },
+         [JSON.generate({ "error" => "MCP forbidden" })]]
+      end
+
+      # Per-request MCP authorisation using the RAW socket peer.
+      #
+      # Reads env["REMOTE_ADDR"] (never X-Forwarded-For — spoofable) and the
+      # token, then delegates to Tina4.request_allowed?. Loopback is always
+      # allowed; a remote caller needs TINA4_MCP_REMOTE=true plus a valid
+      # token. Mirrors the Python dev_admin _mcp_request_allowed.
+      def mcp_request_allowed?(env)
+        remote_ip = (env["REMOTE_ADDR"] || "").to_s
+        Tina4.request_allowed?(remote_ip, has_valid_token: mcp_token_ok?(env))
+      end
+
+      # Whether the request carried a token matching TINA4_MCP_TOKEN.
+      #
+      # Token transports (in order): Authorization: Bearer, X-MCP-Token,
+      # X-Api-Key. Compared timing-safe against TINA4_MCP_TOKEN (fallback
+      # TINA4_API_KEY). With NO configured token this returns false, so a
+      # remote caller can never present a "valid" token by accident.
+      def mcp_token_ok?(env)
+        expected = ENV["TINA4_MCP_TOKEN"]
+        expected = ENV["TINA4_API_KEY"] if expected.nil? || expected.empty?
+        return false if expected.nil? || expected.empty?
+
+        provided = ""
+        auth = (env["HTTP_AUTHORIZATION"] || "").to_s
+        provided = auth[7..].to_s.strip if auth.downcase.start_with?("bearer ")
+        provided = (env["HTTP_X_MCP_TOKEN"] || "").to_s if provided.empty?
+        provided = (env["HTTP_X_API_KEY"] || "").to_s if provided.empty?
+        return false if provided.empty?
+
+        secure_equal?(expected.to_s, provided)
+      end
+
+      # Constant-time string comparison (length check first so the
+      # fixed-length compare never raises on a mismatch).
+      def secure_equal?(expected, provided)
+        return false unless expected.bytesize == provided.bytesize
+
+        OpenSSL.fixed_length_secure_compare(expected, provided)
+      rescue StandardError
+        # Fallback for very old OpenSSL without fixed_length_secure_compare.
+        res = 0
+        expected.bytes.zip(provided.bytes) { |a, b| res |= (a ^ b.to_i) }
+        res.zero?
       end
 
       def mcp_tools_list
