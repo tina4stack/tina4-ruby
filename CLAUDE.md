@@ -462,6 +462,26 @@ Tina4::Router.get("/api/users") do |request, response|
 end
 ```
 
+### DocStore — pymongo-style document store (zero-config SQLite fallback)
+
+`Tina4::DocStore.get_collection(name)` returns a Mongo-style collection. When a Mongo URI is configured (and the `mongo` gem is present) it is a real Mongo collection; otherwise it is a `Tina4::DocStore::SqliteCollection` backed by a local SQLite file using JSON1. The call sites are identical either way — only the backend differs — so you develop against a zero-dependency local store and switch to MongoDB in production by setting one env var.
+
+```ruby
+orders = Tina4::DocStore.get_collection("orders")
+res = orders.insert_one({ "customer_id" => 1, "total" => 9.99, "status" => "new" })
+orders.find_one({ "_id" => res.inserted_id })
+orders.update_one({ "_id" => res.inserted_id }, { "$set" => { "status" => "shipped" } })
+orders.find({ "total" => { "$gt" => 5 } }).sort("total", -1).limit(10).each { |doc| }
+orders.count_documents({ "status" => "shipped" })
+Tina4::DocStore.serverless?   # true when running on the SQLite fallback
+```
+
+Filter operators: equality, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$exists`, `$regex`, implicit AND, `$or`, `$and`, and dotted nested keys (`addr.city`). Updates: `$set`, `$unset`, `$inc`, replace, upsert. Cursors: `sort`, `limit`, `skip`, projection. Values round-trip (Time to/from ISO-8601, `ObjectId` to/from 24-hex) and stay queryable via `json_extract`. Non-goals: aggregation pipelines, `$elemMatch`, geo queries.
+
+Selection and configuration:
+- `TINA4_MONGO_URI` — app-wide Mongo URI. Falls back to `TINA4_SESSION_MONGO_URI`, then the legacy `TINA4_SESSION_MONGO_URL`. When one is set and the gem is present, `get_collection` returns a real Mongo collection.
+- `TINA4_DOC_STORE_PATH` — SQLite file for the fallback store (default `data/tina4_docstore.db`).
+
 ### Template — ERB/Twig engine
 
 ```ruby
