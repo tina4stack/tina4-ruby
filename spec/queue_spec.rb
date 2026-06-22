@@ -633,6 +633,106 @@ RSpec.describe Tina4::Queue do
   end
 end
 
+# ── consume()/process()/produce() topic targeting (Bug A) ──────────
+#
+# consume(topic)/process(topic:) must honor the topic ARGUMENT, not the topic
+# the Queue was constructed with. Regression lock mirroring the Python master:
+# in Python pop() used the construction-time topic so consume("other") silently
+# drained the wrong queue. Ruby's consume/process pass the argument topic
+# straight to backend.dequeue(topic) and acks route by job.topic, so it has
+# always honoured the argument — these tests guard against drift. Engine-
+# agnostic (file/lite backend), so they cover every backend's read path.
+RSpec.describe "Tina4::Queue consume/process topic targeting" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_queue_topic_test") }
+  after(:each) { FileUtils.rm_rf(tmp_dir) }
+
+  def topic_queue(topic: "default", max_retries: 3)
+    backend = Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir, max_retries: max_retries)
+    Tina4::Queue.new(topic: topic, backend: backend, max_retries: max_retries)
+  end
+
+  it "consume(topic) drains the argument topic, not the construction topic" do
+    q = topic_queue(topic: "default")
+    q.push({ "where" => "default" })             # lands on 'default'
+    q.produce("alerts", { "where" => "alerts" }) # lands on 'alerts'
+
+    drained = []
+    q.consume("alerts", poll_interval: 0) do |job|
+      drained << job.payload
+      job.complete
+    end
+    expect(drained).to eq([{ "where" => "alerts" }])  # only alerts
+
+    leftover = []
+    q.consume("default", poll_interval: 0) do |job|
+      leftover << job.payload
+      job.complete
+    end
+    expect(leftover).to eq([{ "where" => "default" }])  # default untouched
+  end
+
+  it "consume() with no topic uses the construction topic" do
+    q = topic_queue(topic: "orders")
+    q.push({ "id" => 1 })
+    drained = []
+    q.consume(poll_interval: 0) { |job| drained << job.payload; job.complete }
+    expect(drained).to eq([{ "id" => 1 }])
+  end
+
+  it "process(topic:) targets the requested topic" do
+    q = topic_queue(topic: "default")
+    q.produce("work", { "v" => 1 })
+    q.produce("work", { "v" => 2 })
+    seen = []
+    q.process(topic: "work") do |job|
+      seen << job.payload["v"]
+      job.complete
+    end
+    expect(seen).to eq([1, 2])
+  end
+
+  it "isolates topics: draining one leaves the other intact" do
+    q = topic_queue(topic: "default")
+    3.times { |i| q.produce("orders", { "k" => "order", "i" => i }) }
+    2.times { |i| q.produce("emails", { "k" => "email", "i" => i }) }
+
+    drained = []
+    q.consume("orders", poll_interval: 0) { |job| drained << job.payload; job.complete }
+    expect(drained.length).to eq(3)
+    expect(drained.all? { |d| d["k"] == "order" }).to be true
+
+    remaining = []
+    q.consume("emails", poll_interval: 0) { |job| remaining << job.payload; job.complete }
+    expect(remaining.length).to eq(2)
+    expect(remaining.all? { |d| d["k"] == "email" }).to be true
+  end
+
+  it "produce(topic) retargets per call and never leaks across topics" do
+    q = topic_queue(topic: "default")
+    q.produce("a", { "n" => 1 })
+    q.produce("b", { "n" => 2 })
+
+    expect(q.consume("a", poll_interval: 0).map { |j| j.complete; j.payload }).to eq([{ "n" => 1 }])
+    expect(q.consume("b", poll_interval: 0).map { |j| j.complete; j.payload }).to eq([{ "n" => 2 }])
+  end
+
+  it "an explicit backend instance survives consume/process retargeting" do
+    # consume(topic)/process(topic:) must not swap an explicitly-provided backend
+    # for the env default — Ruby reuses the same @backend the whole time.
+    backend = Tina4::QueueBackends::LiteBackend.new(dir: tmp_dir)
+    ENV["TINA4_QUEUE_BACKEND"] = "rabbitmq"   # env says rabbitmq...
+    begin
+      q = Tina4::Queue.new(topic: "default", backend: backend)  # ...explicit wins
+      q.produce("t", { "n" => 1 })
+      expect(q.backend).to equal(backend)
+      q.consume("t", poll_interval: 0) { |job| job.complete }
+      expect(q.backend).to equal(backend)   # still the same lite backend
+    ensure
+      ENV.delete("TINA4_QUEUE_BACKEND")
+    end
+  end
+end
+
 # ── Reservation / visibility timeout (file backend) ────────────────
 #
 # Regression lock for the production bug where a consumer that dies before
@@ -769,11 +869,12 @@ end
 RSpec.describe Tina4::QueueBackends::MongoBackend do
   # Construct a backend with a mock collection and explicit policy, bypassing
   # the connecting constructor (which would need a live mongod).
-  def mock_backend(visibility_timeout: 300.0, max_retries: 3)
+  def mock_backend(visibility_timeout: 300.0, max_retries: 3, retry_backoff: 0)
     backend = Tina4::QueueBackends::MongoBackend.allocate
     backend.instance_variable_set(:@collection_name, "tina4_queue")
     backend.visibility_timeout = visibility_timeout
     backend.max_retries = max_retries
+    backend.retry_backoff = retry_backoff
     collection = double("collection")
     allow(backend).to receive(:collection).and_return(collection)
     [backend, collection]
@@ -862,6 +963,177 @@ RSpec.describe Tina4::QueueBackends::MongoBackend do
       backend, collection = mock_backend(visibility_timeout: 0)
       expect(collection).not_to receive(:find_one_and_update)
       expect(backend.reclaim_expired("emails", 3)).to eq(0)
+    end
+  end
+
+  # ── Bug B: requeue/fail/retry/retry_failed reset available_at ──────
+  #
+  # On dequeue a job is reserved with available_at = now + visibility_timeout.
+  # When it is re-queued (requeue/fail-with-retries-left/retry/retry_failed) the
+  # adapter MUST reset available_at to now (or now + retry_backoff) and clear
+  # reserved_at — otherwise the requeued job stays invisible for the whole
+  # visibility window (default 300s) instead of being retryable on the next pop.
+  describe "#requeue (Bug B: resets available_at, clears reserved_at)" do
+    it "sets available_at to now and clears reserved_at on requeue" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      captured = nil
+      allow(collection).to receive(:find_one_and_update) do |_filter, update, **_opts|
+        captured = update
+      end
+
+      job = Tina4::Job.new(topic: "emails", payload: { "x" => 1 }, id: "msg-1")
+      before = Time.now.utc
+      backend.requeue(job)
+
+      set = captured["$set"]
+      expect(set[:status]).to eq("pending")
+      expect(set[:reserved_at]).to be_nil
+      # available_at is reset to ~now (not left at now + 300s).
+      expect(set[:available_at]).to be_a(Time)
+      expect(set[:available_at]).to be >= before
+      expect(set[:available_at]).to be < before + 60  # nowhere near the 300s window
+      expect(captured["$inc"][:attempts]).to eq(1)    # requeue still counts an attempt
+    end
+
+    it "delays available_at by retry_backoff when configured" do
+      backend, collection = mock_backend(visibility_timeout: 300.0, retry_backoff: 30)
+      captured = nil
+      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
+
+      before = Time.now.utc
+      backend.requeue(Tina4::Job.new(topic: "emails", payload: {}, id: "m"))
+      # available_at is pushed out by ~retry_backoff, but far short of the 300s window.
+      expect(captured["$set"][:available_at]).to be >= before + 29
+      expect(captured["$set"][:available_at]).to be < before + 60
+    end
+  end
+
+  describe "#fail (Bug B + lifecycle parity with the lite backend)" do
+    it "requeues with a reset available_at while attempts < max_retries" do
+      backend, collection = mock_backend(visibility_timeout: 300.0, max_retries: 3)
+      captured = nil
+      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
+
+      job = Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1", attempts: 0)
+      before = Time.now.utc
+      backend.fail(job, "boom")
+
+      expect(job.attempts).to eq(1)                   # incremented
+      set = captured["$set"]
+      expect(set[:status]).to eq("pending")           # re-queued, not dead
+      expect(set[:error]).to eq("boom")               # failure reason carried over
+      expect(set[:reserved_at]).to be_nil
+      # The incremented attempt count MUST be persisted to the doc. Without this
+      # the next dequeue surfaced a stale count, fail()'s attempts >= max_retries
+      # check never tripped, and the job was re-queued forever (never dead-lettered).
+      expect(set[:attempts]).to eq(1)
+      expect(set[:available_at]).to be >= before
+      expect(set[:available_at]).to be < before + 60  # visible again immediately
+    end
+
+    it "dead-letters (does not requeue) once attempts >= max_retries" do
+      backend, collection = mock_backend(visibility_timeout: 300.0, max_retries: 1)
+      captured = nil
+      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
+
+      job = Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1", attempts: 0)
+      backend.fail(job, "boom")  # attempts -> 1 >= max_retries 1
+
+      expect(job.attempts).to eq(1)
+      set = captured["$set"]
+      expect(set[:status]).to eq("dead")
+      expect(set[:topic]).to eq("emails.dead_letter")
+      expect(set[:error]).to eq("boom")
+    end
+  end
+
+  describe "#retry (Bug B: explicit manual re-queue)" do
+    it "resets available_at, clears reserved_at, clears error and increments attempts" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      captured = nil
+      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
+
+      job = Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1", attempts: 2)
+      before = Time.now.utc
+      backend.retry(job)
+
+      expect(job.attempts).to eq(3)
+      set = captured["$set"]
+      expect(set[:status]).to eq("pending")
+      expect(set[:error]).to be_nil
+      expect(set[:reserved_at]).to be_nil
+      expect(set[:available_at]).to be >= before
+      expect(set[:available_at]).to be < before + 60
+    end
+
+    it "honours an explicit delay_seconds over retry_backoff" do
+      backend, collection = mock_backend(visibility_timeout: 300.0, retry_backoff: 5)
+      captured = nil
+      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
+
+      before = Time.now.utc
+      backend.retry(Tina4::Job.new(topic: "emails", payload: {}, id: "m"), delay_seconds: 30)
+      expect(captured["$set"][:available_at]).to be >= before + 29
+    end
+  end
+
+  describe "#complete (Bug A/lifecycle: terminal ack removes the doc)" do
+    it "deletes the job document so it is not stuck reserved/processing" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      expect(collection).to receive(:delete_one).with(_id: "msg-1")
+      backend.complete(Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1"))
+    end
+  end
+
+  describe "#retry_failed (Bug B + Bug D: accepts max_retries, resets available_at)" do
+    it "accepts the max_retries kwarg the Queue passes (no ArgumentError)" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      allow(collection).to receive(:update_many).and_return(double("result", modified_count: 0))
+      expect { backend.retry_failed("emails", max_retries: 5) }.not_to raise_error
+    end
+
+    it "resets available_at and clears reserved_at on the re-queued failed jobs" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      captured = nil
+      allow(collection).to receive(:update_many) do |_filter, update, **_opts|
+        captured = update
+        double("result", modified_count: 2)
+      end
+
+      before = Time.now.utc
+      count = backend.retry_failed("emails", max_retries: 3)
+      expect(count).to eq(2)
+      set = captured["$set"]
+      expect(set[:status]).to eq("pending")
+      expect(set[:error]).to be_nil
+      expect(set[:reserved_at]).to be_nil
+      expect(set[:available_at]).to be >= before
+      expect(set[:available_at]).to be < before + 60
+    end
+  end
+
+  describe "#dequeue (Bug C: surfaces the live top-level attempts)" do
+    it "reads attempts from the top-level document, not a nested snapshot" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      allow(collection).to receive(:find_one_and_update) do |filter, _update, **_opts|
+        if filter[:status] == "pending"
+          # Top-level attempts = 2 (bumped by reclaim/reject); a stale nested
+          # snapshot inside payload would be 0. dequeue must surface the live 2.
+          { "_id" => "msg-1", "topic" => "emails",
+            "payload" => { "x" => 1, "attempts" => 0 }, "attempts" => 2 }
+        end
+      end
+
+      job = backend.dequeue("emails")
+      expect(job.attempts).to eq(2)
+    end
+  end
+
+  describe "#dead_letters (Bug D: accepts max_retries kwarg)" do
+    it "does not raise when the Queue passes max_retries" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      allow(collection).to receive(:find).and_return([])
+      expect { backend.dead_letters("emails", max_retries: 7) }.not_to raise_error
     end
   end
 
