@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.41 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.42 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -1011,6 +1011,19 @@ Environment variables (read by `lib/tina4/swagger.rb` and
 | `TINA4_SWAGGER_CONTACT_TEAM` | `SWAGGER_CONTACT_TEAM` | `info.contact.name`. |
 | `TINA4_SWAGGER_CONTACT_URL` | `SWAGGER_CONTACT_URL` | `info.contact.url`. |
 | `TINA4_SWAGGER_LICENSE` | (unset) | SPDX license name (e.g. `MIT`) -> `info.license.name`. |
+| `TINA4_SWAGGER_OPENAPI` | `3.0.3` | OpenAPI version; `3.1`/`3.1.0` -> emits `3.1.0`. |
+| `TINA4_SWAGGER_BEARER_FORMAT` | `JWT` | `bearerFormat` on the built-in `bearerAuth` scheme (e.g. `opaque` for `sk_live_` keys). |
+| `TINA4_SWAGGER_API_KEY_NAME` / `_IN` | (unset) / `header` | When the name is set, emit an `apiKeyAuth` scheme; `_IN` is header/query/cookie. |
+| `TINA4_SWAGGER_DEFAULT_SCHEME` | `bearerAuth` | Scheme a secured route uses when `swagger_meta` declares no `security`. |
+| `TINA4_SWAGGER_INCLUDE` / `_EXCLUDE` | (unset) | Comma-separated path-prefix allow-list / deny-list (`/swagger` + `/__dev` always excluded). |
+
+**Per-route security + reusable schemas (v3.13.42).** Declare via `swagger_meta:`:
+`security:` (scheme name, a `{name => [scopes]}` map, a list of maps for OR, or
+`"public"`) and a sibling `scopes:` array; `request_schema:` / `response_schemas:`
+reference schemas registered with `Tina4::Swagger.add_schema(name, schema)`.
+Register arbitrary schemes (incl. `oauth2` + scopes) via
+`Tina4::Swagger.add_security_scheme(name, definition)`. Scopes are kept valid:
+only `oauth2`/`openIdConnect` carry them; `http`/`apiKey` get `[]`.
 
 ### MCP (Model Context Protocol)
 
