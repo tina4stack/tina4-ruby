@@ -454,17 +454,26 @@ module Tina4
     end
 
     def serve_swagger_ui
+      # Honour the documented production on/off switch (TINA4_SWAGGER_ENABLED,
+      # else TINA4_DEBUG) — before v3.13.40 this was never checked and /swagger
+      # (the full API surface) was served unconditionally in production.
+      return [404, { "content-type" => "text/plain" }, ["Not Found"]] unless Tina4::Swagger.enabled?
+
+      # The UI assets load from a CDN by default (keeps the framework
+      # zero-dependency — no vendored ~1.4MB swagger-ui-dist). Air-gapped
+      # deployments point TINA4_SWAGGER_UI_CDN at a self-hosted mirror.
+      cdn = (ENV["TINA4_SWAGGER_UI_CDN"] || "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5").sub(%r{/+\z}, "")
       html = <<~HTML
         <!DOCTYPE html>
         <html lang="en">
         <head>
           <meta charset="UTF-8">
           <title>API Documentation</title>
-          <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+          <link rel="stylesheet" href="#{cdn}/swagger-ui.css">
         </head>
         <body>
           <div id="swagger-ui"></div>
-          <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+          <script src="#{cdn}/swagger-ui-bundle.js"></script>
           <script>
             SwaggerUIBundle({ url: '/swagger/openapi.json', dom_id: '#swagger-ui' });
           </script>
@@ -475,8 +484,11 @@ module Tina4
     end
 
     def serve_openapi_json
-      @openapi_json ||= JSON.generate(Tina4::Swagger.generate)
-      [200, { "content-type" => "application/json; charset=utf-8" }, [@openapi_json]]
+      return [404, { "content-type" => "application/json; charset=utf-8" }, ['{"error":"Not Found"}']] unless Tina4::Swagger.enabled?
+
+      # Regenerate per request — DevReload adds routes in-process (same PID), so
+      # a memoized spec would go stale until restart. Swagger.generate is cheap.
+      [200, { "content-type" => "application/json; charset=utf-8" }, [JSON.generate(Tina4::Swagger.generate)]]
     end
 
     def handle_403(path = "")

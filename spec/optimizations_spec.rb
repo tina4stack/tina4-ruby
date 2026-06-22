@@ -97,21 +97,30 @@ RSpec.describe "Performance optimizations" do
     end
   end
 
-  describe "OpenAPI spec caching" do
-    it "caches the JSON output after first call" do
+  describe "OpenAPI spec generation" do
+    # v3.13.40: the spec is regenerated per request (the old per-process memoize
+    # went stale after a DevReload route add — same PID, cached spec). Generation
+    # is cheap (one pass over the route table) and freshness matters more.
+    it "regenerates a fresh spec on every request so new routes appear" do
+      around_env = ENV["TINA4_SWAGGER_ENABLED"]
+      ENV["TINA4_SWAGGER_ENABLED"] = "true"
+      Tina4::Router.clear!
       app = Tina4::RackApp.new(root_dir: Dir.pwd)
-      # Call serve_openapi_json twice via the Rack interface
-      env1 = { "REQUEST_METHOD" => "GET", "PATH_INFO" => "/swagger/openapi.json",
-               "QUERY_STRING" => "", "rack.input" => StringIO.new("") }
-      env2 = env1.dup
+      env = { "REQUEST_METHOD" => "GET", "PATH_INFO" => "/swagger/openapi.json",
+              "QUERY_STRING" => "", "rack.input" => StringIO.new("") }
 
-      status1, _headers1, body1 = app.call(env1)
-      status2, _headers2, body2 = app.call(env2)
-
+      status1, _h1, body1 = app.call(env.dup)
       expect(status1).to eq(200)
+      expect(JSON.parse(body1.join)["paths"]).not_to have_key("/api/fresh_route")
+
+      # Register a route AFTER the first spec was served — it must show up next call.
+      Tina4.get("/api/fresh_route") { |_req, res| res.json({}) }
+      status2, _h2, body2 = app.call(env.dup)
       expect(status2).to eq(200)
-      # Same object reference — cached, not regenerated
-      expect(body1.first.object_id).to eq(body2.first.object_id)
+      expect(JSON.parse(body2.join)["paths"]).to have_key("/api/fresh_route")
+    ensure
+      ENV["TINA4_SWAGGER_ENABLED"] = around_env
+      Tina4::Router.clear!
     end
   end
 

@@ -59,17 +59,37 @@ RSpec.describe Tina4::RackApp do
       expect(status).to eq(404)
     end
 
-    it "serves swagger UI" do
+    it "serves swagger UI when enabled" do
+      saved = ENV["TINA4_SWAGGER_ENABLED"]
+      ENV["TINA4_SWAGGER_ENABLED"] = "true"
       status, _headers, body = app.call(mock_env("GET", "/swagger"))
       expect(status).to eq(200)
       expect(body.join).to include("swagger-ui")
+    ensure
+      ENV["TINA4_SWAGGER_ENABLED"] = saved
     end
 
-    it "serves OpenAPI JSON spec" do
-      status, headers, body = app.call(mock_env("GET", "/swagger/openapi.json"))
+    it "404s swagger UI when disabled (production gate)" do
+      saved_e = ENV["TINA4_SWAGGER_ENABLED"]
+      saved_d = ENV["TINA4_DEBUG"]
+      ENV["TINA4_SWAGGER_ENABLED"] = "false"
+      ENV.delete("TINA4_DEBUG")
+      status, = app.call(mock_env("GET", "/swagger"))
+      expect(status).to eq(404)
+    ensure
+      ENV["TINA4_SWAGGER_ENABLED"] = saved_e
+      ENV["TINA4_DEBUG"] = saved_d
+    end
+
+    it "serves OpenAPI JSON spec when enabled" do
+      saved = ENV["TINA4_SWAGGER_ENABLED"]
+      ENV["TINA4_SWAGGER_ENABLED"] = "true"
+      status, _headers, body = app.call(mock_env("GET", "/swagger/openapi.json"))
       expect(status).to eq(200)
       spec = JSON.parse(body.join)
       expect(spec["openapi"]).to eq("3.0.3")
+    ensure
+      ENV["TINA4_SWAGGER_ENABLED"] = saved
     end
 
     it "handles exceptions with 500" do
