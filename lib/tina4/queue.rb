@@ -17,15 +17,29 @@ module Tina4
   #   # Or pass a backend instance directly (legacy)
   #   queue = Queue.new(topic: "tasks", backend: my_backend)
   class Queue
-    attr_reader :topic, :max_retries, :retry_backoff
+    attr_reader :topic, :max_retries, :retry_backoff, :visibility_timeout
 
-    def initialize(topic:, backend: nil, max_retries: 3, retry_backoff: 0)
+    def initialize(topic:, backend: nil, max_retries: 3, retry_backoff: 0, visibility_timeout: nil)
       @topic = topic
       @max_retries = max_retries
       # Seconds to wait before a failed job is re-attempted (lite backend).
       # Default 0 = retry on the very next pop/consume iteration.
       @retry_backoff = retry_backoff
+      # Reservation/visibility timeout (seconds). A popped job is reserved for
+      # this long; if the consumer dies before complete()/fail() the next pop()
+      # reclaims it (at-least-once delivery). Falls back to
+      # TINA4_QUEUE_VISIBILITY_TIMEOUT, else 300 (5 min). <= 0 disables reclaim.
+      # RabbitMQ/Kafka ignore it — the broker owns redelivery.
+      @visibility_timeout =
+        visibility_timeout.nil? ? self.class.default_visibility_timeout : visibility_timeout.to_f
       @backend = resolve_backend_arg(backend)
+    end
+
+    # Reservation/visibility timeout in seconds, from env (default 300 = 5 min).
+    def self.default_visibility_timeout
+      Float(ENV.fetch("TINA4_QUEUE_VISIBILITY_TIMEOUT", "300"))
+    rescue ArgumentError, TypeError
+      300.0
     end
 
     # Push a job onto the queue. Returns the Job.
@@ -207,6 +221,8 @@ module Tina4
       case status.to_s
       when "pending"
         @backend.size(@topic)
+      when "reserved"
+        @backend.respond_to?(:reserved_count) ? @backend.reserved_count(@topic) : 0
       when "failed", "dead"
         if @backend.respond_to?(:dead_letter_count)
           @backend.dead_letter_count(@topic)
@@ -267,20 +283,28 @@ module Tina4
     end
 
     # Resolve the default backend from env vars.
-    def self.resolve_backend(name = nil, max_retries: 3, retry_backoff: 0)
+    def self.resolve_backend(name = nil, max_retries: 3, retry_backoff: 0, visibility_timeout: nil)
       chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "file").downcase.strip
+      vt = visibility_timeout.nil? ? default_visibility_timeout : visibility_timeout
 
       case chosen.to_s
       when "lite", "file", "default"
-        Tina4::QueueBackends::LiteBackend.new(max_retries: max_retries, retry_backoff: retry_backoff)
+        Tina4::QueueBackends::LiteBackend.new(
+          max_retries: max_retries, retry_backoff: retry_backoff, visibility_timeout: vt
+        )
       when "rabbitmq"
+        # Broker manages visibility/redelivery (unacked messages requeue on
+        # channel close) — the framework timeout is accepted but not used.
         config = resolve_rabbitmq_config
         Tina4::QueueBackends::RabbitmqBackend.new(config)
       when "kafka"
+        # Consumer-group offsets manage redelivery — framework timeout N/A.
         config = resolve_kafka_config
         Tina4::QueueBackends::KafkaBackend.new(config)
       when "mongodb", "mongo"
         config = resolve_mongo_config
+        config[:visibility_timeout] = vt
+        config[:max_retries] = max_retries
         Tina4::QueueBackends::MongoBackend.new(config)
       else
         raise ArgumentError, "Unknown queue backend: #{chosen.inspect}. Use 'lite', 'rabbitmq', 'kafka', or 'mongodb'."
@@ -302,10 +326,12 @@ module Tina4
       if backend && !backend.is_a?(Symbol) && !backend.is_a?(String)
         backend.max_retries = @max_retries if backend.respond_to?(:max_retries=)
         backend.retry_backoff = @retry_backoff if backend.respond_to?(:retry_backoff=)
+        backend.visibility_timeout = @visibility_timeout if backend.respond_to?(:visibility_timeout=)
         return backend
       end
       # If a symbol or string name is passed, resolve it
-      Queue.resolve_backend(backend, max_retries: @max_retries, retry_backoff: @retry_backoff)
+      Queue.resolve_backend(backend, max_retries: @max_retries, retry_backoff: @retry_backoff,
+                                     visibility_timeout: @visibility_timeout)
     end
 
     def self.resolve_rabbitmq_config

@@ -28,10 +28,22 @@ module Tina4
         # Seconds to delay a job's next attempt when fail() re-enqueues it.
         # 0 (default) = retry on the very next pop/consume iteration.
         @retry_backoff = options[:retry_backoff] || 0
+        # Reservation/visibility timeout (seconds). When a job is popped it is
+        # held in <topic>/reserved/ with available_at = now + visibility_timeout.
+        # If the consumer dies before complete()/fail() (crash, OOM, k8s
+        # eviction) the next pop() reclaims it once the window expires —
+        # incrementing attempts and re-enqueuing, or dead-lettering past
+        # max_retries. <= 0 disables the reclaim (a reservation then lasts until
+        # the consumer acks — the old at-most-once behaviour).
+        @visibility_timeout = options[:visibility_timeout] || 300.0
         FileUtils.mkdir_p(@dir)
         FileUtils.mkdir_p(@dead_letter_dir)
         @mutex = Mutex.new
       end
+
+      # Retry/visibility policy is settable so a Queue can propagate its own
+      # configuration onto a backend instance passed directly (legacy path).
+      attr_accessor :visibility_timeout
 
       def enqueue(message)
         @mutex.synchronize do
@@ -44,19 +56,35 @@ module Tina4
 
       def dequeue(topic)
         @mutex.synchronize do
+          # First return any reservations whose consumer died mid-flight.
+          reclaim_expired(topic)
           candidate = available_candidates(topic).first
           return nil unless candidate
 
-          File.delete(candidate[:file])
+          # Write the reservation BEFORE claiming the pending file, so a crash
+          # between claim and reserve can never strand the job. Only the worker
+          # that wins the delete owns — and returns — it.
+          write_reserved(candidate[:data], topic)
+          begin
+            File.delete(candidate[:file])
+          rescue Errno::ENOENT
+            return nil # already consumed by another worker
+          end
           job_from_data(candidate[:data], topic)
         end
       end
 
       def dequeue_batch(topic, count)
         @mutex.synchronize do
+          reclaim_expired(topic)
           chosen = available_candidates(topic).first(count)
-          chosen.map do |c|
-            File.delete(c[:file])
+          chosen.filter_map do |c|
+            write_reserved(c[:data], topic)
+            begin
+              File.delete(c[:file])
+            rescue Errno::ENOENT
+              next
+            end
             job_from_data(c[:data], topic)
           end
         end
@@ -74,6 +102,9 @@ module Tina4
             data = JSON.parse(File.read(f))
             next unless data["id"].to_s == target
 
+            # Reserve (so a dead consumer's job is reclaimable) then claim the
+            # pending file — mirrors dequeue.
+            write_reserved(data, topic)
             File.delete(f)
             return job_from_data(data, topic)
           rescue JSON::ParserError
@@ -88,8 +119,10 @@ module Tina4
       end
 
       def complete(message)
-        # Job file was already deleted on dequeue. complete() is terminal:
-        # the job is done and gone.
+        # The pending file was claimed on dequeue and a reservation record
+        # written; complete() is terminal, so drop the reservation. The job is
+        # done and gone.
+        clear_reservation(message.topic, message.id)
       end
 
       def requeue(message)
@@ -101,6 +134,8 @@ module Tina4
       # the configured retry_backoff). Once attempts >= max_retries it is moved
       # to the dead-letter store.
       def fail(job, error = "")
+        # Clear the reservation — the consumer acknowledged (with a failure).
+        clear_reservation(job.topic, job.id)
         job.attempts += 1
         job.error = error
         if job.attempts < @max_retries
@@ -114,6 +149,7 @@ module Tina4
       # re-enqueues regardless of the retry limit — a manual override, distinct
       # from the automatic fail() path. Increments attempts, clears the error.
       def retry(job, delay_seconds: 0)
+        clear_reservation(job.topic, job.id)
         job.attempts += 1
         requeue_job(job, delay_seconds: delay_seconds, error: nil)
       end
@@ -127,6 +163,13 @@ module Tina4
 
       def size(topic)
         dir = topic_path(topic)
+        return 0 unless Dir.exist?(dir)
+        Dir.glob(File.join(dir, "*.json")).length
+      end
+
+      # Count currently-reserved (in-flight) jobs for a topic.
+      def reserved_count(topic)
+        dir = reserved_path(topic)
         return 0 unless Dir.exist?(dir)
         Dir.glob(File.join(dir, "*.json")).length
       end
@@ -241,14 +284,18 @@ module Tina4
         count
       end
 
-      # Remove all pending jobs from a topic. Returns count removed.
+      # Remove all pending jobs from a topic (and any held reservations).
+      # Returns count removed.
       def clear(topic)
-        dir = topic_path(topic)
-        return 0 unless Dir.exist?(dir)
         count = 0
-        Dir.glob(File.join(dir, "*.json")).each do |file|
-          File.delete(file)
-          count += 1
+        [topic_path(topic), reserved_path(topic)].each do |dir|
+          next unless Dir.exist?(dir)
+          Dir.glob(File.join(dir, "*.json")).each do |file|
+            File.delete(file)
+            count += 1
+          rescue Errno::ENOENT
+            next
+          end
         end
         count
       end
@@ -366,6 +413,13 @@ module Tina4
       # within a priority tier it sorts behind jobs not yet attempted) and the
       # current attempts/error carried over.
       def requeue_job(job, delay_seconds: 0, error: nil)
+        @mutex.synchronize { write_pending(job, delay_seconds: delay_seconds, error: error) }
+      end
+
+      # Mutex-free pending write. Callers already holding @mutex (e.g.
+      # reclaim_expired, invoked from within dequeue's locked block) use this
+      # directly — Ruby's Mutex is non-reentrant, so re-locking would deadlock.
+      def write_pending(job, delay_seconds: 0, error: nil)
         available_at = delay_seconds > 0 ? (Time.now + delay_seconds).iso8601(6) : nil
         data = {
           id: job.id,
@@ -378,16 +432,19 @@ module Tina4
           created_at: Time.now.iso8601(6)
         }
         data[:available_at] = available_at if available_at
-        @mutex.synchronize do
-          topic_dir = topic_path(job.topic)
-          FileUtils.mkdir_p(topic_dir)
-          File.write(File.join(topic_dir, "#{job.id}.json"), JSON.generate(data))
-        end
+        topic_dir = topic_path(job.topic)
+        FileUtils.mkdir_p(topic_dir)
+        File.write(File.join(topic_dir, "#{job.id}.json"), JSON.generate(data))
       end
 
       # Move a failed job to the dead-letter directory. Terminal until a manual
       # retry_failed/retry revives it.
       def move_to_dead_letter(job, error = "")
+        @mutex.synchronize { write_dead_letter(job, error) }
+      end
+
+      # Mutex-free dead-letter write (see write_pending for the re-entrancy note).
+      def write_dead_letter(job, error = "")
         data = {
           id: job.id,
           topic: job.topic,
@@ -398,15 +455,96 @@ module Tina4
           error: error,
           failed_at: Time.now.iso8601(6)
         }
-        @mutex.synchronize do
-          FileUtils.mkdir_p(@dead_letter_dir)
-          File.write(File.join(@dead_letter_dir, "#{job.id}.json"), JSON.generate(data))
-        end
+        FileUtils.mkdir_p(@dead_letter_dir)
+        File.write(File.join(@dead_letter_dir, "#{job.id}.json"), JSON.generate(data))
       end
 
       def topic_path(topic)
         safe_topic = topic.to_s.gsub(/[^a-zA-Z0-9_-]/, "_")
         File.join(@dir, safe_topic)
+      end
+
+      # Directory holding a topic's reservation records (in-flight jobs).
+      def reserved_path(topic)
+        File.join(topic_path(topic), "reserved")
+      end
+
+      # Persist a reservation record so a dead consumer's job is reclaimable.
+      # Stores reserved_at + available_at = now + visibility_timeout. The next
+      # dequeue reclaims this job once available_at has passed (see
+      # reclaim_expired). complete()/fail()/retry() delete the record.
+      def write_reserved(data, topic)
+        now = Time.now
+        vt = @visibility_timeout || 0
+        record = {
+          id: data["id"],
+          topic: data["topic"] || topic.to_s,
+          payload: data["payload"],
+          status: "reserved",
+          priority: data["priority"] || 0,
+          attempts: data["attempts"] || 0,
+          error: data["error"],
+          reserved_at: now.iso8601(6),
+          available_at: (vt > 0 ? (now + vt) : now).iso8601(6),
+          created_at: data["created_at"] || now.iso8601(6)
+        }
+        dir = reserved_path(topic)
+        FileUtils.mkdir_p(dir)
+        File.write(File.join(dir, "#{record[:id]}.json"), JSON.generate(record))
+      end
+
+      # Delete a job's reservation record (best-effort).
+      def clear_reservation(topic, id)
+        File.delete(File.join(reserved_path(topic), "#{id}.json"))
+      rescue Errno::ENOENT
+        nil
+      end
+
+      # Return expired reservations to the queue (at-least-once delivery).
+      #
+      # A reserved job whose available_at <= now means its consumer never
+      # acknowledged in time (crash / OOM / pod eviction). Increment attempts and
+      # either re-enqueue it (so the next dequeue picks it up) or dead-letter it
+      # once it has hit max_retries. Disabled when visibility_timeout <= 0.
+      def reclaim_expired(topic)
+        return if @visibility_timeout.nil? || @visibility_timeout <= 0
+
+        dir = reserved_path(topic)
+        return unless Dir.exist?(dir)
+
+        now = Time.now
+        Dir.glob(File.join(dir, "*.json")).each do |file|
+          data = JSON.parse(File.read(file))
+          available_at = data["available_at"] ? Time.parse(data["available_at"]) : now
+          next if available_at > now # reservation still valid
+
+          # Atomically claim the expired reservation by deleting its file.
+          begin
+            File.delete(file)
+          rescue Errno::ENOENT
+            next # another worker reclaimed it first
+          end
+
+          attempts = (data["attempts"] || 0) + 1
+          error = "reservation timed out - consumer did not acknowledge within the visibility timeout"
+          job = Tina4::Job.new(
+            topic: data["topic"] || topic.to_s,
+            payload: data["payload"],
+            id: data["id"],
+            priority: data["priority"] || 0,
+            attempts: attempts,
+            error: error
+          )
+          # Mutex-free writers: reclaim_expired runs inside dequeue's locked
+          # block, and Ruby's Mutex is non-reentrant.
+          if attempts >= @max_retries
+            write_dead_letter(job, error)
+          else
+            write_pending(job, delay_seconds: 0, error: error)
+          end
+        rescue JSON::ParserError
+          next
+        end
       end
     end
   end

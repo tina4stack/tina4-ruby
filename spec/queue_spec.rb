@@ -633,3 +633,258 @@ RSpec.describe Tina4::Queue do
   end
 end
 
+# ── Reservation / visibility timeout (file backend) ────────────────
+#
+# Regression lock for the production bug where a consumer that dies before
+# job.complete() left the message stuck forever — never re-delivered, never
+# retried, never dead-lettered. A popped job is now reserved for
+# visibility_timeout seconds; if it is not acked in time the next pop()
+# reclaims it (incrementing attempts) or dead-letters it past max_retries.
+# Deterministic: a tiny visibility_timeout + a short real sleep.
+RSpec.describe "Tina4::Queue visibility timeout" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_queue_vt_test") }
+  after(:each) { FileUtils.rm_rf(tmp_dir) }
+
+  # Build a Queue whose lite backend stores under tmp_dir with the given
+  # visibility_timeout — mirrors `Queue(topic=, visibility_timeout=)` in Python.
+  def vt_queue(visibility_timeout:, max_retries: 3)
+    backend = Tina4::QueueBackends::LiteBackend.new(
+      dir: tmp_dir, max_retries: max_retries, visibility_timeout: visibility_timeout
+    )
+    Tina4::Queue.new(topic: "vt", backend: backend,
+                     max_retries: max_retries, visibility_timeout: visibility_timeout)
+  end
+
+  it "reclaims a reserved-then-abandoned job after the timeout (attempts == 1)" do
+    queue = vt_queue(visibility_timeout: 0.05)
+    queue.push({ "job" => "import" })
+
+    job = queue.pop                       # consumer A reserves it
+    expect(job).not_to be_nil
+    expect(job.attempts).to eq(0)
+    expect(queue.size(status: "pending")).to eq(0)   # claimed out of pending
+    expect(queue.size(status: "reserved")).to eq(1)  # held as a reservation
+
+    # Consumer A "dies" — never calls complete()/fail(). After the window
+    # expires the next pop() reclaims the abandoned reservation.
+    sleep(0.12)
+    reclaimed = queue.pop
+    expect(reclaimed).not_to be_nil
+    expect(reclaimed.payload["job"]).to eq("import")
+    expect(reclaimed.attempts).to eq(1)   # reclaim counted as one attempt
+  end
+
+  it "does NOT reclaim before the timeout (a second consumer gets nothing)" do
+    queue = vt_queue(visibility_timeout: 30)
+    queue.push({ "job" => "import" })
+
+    expect(queue.pop).not_to be_nil       # reserved
+    # The reservation is still valid — a second consumer must NOT get it.
+    expect(queue.pop).to be_nil
+    expect(queue.size(status: "reserved")).to eq(1)
+  end
+
+  it "dead-letters instead of re-delivering once reclaim passes max_retries" do
+    queue = vt_queue(visibility_timeout: 0.05, max_retries: 1)
+    queue.push({ "job" => "import" })
+
+    expect(queue.pop).not_to be_nil       # reserve (attempts 0)
+    sleep(0.12)
+    # Reclaim bumps attempts to 1 (>= max_retries) → dead-letter, not re-served.
+    expect(queue.pop).to be_nil
+    expect(queue.size(status: "reserved")).to eq(0)
+    dead = queue.dead_letters
+    expect(dead.length).to eq(1)
+    expect(dead.first["payload"]["job"]).to eq("import")
+  end
+
+  it "complete() clears the reservation (no phantom reclaim)" do
+    queue = vt_queue(visibility_timeout: 0.05)
+    queue.push({ "job" => "import" })
+
+    job = queue.pop
+    job.complete                          # acked — reservation cleared
+    expect(queue.size(status: "reserved")).to eq(0)
+    sleep(0.12)
+    expect(queue.pop).to be_nil           # nothing to reclaim
+  end
+
+  it "fail() clears the reservation and requeues with attempts incremented" do
+    queue = vt_queue(visibility_timeout: 0.05, max_retries: 3)
+    queue.push({ "job" => "import" })
+
+    job = queue.pop
+    job.fail("boom")                      # acked with failure → requeued
+    expect(queue.size(status: "reserved")).to eq(0)  # reservation cleared by fail()
+    # The requeued job is pending again with attempts incremented.
+    retried = queue.pop
+    expect(retried).not_to be_nil
+    expect(retried.attempts).to eq(1)
+  end
+
+  describe "configuration" do
+    around(:each) do |example|
+      saved = ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"]
+      example.run
+      if saved.nil?
+        ENV.delete("TINA4_QUEUE_VISIBILITY_TIMEOUT")
+      else
+        ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"] = saved
+      end
+    end
+
+    it "defaults to 300 seconds" do
+      ENV.delete("TINA4_QUEUE_VISIBILITY_TIMEOUT")
+      expect(Tina4::Queue.new(topic: "vt", backend: :file).visibility_timeout).to eq(300.0)
+    end
+
+    it "reads TINA4_QUEUE_VISIBILITY_TIMEOUT as the env override" do
+      ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"] = "42"
+      expect(Tina4::Queue.new(topic: "vt", backend: :file).visibility_timeout).to eq(42.0)
+    end
+
+    it "lets the constructor arg win over the env" do
+      ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"] = "42"
+      expect(Tina4::Queue.new(topic: "vt", backend: :file, visibility_timeout: 7).visibility_timeout).to eq(7.0)
+    end
+  end
+
+  it "visibility_timeout = 0 disables reclaim (reservation stays put)" do
+    queue = vt_queue(visibility_timeout: 0)
+    queue.push({ "job" => "import" })
+
+    expect(queue.pop).not_to be_nil
+    sleep(0.05)
+    # Reclaim is disabled — the reservation stays (opt-out / old behaviour).
+    expect(queue.pop).to be_nil
+    expect(queue.size(status: "reserved")).to eq(1)
+  end
+end
+
+# ── MongoDB backend visibility timeout (mocked collection) ─────────
+#
+# No live mongo: build the backend via allocate (skipping the connecting
+# initialize) and stub its private `collection` with a double. Mirrors the
+# Python mongo mock tests in tests/test_queue_backends.py.
+RSpec.describe Tina4::QueueBackends::MongoBackend do
+  # Construct a backend with a mock collection and explicit policy, bypassing
+  # the connecting constructor (which would need a live mongod).
+  def mock_backend(visibility_timeout: 300.0, max_retries: 3)
+    backend = Tina4::QueueBackends::MongoBackend.allocate
+    backend.instance_variable_set(:@collection_name, "tina4_queue")
+    backend.visibility_timeout = visibility_timeout
+    backend.max_retries = max_retries
+    collection = double("collection")
+    allow(backend).to receive(:collection).and_return(collection)
+    [backend, collection]
+  end
+
+  describe "#dequeue" do
+    it "advances available_at into the future and records reserved_at" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      captured = nil
+      # dequeue first runs reclaim_expired (status "processing" query) then the
+      # real claim (status "pending"). Model real Mongo: the reclaim finds
+      # nothing, the claim returns the message — otherwise reclaim's loop would
+      # never terminate against a mock that returns a doc for every call.
+      allow(collection).to receive(:find_one_and_update) do |filter, update, **_opts|
+        if filter[:status] == "processing"
+          nil
+        else
+          captured = update
+          { "_id" => "msg-1", "topic" => "emails", "payload" => { "x" => 1 } }
+        end
+      end
+
+      backend.dequeue("emails")
+
+      set = captured["$set"]
+      expect(set[:status]).to eq("processing")
+      expect(set[:reserved_at]).not_to be_nil
+      # available_at is pushed to a real future timestamp (not left unchanged).
+      expect(set[:available_at]).not_to be_nil
+      expect(set[:available_at]).to be > set[:reserved_at]
+    end
+
+    it "runs reclaim_expired before claiming the next message" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      # reclaim loop: no expired reservation, then the real dequeue claim.
+      expect(backend).to receive(:reclaim_expired).with("emails", 3).and_call_original
+      allow(collection).to receive(:find_one_and_update).and_return(nil)
+      backend.dequeue("emails")
+    end
+  end
+
+  describe "#reclaim_expired" do
+    it "requeues an expired reservation under the retry limit" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      # One expired reservation (attempts after inc = 1, below max 3), then none.
+      updates = []
+      responses = [
+        { "_id" => "msg-1", "topic" => "emails", "payload" => { "x" => 1 }, "attempts" => 1 },
+        nil
+      ]
+      allow(collection).to receive(:find_one_and_update) do |_filter, update, **_opts|
+        updates << update
+        responses.shift
+      end
+      allow(collection).to receive(:insert_one)
+      allow(collection).to receive(:delete_one)
+
+      count = backend.reclaim_expired("emails", 3)
+      expect(count).to eq(1)
+      # The reclaim flips processing -> pending and increments attempts.
+      expect(updates.first["$set"][:status]).to eq("pending")
+      expect(updates.first["$inc"][:attempts]).to eq(1)
+      # Under the limit: not dead-lettered, not deleted.
+      expect(collection).not_to have_received(:insert_one)
+      expect(collection).not_to have_received(:delete_one)
+    end
+
+    it "dead-letters an expired reservation past max_retries" do
+      backend, collection = mock_backend(visibility_timeout: 300.0)
+      responses = [
+        { "_id" => "msg-1", "topic" => "emails", "payload" => { "x" => 1 }, "attempts" => 3 },
+        nil
+      ]
+      allow(collection).to receive(:find_one_and_update) { |*_a, **_o| responses.shift }
+      dead = nil
+      allow(collection).to receive(:insert_one) { |doc| dead = doc }
+      expect(collection).to receive(:delete_one).once    # original removed
+
+      count = backend.reclaim_expired("emails", 3)
+      expect(count).to eq(1)
+      expect(dead[:topic]).to eq("emails.dead_letter")  # moved to dead-letter
+      expect(dead[:status]).to eq("dead")
+    end
+
+    it "is a no-op when visibility_timeout <= 0" do
+      backend, collection = mock_backend(visibility_timeout: 0)
+      expect(collection).not_to receive(:find_one_and_update)
+      expect(backend.reclaim_expired("emails", 3)).to eq(0)
+    end
+  end
+
+  describe "configuration" do
+    around(:each) do |example|
+      saved = ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"]
+      example.run
+      if saved.nil?
+        ENV.delete("TINA4_QUEUE_VISIBILITY_TIMEOUT")
+      else
+        ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"] = saved
+      end
+    end
+
+    it "reads the visibility timeout from the env (default 300)" do
+      backend = Tina4::QueueBackends::MongoBackend.allocate
+      ENV.delete("TINA4_QUEUE_VISIBILITY_TIMEOUT")
+      expect(backend.resolve_visibility_timeout(nil)).to eq(300.0)
+      ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"] = "45"
+      expect(backend.resolve_visibility_timeout(nil)).to eq(45.0)
+      # An explicit option wins over the env.
+      expect(backend.resolve_visibility_timeout(7)).to eq(7.0)
+    end
+  end
+end
+
