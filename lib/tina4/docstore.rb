@@ -695,8 +695,12 @@ module Tina4
     module_function
 
     # The configured Mongo URI, reusing the app-wide queue/session env vars.
+    # Canonical TINA4_SESSION_MONGO_URI; TINA4_SESSION_MONGO_URL is a legacy alias.
     def mongo_uri
-      (ENV["TINA4_MONGO_URI"] || ENV["TINA4_SESSION_MONGO_URI"] || "").strip
+      (ENV["TINA4_MONGO_URI"] ||
+       ENV["TINA4_SESSION_MONGO_URI"] ||
+       ENV["TINA4_SESSION_MONGO_URL"] ||
+       "").strip
     end
 
     # True when no Mongo is configured, so the SQLite fallback is in effect.

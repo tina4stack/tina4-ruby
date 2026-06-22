@@ -288,5 +288,32 @@ RSpec.describe Tina4::DocStore do
       db.get_collection("a").insert_one({ "x" => 1 })
       expect(db["a"].count_documents({})).to eq(1)
     end
+
+    # Parity fix: canonical TINA4_SESSION_MONGO_URI, with TINA4_SESSION_MONGO_URL
+    # accepted as a legacy alias (Python/PHP historically used _URL).
+    it "resolves the session Mongo URI from _URI then the legacy _URL alias" do
+      had_url = ENV["TINA4_SESSION_MONGO_URL"]
+      begin
+        ENV.delete("TINA4_MONGO_URI")
+        ENV.delete("TINA4_SESSION_MONGO_URI")
+        ENV.delete("TINA4_SESSION_MONGO_URL")
+
+        ENV["TINA4_SESSION_MONGO_URI"] = "mongodb://uri-host/db"
+        expect(Tina4::DocStore.mongo_uri).to eq("mongodb://uri-host/db")
+
+        ENV.delete("TINA4_SESSION_MONGO_URI")
+        ENV["TINA4_SESSION_MONGO_URL"] = "mongodb://url-host/db"
+        expect(Tina4::DocStore.mongo_uri).to eq("mongodb://url-host/db") # legacy alias
+
+        ENV["TINA4_SESSION_MONGO_URI"] = "mongodb://uri-host/db"
+        expect(Tina4::DocStore.mongo_uri).to eq("mongodb://uri-host/db") # canonical wins
+
+        ENV["TINA4_MONGO_URI"] = "mongodb://app-host/db"
+        expect(Tina4::DocStore.mongo_uri).to eq("mongodb://app-host/db") # app-wide wins
+      ensure
+        ENV.delete("TINA4_SESSION_MONGO_URL")
+        ENV["TINA4_SESSION_MONGO_URL"] = had_url if had_url
+      end
+    end
   end
 end
