@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.40 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.41 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -1059,7 +1059,7 @@ mode and protected for remote callers. Environment variables (read by
 - Frond pre-compilation for 2.8x template render improvement
 - DB query caching: request-scoped auto cache **off by default — opt-in** via `TINA4_AUTO_CACHING=true` (TTL `TINA4_AUTO_CACHING_TTL=5`s) for read-heavy endpoints; it dedupes identical reads within a request and flushes on writes. It defaults OFF because a request-scoped cache that defaults on is a footgun: a `SELECT MAX(id)`/generator read right before an `INSERT` in the **same** request would return a cached pre-write value (duplicate keys), and any read-after-write in one request would show stale state. Persistent cross-request cache is also opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL` so instances share one cache with global write-invalidation; `cache_stats` reports `mode` (request/persistent/off — `off` when neither layer is enabled) and `backend`, `cache_clear`
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
-- Queue backends: file (default), RabbitMQ, Kafka, MongoDB
+- Queue backends: file (default), RabbitMQ, Kafka, MongoDB. **Reservation/visibility timeout** (file + MongoDB): a popped job is reserved for `TINA4_QUEUE_VISIBILITY_TIMEOUT` seconds (default 300; `Queue.new(visibility_timeout:)`; `<= 0` disables) — if the consumer dies before `complete`/`fail`, the next `dequeue` reclaims it (incrementing `attempts`, dead-lettering past `max_retries`), so a crashed/evicted consumer never strands a job. RabbitMQ/Kafka delegate redelivery to the broker.
 - Cache backends: unified set across response/KV and persistent DB cache — `memory` (default), `file`, `redis`, `valkey`, `memcached`, `mongodb`, `database` — selected via `TINA4_CACHE_BACKEND` (+ `TINA4_CACHE_URL`/credentials); falls back to the file backend if a backend is unreachable
 - Session handlers: file, Redis, MongoDB. `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
