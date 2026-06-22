@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.37 — TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.40 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -968,6 +968,42 @@ Tina4::DevAdmin.request_inspector.get(limit: 50)
 Tina4::DevAdmin.request_inspector.stats  # -> { total:, avg_ms:, errors:, slowest_ms: }
 Tina4::DevAdmin.request_inspector.clear
 ```
+
+### Swagger / OpenAPI
+
+Auto-generated docs are served at `/swagger` (UI) and `/swagger/openapi.json`
+(spec). The spec is OpenAPI **3.0.3**. ORM models become reusable
+`components.schemas` referenced by `$ref`, and any secured route emits a
+`bearerAuth` security requirement.
+
+Environment variables (read by `lib/tina4/swagger.rb` and
+`lib/tina4/rack_app.rb`):
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TINA4_SWAGGER_ENABLED` | falls back to `TINA4_DEBUG` | Production on/off switch for the `/swagger` UI + `/swagger/openapi.json` endpoints. Explicit `true`/`false` wins; unset falls back to `TINA4_DEBUG`. Set `false` to DISABLE swagger in ANY environment (including dev); set `true` to expose it in production. Wired for real in 3.13.40 (previously ignored). |
+| `TINA4_SWAGGER_SERVERS` | `SWAGGER_DEV_URL`, else `/` | Comma-separated list of server URLs for the OpenAPI `servers[]` block (multi-server / multi-environment). |
+| `TINA4_SWAGGER_UI_CDN` | `https://cdn.jsdelivr.net/npm/swagger-ui-dist@5` | Base URL for the Swagger UI assets (`swagger-ui.css` + `swagger-ui-bundle.js`). Point it at a self-hosted mirror for air-gapped deployments. |
+| `TINA4_SWAGGER_TITLE` | `PROJECT_NAME`, else `Tina4 API` | `info.title`. |
+| `TINA4_SWAGGER_VERSION` | `Tina4::VERSION` | `info.version`. |
+| `TINA4_SWAGGER_DESCRIPTION` | `Auto-generated API documentation` | `info.description`. |
+| `TINA4_SWAGGER_CONTACT_EMAIL` | (unset) | `info.contact.email` (block emitted only when a contact field is set). |
+| `TINA4_SWAGGER_CONTACT_TEAM` | `SWAGGER_CONTACT_TEAM` | `info.contact.name`. |
+| `TINA4_SWAGGER_CONTACT_URL` | `SWAGGER_CONTACT_URL` | `info.contact.url`. |
+| `TINA4_SWAGGER_LICENSE` | (unset) | SPDX license name (e.g. `MIT`) -> `info.license.name`. |
+
+### MCP (Model Context Protocol)
+
+The dev MCP server is mounted at `/__dev/mcp` (plus `/__dev/mcp/message` and an
+SSE channel) and lets an AI client call built-in tools. It is gated on debug
+mode and protected for remote callers. Environment variables (read by
+`lib/tina4/mcp.rb` and `lib/tina4/dev_admin.rb`):
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TINA4_MCP` / `TINA4_DEBUG` | (unset) | Capability gate - whether MCP is enabled at all. `TINA4_MCP` set explicitly wins (sysadmin override, any host); else a truthy `TINA4_DEBUG` enables it. |
+| `TINA4_MCP_REMOTE` | `false` | Set `true` to allow non-loopback MCP callers at all (still requires a valid token). Loopback callers never need a token. |
+| `TINA4_MCP_TOKEN` | falls back to `TINA4_API_KEY` | Bearer token authorising a REMOTE MCP request. Accepted as `Authorization: Bearer`, `X-MCP-Token`, or `X-Api-Key`, compared timing-safe. With NO token configured a remote caller is always denied. |
 
 ## Key Architecture
 
