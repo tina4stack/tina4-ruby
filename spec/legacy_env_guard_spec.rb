@@ -136,6 +136,24 @@ RSpec.describe "Tina4 v3.12 legacy env-var boot guard" do
     expect(output).to include("TINA4_ALLOW_LEGACY_ENV=true")
   end
 
+  # ── 5b. Error message hints at the .env / build-context source + louder FIX (DX fix B)
+
+  it "hints legacy names may come from a baked .env and lifts env --migrate to a FIX step" do
+    Tina4::LEGACY_ENV_VARS.each_key { |k| ENV[k] = "value" }
+    io = StringIO.new
+    expect {
+      Tina4.check_legacy_env_vars!(io: io, exit_on_error: false)
+    }.to raise_error(Tina4::LegacyEnvError)
+    output = io.string
+    # source hint: a .env loaded by dotenv / baked into the image, not just runtime env
+    expect(output).to include("dotenv")
+    expect(output).to include("build context")
+    expect(output).to include("baked into a Docker image")
+    # louder, explicit FIX step pointing at env --migrate
+    expect(output).to include("FIX:")
+    expect(output).to include("tina4 env --migrate")
+  end
+
   # ── 6. Whitelisted un-prefixed names DO NOT trip the guard ──────
 
   it "does not trip on un-prefixed runtime names that stay as-is (PORT, HOST, RACK_ENV, RUBY_ENV, NODE_ENV, ENVIRONMENT)" do

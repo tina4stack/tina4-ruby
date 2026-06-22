@@ -121,6 +121,21 @@ RSpec.describe "Tina4::Auth.ensure_dev_secret" do
     end
   end
 
+  describe "blank-secret warning is self-explanatory (DX fix A)" do
+    it "names BOTH the prod fix and the LOCAL DEV auto-generate path" do
+      w = Tina4::Auth::BLANK_SECRET_WARNING
+      # existing actionable guidance kept
+      expect(w).to include("TINA4_SECRET is not set")
+      expect(w).to include("openssl rand -hex 32")
+      # appended: how to auto-generate in local dev
+      expect(w).to include("TINA4_DEBUG=true")
+      expect(w).to include(".env.local")
+      # appended: why you are seeing the warning (not detected as dev)
+      expect(w).to include("NOT detected as dev")
+      expect(w).to include("TINA4_ENV=production")
+    end
+  end
+
   describe "never crashes on write failure" do
     it "keeps the in-memory secret when .env.local cannot be written" do
       Dir.mktmpdir do |dir|
