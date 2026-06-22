@@ -305,6 +305,10 @@ module Tina4
         config = resolve_mongo_config
         config[:visibility_timeout] = vt
         config[:max_retries] = max_retries
+        # Thread retry_backoff through so a failed/retried job's available_at is
+        # reset to now (or now + retry_backoff) instead of being stranded for the
+        # full visibility window (Bug B).
+        config[:retry_backoff] = retry_backoff
         Tina4::QueueBackends::MongoBackend.new(config)
       else
         raise ArgumentError, "Unknown queue backend: #{chosen.inspect}. Use 'lite', 'rabbitmq', 'kafka', or 'mongodb'."
