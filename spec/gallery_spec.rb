@@ -14,9 +14,11 @@ RSpec.describe "Gallery" do
       expect(Dir.exist?(gallery_dir)).to be true
     end
 
-    it "has subdirectories" do
+    it "subdirectories are exactly the expected examples (no stray dirs)" do
       subdirs = Dir.children(gallery_dir).select { |d| File.directory?(File.join(gallery_dir, d)) }
-      expect(subdirs.length).to be > 0
+      # Every expected example is present AND there are no unexpected stray
+      # directories — a stronger contract than a bare count > 0.
+      expect(subdirs.sort).to match_array(expected_examples)
     end
 
     it "contains all expected examples" do
@@ -117,14 +119,19 @@ RSpec.describe "Gallery" do
   # ── DevAdmin gallery handlers ──────────────────────────────────────
 
   describe "gallery_list via DevAdmin" do
-    it "DevAdmin responds to gallery_list" do
-      expect(Tina4::DevAdmin.respond_to?(:gallery_list, true)).to be true
+    it "gallery_list discovers every expected example by id" do
+      result = Tina4::DevAdmin.send(:gallery_list)
+      expect(result[:count]).to eq(expected_examples.length)
+      expect(result[:gallery].map { |i| i["id"] }).to match_array(expected_examples)
     end
 
-    it "gallery_list returns gallery and count keys" do
+    it "gallery_list count is consistent with the gallery contents" do
       result = Tina4::DevAdmin.send(:gallery_list)
       expect(result).to have_key(:gallery)
       expect(result).to have_key(:count)
+      # count must actually reflect the gallery it returns, not a stale/independent value.
+      expect(result[:gallery]).to be_a(Array)
+      expect(result[:count]).to eq(result[:gallery].length)
     end
 
     it "gallery_list count matches expected examples" do
@@ -132,21 +139,36 @@ RSpec.describe "Gallery" do
       expect(result[:count]).to eq(expected_examples.length)
     end
 
-    it "each gallery item has id, name, and description" do
+    it "each gallery item carries real id/name/description matching its meta.json" do
       result = Tina4::DevAdmin.send(:gallery_list)
       result[:gallery].each do |item|
-        expect(item).to have_key("id")
-        expect(item).to have_key("name")
-        expect(item).to have_key("description")
+        # id must be one of the real examples (not just present).
+        expect(expected_examples).to include(item["id"])
+
+        # name/description must be non-empty strings...
+        expect(item["name"]).to be_a(String).and(satisfy { |s| !s.empty? })
+        expect(item["description"]).to be_a(String).and(satisfy { |s| !s.empty? })
+
+        # ...and equal the on-disk meta.json for that id (the handler must
+        # surface the real metadata, not synthesised placeholders).
+        meta = JSON.parse(File.read(File.join(gallery_dir, item["id"], "meta.json")))
+        expect(item["name"]).to eq(meta["name"])
+        expect(item["description"]).to eq(meta["description"])
       end
     end
 
-    it "each gallery item lists source files" do
+    it "each gallery item's listed source files actually exist on disk" do
       result = Tina4::DevAdmin.send(:gallery_list)
       result[:gallery].each do |item|
-        expect(item).to have_key("files")
         expect(item["files"]).to be_a(Array)
         expect(item["files"].length).to be > 0
+        # Every listed file is a real readable file under gallery/<id>/src/ —
+        # the manifest must match reality, not list phantom paths. (files are
+        # stored relative to the src dir, e.g. "routes/api/gallery_hello.rb".)
+        item["files"].each do |f|
+          path = File.join(gallery_dir, item["id"], "src", f)
+          expect(File.file?(path)).to be(true), "Listed file missing on disk: #{path}"
+        end
       end
     end
   end

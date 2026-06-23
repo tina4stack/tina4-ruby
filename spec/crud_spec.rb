@@ -145,8 +145,24 @@ RSpec.describe Tina4::Crud do
   end
 
   describe "CRUD alias" do
-    it "Tina4::CRUD is an alias for Tina4::Crud" do
-      expect(Tina4::CRUD).to eq(Tina4::Crud)
+    it "Tina4::CRUD resolves to the working Crud implementation" do
+      # Behavioural: call to_crud THROUGH the uppercase alias and assert it
+      # does the real CRUD work against the bound SQLite DB (Alice/Bob/Charlie
+      # seeded in before(:each)) — proving the alias points at the live
+      # implementation, not just that two constants are object-identical.
+      request = mock_request
+      html = Tina4::CRUD.to_crud(request, { model: CrudTestModel, title: "Via Alias" })
+
+      expect(html).to include("Via Alias")            # title rendered by the real builder
+      expect(html).to include("<table")               # real table markup
+      expect(html).to include("Alice")                # real row read from the DB
+      expect(html).to include("Bob")
+      expect(html).to include("Charlie")
+      expect(html).to include("Showing 3 of 3 records") # real count from model.count
+
+      # The alias-driven call also registered the real API routes (side effect).
+      routes = Tina4::Router.routes.map { |r| "#{r.method} #{r.path}" }
+      expect(routes).to include("POST /api/crudtestmodels")
     end
   end
 

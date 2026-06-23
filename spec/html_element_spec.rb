@@ -193,12 +193,15 @@ RSpec.describe Tina4::HtmlHelpers do
 
   # -- add_html_helpers --------------------------------------------------------
 
-  it "injects helpers into a hash" do
+  it "injects helpers into a hash that produce correct HTML" do
     h = {}
     Tina4.add_html_helpers(h)
-    expect(h).to have_key(:_div)
-    expect(h).to have_key(:_p)
-    expect(h).to have_key(:_span)
+    # Don't just assert the keys exist — invoke the injected helpers and assert
+    # they actually build the right markup (the keys hold callable Method
+    # objects, so .call(...) exercises the real helper behaviour).
+    expect(h[:_div].call({ class: "card" }, "Hello").to_s).to eq('<div class="card">Hello</div>')
+    expect(h[:_p].call("Text").to_s).to eq("<p>Text</p>")
+    expect(h[:_span].call("hi").to_s).to eq("<span>hi</span>")
   end
 
   it "hash helpers produce correct HTML" do

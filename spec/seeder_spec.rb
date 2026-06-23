@@ -188,12 +188,18 @@ RSpec.describe Tina4::FakeData do
       expect(data.keys).to match_array(%w[name value])
     end
 
-    it "#city returns a string" do
-      expect(fake.city).to be_a(String)
+    it "#city picks a real value from the fixed CITIES list" do
+      cities = Array.new(20) { fake.city }
+      # Every generated city is an actual member of the curated list...
+      cities.each { |c| expect(Tina4::FakeData::CITIES).to include(c) }
+      # ...and none escapes the list (proves it's a generated city, not any String).
+      expect(cities - Tina4::FakeData::CITIES).to be_empty
     end
 
-    it "#country returns a string" do
-      expect(fake.country).to be_a(String)
+    it "#country picks a real value from the fixed COUNTRIES list" do
+      countries = Array.new(20) { fake.country }
+      countries.each { |c| expect(Tina4::FakeData::COUNTRIES).to include(c) }
+      expect(countries - Tina4::FakeData::COUNTRIES).to be_empty
     end
 
     it "#address has number and street" do
@@ -533,14 +539,28 @@ end
 # ===================================================================
 
 RSpec.describe "FakeData edge cases" do
-  it "FakeData handles many calls without error" do
+  it "FakeData holds its invariants across 1000 calls" do
     fake = Tina4::FakeData.new(seed: 1)
     1000.times do
-      fake.name
-      fake.email
-      fake.integer
-      fake.sentence
-      fake.json_data
+      # name is "First Last" (two-part, space-joined)
+      name = fake.name
+      expect(name).to include(" ")
+      # email is well-formed: has a local part, an @, and a domain from the list
+      email = fake.email
+      expect(email).to include("@")
+      local, domain = email.split("@", 2)
+      expect(local).not_to be_empty
+      expect(Tina4::FakeData::DOMAINS).to include(domain)
+      # integer stays inside the documented default 0..10_000 range
+      expect(fake.integer).to be_between(0, 10_000)
+      # sentence is capitalized and period-terminated
+      sentence = fake.sentence
+      expect(sentence[0]).to match(/[A-Z]/)
+      expect(sentence).to end_with(".")
+      # json_data is a Hash with 2..5 keys (its documented default shape)
+      data = fake.json_data
+      expect(data).to be_a(Hash)
+      expect(data.length).to be_between(2, 5)
     end
   end
 

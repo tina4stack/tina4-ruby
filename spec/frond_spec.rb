@@ -922,10 +922,27 @@ RSpec.describe Tina4::Frond do
       expect(engine.render_string("v{{ version }}", {})).to eq("v1.0")
     end
 
-    it "supports sandbox and unsandbox" do
+    it "supports sandbox and unsandbox (unsandbox restores BOTH filter and var access)" do
+      # Sandbox whitelists only the `upper`/`lower` filters and the `name` var.
       engine.sandbox(filters: ["upper", "lower"], vars: ["name"])
+      # While sandboxed: a non-whitelisted filter (`title`) is stripped (value
+      # passes through unfiltered) and a non-whitelisted var (`greeting`) is
+      # blocked to an empty string -- proving the sandbox is actually enforced
+      # before we tear it down.
+      expect(
+        engine.render_string("{{ name | title }}|{{ greeting }}",
+                             { "name" => "alice smith", "greeting" => "hi" })
+      ).to eq("alice smith|")
+
       engine.unsandbox
-      # Should not raise
+
+      # After unsandbox: the SAME non-whitelisted filter and var now both work,
+      # proving unsandbox restored full filter AND var access (the dedicated
+      # "unsandbox restores full access" test only re-checks a var).
+      expect(
+        engine.render_string("{{ name | title }}|{{ greeting }}",
+                             { "name" => "alice smith", "greeting" => "hi" })
+      ).to eq("Alice Smith|hi")
     end
   end
 

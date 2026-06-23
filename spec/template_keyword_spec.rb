@@ -32,19 +32,61 @@ RSpec.describe "Router template: keyword" do
   end
 
   describe "Route registration" do
-    it "stores the template on the Route object" do
-      route = Tina4::Router.get("/dash", template: "dash.twig") { |_req, _res| {} }
-      expect(route.template).to eq("dash.twig")
+    it "honours the template stored on the Route object end-to-end via RackApp" do
+      # The stored template value is only meaningful if dispatch actually uses
+      # it: register a real twig file via template: and assert the rendered
+      # HTML reflects that template (proving the stored value is read, not just
+      # held). The Route still exposes the value it was given.
+      tpl = write_template("dash.twig", "<h1>Dash: {{ name }}</h1>")
+
+      route = Tina4::Router.get("/dash", template: tpl) do |_req, _res|
+        { name: "Overview" }
+      end
+      expect(route.template).to eq(tpl)
+
+      status, headers, body = app.call(rack_env("GET", "/dash"))
+      html = body.join
+
+      expect(status).to eq(200)
+      expect(headers["content-type"]).to include("text/html")
+      expect(html).to include("<h1>Dash: Overview</h1>")
     end
 
-    it "defaults template to nil when not provided" do
-      route = Tina4::Router.get("/plain") { |_req, _res| "hello" }
+    it "returns the handler value verbatim (JSON) when no template: is given" do
+      # The behavioural consequence of a nil template: a route with no template
+      # serialises the handler's Hash as JSON rather than rendering HTML. The
+      # Route still reports template == nil.
+      route = Tina4::Router.get("/plain") do |_req, _res|
+        { greeting: "hello" }
+      end
       expect(route.template).to be_nil
+
+      status, headers, body = app.call(rack_env("GET", "/plain"))
+      html = body.join
+
+      expect(status).to eq(200)
+      expect(headers["content-type"]).to include("application/json")
+      expect(html).not_to include("text/html")
+      expect(JSON.parse(html)).to eq("greeting" => "hello")
     end
 
-    it "stores template via add_route" do
-      route = Tina4::Router.add("POST", "/api", proc { {} }, template: "api.twig")
-      expect(route.template).to eq("api.twig")
+    it "wires the template passed to add into dispatch (rendered body)" do
+      # add() is the lower-level registration path. Register a POST route with a
+      # real twig file through add and assert the response body is the RENDERED
+      # template output, proving add's template: is actually plumbed through to
+      # the dispatcher (not merely stored on the Route).
+      tpl = write_template("api.twig", "<p>API: {{ status }}</p>")
+
+      route = Tina4::Router.add("POST", "/api", proc { { status: "ok" } }, template: tpl)
+      route.no_auth # POST is secure-by-default; opt out so the handler runs
+      expect(route.template).to eq(tpl)
+
+      status, headers, body = app.call(rack_env("POST", "/api"))
+      html = body.join
+
+      expect(status).to eq(200)
+      expect(headers["content-type"]).to include("text/html")
+      expect(html).to include("<p>API: ok</p>")
     end
   end
 

@@ -42,50 +42,62 @@ RSpec.describe "Database Driver Registration" do
   end
 
   describe "driver detection via connection string" do
-    # We test detect_driver indirectly through create_driver behavior.
-    # Since we can't connect to real databases, we verify the driver class is instantiated.
+    # These exercise the REAL detection / driver behaviour. SQLite is the only
+    # engine provisioned for unit tests, so it gets a full connect+execute path
+    # against a real on-disk DB; the other engines have their server-free pure
+    # methods (placeholder/placeholders/apply_limit + private SQL translators)
+    # invoked for their real computed output.
 
-    it "detects sqlite from .db extension" do
-      driver = Tina4::Drivers::SqliteDriver.new
-      expect(driver).to respond_to(:connect)
-      expect(driver).to respond_to(:execute_query)
-      expect(driver).to respond_to(:execute)
+    it "detects sqlite from .db extension and the driver actually functions" do
+      tmp = Dir.mktmpdir
+      begin
+        db = Tina4::Database.new("sqlite:///" + File.join(tmp, "x.db"))
+        # Real detection: the connection string was routed to the sqlite driver.
+        expect(db.driver_name).to eq("sqlite")
+        # ...and that driver actually works against a real SQLite file.
+        db.execute("CREATE TABLE t(id INTEGER)")
+        expect(db.table_exists?("t")).to be true
+        db.close
+      ensure
+        FileUtils.rm_rf(tmp)
+      end
     end
 
-    it "detects postgres driver responds to expected interface" do
+    it "postgres driver produces $N placeholders and LIMIT/OFFSET SQL" do
       driver = Tina4::Drivers::PostgresDriver.new
-      expect(driver).to respond_to(:connect)
-      expect(driver).to respond_to(:execute_query)
-      expect(driver).to respond_to(:placeholder)
-      expect(driver).to respond_to(:placeholders)
-      expect(driver).to respond_to(:apply_limit)
-      expect(driver).to respond_to(:begin_transaction)
-      expect(driver).to respond_to(:commit)
-      expect(driver).to respond_to(:rollback)
-      expect(driver).to respond_to(:tables)
-      expect(driver).to respond_to(:columns)
-      expect(driver).to respond_to(:close)
+      # Pure, server-free methods — assert real computed output, not existence.
+      expect(driver.placeholder).to eq("?")
+      expect(driver.placeholders(2)).to eq("$1, $2")
+      expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t LIMIT 10 OFFSET 5")
+      expect(driver.send(:convert_placeholders, "a = ? AND b = ?")).to eq("a = $1 AND b = $2")
     end
 
-    it "detects mysql driver responds to expected interface" do
+    it "mysql driver produces ? placeholders and LIMIT/OFFSET SQL" do
       driver = Tina4::Drivers::MysqlDriver.new
-      expect(driver).to respond_to(:connect)
-      expect(driver).to respond_to(:execute_query)
-      expect(driver).to respond_to(:last_insert_id)
+      expect(driver.placeholder).to eq("?")
+      expect(driver.placeholders(3)).to eq("?, ?, ?")
+      expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t LIMIT 10 OFFSET 5")
+      # No connection yet: last_insert_id has no @connection to probe, so it
+      # surfaces the dead-connection error rather than a (wrong) nil id.
+      expect { driver.last_insert_id }.to raise_error(NoMethodError)
     end
 
-    it "detects mssql driver responds to expected interface" do
+    it "mssql driver translates LIMIT to OFFSET/FETCH and escapes params" do
       driver = Tina4::Drivers::MssqlDriver.new
-      expect(driver).to respond_to(:connect)
-      expect(driver).to respond_to(:execute_query)
-      expect(driver).to respond_to(:apply_limit)
+      expect(driver.apply_limit("SELECT * FROM users", 10, 5))
+        .to eq("SELECT * FROM users OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
+      # Real param interpolation: single quotes are doubled (SQL-escaped).
+      expect(driver.send(:interpolate_params, "WHERE name = ?", ["O'Brien"]))
+        .to eq("WHERE name = 'O''Brien'")
     end
 
-    it "detects firebird driver responds to expected interface" do
+    it "firebird driver translates LIMIT to FIRST/SKIP and has nil last id" do
       driver = Tina4::Drivers::FirebirdDriver.new
-      expect(driver).to respond_to(:connect)
-      expect(driver).to respond_to(:execute_query)
-      expect(driver).to respond_to(:apply_limit)
+      expect(driver.apply_limit("SELECT * FROM users", 10, 5))
+        .to eq("SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM users)")
+      expect(driver.placeholders(3)).to eq("?, ?, ?")
+      # Firebird has no last-insert-id concept; the driver returns nil literally.
+      expect(driver.last_insert_id).to be_nil
     end
   end
 
@@ -375,61 +387,111 @@ RSpec.describe "Database Driver Registration" do
   # ── Adapter Contract (all drivers must implement same interface) ──
 
   describe "Adapter contract" do
-    %w[SqliteDriver PostgresDriver MysqlDriver MssqlDriver FirebirdDriver].each do |driver_class_name|
+    # The contract isn't "the method exists" — respond_to? proves nothing about
+    # behaviour. We assert the real engine-specific output of the pure members
+    # (placeholder / placeholders / apply_limit) per driver, and for the
+    # SqliteDriver — the one engine provisioned for unit tests — we exercise the
+    # connection-requiring members (connect/execute/begin_transaction/commit/
+    # rollback/tables/columns/close) for real against a tmp SQLite database.
+
+    # Expected engine-specific output for the pure (server-free) members.
+    {
+      "SqliteDriver"   => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
+      "PostgresDriver" => { placeholders: "$1, $2, $3", limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
+      "MysqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
+      "MssqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY" },
+      "FirebirdDriver" => { placeholders: "?, ?, ?",   limit: "SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM t)" }
+    }.each do |driver_class_name, expected|
       describe driver_class_name do
         let(:driver) { Tina4::Drivers.const_get(driver_class_name).new }
 
-        it "has connect" do
-          expect(driver).to respond_to(:connect)
+        it "produces ? as its bind placeholder" do
+          expect(driver.placeholder).to eq("?")
         end
 
-        it "has close" do
-          expect(driver).to respond_to(:close)
+        it "expands placeholders to the engine's style" do
+          expect(driver.placeholders(3)).to eq(expected[:placeholders])
         end
 
-        it "has execute_query" do
-          expect(driver).to respond_to(:execute_query)
+        it "applies LIMIT/OFFSET in the engine's dialect" do
+          expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq(expected[:limit])
         end
+      end
+    end
 
-        it "has execute" do
-          expect(driver).to respond_to(:execute)
-        end
+    # SqliteDriver — the connection-requiring members exercised for real.
+    describe "SqliteDriver live connection members" do
+      let(:tmp_dir) { Dir.mktmpdir("tina4_adapter_contract") }
+      let(:db_path) { File.join(tmp_dir, "contract.db") }
+      let(:driver)  { Tina4::Drivers::SqliteDriver.new }
 
-        it "has placeholder" do
-          expect(driver).to respond_to(:placeholder)
-        end
+      before(:each) { driver.connect("sqlite:///" + db_path) }
 
-        it "has placeholders" do
-          expect(driver).to respond_to(:placeholders)
-        end
+      after(:each) do
+        driver.close
+        FileUtils.rm_rf(tmp_dir)
+      end
 
-        it "has apply_limit" do
-          expect(driver).to respond_to(:apply_limit)
-        end
+      it "connect + execute create a real table that tables/columns report" do
+        driver.execute("CREATE TABLE t(id INTEGER, name TEXT)")
+        expect(driver.tables).to include("t")
+        col_names = driver.columns("t").map { |c| c[:name] || c["name"] }
+        expect(col_names).to include("id", "name")
+      end
 
-        it "has begin_transaction" do
-          expect(driver).to respond_to(:begin_transaction)
-        end
+      it "execute_query returns the rows that execute inserted" do
+        driver.execute("CREATE TABLE t(id INTEGER)")
+        driver.execute("INSERT INTO t VALUES (1)")
+        driver.execute("INSERT INTO t VALUES (2)")
+        rows = driver.execute_query("SELECT id FROM t ORDER BY id")
+        expect(rows).to eq([{ id: 1 }, { id: 2 }])
+      end
 
-        it "has commit" do
-          expect(driver).to respond_to(:commit)
-        end
+      it "execute has a real side effect (a row is persisted)" do
+        driver.execute("CREATE TABLE t(id INTEGER)")
+        driver.execute("INSERT INTO t VALUES (1)")
+        count = driver.execute_query("SELECT count(*) AS n FROM t").first[:n]
+        expect(count).to eq(1)
+      end
 
-        it "has rollback" do
-          expect(driver).to respond_to(:rollback)
-        end
+      it "begin_transaction + rollback discards the write" do
+        driver.execute("CREATE TABLE t(id INTEGER)")
+        driver.begin_transaction
+        driver.execute("INSERT INTO t VALUES (1)")
+        driver.rollback
+        count = driver.execute_query("SELECT count(*) AS n FROM t").first[:n]
+        expect(count).to eq(0)
+      end
 
-        it "has tables" do
-          expect(driver).to respond_to(:tables)
-        end
+      it "begin_transaction + commit persists the write across a reconnect" do
+        driver.execute("CREATE TABLE t(id INTEGER)")
+        driver.begin_transaction
+        driver.execute("INSERT INTO t VALUES (42)")
+        driver.commit
+        driver.close
+        # Reopen the same file to prove the commit hit disk, not just a cache.
+        reopened = Tina4::Drivers::SqliteDriver.new
+        reopened.connect("sqlite:///" + db_path)
+        row = reopened.execute_query("SELECT id FROM t").first
+        expect(row[:id]).to eq(42)
+        reopened.close
+      end
 
-        it "has columns" do
-          expect(driver).to respond_to(:columns)
-        end
+      it "close releases the connection (a later query raises)" do
+        driver.execute("CREATE TABLE t(id INTEGER)")
+        expect { driver.close }.not_to raise_error
+        expect { driver.execute_query("SELECT 1") }.to raise_error(StandardError)
+      end
 
-        it "has close" do
-          expect(driver).to respond_to(:close)
-        end
+      it "tables lists a freshly created table" do
+        driver.execute("CREATE TABLE foo(id INTEGER)")
+        expect(driver.tables).to include("foo")
+      end
+
+      it "columns reports the real column names of a table" do
+        driver.execute("CREATE TABLE foo(id INTEGER, name TEXT)")
+        col_names = driver.columns("foo").map { |c| c[:name] || c["name"] }
+        expect(col_names).to include("id", "name")
       end
     end
   end

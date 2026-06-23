@@ -29,10 +29,30 @@ RSpec.describe Tina4::Health do
   describe ".register!" do
     before { Tina4::Router.clear! }
 
-    it "registers a GET /health route" do
+    it "wires the registered GET /health route to Health.handle" do
       Tina4::Health.register!
-      result = Tina4::Router.find_route("GET", "/health")
-      expect(result).not_to be_nil
+
+      route, _params = Tina4::Router.find_route("GET", "/health")
+      expect(route).not_to be_nil
+
+      # Dispatch the registered route's handler and assert it actually
+      # produces the health payload — not merely that the route exists.
+      env = {
+        "REQUEST_METHOD" => "GET",
+        "PATH_INFO" => "/health",
+        "QUERY_STRING" => "",
+        "rack.input" => StringIO.new("")
+      }
+      request = Tina4::Request.new(env)
+      response = Tina4::Response.new
+
+      route.handler.call(request, response)
+
+      expect(response.status).to eq(200)
+      body = JSON.parse(response.body)
+      expect(body["status"]).to eq("ok")
+      expect(body["framework"]).to eq("tina4-ruby")
+      expect(body["version"]).to eq(Tina4::VERSION)
     end
   end
 

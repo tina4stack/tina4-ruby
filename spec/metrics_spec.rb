@@ -126,8 +126,11 @@ RSpec.describe Tina4::Metrics do
       expect(result["dependency_graph"]).to be_a(Hash)
     end
 
-    it "detects violations for high complexity" do
-      # Build a method with many branches to exceed complexity 10
+    it "detects a complexity violation for a method that exceeds the threshold" do
+      # Build a method with 12 `when` branches: cyclomatic complexity is
+      # 1 (base) + 12 (decision points) = 13, which is above the recommended
+      # max of 10 (and below the error threshold of 20), so the analyzer must
+      # emit a `moderate_complexity` warning violation for this file.
       branches = (1..12).map { |i| "      when #{i} then #{i}" }.join("\n")
       create_file("src/complex.rb", <<~RUBY)
         class Complex
@@ -140,7 +143,25 @@ RSpec.describe Tina4::Metrics do
       RUBY
       result = Tina4::Metrics.full_analysis("src")
       violations = result["violations"]
-      expect(violations).to be_an(Array)
+
+      # The detection must actually fire — not an empty list that a broken
+      # detector would also satisfy.
+      expect(violations).not_to be_empty
+
+      complexity_violation = violations.find do |v|
+        v["file"].to_s.include?("complex.rb") && v["rule"].to_s.include?("complexity")
+      end
+      expect(complexity_violation).not_to be_nil
+      expect(complexity_violation["type"]).to eq("warning")
+      expect(complexity_violation["rule"]).to eq("moderate_complexity")
+      expect(complexity_violation["message"]).to include("Complex.big_method")
+
+      # And the offending method's COMPUTED complexity must really be above the
+      # threshold of 10 (mirrors the `.offenders` complexity assertions in
+      # metrics_cli_spec.rb).
+      offender = result["most_complex_functions"].find { |f| f["name"] == "Complex.big_method" }
+      expect(offender).not_to be_nil
+      expect(offender["complexity"]).to be > 10
     end
 
     it "caches results within TTL" do

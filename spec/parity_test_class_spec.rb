@@ -9,8 +9,16 @@ require "spec_helper"
 # 3.13.0 the constant didn't exist.
 RSpec.describe Tina4::Test do
   describe "class definition" do
-    it "exists" do
-      expect(defined?(Tina4::Test)).to eq("constant")
+    it "is a usable runnable test base, not just a defined name" do
+      fixture = Class.new(Tina4::Test) do
+        def test_x
+          assert_true(true)
+        end
+      end
+      results = fixture.run!
+      expect(results[:passed]).to eq(1)
+      expect(results[:failed]).to eq(0)
+      expect(results[:errors]).to eq(0)
     end
 
     it "auto-registers subclasses for run_all discovery" do
@@ -35,12 +43,28 @@ RSpec.describe Tina4::Test do
 
     let(:suite) { fixture_class.new }
 
-    it "exposes get/post/put/patch/delete" do
-      expect(suite).to respond_to(:get)
-      expect(suite).to respond_to(:post)
-      expect(suite).to respond_to(:put)
-      expect(suite).to respond_to(:patch)
-      expect(suite).to respond_to(:delete)
+    it "issues real HTTP requests through TestClient for each verb" do
+      Tina4::Router.get("/ping") { |_req, res| res.json({ pong: true }) }
+      Tina4::Router.post("/echo") { |req, res| res.json({ echoed: req.body }) }
+      Tina4::Router.put("/replace") { |_req, res| res.json({ verb: "PUT" }) }
+      Tina4::Router.patch("/tweak") { |_req, res| res.json({ verb: "PATCH" }) }
+      Tina4::Router.delete("/remove") { |_req, res| res.json({ verb: "DELETE" }) }
+
+      # GET round-trips and the handler's JSON body comes back intact.
+      get_resp = suite.get("/ping")
+      expect(get_resp.status).to eq(200)
+      expect(get_resp.json["pong"]).to be(true)
+
+      # POST actually carries the JSON request body to the handler and back.
+      post_resp = suite.post("/echo", json: { hello: "world" })
+      expect(post_resp.status).to eq(200)
+      expect(post_resp.json["echoed"]).to eq("hello" => "world")
+
+      # PUT / PATCH / DELETE each dispatch through their own HTTP method —
+      # a wrong verb wouldn't match these distinct paths.
+      expect(suite.put("/replace").json["verb"]).to eq("PUT")
+      expect(suite.patch("/tweak").json["verb"]).to eq("PATCH")
+      expect(suite.delete("/remove").json["verb"]).to eq("DELETE")
     end
 
     it "lazily creates a single TestClient" do

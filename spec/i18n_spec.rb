@@ -105,8 +105,11 @@ RSpec.describe Tina4::Localization do
   end
 
   describe ".translations" do
-    it "returns a hash" do
+    it "reflects an added translation in its locale-keyed structure" do
+      Tina4::Localization.add("en", "k", "v")
       expect(Tina4::Localization.translations).to be_a(Hash)
+      expect(Tina4::Localization.translations.keys).to eq(["en"])
+      expect(Tina4::Localization.translations.dig("en", "k")).to eq("v")
     end
 
     it "stores translations keyed by locale" do
@@ -150,10 +153,23 @@ RSpec.describe Tina4::Localization do
       expect { Tina4::Localization.load("/nonexistent/path") }.not_to raise_error
     end
 
-    it "searches multiple directory names" do
-      expect(Tina4::Localization::LOCALE_DIRS).to include("locales")
-      expect(Tina4::Localization::LOCALE_DIRS).to include("translations")
-      expect(Tina4::Localization::LOCALE_DIRS).to include("i18n")
+    it "actually scans each non-default LOCALE_DIRS entry, not just locales/" do
+      # Prove the loader walks every directory name in LOCALE_DIRS (beyond the
+      # primary "locales/") by placing a distinct locale file in each one and
+      # asserting all of them are loaded in a single .load pass.
+      %w[translations i18n].each do |dir_name|
+        # Guard against a regression where a name is dropped from LOCALE_DIRS.
+        expect(Tina4::Localization::LOCALE_DIRS).to include(dir_name)
+
+        scan_dir = File.join(tmpdir, dir_name)
+        FileUtils.mkdir_p(scan_dir)
+        File.write(File.join(scan_dir, "en.json"), %({"from_#{dir_name}": "value-#{dir_name}"}))
+      end
+
+      Tina4::Localization.load(tmpdir)
+
+      expect(Tina4::Localization.t("from_translations")).to eq("value-translations")
+      expect(Tina4::Localization.t("from_i18n")).to eq("value-i18n")
     end
   end
 

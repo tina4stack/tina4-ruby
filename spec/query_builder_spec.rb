@@ -69,9 +69,13 @@ RSpec.describe Tina4::QueryBuilder do
   # 1. .from() creates a QueryBuilder
   # ---------------------------------------------------------------------------
   describe ".from_table" do
-    it "returns a QueryBuilder instance" do
+    it "returns a working QueryBuilder that can build and run a query" do
       qb = Tina4::QueryBuilder.from_table("users", db: @db_shared)
       expect(qb).to be_a(Tina4::QueryBuilder)
+      # Prove the constructed builder actually composes SQL and queries the
+      # real table (5 users seeded), not merely that it was instantiated.
+      expect(qb.to_sql).to eq("SELECT * FROM users")
+      expect(qb.count).to eq(5)
     end
 
     it "accepts a table name" do
@@ -358,6 +362,25 @@ RSpec.describe Tina4::QueryBuilder do
              .limit(10, 5)
 
       expect(qb).to be_a(Tina4::QueryBuilder)
+
+      # The whole chain must compose into a single correct SQL string, with
+      # every clause in the right place and order (JOIN, WHERE, GROUP BY,
+      # HAVING, ORDER BY). limit/offset are not emitted by to_sql.
+      sql = qb.to_sql
+      expect(sql).to start_with("SELECT id, name FROM users")
+      expect(sql).to include("INNER JOIN orders ON orders.user_id = users.id")
+      expect(sql).to include("WHERE active = ? OR age > ?")
+      expect(sql).to include("GROUP BY users.id")
+      expect(sql).to include("HAVING COUNT(*) > ?")
+      expect(sql).to include("ORDER BY name ASC")
+      expect(sql).to eq(
+        "SELECT id, name FROM users " \
+        "INNER JOIN orders ON orders.user_id = users.id " \
+        "WHERE active = ? OR age > ? " \
+        "GROUP BY users.id " \
+        "HAVING COUNT(*) > ? " \
+        "ORDER BY name ASC"
+      )
     end
   end
 
@@ -442,9 +465,13 @@ RSpec.describe Tina4::QueryBuilder do
       expect(cnt).to eq(1)
     end
 
-    it "returns an integer" do
-      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared).count
+    it "returns the real count as an integer for a range filter" do
+      cnt = Tina4::QueryBuilder.from_table("users", db: @db_shared)
+              .where("age >= ?", [30])
+              .count
+      # Alice (30) and Charlie (35) are the only users >= 30.
       expect(cnt).to be_a(Integer)
+      expect(cnt).to eq(2)
     end
 
     it "returns 0 when no rows match" do
@@ -473,9 +500,11 @@ RSpec.describe Tina4::QueryBuilder do
       expect(result).to be false
     end
 
-    it "returns a boolean value" do
+    it "returns true for the unfiltered table that has rows" do
       result = Tina4::QueryBuilder.from_table("users", db: @db_shared).exists?
-      expect(result).to be(true).or be(false)
+      # The seeded users table has 5 rows, so exists? must compute presence,
+      # not merely return some boolean — it must be exactly true.
+      expect(result).to be(true)
     end
   end
 

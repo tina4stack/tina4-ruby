@@ -81,6 +81,22 @@ class ExplodingBackplane < FakeBackplane
   end
 end
 
+# A backplane that records the (channel, message) of every publish so a test can
+# prove which channel the manager actually published a broadcast on.
+class CapturingBackplane < FakeBackplane
+  attr_reader :published
+
+  def initialize
+    super
+    @published = []
+  end
+
+  def publish(channel, message)
+    @published << [channel, message]
+    super
+  end
+end
+
 # Attach a fake backplane to a manager the way ensure_backplane would, wiring
 # the subscribe callback to the manager's on_backplane_message.
 def wire_backplane(manager, backplane)
@@ -225,14 +241,32 @@ RSpec.describe "WebSocket backplane relay" do
     expect(captured[0]["src"]).to eq(mgr.instance_id)
   end
 
-  it "publish_envelope is a no-op (and never raises) without a backplane" do
+  it "publish_envelope truly publishes nothing (no local or remote delivery) without a backplane" do
     mgr = Tina4::WebSocket.new
+    conn = FakeWsConnection.new("c1")
+    mgr.register_connection(conn)
+
+    # No backplane wired. publish_envelope is the publish-only half of a
+    # broadcast — with no bus it must early-return: never raise, AND never
+    # deliver to the local connection (publish does not fan out locally).
     expect { mgr.publish_envelope("all", "noop") }.not_to raise_error
+    expect(conn.sent).to eq([])
   end
 
-  it "uses the shared channel name across frameworks" do
-    expect(Tina4::WEBSOCKET_BACKPLANE_CHANNEL).to eq("tina4:ws")
-    expect(Tina4::WebSocket.new.backplane_channel).to eq("tina4:ws")
+  it "publishes broadcasts on the shared 'tina4:ws' channel (the constant is the channel actually used)" do
+    backplane = CapturingBackplane.new
+    mgr = Tina4::WebSocket.new
+    wire_backplane(mgr, backplane)
+
+    mgr.broadcast_all("x")
+
+    # Prove the constant is not just a literal but the channel the manager
+    # actually published on — captured live during the broadcast.
+    expect(backplane.published.length).to eq(1)
+    published_channel, = backplane.published.first
+    expect(published_channel).to eq("tina4:ws")
+    expect(published_channel).to eq(mgr.backplane_channel)
+    expect(published_channel).to eq(Tina4::WEBSOCKET_BACKPLANE_CHANNEL)
   end
 
   it "does not let a flaky bus undo the local broadcast" do

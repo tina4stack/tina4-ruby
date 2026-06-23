@@ -77,9 +77,15 @@ RSpec.describe Tina4::GraphQLSchema do
   subject(:schema) { Tina4::GraphQLSchema.new }
 
   describe "#initialize" do
-    it "registers all scalar types" do
+    it "registers all five built-in scalar types as usable scalar GraphQLType objects" do
       %w[String Int Float Boolean ID].each do |s|
-        expect(schema.get_type(s)).not_to be_nil
+        type = schema.get_type(s)
+        expect(type).to be_a(Tina4::GraphQLType)
+        expect(type.name).to eq(s)
+        expect(type.kind).to eq(:scalar)
+        expect(type.scalar?).to be true
+        expect(type.list?).to be false
+        expect(type.non_null?).to be false
       end
     end
   end

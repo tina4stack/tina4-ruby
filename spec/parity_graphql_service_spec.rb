@@ -68,8 +68,12 @@ RSpec.describe Tina4::Service, "(3.13.1 base class)" do
     end
   end
 
-  it "exists as an abstract base class" do
-    expect(defined?(Tina4::Service)).to eq("constant")
+  it "enforces the abstract contract: base #run raises and a fresh instance is not-yet-stopped" do
+    base = Tina4::Service.new
+    # The abstract base must refuse to run without a subclass override.
+    expect { base.run }.to raise_error(NotImplementedError, /run must be implemented/)
+    # A freshly-constructed service starts in the running state.
+    expect(base.should_stop?).to be false
   end
 
   it "raises NotImplementedError when run is not overridden" do
@@ -90,10 +94,15 @@ RSpec.describe Tina4::Service, "(3.13.1 base class)" do
     expect(svc.iterations).to eq(3)
   end
 
-  it "to_proc returns a callable that invokes #run" do
+  it "to_proc returns a callable that, when invoked, drives #run to completion" do
     svc = fixture_class.new
     callable = svc.to_proc
     expect(callable).to be_a(Proc)
+    # Calling the proc must actually execute #run — observe the side effect.
+    expect(svc.iterations).to eq(0)
+    callable.call
+    expect(svc.iterations).to eq(3)
+    expect(svc.should_stop?).to be true
   end
 
   it "ServiceRunner.register_service accepts a Service instance" do

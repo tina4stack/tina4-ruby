@@ -43,14 +43,19 @@ RSpec.describe Tina4::RackApp do
       expect(status).to eq(404)
     end
 
-    it "serves static files" do
+    it "serves static files with their real contents and content type" do
       # Create a static file
       pub_dir = File.join(tmp_dir, "public")
       FileUtils.mkdir_p(pub_dir)
       File.write(File.join(pub_dir, "test.txt"), "hello static")
 
-      status, _headers, body = app.call(mock_env("GET", "/test.txt"))
+      status, headers, body = app.call(mock_env("GET", "/test.txt"))
       expect(status).to eq(200)
+      # The exact file bytes must be served back, not just any 200.
+      expect(body.join).to eq("hello static")
+      # And the content type must be derived from the .txt extension.
+      content_type = headers["content-type"] || headers["Content-Type"]
+      expect(content_type).to include("text/plain")
     end
 
     it "prevents path traversal" do

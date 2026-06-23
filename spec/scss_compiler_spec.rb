@@ -272,10 +272,13 @@ RSpec.describe Tina4::ScssCompiler do
   # ── Single-line Comment Tests ──────────────────────────────────
 
   describe "single-line comments" do
-    it "handles single-line comments in input" do
+    it "does not strip single-line comments (passes // comments through)" do
       scss = "// This is a comment\n.box { color: red; }"
       css = basic_compile(scss)
-      # Basic compiler may pass through or strip comments; verify output is produced
+      # basic_compile does NOT strip `//` comments — the comment line is
+      # preserved verbatim alongside the compiled rule. Pin both so a future
+      # comment-stripping change is caught.
+      expect(css).to include("// This is a comment")
       expect(css).to include("color: red")
     end
   end
@@ -283,50 +286,67 @@ RSpec.describe Tina4::ScssCompiler do
   # ── Mixin Tests ────────────────────────────────────────────────
 
   describe "mixins" do
-    it "handles mixin declarations without crashing" do
+    it "does not expand mixins (leaves @mixin and @include in the output)" do
       scss = "@mixin reset { margin: 0; padding: 0; }\n.box { @include reset; }"
       css = basic_compile(scss)
-      # Basic compiler may not expand mixins; verify it produces output
-      expect(css).to include(".box")
+      # basic_compile does NOT expand mixins: the @mixin block stays, and the
+      # @include is emitted verbatim inside the rule instead of being replaced by
+      # the mixin's declarations. Lock that un-expanded behaviour.
+      expect(css).to include(".box {")
+      expect(css).to include("@include reset")
+      expect(css).to include("@mixin reset")
     end
 
-    it "handles mixin with parameters" do
+    it "does not expand parametric mixins (passes @include args through verbatim)" do
       scss = "@mixin border($width, $color) { border: $width solid $color; }\n.card { @include border(2px, red); }"
       css = basic_compile(scss)
-      expect(css).to include(".card")
+      # The mixin parameters ($width/$color) are never declared as variables, so
+      # they survive, and the @include call is not substituted with a border rule.
+      expect(css).to include("@include border(2px, red)")
+      expect(css).to include("@mixin border($width, $color)")
     end
   end
 
   # ── Math Tests ─────────────────────────────────────────────────
 
   describe "math operations" do
-    it "evaluates addition" do
+    it "does not evaluate addition (passes arithmetic through verbatim)" do
       scss = ".box { width: 10px + 5px; }"
       css = basic_compile(scss)
-      # basic compiler may or may not evaluate math; verify it outputs something
-      expect(css).to include("width:")
+      # The basic compiler does NOT do SCSS math — it emits the expression as-is
+      # rather than computing 15px. Pin the real pass-through value so a future
+      # change that silently starts (or stops) evaluating math is caught.
+      expect(css).to include("width: 10px + 5px")
+      expect(css).not_to include("width: 15px")
     end
 
-    it "evaluates subtraction" do
+    it "does not evaluate subtraction (passes arithmetic through verbatim)" do
       scss = ".box { margin: 20px - 5px; }"
       css = basic_compile(scss)
-      expect(css).to include("margin:")
+      # Same pass-through reality as addition: basic_compile emits the literal
+      # expression, not the computed 15px.
+      expect(css).to include("margin: 20px - 5px")
+      expect(css).not_to include("margin: 15px")
     end
   end
 
   # ── Color Function Tests ───────────────────────────────────────
 
   describe "color functions" do
-    it "handles lighten function" do
+    it "does not resolve the lighten function (passes the call through verbatim)" do
       scss = ".box { color: lighten(#333, 20%); }"
       css = basic_compile(scss)
-      expect(css).to include("color:")
+      # The fallback compiler leaves SCSS color functions untouched — it does NOT
+      # compute the lightened hex. Assert the verbatim call so the test documents
+      # (and locks) the no-resolve behaviour.
+      expect(css).to include("color: lighten(#333, 20%)")
     end
 
-    it "handles darken function" do
+    it "does not resolve the darken function (passes the call through verbatim)" do
       scss = ".box { color: darken(#ccc, 20%); }"
       css = basic_compile(scss)
-      expect(css).to include("color:")
+      # Mirror of lighten: the call survives unevaluated.
+      expect(css).to include("color: darken(#ccc, 20%)")
     end
   end
 
@@ -344,11 +364,15 @@ RSpec.describe Tina4::ScssCompiler do
   # ── Placeholder Tests ──────────────────────────────────────────
 
   describe "placeholders" do
-    it "handles placeholder syntax without crashing" do
+    it "does not expand placeholders (leaves %placeholder and @extend in the output)" do
       scss = "%clearfix { overflow: hidden; }\n.container { @extend %clearfix; color: red; }"
       css = basic_compile(scss)
-      # Basic compiler may not fully expand placeholders; verify output is produced
-      expect(css).to include("overflow: hidden")
+      # basic_compile does NOT resolve @extend: the %clearfix placeholder rule is
+      # emitted as-is and the @extend stays inside .container instead of pulling
+      # in the placeholder's declarations. Lock the no-extend behaviour.
+      expect(css).to include("%clearfix")
+      expect(css).to include("@extend %clearfix")
+      expect(css).to include(".container {")
     end
   end
 
@@ -429,10 +453,14 @@ RSpec.describe Tina4::ScssCompiler do
       expect { Tina4::ScssCompiler.compile_all(tmp_dir) }.not_to raise_error
     end
 
-    it "handles SCSS with only comments" do
+    it "passes a comment-only file through unchanged (block + single-line)" do
       scss = "/* Only a comment */\n// Another comment"
       css = basic_compile(scss)
-      expect(css).not_to be_nil
+      # With no rules to flatten, basic_compile returns the input untouched: the
+      # block comment is preserved and the `//` line passes through. Assert both
+      # concretely instead of the near-no-op not_to be_nil.
+      expect(css).to include("/* Only a comment */")
+      expect(css).to include("// Another comment")
     end
   end
 end

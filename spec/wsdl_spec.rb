@@ -561,8 +561,21 @@ RSpec.describe Tina4::WSDL::Service do
 
     let(:wsdl) { service.generate_wsdl("http://localhost:3000/soap") }
 
-    it "returns a string" do
-      expect(wsdl).to be_a(String)
+    it "produces a single well-formed WSDL document for the configured service" do
+      # Was a smoke check (be_a(String)). Parse the generated document and
+      # assert the real, observable structure: it must be valid XML whose root
+      # is the <definitions> element carrying THIS service's name and target
+      # namespace, with both declared operations surfacing through to the
+      # binding's soapAction. This verifies the generator emits one coherent
+      # document tied to the Service's own config, not merely that some string
+      # came back.
+      doc = REXML::Document.new(wsdl)
+      root = doc.root
+      expect(root.name).to eq("definitions")
+      expect(root.attributes["name"]).to eq("Calculator")
+      expect(root.attributes["targetNamespace"]).to eq("http://test.com/wsdl")
+      expect(wsdl).to include("soapAction=\"http://test.com/wsdl/Add\"")
+      expect(wsdl).to include("soapAction=\"http://test.com/wsdl/Greet\"")
     end
 
     it "starts with XML declaration" do

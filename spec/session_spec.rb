@@ -179,12 +179,18 @@ RSpec.describe Tina4::Session do
       expect(s2["name"]).to eq("Bob")
     end
 
-    it "does not write when not modified" do
+    it "does not write a session file when never modified" do
       session = Tina4::Session.new(env, options)
-      # No modifications made, save should be a no-op
-      session.save
-      # Session file should not exist since nothing was written
-      # Just verify it does not raise
+      # No modifications made: save must be a genuine no-op (returns true early,
+      # before touching the backend) so an untouched session never persists.
+      expect(session.save).to be true
+      expect(Dir.glob(File.join(tmp_dir, "sess_*.json"))).to be_empty
+
+      # Sanity: once a value is set, the SAME id DOES write a file — proving the
+      # no-op above was the modified-flag gate, not a broken handler/dir.
+      session["touched"] = "now"
+      expect(session.save).to be true
+      expect(Dir.glob(File.join(tmp_dir, "sess_#{session.id}.json"))).not_to be_empty
     end
 
     it "persists multiple values" do

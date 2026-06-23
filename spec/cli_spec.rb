@@ -59,17 +59,57 @@ RSpec.describe Tina4::CLI do
     end
   end
 
-  describe "COMMANDS constant" do
-    it "includes all expected commands" do
-      %w[init start migrate seed test version routes console help].each do |cmd|
-        expect(Tina4::CLI::COMMANDS).to include(cmd)
+  describe "COMMANDS dispatch" do
+    let(:cli) { Tina4::CLI.new }
+
+    # Run the CLI, capturing stdout and the SystemExit status (0 if it didn't
+    # exit). Same pattern as metrics_cli_spec.rb#run_metrics.
+    def run_cli(args)
+      out = +""
+      status = 0
+      orig = $stdout
+      $stdout = StringIO.new
+      begin
+        cli.run(args)
+      rescue SystemExit => e
+        status = e.status
+      ensure
+        out = $stdout.string
+        $stdout = orig
       end
+      [out, status]
+    end
+
+    it "routes a known command to its real effect, not the Unknown-command branch" do
+      # "version" is a representative COMMANDS entry. Running it must produce the
+      # command's actual side effect (the version string on stdout), exit
+      # cleanly, and must NOT fall through to the Unknown-command/exit path.
+      # This ties the COMMANDS contract to real routing behaviour instead of
+      # asserting the array against its own literals.
+      expect(Tina4::CLI::COMMANDS).to include("version")
+      out, status = run_cli(["version"])
+      expect(out).to match(/Tina4 Ruby v#{Regexp.escape(Tina4::VERSION)}/)
+      expect(out).not_to match(/Unknown command/)
+      expect(status).to eq(0)
+    end
+
+    it "routes an entry NOT in COMMANDS to the Unknown-command/exit path" do
+      # The dispatch's else branch prints "Unknown command:" and exit(1)s.
+      # An entry that is genuinely absent from COMMANDS must hit it.
+      expect(Tina4::CLI::COMMANDS).not_to include("nonexistent")
+      out, status = run_cli(["nonexistent"])
+      expect(out).to match(/Unknown command: nonexistent/)
+      expect(status).to eq(1)
     end
   end
 
   describe ".start" do
-    it "is a class method" do
-      expect(Tina4::CLI).to respond_to(:start)
+    it "delegates to an instance #run and executes the command end-to-end" do
+      # Tina4::CLI.start(argv) is defined as `new.run(argv)`. Drive it
+      # end-to-end: the version effect on stdout proves .start built an
+      # instance and dispatched the command through #run.
+      expect { Tina4::CLI.start(["version"]) }
+        .to output(/Tina4 Ruby v#{Regexp.escape(Tina4::VERSION)}/).to_stdout
     end
   end
 end

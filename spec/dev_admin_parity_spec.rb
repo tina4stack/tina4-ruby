@@ -102,19 +102,39 @@ RSpec.describe "Tina4::DevAdmin parity routes" do
     expect(File).to exist("src/routes/widgets.rb")
   end
 
-  it "lists MCP tools" do
+  it "lists the real registered MCP tool catalogue" do
     status, _, body = Tina4::DevAdmin.handle_request(make_env("GET", "/__dev/api/mcp/tools"))
     expect(status).to eq(200)
     data = JSON.parse(body.first)
-    expect(data["tools"]).to be_an(Array)
+    # mcp_tools_list returns the default MCP server's actually-registered dev
+    # tools — assert the catalogue, not just that it's an Array.
+    names = data["tools"].map { |t| t["name"] }
+    expect(names).to include("route_list", "file_list", "docs_list", "project_overview")
+    # count must match the number of tools returned.
+    expect(data["count"]).to eq(data["tools"].size)
+    expect(data["count"]).to be > 0
+    # Every tool entry carries a non-empty description and a schema key
+    # (register_tool maps inputSchema -> "schema" and defaults description to
+    # the tool name, so it is never empty).
+    data["tools"].each do |tool|
+      expect(tool["description"]).to be_a(String)
+      expect(tool["description"]).not_to be_empty
+      expect(tool).to have_key("schema")
+    end
   end
 
   it "returns supervisor error JSON for /__dev/api/thoughts when supervisor is down" do
+    # No supervisor is running on the (port + 2000) dev channel during the
+    # spec, so thoughts_payload's real connection attempt fails and it returns
+    # its degraded shape: { thoughts: [], error: <connection message> }.
     status, _, body = Tina4::DevAdmin.handle_request(make_env("GET", "/__dev/api/thoughts"))
     expect(status).to eq(200)
     data = JSON.parse(body.first)
-    # Connection refused or similar — just require JSON shape.
-    expect(data).to be_a(Hash)
+    # Assert the REAL degraded payload, not just "is a Hash".
+    expect(data["thoughts"]).to eq([])
+    expect(data).to have_key("error")
+    expect(data["error"]).to be_a(String)
+    expect(data["error"]).not_to be_empty
   end
 
   # ── Tier 3 parity: /__dev/api/chat + /__dev/api/threads* ──────────

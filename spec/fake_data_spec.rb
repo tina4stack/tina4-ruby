@@ -185,12 +185,17 @@ RSpec.describe Tina4::FakeData do
       end
     end
 
-    it "respects decimal precision" do
+    it "rounds to the requested decimal precision" do
       fake = described_class.new(seed: 42)
       val = fake.numeric(min: 0.0, max: 100.0, decimals: 3)
-      # Check no more than 3 decimal places
-      parts = val.to_s.split(".")
-      expect(parts.last.length).to be <= 3 if parts.length == 2
+      # The source does `val.round(decimals)`, so the returned value MUST be
+      # equal to itself rounded to 3 places — no guard, never skipped. (seed 42
+      # yields 37.454, which genuinely has a fractional part.)
+      expect(val).to be_between(0.0, 100.0)
+      expect(val).to eq(val.round(3))
+      # And rounding to one MORE place than requested must not reveal a 4th
+      # decimal digit (i.e. the clamp really happened, not a coincidence).
+      expect(val.round(4)).to eq(val.round(3))
     end
   end
 
@@ -297,9 +302,14 @@ RSpec.describe Tina4::FakeData do
   end
 
   describe "#company" do
-    it "returns a non-empty string" do
+    it "composes a two-token name with a suffix from COMPANY_SUFFIXES" do
       fake = described_class.new(seed: 42)
-      expect(fake.company.length).to be > 0
+      c = fake.company
+      # Source builds `"#{w1}#{w2} #{suffix}"` — the two words are concatenated,
+      # so the result is exactly TWO space-separated tokens: "<word1word2> <suffix>".
+      expect(c).to match(/\A\S+ \S+\z/)
+      # And the trailing token must be drawn from the real suffix list.
+      expect(described_class::COMPANY_SUFFIXES).to include(c.split.last)
     end
   end
 
@@ -388,10 +398,14 @@ RSpec.describe Tina4::FakeData do
       expect(names_differ || emails_differ).to be true
     end
 
-    it "seed factory method works" do
-      fake = described_class.seed(42)
-      expect(fake).to be_a(described_class)
-      expect(fake.name).to be_a(String)
+    it "seed factory threads the seed through (equivalent to new(seed:))" do
+      # FakeData.seed(42) must be the same as new(seed: 42): proving the factory
+      # actually wires the seed through is what makes its output reproducible,
+      # not merely that it returns an instance.
+      expect(described_class.seed(42).name).to eq(described_class.new(seed: 42).name)
+      expect(described_class.seed(42).email).to eq(described_class.new(seed: 42).email)
+      # A different seed must diverge — guards against seed() ignoring its arg.
+      expect(described_class.seed(42).name).not_to eq(described_class.seed(7).name)
     end
   end
 

@@ -556,8 +556,18 @@ RSpec.describe Tina4::DevMailbox do
   after(:each) { FileUtils.rm_rf(test_dir) }
 
   describe "#initialize" do
-    it "creates a mailbox instance" do
-      expect(mailbox).to be_a(Tina4::DevMailbox)
+    it "creates a usable mailbox instance with its storage dirs" do
+      # The constructor's real work is ensure_dirs (creates the messages +
+      # attachments subdirs) AND a freshly-built instance must function
+      # end-to-end. Prove both: the side-effect dirs exist, and a captured
+      # message can be read back through this very instance.
+      result = mailbox.capture(to: "alice@test.com", subject: "Ping", body: "Pong")
+      expect(Dir.exist?(File.join(test_dir, "messages"))).to be true
+      expect(Dir.exist?(File.join(test_dir, "attachments"))).to be true
+
+      stored = mailbox.read(result[:id])
+      expect(stored[:subject]).to eq("Ping")
+      expect(stored[:body]).to eq("Pong")
     end
 
     it "stores the mailbox directory" do
@@ -581,9 +591,14 @@ RSpec.describe Tina4::DevMailbox do
       expect(result[:success]).to be true
     end
 
-    it "returns a message string" do
+    it "returns the captured-confirmation message and round-trips the email" do
       result = mailbox.capture(to: "alice@test.com", subject: "Hello", body: "Hi")
-      expect(result[:message]).to be_a(String)
+      # The contract promises this exact confirmation string, not merely "a String".
+      expect(result[:message]).to eq("Email captured to dev mailbox")
+      # And the captured email must actually round-trip out of storage.
+      msg = mailbox.read(result[:id])
+      expect(msg[:subject]).to eq("Hello")
+      expect(msg[:body]).to eq("Hi")
     end
 
     it "returns an id" do

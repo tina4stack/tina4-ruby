@@ -249,13 +249,14 @@ RSpec.describe Tina4::Router do
       expect(route).not_to be_nil
     end
 
-    it "handles path type parameter" do
+    it "{filepath:path} greedily captures the remaining slashed segments" do
       Tina4::Router.add("GET", "/files/{filepath:path}", proc { "file" })
       route, params = Tina4::Router.match("GET", "/files/docs/readme.md")
-      if route
-        fp = params["filepath"] || params[:filepath]
-        expect(fp).to include("docs")
-      end
+      expect(route).not_to be_nil
+      fp = params["filepath"] || params[:filepath]
+      # The :path type uses the greedy `.+` pattern, so the whole tail
+      # (slashes included) lands in the param — not just the first segment.
+      expect(fp).to eq("docs/readme.md")
     end
 
     it "does not match extra segments on exact path" do

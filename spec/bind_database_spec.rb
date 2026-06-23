@@ -63,9 +63,22 @@ RSpec.describe "Tina4.bind_database + named connection registry" do
       expect(Tina4.database).to equal(db)
     end
 
-    it "exposes database as a reader only (no writer / hard rename, no alias)" do
-      expect(Tina4).not_to respond_to(:database=)
+    it "exposes database as a reader that reflects a bind, with no writer (hard rename, no alias)" do
+      # The reader must reflect a real bind, not merely exist.
+      Tina4.bind_database(db)
       expect(Tina4).to respond_to(:database)
+      expect(Tina4.database).to equal(db)
+
+      # There is no public writer (the old Tina4.database= was removed in
+      # 3.13.19, with no alias).
+      expect(Tina4).not_to respond_to(:database=)
+
+      # And no private writer either: assigning via send must fail
+      # behaviourally rather than silently clobbering the binding.
+      expect { Tina4.send(:database=, db2) }.to raise_error(NoMethodError)
+
+      # The earlier bind survives the failed assignment attempt.
+      expect(Tina4.database).to equal(db)
     end
   end
 

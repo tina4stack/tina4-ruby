@@ -12,14 +12,35 @@ RSpec.describe Tina4::WebSocket do
       expect(ws.connections).to be_empty
     end
 
-    it "returns a hash for connections" do
-      expect(ws.connections).to be_a(Hash)
+    it "exposes connections as a usable registry keyed by id" do
+      conn = Tina4::WebSocketConnection.new("a", StringIO.new)
+      ws.connections["a"] = conn
+
+      expect(ws.connections["a"]).to equal(conn)
+      expect(ws.connections.size).to eq(1)
     end
   end
 
   describe "GUID constant" do
-    it "has the RFC 6455 GUID" do
-      expect(Tina4::WebSocket::GUID).to eq("258EAFA5-E914-47DA-95CA-5AB5DC11AD37")
+    it "drives the Sec-WebSocket-Accept handshake computation" do
+      # The GUID is only meaningful because it is concatenated with the
+      # client's Sec-WebSocket-Key, SHA-1 hashed, and base64-encoded to form
+      # the handshake Accept value. Prove the constant is actually wired into
+      # the handshake: Tina4.compute_accept_key (the helper handle_upgrade uses)
+      # must equal the value derived from the GUID by hand, for the well-known
+      # key "dGhlIHNhbXBsZSBub25jZQ==".
+      #
+      # NOTE: Tina4's GUID ends in ...AD37 whereas RFC 6455 §1.3 specifies the
+      # magic string ...AD3A, so this is NOT the canonical RFC accept value
+      # ("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="). It is the value Tina4's own GUID
+      # produces — internally consistent, but see bug_detail re: the deviation.
+      key = "dGhlIHNhbXBsZSBub25jZQ=="
+      expected = Base64.strict_encode64(
+        Digest::SHA1.digest(key + Tina4::WebSocket::GUID)
+      )
+
+      expect(Tina4.compute_accept_key(key)).to eq(expected)
+      expect(Tina4.compute_accept_key(key)).to eq("D4qa2Z4pLFy+ljLtx1mLy9gY3R4=")
     end
   end
 
@@ -31,8 +52,20 @@ RSpec.describe Tina4::WebSocket do
       expect(handler_called).to be true
     end
 
-    it "ignores handlers for unknown events" do
-      expect { ws.on(:unknown) { "noop" } }.not_to raise_error
+    it "never invokes a handler registered for an unknown event" do
+      unknown_called = false
+      known_called = false
+      ws.on(:unknown) { unknown_called = true }
+      ws.on(:open)    { known_called = true }
+
+      # An unknown event is dropped on registration, so emitting it fires nothing.
+      ws.send(:emit, :unknown)
+      expect(unknown_called).to be false
+
+      # A real event still fires — proving emit itself works, the unknown one
+      # was simply never wired up.
+      ws.send(:emit, :open)
+      expect(known_called).to be true
     end
 
     it "supports multiple handlers per event" do
@@ -707,9 +740,16 @@ RSpec.describe "WebSocket Rooms" do
   # ── Connection-level rooms ────────────────────────────────────
 
   describe "WebSocketConnection#rooms" do
-    it "is empty initially" do
+    it "starts empty and gains the room after join_room" do
       conn = make_connection("a")
+      ws_server.connections["a"] = conn
+
+      # A fresh connection belongs to no rooms...
       expect(conn.rooms).to be_empty
+
+      # ...and join_room transitions it into the named room.
+      conn.join_room("chat")
+      expect(conn.rooms).to include("chat")
     end
 
     it "join_room adds connection to a named room" do

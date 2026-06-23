@@ -53,20 +53,32 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     end
 
     describe "endpoint registration" do
-      it "does NOT 404 (returns a real response, not nil) for POST /__dev/mcp/message" do
+      it "dispatches POST /__dev/mcp/message to the real JSON-RPC ping handler" do
         result = post_jsonrpc({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping", "params" => {} })
         expect(result).not_to be_nil
-        status, = result
+        status, _headers, body = result
         expect(status).to eq(200)
+        # 200 alone only proves routing; parse the body and assert the real
+        # JSON-RPC ping result the McpServer#_handle_ping handler returns ({}).
+        msg = JSON.parse(body.first)
+        expect(msg["jsonrpc"]).to eq("2.0")
+        expect(msg["id"]).to eq(1)
+        expect(msg["result"]).to eq({})
       end
 
-      it "is reachable at the bare POST /__dev/mcp alias too" do
+      it "dispatches the bare POST /__dev/mcp alias to the same JSON-RPC ping handler" do
         result = post_jsonrpc(
           { "jsonrpc" => "2.0", "id" => 1, "method" => "ping", "params" => {} },
           path: "/__dev/mcp"
         )
-        status, = result
+        status, _headers, body = result
         expect(status).to eq(200)
+        # Confirm the alias reaches the same real ping handler, not just any 200:
+        # the body must be the empty-object ping result keyed back to our id.
+        msg = JSON.parse(body.first)
+        expect(msg["jsonrpc"]).to eq("2.0")
+        expect(msg["id"]).to eq(1)
+        expect(msg["result"]).to eq({})
       end
     end
 

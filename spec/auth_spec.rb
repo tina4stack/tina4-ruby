@@ -150,8 +150,13 @@ RSpec.describe Tina4::Auth do
   end
 
   describe ".bearer_auth" do
-    it "returns a lambda" do
-      expect(Tina4::Auth.bearer_auth).to respond_to(:call)
+    it "returns a callable that makes the real auth decision and exposes the payload" do
+      lam = Tina4::Auth.bearer_auth
+      token = Tina4::Auth.create_token({ "user_id" => 9 })
+      env = { "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+      expect(lam.call(env)).to be true
+      expect(env["tina4.auth"]["user_id"]).to eq(9)
+      expect(lam.call({})).to be false
     end
 
     it "authenticates valid bearer token" do

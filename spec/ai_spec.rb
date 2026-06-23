@@ -10,16 +10,37 @@ RSpec.describe Tina4::AI do
   end
 
   describe "AI_TOOLS" do
-    it "has the expected tools in order" do
-      names = Tina4::AI::AI_TOOLS.map { |t| t[:name] }
-      expect(names).to include("claude-code", "cursor", "copilot", "windsurf", "aider", "cline", "codex")
+    it "maps each tool name to the exact context file the installer writes, in documented order" do
+      # The constant's PURPOSE is to drive which context file gets written for
+      # each tool, in a stable documented order. Assert the full ordered
+      # name -> context_file mapping (not just that some names are present).
+      expect(Tina4::AI::AI_TOOLS.map { |t| [t[:name], t[:context_file]] }).to eq(
+        [
+          ["claude-code", "CLAUDE.md"],
+          ["cursor", ".cursorules"],
+          ["copilot", ".github/copilot-instructions.md"],
+          ["windsurf", ".windsurfrules"],
+          ["aider", "CONVENTIONS.md"],
+          ["cline", ".clinerules"],
+          ["codex", "AGENTS.md"]
+        ]
+      )
     end
 
-    it "each tool has required keys" do
+    it "drives a real context_file (and config_dir when set) for every tool through install_all" do
+      # Don't just check the keys exist on the constant -- prove each tool's
+      # declared :context_file is actually created on disk, and each non-nil
+      # :config_dir is a real directory after a full install.
+      Tina4::AI.install_all(tmp_dir)
       Tina4::AI::AI_TOOLS.each do |tool|
-        expect(tool).to have_key(:name)
-        expect(tool).to have_key(:description)
-        expect(tool).to have_key(:context_file)
+        expect(File.exist?(File.join(tmp_dir, tool[:context_file]))).to(
+          be(true), "expected #{tool[:name]} context file #{tool[:context_file]} to exist"
+        )
+        if tool[:config_dir]
+          expect(Dir.exist?(File.join(tmp_dir, tool[:config_dir]))).to(
+            be(true), "expected #{tool[:name]} config dir #{tool[:config_dir]} to exist"
+          )
+        end
       end
     end
   end
@@ -79,19 +100,27 @@ RSpec.describe Tina4::AI do
       expect(File.exist?(copilot_file)).to be true
     end
 
-    it "returns an array of installed file paths" do
+    it "returns the windsurf path and writes its real skill-block content" do
       result = Tina4::AI.install_selected(tmp_dir, "4") # windsurf
-      expect(result).to be_an(Array)
-      expect(result).not_to be_empty
+      expect(result).to include(".windsurfrules")
+      # The written file must actually carry the marker-bracketed skill block
+      # (non-.md files use the "# tina4-skills:start" marker form).
+      content = File.read(File.join(tmp_dir, ".windsurfrules"))
+      expect(content).to include("tina4-skills:start")
     end
 
-    it "ignores invalid selection numbers" do
-      expect { Tina4::AI.install_selected(tmp_dir, "99") }.not_to raise_error
+    it "installs nothing for an out-of-range selection number" do
+      result = Tina4::AI.install_selected(tmp_dir, "99")
+      expect(result).to eq([])
+      # No context file should have been created for a number outside the menu.
+      expect(Dir.children(tmp_dir)).to be_empty
     end
 
-    it "handles empty selection gracefully" do
+    it "is a true no-op for an empty selection" do
       result = Tina4::AI.install_selected(tmp_dir, "")
-      expect(result).to be_an(Array)
+      expect(result).to eq([])
+      expect(File.exist?(File.join(tmp_dir, "CLAUDE.md"))).to be(false)
+      expect(Dir.children(tmp_dir)).to be_empty
     end
   end
 
@@ -120,10 +149,14 @@ RSpec.describe Tina4::AI do
   end
 
   describe ".generate_context" do
-    it "returns a non-empty string" do
-      context = Tina4::AI.generate_context
-      expect(context).to be_a(String)
-      expect(context).not_to be_empty
+    it "dispatches per-tool so each tool gets distinct, tool-named content" do
+      # The case statement in generate_context must produce tool-specific
+      # bodies -- prove the dispatch fires by checking each tool's own header
+      # text and that two different tools don't render the same document.
+      expect(Tina4::AI.generate_context("cursor")).to include("Cursor Rules")
+      expect(Tina4::AI.generate_context("copilot")).to include("Copilot Instructions")
+      expect(Tina4::AI.generate_context("codex")).to include("Codex Agent Instructions")
+      expect(Tina4::AI.generate_context("cursor")).not_to eq(Tina4::AI.generate_context("codex"))
     end
 
     it "includes Tina4 Ruby references" do

@@ -34,8 +34,22 @@ RSpec.describe "Issue #106 equivalent bugs" do
   describe "Router.group accessible" do
     before { Tina4::Router.clear! }
 
-    it "responds to .group" do
-      expect(Tina4::Router).to respond_to(:group)
+    it "registers a working prefixed route via the .group block" do
+      # Behavioural proof that .group actually evaluates its block and
+      # registers a real, dispatchable route (not just that the method
+      # exists). The block runs in the GroupContext, so the bare get(...)
+      # call prefixes the path and stores a live handler we can invoke.
+      Tina4::Router.group("/x") do
+        get("/y") { "y-handler-ran" }
+      end
+
+      route, params = Tina4::Router.match("GET", "/x/y")
+      expect(route).not_to be_nil
+      expect(route.path).to eq("/x/y")
+      expect(params).to eq({})
+      # The registered block is the real handler — invoking it returns the
+      # value defined inside the group, proving the block was wired through.
+      expect(route.handler.call).to eq("y-handler-ran")
     end
 
     it "prefixes routes registered inside the group" do

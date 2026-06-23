@@ -62,14 +62,26 @@ RSpec.describe "Port/Host configuration" do
   end
 
   describe "DEFAULT_PORT" do
-    it "is 7147" do
-      expect(Tina4::CLI.const_get(:DEFAULT_PORT)).to eq(7147)
+    after { ENV.delete("PORT") }
+
+    it "is the port resolution actually falls back to (no CLI flag, no ENV)" do
+      ENV.delete("PORT")
+      resolved = cli.send(:resolve_config, :port, nil)
+      expect(resolved).to eq(Tina4::CLI.const_get(:DEFAULT_PORT))
+      # and it is the documented value (CLAUDE.md / scaffolding contract)
+      expect(resolved).to eq(7147)
     end
   end
 
   describe "DEFAULT_HOST" do
-    it "is 0.0.0.0" do
-      expect(Tina4::CLI.const_get(:DEFAULT_HOST)).to eq("0.0.0.0")
+    after { ENV.delete("HOST") }
+
+    it "is the host resolution actually falls back to (no CLI flag, no ENV)" do
+      ENV.delete("HOST")
+      resolved = cli.send(:resolve_config, :host, nil)
+      expect(resolved).to eq(Tina4::CLI.const_get(:DEFAULT_HOST))
+      # and it is the documented value (bind-all default)
+      expect(resolved).to eq("0.0.0.0")
     end
   end
 end

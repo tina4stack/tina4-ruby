@@ -35,8 +35,13 @@ RSpec.describe "Tina4 v3.12 legacy env-var boot guard" do
 
   # ── 1. Maps every documented legacy var to a TINA4_ replacement ──
 
-  it "maps all 22 retired env vars to their TINA4_-prefixed replacements" do
-    expect(Tina4::LEGACY_ENV_VARS).to include(
+  it "drives all 22 retired env vars through the guard, surfacing each TINA4_ replacement at runtime" do
+    # The documented mapping. We do NOT assert the constant against this copy —
+    # we feed each OLD name into the guard one at a time and prove the guard
+    # consults the live LEGACY_ENV_VARS table to name the correct replacement.
+    # This catches the failure the constant-comparison version could not: a
+    # mapping that is declared but never actually used by the boot guard.
+    expected = {
       "DATABASE_URL"           => "TINA4_DATABASE_URL",
       "DATABASE_USERNAME"      => "TINA4_DATABASE_USERNAME",
       "DATABASE_PASSWORD"      => "TINA4_DATABASE_PASSWORD",
@@ -59,8 +64,36 @@ RSpec.describe "Tina4 v3.12 legacy env-var boot guard" do
       "SWAGGER_DESCRIPTION"    => "TINA4_SWAGGER_DESCRIPTION",
       "SWAGGER_VERSION"        => "TINA4_SWAGGER_VERSION",
       "ORM_PLURAL_TABLE_NAMES" => "TINA4_ORM_PLURAL_TABLE_NAMES"
-    )
-    expect(Tina4::LEGACY_ENV_VARS.size).to eq(22)
+    }
+
+    expected.each do |old, new_name|
+      ENV[old] = "anything"
+      io = StringIO.new
+      err = nil
+      begin
+        Tina4.check_legacy_env_vars!(io: io, exit_on_error: false)
+      rescue Tina4::LegacyEnvError => e
+        err = e
+      ensure
+        ENV.delete(old)
+      end
+
+      # The guard must have refused to boot and named the offending legacy var.
+      expect(err).to be_a(Tina4::LegacyEnvError),
+                     "expected setting #{old} to trip the boot guard"
+      expect(err.message).to include(old)
+      # ...and the rendered guidance must point at the exact replacement,
+      # proving the runtime mapping resolved old -> new through the guard.
+      expect(io.string).to include(old)
+      expect(io.string).to include(new_name),
+                           "expected guard to tell user to use #{new_name} in place of #{old}"
+    end
+
+    # Every documented pair was exercised, and the live table holds exactly the
+    # 22 mappings we drove through the guard (no extras, none missing).
+    expect(expected.size).to eq(22)
+    expect(Tina4::LEGACY_ENV_VARS.size).to eq(expected.size)
+    expect(Tina4::LEGACY_ENV_VARS).to eq(expected)
   end
 
   # ── 2. Clean env passes silently ─────────────────────────────────

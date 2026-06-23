@@ -96,18 +96,45 @@ RSpec.describe "ORM correctness (v3.13.11)" do
   # ── #50.2 — natural-key INSERT regression guard ──────────────────
 
   describe "natural-key INSERT (regression guard)" do
-    it "uses @persisted=false from .new to pick INSERT for a fresh natural-key record" do
-      # We don't need a real DB for this — just verify the decision
-      # branch in save() routes through INSERT when @persisted is false.
-      # This is a regression test pinning the existing correct behaviour
-      # so a future refactor can't silently break natural-key models.
-      class NaturalKeyGuard < Tina4::ORM
-        string_field :code, primary_key: true
-        string_field :name
-      end
+    # ccoins-style model: a natural (non-auto-increment) string primary key.
+    # save() must pick INSERT for a fresh record so the row actually lands in
+    # the table — not silently no-op or mistakenly UPDATE a non-existent row.
+    class NaturalKeyGuard < Tina4::ORM
+      table_name "natural_key_guard"
+      string_field :code, primary_key: true
+      string_field :name
+    end
 
-      instance = NaturalKeyGuard.new(code: "GC-100", name: "alice")
-      expect(instance.instance_variable_get(:@persisted)).to be(false)
+    let(:tmp_dir) { Dir.mktmpdir("tina4_natural_key_insert") }
+    let(:db_path) { File.join(tmp_dir, "natural_key.db") }
+    let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
+
+    before(:each) do
+      Tina4.bind_database(db)
+      db.execute("CREATE TABLE natural_key_guard (code TEXT PRIMARY KEY, name TEXT)")
+      db.commit
+    end
+
+    after(:each) do
+      db.close
+      FileUtils.rm_rf(tmp_dir)
+    end
+
+    it "INSERTs a fresh natural-key record into the database via save" do
+      # A brand-new instance is not yet persisted: save() must INSERT it.
+      fresh = NaturalKeyGuard.new(code: "GC-100", name: "alice")
+      expect(fresh.instance_variable_get(:@persisted)).to be(false)
+
+      # Exercise the real INSERT branch against a real SQLite DB.
+      expect(fresh.save).to be(fresh)             # fluent self on success
+
+      # Verify the row actually landed in the table (the decision was correct).
+      expect(NaturalKeyGuard.count).to eq(1)
+      stored = NaturalKeyGuard.find_by_id("GC-100")
+      expect(stored).not_to be_nil
+      expect(stored.name).to eq("alice")
+      # The saved instance is now flagged persisted (INSERT path completed).
+      expect(fresh.instance_variable_get(:@persisted)).to be(true)
     end
   end
 end

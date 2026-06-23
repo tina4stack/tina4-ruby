@@ -293,30 +293,78 @@ RSpec.describe "CLI generate commands" do
   # ── FIELD_TYPE_MAP ─────────────────────────────────────────────
 
   describe "FIELD_TYPE_MAP" do
-    it "maps string types to string_field" do
-      expect(Tina4::CLI::FIELD_TYPE_MAP["string"][:orm]).to eq("string_field")
-      expect(Tina4::CLI::FIELD_TYPE_MAP["str"][:orm]).to eq("string_field")
+    it "drives string_field output for both string and str field types" do
+      expect {
+        cli.run(["generate", "model", "Thing", "--fields", "name:string,nick:str"])
+      }.to output(/Created/).to_stdout
+
+      content = File.read(File.join(@tmp_dir, "src", "orm", "thing.rb"))
+      # Both the "string" and "str" map entries must resolve to string_field in
+      # the generated ORM class — exercised through the generator, not by reading
+      # the constant against itself.
+      expect(content).to include("string_field :name")
+      expect(content).to include("string_field :nick")
     end
 
-    it "maps integer types to integer_field" do
-      expect(Tina4::CLI::FIELD_TYPE_MAP["integer"][:orm]).to eq("integer_field")
-      expect(Tina4::CLI::FIELD_TYPE_MAP["int"][:orm]).to eq("integer_field")
+    it "drives integer_field output and INTEGER DDL for integer and int field types" do
+      expect {
+        cli.run(["generate", "model", "Thing", "--fields", "count:integer,qty:int"])
+      }.to output(/Created/).to_stdout
+
+      content = File.read(File.join(@tmp_dir, "src", "orm", "thing.rb"))
+      # Both the "integer" and "int" map entries must resolve to integer_field.
+      expect(content).to include("integer_field :count")
+      expect(content).to include("integer_field :qty")
+
+      # The matching create_thing migration emits the :sql mapping (INTEGER) too.
+      migrations = Dir.glob(File.join(@tmp_dir, "migrations", "*create_thing.sql"))
+      expect(migrations.length).to be >= 1
+      migration = File.read(migrations.first)
+      expect(migration).to include("count INTEGER")
+      expect(migration).to include("qty INTEGER")
     end
 
-    it "maps float types to float_field" do
-      expect(Tina4::CLI::FIELD_TYPE_MAP["float"][:orm]).to eq("float_field")
-      expect(Tina4::CLI::FIELD_TYPE_MAP["decimal"][:orm]).to eq("float_field")
+    it "drives float_field output and REAL DDL for float and decimal field types" do
+      expect {
+        cli.run(["generate", "model", "Thing", "--fields", "price:float,rate:decimal"])
+      }.to output(/Created/).to_stdout
+
+      content = File.read(File.join(@tmp_dir, "src", "orm", "thing.rb"))
+      # Both the "float" and "decimal" map entries must resolve to float_field.
+      expect(content).to include("float_field :price")
+      expect(content).to include("float_field :rate")
+
+      # The matching create_thing migration emits the :sql mapping (REAL).
+      migrations = Dir.glob(File.join(@tmp_dir, "migrations", "*create_thing.sql"))
+      expect(migrations.length).to be >= 1
+      migration = File.read(migrations.first)
+      expect(migration).to include("price REAL")
+      expect(migration).to include("rate REAL")
     end
 
-    it "maps boolean types to boolean_field" do
-      expect(Tina4::CLI::FIELD_TYPE_MAP["bool"][:orm]).to eq("boolean_field")
-      expect(Tina4::CLI::FIELD_TYPE_MAP["boolean"][:orm]).to eq("boolean_field")
+    it "drives boolean_field output for both boolean and bool field types" do
+      expect {
+        cli.run(["generate", "model", "Thing", "--fields", "active:boolean,flag:bool"])
+      }.to output(/Created/).to_stdout
+
+      content = File.read(File.join(@tmp_dir, "src", "orm", "thing.rb"))
+      # Both the "boolean" and "bool" map entries must resolve to boolean_field.
+      expect(content).to include("boolean_field :active")
+      expect(content).to include("boolean_field :flag")
     end
 
-    it "includes SQL type mappings" do
-      expect(Tina4::CLI::FIELD_TYPE_MAP["string"][:sql]).to eq("VARCHAR(255)")
-      expect(Tina4::CLI::FIELD_TYPE_MAP["integer"][:sql]).to eq("INTEGER")
-      expect(Tina4::CLI::FIELD_TYPE_MAP["text"][:sql]).to eq("TEXT")
+    it "emits the :sql type mappings into generated create_ migration DDL" do
+      expect {
+        cli.run(["generate", "migration", "create_things", "--fields", "name:string,n:integer,body:text"])
+      }.to output(/Created/).to_stdout
+
+      files = Dir.glob(File.join(@tmp_dir, "migrations", "*create_things.sql"))
+      expect(files.length).to be >= 1
+      content = File.read(files.first)
+      # The :sql values for string/integer/text are emitted verbatim into the DDL.
+      expect(content).to include("name VARCHAR(255)")
+      expect(content).to include("n INTEGER")
+      expect(content).to include("body TEXT")
     end
   end
 end

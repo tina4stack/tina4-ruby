@@ -97,14 +97,23 @@ RSpec.describe Tina4::Testing do
   end
 
   describe Tina4::Testing::TestSuite do
-    it "stores its name" do
+    it "threads its name through execution into the recorded result" do
       suite = Tina4::Testing::TestSuite.new("Example")
-      expect(suite.name).to eq("Example")
+      suite.it("a passing test") { assert(true) }
+      Tina4::Testing.suites << suite
+      results = capture_output { Tina4::Testing.run_all }
+      # The name is not merely stored on the suite — run_all must thread it
+      # through run_test into the per-test record.
+      expect(results[:tests].first[:suite]).to eq("Example")
+      expect(results[:tests].first[:name]).to eq("a passing test")
     end
 
-    it "starts with empty tests" do
+    it "transitions from empty to populated when it() registers a test" do
       suite = Tina4::Testing::TestSuite.new("Example")
       expect(suite.tests).to be_empty
+      suite.it("does work") { assert(true) }
+      expect(suite.tests.length).to eq(1)
+      expect(suite.tests.first[:name]).to eq("does work")
     end
 
     it "registers tests with it()" do
@@ -269,13 +278,30 @@ RSpec.describe Tina4::Testing do
   end
 
   describe Tina4::Testing::TestFailure do
-    it "is a subclass of StandardError" do
-      expect(Tina4::Testing::TestFailure.ancestors).to include(StandardError)
+    let(:ctx) { Tina4::Testing::TestContext.new }
+
+    it "is catchable as a StandardError when a real assertion fails" do
+      # Drive a real failing assertion and prove the raised error is actually
+      # catchable as StandardError (the inheritance is exercised, not just
+      # asserted on the ancestors list).
+      expect { ctx.assert(false) }.to raise_error(StandardError)
+
+      caught = nil
+      begin
+        ctx.assert(false, "boom")
+      rescue StandardError => e
+        caught = e
+      end
+      expect(caught).to be_a(Tina4::Testing::TestFailure)
+      expect(caught.message).to eq("boom")
     end
 
-    it "carries a message" do
-      error = Tina4::Testing::TestFailure.new("test failed")
-      expect(error.message).to eq("test failed")
+    it "carries the message produced by the real assertion code" do
+      # The message comes out of the live assert_equal path, not a
+      # hand-constructed instance.
+      expect { ctx.assert_equal("a", "b") }.to raise_error(
+        Tina4::Testing::TestFailure, /Expected "a", got "b"/
+      )
     end
   end
 

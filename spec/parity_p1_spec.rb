@@ -8,26 +8,38 @@ RSpec.describe "v3.13.1 P1 parity" do
   # ─── Database.get_connection ───────────────────────────────────────
 
   describe Tina4::Database, ".get_connection" do
-    it "accepts an explicit URL" do
+    it "accepts an explicit URL and returns a live, usable connection" do
       db = Tina4::Database.get_connection("sqlite::memory:")
-      expect(db).to be_a(Tina4::Database)
+      db.execute("CREATE TABLE t (id INTEGER)")
+      db.insert("t", { id: 7 })
+      expect(db.fetch_one("SELECT id FROM t")[:id]).to eq(7)
     end
 
-    it "reads from env var when given a name without ://" do
+    it "reads from env var when given a name without :// and the resolved connection round-trips" do
       ENV["TEST_PARITY_DB_URL"] = "sqlite::memory:"
       begin
         db = Tina4::Database.get_connection("TEST_PARITY_DB_URL")
-        expect(db).to be_a(Tina4::Database)
+        # Prove the env-var URL was resolved into a working connection, not some
+        # unrelated default: a full CREATE/insert/fetch_one round-trip.
+        db.execute("CREATE TABLE env_resolved (id INTEGER, name TEXT)")
+        db.insert("env_resolved", { id: 42, name: "from-env" })
+        row = db.fetch_one("SELECT id, name FROM env_resolved")
+        expect(row[:id]).to eq(42)
+        expect(row[:name]).to eq("from-env")
       ensure
         ENV.delete("TEST_PARITY_DB_URL")
       end
     end
 
-    it "falls back to in-memory SQLite when no URL resolves" do
+    it "falls back to a working in-memory SQLite connection when no URL resolves" do
       prev = ENV.delete("TINA4_DATABASE_URL")
       begin
         db = Tina4::Database.get_connection("NON_EXISTENT_ENV_KEY")
-        expect(db).to be_a(Tina4::Database)
+        # The fallback must be a real, usable in-memory SQLite connection.
+        expect(db.get_database_type).to eq("sqlite")
+        db.execute("CREATE TABLE fb (id INTEGER)")
+        db.insert("fb", { id: 1 })
+        expect(db.fetch_all("SELECT * FROM fb").length).to eq(1)
       ensure
         ENV["TINA4_DATABASE_URL"] = prev if prev
       end

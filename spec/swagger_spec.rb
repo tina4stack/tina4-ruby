@@ -28,11 +28,14 @@ RSpec.describe Tina4::Swagger do
       expect(params.any? { |p| p["name"] == "id" }).to be true
     end
 
-    it "includes security for secure routes" do
+    it "computes bearerAuth security for a secure GET route" do
       Tina4.secure_get("/api/secret") { |_req, res| res.json({}) }
       spec = Tina4::Swagger.generate
       operation = spec["paths"]["/api/secret"]["get"]
-      expect(operation["security"]).not_to be_nil
+      # secure_get sets route.auth_handler, so resolve_security applies the
+      # default scheme (bearerAuth). bearerAuth is type "http", so scopes are
+      # sanitized to [] (scopes only allowed on oauth2/openIdConnect).
+      expect(operation["security"]).to eq([{ "bearerAuth" => [] }])
     end
 
     it "includes request body for POST routes" do
@@ -55,16 +58,31 @@ RSpec.describe Tina4::Swagger do
       expect(schemes["bearerFormat"]).to eq("JWT")
     end
 
-    it "has a default info title" do
-      spec = Tina4::Swagger.generate
-      expect(spec["info"]["title"]).to be_a(String)
-      expect(spec["info"]["title"]).not_to be_empty
+    it "falls back to the 'Tina4 API' default info title" do
+      # base_spec falls back to "Tina4 API" only when neither TINA4_SWAGGER_TITLE
+      # nor PROJECT_NAME is set. Scrub both for this example so we assert the
+      # real computed default rather than whatever the ambient env contributes.
+      original_title = ENV.delete("TINA4_SWAGGER_TITLE")
+      original_project = ENV.delete("PROJECT_NAME")
+      begin
+        spec = Tina4::Swagger.generate
+        expect(spec["info"]["title"]).to eq("Tina4 API")
+      ensure
+        ENV["TINA4_SWAGGER_TITLE"] = original_title if original_title
+        ENV["PROJECT_NAME"] = original_project if original_project
+      end
     end
 
-    it "has a default info version" do
-      spec = Tina4::Swagger.generate
-      expect(spec["info"]["version"]).to be_a(String)
-      expect(spec["info"]["version"]).not_to be_empty
+    it "falls back to Tina4::VERSION for the default info version" do
+      # base_spec uses Tina4::VERSION as the version default when
+      # TINA4_SWAGGER_VERSION is unset.
+      original_version = ENV.delete("TINA4_SWAGGER_VERSION")
+      begin
+        spec = Tina4::Swagger.generate
+        expect(spec["info"]["version"]).to eq(Tina4::VERSION)
+      ensure
+        ENV["TINA4_SWAGGER_VERSION"] = original_version if original_version
+      end
     end
 
     it "has a description in info" do

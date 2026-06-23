@@ -267,14 +267,27 @@ RSpec.describe Tina4::ErrorTracker do
   end
 
   describe "#register" do
-    it "can be called without error" do
-      expect { tracker.register }.not_to raise_error
+    it "sets @registered true and installs the at_exit hook only once" do
+      expect(tracker.instance_variable_get(:@registered)).to be_falsey
+      tracker.register
+      expect(tracker.instance_variable_get(:@registered)).to be true
+
+      # The guard makes a second register a no-op: @registered stays true and
+      # no second at_exit hook / duplicate work is performed.
+      tracker.register
+      expect(tracker.instance_variable_get(:@registered)).to be true
     end
 
-    it "is safe to call multiple times" do
+    it "is idempotent — registering twice does not double-count a captured error" do
       tracker.register
       tracker.register
-      # No error raised
+      # If the guard failed and register installed work twice, a captured
+      # exception would be recorded more than once. Prove a single capture
+      # produces exactly one tracked error.
+      tracker.capture_exception(StandardError.new("x"))
+      expect(tracker.get.size).to eq(1)
+      expect(tracker.get.first[:count]).to eq(1)
+      expect(tracker.instance_variable_get(:@registered)).to be true
     end
   end
 end
@@ -749,12 +762,21 @@ RSpec.describe Tina4::DevAdmin do
       expect(html).to include("tina4-dev-admin.min.js")
     end
 
-    it "serves the dev admin JS bundle" do
+    it "serves the REAL dev admin JS bundle (not a stub/truncated asset)" do
       env = { "PATH_INFO" => "/__dev/js/tina4-dev-admin.min.js", "REQUEST_METHOD" => "GET" }
       status, headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       expect(headers["content-type"]).to include("javascript")
-      expect(body.first.length).to be > 1000
+
+      js = body.first
+      expect(js.length).to be > 1000
+      # Assert the served body is the genuine bundle the dashboard depends on:
+      # the SPA framework token plus the same database-tab selectors the
+      # source-file test checks. A truncated or wrong asset would miss these.
+      expect(js).to include("tina4")
+      expect(js).to include("db-table-list")
+      expect(js).to include("db-result")
+      expect(js).to include("db-query")
     end
 
     it "JS bundle contains database tab elements" do

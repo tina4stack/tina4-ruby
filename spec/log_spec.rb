@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "stringio"
 
 RSpec.describe Tina4::Log do
   let(:tmpdir) { Dir.mktmpdir }
@@ -38,29 +39,58 @@ RSpec.describe Tina4::Log do
   end
 
   describe "logging methods" do
-    before { Tina4::Log.configure(tmpdir) }
+    let(:log_path) { File.join(tmpdir, "logs", "tina4.log") }
 
-    it "responds to .info" do
-      expect(Tina4::Log).to respond_to(:info)
+    it "writes an INFO entry to the log file" do
+      ENV["TINA4_LOG_LEVEL"] = "debug" # ensure debug-level config doesn't suppress the file (file records all anyway)
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.info("hello-info")
+      content = File.read(log_path)
+      expect(content).to include("hello-info")
+      expect(content).to include("INFO")
+    ensure
+      ENV.delete("TINA4_LOG_LEVEL")
     end
 
-    it "responds to .debug" do
-      expect(Tina4::Log).to respond_to(:debug)
+    it "writes a DEBUG entry to the log file" do
+      # The log FILE records every level regardless of TINA4_LOG_LEVEL, but set
+      # debug explicitly to mirror the documented "enable debug" workflow.
+      ENV["TINA4_LOG_LEVEL"] = "debug"
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.debug("hello-debug")
+      content = File.read(log_path)
+      expect(content).to include("hello-debug")
+      expect(content).to include("DEBUG")
+    ensure
+      ENV.delete("TINA4_LOG_LEVEL")
     end
 
-    it "responds to .warning" do
-      expect(Tina4::Log).to respond_to(:warning)
+    it "writes a WARNING entry with the WARNING level label" do
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.warning("hello-warn")
+      content = File.read(log_path)
+      expect(content).to include("hello-warn")
+      expect(content).to include("WARNING")
     end
 
-    it "responds to .error" do
-      expect(Tina4::Log).to respond_to(:error)
+    it "writes an ERROR entry with the ERROR level label" do
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.error("hello-err")
+      content = File.read(log_path)
+      expect(content).to include("hello-err")
+      expect(content).to include("ERROR")
     end
 
-    it "does not raise when logging" do
-      expect { Tina4::Log.info("test") }.not_to raise_error
-      expect { Tina4::Log.debug("test") }.not_to raise_error
-      expect { Tina4::Log.warning("test") }.not_to raise_error
-      expect { Tina4::Log.error("test") }.not_to raise_error
+    it "lands a message at every standard level in the file" do
+      ENV["TINA4_LOG_LEVEL"] = "debug"
+      Tina4::Log.configure(tmpdir)
+      %w[info debug warning error].each { |lvl| Tina4::Log.public_send(lvl, "probe-#{lvl}") }
+      content = File.read(log_path)
+      %w[info debug warning error].each do |lvl|
+        expect(content).to include("probe-#{lvl}"), "expected level #{lvl} message in the log file"
+      end
+    ensure
+      ENV.delete("TINA4_LOG_LEVEL")
     end
   end
 
@@ -211,8 +241,22 @@ RSpec.describe Tina4::Log do
     end
 
     it "logs without request_id when not set" do
+      # First write a line WITH a request id, then clear it and write another.
+      # The second line must be written, omit the request id, and not leak the
+      # stale id from the first line.
+      Tina4::Log.set_request_id("stale-rid-001")
+      Tina4::Log.info("with-ctx-msg")
       Tina4::Log.clear_request_id
-      expect { Tina4::Log.info("no context") }.not_to raise_error
+      Tina4::Log.info("no-ctx-msg")
+
+      content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      no_ctx_line = content.lines.find { |l| l.include?("no-ctx-msg") }
+      expect(no_ctx_line).not_to be_nil
+      expect(no_ctx_line).not_to include("stale-rid-001")
+      # The line WITH the id must still carry it — proving the omission above is
+      # genuinely "no id set", not a logger that never records ids.
+      with_ctx_line = content.lines.find { |l| l.include?("with-ctx-msg") }
+      expect(with_ctx_line).to include("stale-rid-001")
     end
 
     it "different request ids appear in sequence" do
@@ -236,14 +280,41 @@ RSpec.describe Tina4::Log do
       expect(Dir.exist?(File.join(nested_dir, "logs"))).to be true
     end
 
-    it "does not raise on repeated setup" do
+    it "still logs (once, no truncation/dup) after a repeated setup" do
+      log_path = File.join(tmpdir, "logs", "tina4.log")
       Tina4::Log.configure(tmpdir)
-      expect { Tina4::Log.configure(tmpdir) }.not_to raise_error
+      Tina4::Log.info("before-reconfigure")
+      # Re-configuring the same dir must not crash, truncate the existing file,
+      # or duplicate handlers (which would double-write every subsequent line).
+      Tina4::Log.configure(tmpdir)
+      Tina4::Log.info("after-reconfigure")
+
+      content = File.read(log_path)
+      expect(content).to include("before-reconfigure") # not truncated by the 2nd configure
+      expect(content).to include("after-reconfigure")  # logger still works
+      # Exactly one write — a duplicated handler would emit the line twice.
+      expect(content.scan(/after-reconfigure/).length).to eq(1)
     end
 
-    it "handles logging before setup without crashing" do
-      # This tests resilience
-      expect { Tina4::Log.info("before setup") }.not_to raise_error
+    it "emits a message logged before setup to stdout (fallback path)" do
+      # Force a genuinely-unconfigured logger: clear the persistent @initialized
+      # flag and release any open file handle so log() must run its
+      # `configure unless @initialized` fallback. With no TINA4_LOG_DIR set,
+      # configure defaults to Dir.pwd/logs, but stdout is ALWAYS on — assert the
+      # fallback actually emits rather than silently swallowing the message.
+      Tina4::Log.close_file_logger
+      Tina4::Log.instance_variable_set(:@initialized, false)
+
+      captured = StringIO.new
+      original = $stdout
+      $stdout = captured
+      begin
+        Tina4::Log.info("before-setup-msg")
+      ensure
+        $stdout = original
+      end
+
+      expect(captured.string).to include("before-setup-msg")
     end
   end
 
@@ -508,9 +579,12 @@ RSpec.describe Tina4::Log do
       saved.nil? ? ENV.delete("TINA4_LOG_LEVEL") : ENV["TINA4_LOG_LEVEL"] = saved
     end
 
-    it "responds to .critical" do
+    it "writes a CRITICAL entry to the log file" do
       Tina4::Log.configure(tmpdir)
-      expect(Tina4::Log).to respond_to(:critical)
+      Tina4::Log.critical("crit-probe")
+      content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(content).to include("crit-probe")
+      expect(content).to include("CRITICAL")
     end
 
     it "ALWAYS writes a critical entry to the log file (no opt-in toggle)" do
@@ -530,9 +604,12 @@ RSpec.describe Tina4::Log do
       expect(log_content).to include("critical at error gate")
     end
 
-    it "does not raise when logging critical" do
+    it "writes a critical message with the CRITICAL label to the file" do
       Tina4::Log.configure(tmpdir)
-      expect { Tina4::Log.critical("safe") }.not_to raise_error
+      Tina4::Log.critical("safe-crit")
+      content = File.read(File.join(tmpdir, "logs", "tina4.log"))
+      expect(content).to include("safe-crit")
+      expect(content).to include("CRITICAL")
     end
 
     it "renders critical in magenta on the console" do
