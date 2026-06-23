@@ -16,10 +16,16 @@ class SoftDeleteUser < Tina4::ORM
   integer_field :is_deleted, default: 0
 end
 
-# Test model with field mapping
+# Test model with field mapping.
+# field_mapping is { ruby_attribute => db_column } — the canonical direction
+# (Python master tina4_python/orm/model.py: # {"python_attribute": "db_column"}).
+# The ORM's read path (from_hash inverts to db_col => ruby_attr) and write path
+# (to_db_hash: mapping[ruby_attr] || ruby_attr) both require this direction. The
+# `mappedusers` table (created in before(:each)) has snake_case columns
+# user_name / user_email; the ruby attributes are name / email.
 class MappedUser < Tina4::ORM
   table_name "mappedusers"
-  self.field_mapping = { "user_name" => "name", "user_email" => "email" }
+  self.field_mapping = { "name" => "user_name", "email" => "user_email" }
 
   integer_field :id, primary_key: true, auto_increment: true
   string_field :name
@@ -330,6 +336,50 @@ RSpec.describe "ORM v3 features" do
       # Cache was cleared, so accessing books triggers fresh load
       books = author.books
       expect(books.length).to eq(1)
+    end
+  end
+
+  describe "Field mapping (ruby_attribute => db_column)" do
+    # Proves the mapping actually performs on BOTH directions against the real
+    # SQLite DB. The mappedusers table has snake_case columns user_name /
+    # user_email (see before(:each)); the ruby attributes are name / email.
+
+    it "surfaces snake_case DB columns on the ruby attributes when reading (find_by_id + where)" do
+      # Seed directly into the real snake_case columns.
+      db.execute("INSERT INTO mappedusers (user_name, user_email) VALUES (?, ?)", ["Ada Lovelace", "ada@dev.test"])
+      id = db.get_last_id
+
+      found = MappedUser.find_by_id(id)
+      expect(found).not_to be_nil
+      # The read path (from_hash inverts the mapping) MUST land user_name->name,
+      # user_email->email. With a backwards mapping these would be nil.
+      expect(found.name).to eq("Ada Lovelace")
+      expect(found.email).to eq("ada@dev.test")
+
+      via_where = MappedUser.where("user_name = ?", ["Ada Lovelace"])
+      expect(via_where.length).to eq(1)
+      expect(via_where.first.name).to eq("Ada Lovelace")
+      expect(via_where.first.email).to eq("ada@dev.test")
+    end
+
+    it "writes ruby attributes into the snake_case DB columns on save, and round-trips on reload" do
+      user = MappedUser.new(name: "Grace Hopper", email: "grace@dev.test")
+      expect(user.save).to be_truthy
+      expect(user.id).not_to be_nil
+
+      # The write path (to_db_hash applies the mapping) MUST land the values in
+      # user_name / user_email, NOT name / email.
+      raw = db.fetch_one("SELECT user_name, user_email FROM mappedusers WHERE id = ?", [user.id])
+      expect(raw).not_to be_nil
+      expect(raw[:user_name]).to eq("Grace Hopper")
+      expect(raw[:user_email]).to eq("grace@dev.test")
+
+      # And a fresh reload through the ORM round-trips the mapped columns back
+      # onto the ruby attributes.
+      reloaded = MappedUser.find_by_id(user.id)
+      expect(reloaded).not_to be_nil
+      expect(reloaded.name).to eq("Grace Hopper")
+      expect(reloaded.email).to eq("grace@dev.test")
     end
   end
 end
