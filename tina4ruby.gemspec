@@ -44,6 +44,11 @@ Gem::Specification.new do |spec|
   # never force-installed; the backend requires it lazily and the spec skips
   # when it is absent. Lets CI exercise the real Kafka enqueue/dequeue cycle.
   spec.add_development_dependency "rdkafka", "~> 0.20"
+  # bunny — optional, for the live RabbitMQ queue backend + its integration spec.
+  # Dev-only (like mongo/pg/rdkafka) so production installs stay lean; the backend
+  # requires it lazily and the live RabbitMQ spec skips when it is absent (without
+  # it the spec was perpetually skipped even with a broker reachable).
+  spec.add_development_dependency "bunny", "~> 2.22"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.12"
   spec.add_development_dependency "rubocop", "~> 1.50"

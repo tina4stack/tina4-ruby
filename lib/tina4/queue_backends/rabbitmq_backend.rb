@@ -27,7 +27,14 @@ module Tina4
 
       def dequeue(topic)
         queue = get_queue(topic)
-        delivery_info, _properties, payload = queue.pop
+        # Manual ack: do NOT let bunny's default auto-ack remove the message on
+        # pop. The message stays in-flight (unacked) until complete() acks it, so
+        # a consumer crash before complete() makes the broker redeliver it
+        # (at-least-once delivery) — parity with the Python/PHP masters, whose
+        # basic_get uses auto_ack=false / no-ack=false. With the old auto-ack pop
+        # the stored delivery_tag had already been acked, so a later
+        # channel.acknowledge raised PRECONDITION_FAILED and closed the channel.
+        delivery_info, _properties, payload = queue.pop(manual_ack: true)
         return nil unless payload
 
         data = JSON.parse(payload)
@@ -40,8 +47,17 @@ module Tina4
         msg
       end
 
-      def acknowledge(_message)
-        @channel.acknowledge(@last_delivery_tag) if @last_delivery_tag
+      # Acknowledge the in-flight message as done (terminal). Named complete() to
+      # match the lite/mongo backends AND the Job#complete lifecycle, which calls
+      # backend.complete (not acknowledge) — so `job.complete` now actually acks
+      # the broker message instead of being a silent no-op. multiple:false acks
+      # only this delivery. The stored tag is cleared so a double-complete is a
+      # safe no-op rather than a second ack on an unknown tag.
+      def complete(_message)
+        return unless @last_delivery_tag
+
+        @channel.acknowledge(@last_delivery_tag, false)
+        @last_delivery_tag = nil
       end
 
       def requeue(message)
