@@ -496,6 +496,18 @@ module Tina4
         return execute_many(sql, params_list)
       end
 
+      # Issue #256: a driver that can surface the ACTUAL generated primary key
+      # (PostgreSQL, via INSERT ... RETURNING *) owns its own insert so a UUID
+      # PK comes back as the real 36-char string and a SERIAL PK as the integer
+      # — instead of probing a session sequence (lastval()) that returns nil or
+      # a stale wrong id for a UUID table. Other engines (SQLite/MySQL/MSSQL/
+      # Firebird) keep the generic build-then-last_insert_id path below.
+      if drv.respond_to?(:insert)
+        result = drv.insert(table, data)
+        autocommit_standalone_write(drv)
+        return result
+      end
+
       columns = data.keys.map(&:to_s)
       placeholders = drv.placeholders(columns.length)
       sql = "INSERT INTO #{table} (#{columns.join(', ')}) VALUES (#{placeholders})"

@@ -192,15 +192,35 @@ module Tina4
             )
           SQL
         else
+          # Engine-aware bookkeeping DDL. Each engine spells an auto-increment
+          # integer PK differently (SQLite AUTOINCREMENT, PostgreSQL SERIAL,
+          # MySQL AUTO_INCREMENT, MSSQL IDENTITY); MSSQL also reserves TIMESTAMP
+          # for rowversion, so a real timestamp column must be DATETIME. The
+          # migration_name UNIQUE column is VARCHAR (not TEXT) — a TEXT column
+          # cannot carry a UNIQUE index on MySQL, and SQLite gives VARCHAR TEXT
+          # affinity so SQLite behaviour stays identical. Mirrors the
+          # engine-aware DDL in ORM.create_table; without it `migrate()` died
+          # with "syntax error at AUTOINCREMENT" on PostgreSQL/MySQL/MSSQL.
+          #
           # migration_name is UNIQUE: a migration is "applied" iff a success row
           # exists, so a re-applied name must never duplicate a tracking row.
+          engine = (@db.respond_to?(:get_database_type) ? @db.get_database_type : "").to_s.downcase
+          id_column = case engine
+                      when "postgres", "postgresql" then "id SERIAL PRIMARY KEY"
+                      when "mysql" then "id INTEGER PRIMARY KEY AUTO_INCREMENT"
+                      when "mssql", "sqlserver" then "id INTEGER IDENTITY(1,1) PRIMARY KEY"
+                      else "id INTEGER PRIMARY KEY AUTOINCREMENT" # sqlite (default)
+                      end
+          executed_at_column = %w[mssql sqlserver].include?(engine) ?
+            "executed_at DATETIME DEFAULT CURRENT_TIMESTAMP" :
+            "executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
           @db.execute(<<~SQL)
             CREATE TABLE #{TRACKING_TABLE} (
-              id INTEGER PRIMARY KEY,
+              #{id_column},
               migration_name VARCHAR(255) NOT NULL UNIQUE,
               description VARCHAR(255) DEFAULT '',
               batch INTEGER NOT NULL DEFAULT 1,
-              executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              #{executed_at_column},
               passed INTEGER NOT NULL DEFAULT 1
             )
           SQL

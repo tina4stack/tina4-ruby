@@ -39,6 +39,11 @@ Gem::Specification.new do |spec|
   # it is never force-installed; the backend degrades gracefully if it is absent.
   spec.add_development_dependency "mongo", "~> 2.19"
   spec.add_development_dependency "pg", "~> 1.5"
+  # rdkafka (librdkafka binding) — optional, for the live Kafka queue backend +
+  # its integration spec. Like mongo/pg it is a dev-only dependency so it is
+  # never force-installed; the backend requires it lazily and the spec skips
+  # when it is absent. Lets CI exercise the real Kafka enqueue/dequeue cycle.
+  spec.add_development_dependency "rdkafka", "~> 0.20"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.12"
   spec.add_development_dependency "rubocop", "~> 1.50"

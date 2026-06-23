@@ -71,12 +71,29 @@ module Tina4
       end
 
       def dequeue(topic)
-        unless @subscribed_topics.include?(topic)
+        first = !@subscribed_topics.include?(topic)
+        if first
           @consumer.subscribe(topic)
           @subscribed_topics << topic
         end
 
-        msg = @consumer.poll(1000)
+        # The first poll after subscribing must drive the consumer-group join +
+        # partition assignment, which takes several seconds on a cold broker.
+        # Until partitions are assigned, poll returns nil even when the topic
+        # already has messages -- so a single poll made dequeue return nil right
+        # after enqueue. Poll in a bounded loop on first subscribe (deadline
+        # TINA4_KAFKA_ASSIGN_TIMEOUT, default 15s); steady state stays one ~1s poll.
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) +
+                   (first ? (ENV["TINA4_KAFKA_ASSIGN_TIMEOUT"] || "15").to_f : 1.0)
+        msg = nil
+        loop do
+          candidate = @consumer.poll(500)
+          if candidate
+            msg = candidate
+            break
+          end
+          break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        end
         return nil unless msg
 
         data = JSON.parse(msg.payload)

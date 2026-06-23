@@ -44,6 +44,13 @@ module Tina4
       end
 
       def execute(sql, params = [])
+        # Issue #256: a bare INSERT run through execute() (not #insert, so no
+        # RETURNING captured) must NOT let a previously-captured RETURNING id
+        # leak into a later last_insert_id() — that would surface a stale id
+        # (e.g. a UUID string from an earlier db.insert) for this new write.
+        # Clear the cache so last_insert_id falls back to the lastval() probe,
+        # which is the correct source for a sequence-backed bare INSERT.
+        @last_returning_id = nil if sql.lstrip[0, 6].upcase == "INSERT"
         converted_sql = convert_placeholders(sql)
         if params.empty?
           @connection.exec(converted_sql)
@@ -52,7 +59,51 @@ module Tina4
         end
       end
 
+      # Issue #256: surface the ACTUAL primary key value an INSERT wrote —
+      # including a server-generated UUID — instead of guessing it from a
+      # session sequence after the fact.
+      #
+      # Before this, Database#insert ran a bare INSERT and then probed
+      # ``last_insert_id`` (``SELECT lastval()``). For a UUID PK
+      # (``id uuid PRIMARY KEY DEFAULT gen_random_uuid()``) there is no
+      # session sequence, so the probe returned nil — or, worse, a STALE
+      # integer left over from an unrelated SERIAL table's nextval() earlier
+      # in the same session (a silently WRONG id). The SERIAL integer path was
+      # correct only by luck of lastval() pointing at the right sequence.
+      #
+      # Fix (mirrors the Python master's ``INSERT ... RETURNING *`` and the
+      # Node adapter): append ``RETURNING *`` and read the generated ``id``
+      # back from the returned row. The value is normalised so the SERIAL path
+      # keeps returning an Integer while a UUID PK surfaces its real 36-char
+      # string. No lastval() probe, so the issue-#38 transaction-abort can't
+      # happen on this path at all.
+      #
+      # Returns { success: true, last_id: <id-or-nil> }. last_id is nil only
+      # when the table truly has no ``id`` column.
+      def insert(table, data)
+        columns = data.keys.map(&:to_s)
+        placeholders = placeholders(columns.length)
+        sql = "INSERT INTO #{table} (#{columns.join(', ')}) VALUES (#{placeholders}) RETURNING *"
+        result = execute_query(sql, data.values)
+        row = result.is_a?(Array) ? result.first : nil
+        id = normalize_returned_id(row)
+        # Remember the real id so a follow-up #last_insert_id / db.get_last_id
+        # surfaces THIS value (incl. a UUID string) instead of re-probing
+        # lastval(), which has no sequence for a UUID PK and would return a
+        # stale wrong integer from an unrelated table.
+        @last_returning_id = id
+        { success: true, last_id: id }
+      end
+
       def last_insert_id
+        # Issue #256: if the most recent write surfaced its real primary key
+        # through ``RETURNING *`` (the #insert path), return that — it is the
+        # actual id written (a UUID string stays a string, a SERIAL stays an
+        # integer), not a guess. Only fall back to the lastval() probe below
+        # when nothing has been captured yet (e.g. a bare
+        # ``execute("INSERT ...")`` with no RETURNING).
+        return @last_returning_id unless @last_returning_id.nil?
+
         # Issue #38: ``SELECT lastval()`` raises on tables with no sequence
         # (UUID, ULID, hash PKs etc.). The exception itself isn't fatal,
         # but the pg gem marks the whole transaction as aborted, so every
@@ -152,6 +203,45 @@ module Tina4
       end
 
       private
+
+      # Issue #256: normalise the ``id`` of an ``INSERT ... RETURNING *`` row.
+      #
+      # The result-type map already decodes a SERIAL/int8 ``id`` to an Integer
+      # and a ``uuid`` ``id`` to a String, so the value usually arrives in the
+      # right shape. We still coerce defensively (mirrors the Node adapter's
+      # ``normalizeId``): a numeric String becomes an Integer so the SERIAL path
+      # always returns the integer id, while a non-numeric String — the UUID PK
+      # case — is preserved verbatim. A row with no ``id`` column (or a
+      # blank/nil id) yields nil.
+      def normalize_returned_id(row)
+        return nil unless row
+
+        value = row_id_value(row)
+        case value
+        when Integer
+          value
+        when Numeric
+          value
+        when String
+          stripped = value.strip
+          return nil if stripped.empty?
+          # A purely numeric string is a SERIAL id surfaced as text — coerce
+          # to Integer. Anything else (a UUID, a ULID, a composite key) stays
+          # the string it is.
+          stripped.match?(/\A-?\d+\z/) ? stripped.to_i : value
+        else
+          value.nil? ? nil : value
+        end
+      end
+
+      # Read the ``id`` column from a RETURNING row regardless of key style
+      # (symbol/string, any case) — execute_query symbolizes keys, but stay
+      # tolerant.
+      def row_id_value(row)
+        return nil unless row.is_a?(Hash)
+
+        row[:id] || row["id"] || row[:ID] || row["ID"]
+      end
 
       # Decode result columns to native Ruby types (parity with SQLite, and
       # with Python psycopg2 / Node node-postgres which both return native

@@ -228,6 +228,89 @@ RSpec.describe "Queue Backends" do
     end
   end
 
+  # ── MongoBackend live db-selection regression (real Mongo, NO mocks) ──────
+  #
+  # Regression for the "uri given -> explicit db: silently ignored" footgun:
+  # Mongo::Client.new(uri) with no database path defaults to "admin", so when a
+  # uri AND a db: were both supplied the requested database was dropped and every
+  # job/dead-letter landed in admin. The explicit db: (and TINA4_MONGO_DB) must
+  # always win over the URI's (often absent) default. Connects for REAL — gated on
+  # TCP reachability of localhost:27017 + the mongo gem — and is SKIPPED, never
+  # mocked, when Mongo is unreachable. Uses only a tina4_test_* db and drops it.
+  describe "MongoBackend db selection (live)" do
+    MONGO_HOST = "localhost"
+    MONGO_PORT = 27_017
+    MONGO_TEST_URI = "mongodb://#{MONGO_HOST}:#{MONGO_PORT}"
+    MONGO_TEST_DB = "tina4_test_queue_db_select"
+
+    def self.mongo_available?
+      require "mongo"
+      s = Socket.tcp(MONGO_HOST, MONGO_PORT, connect_timeout: 1)
+      s.close
+      true
+    rescue LoadError, StandardError
+      false
+    end
+
+    if mongo_available?
+      after(:each) do
+        # Drop ONLY our throwaway tina4_test_* db; never touch other databases.
+        client = Mongo::Client.new(MONGO_TEST_URI, database: MONGO_TEST_DB)
+        client.database.drop
+        client.close
+      rescue StandardError
+        # best-effort cleanup
+      end
+
+      it "honours the explicit db: over the URI default when BOTH are given" do
+        backend = Tina4::QueueBackends::MongoBackend.new(
+          uri: MONGO_TEST_URI,
+          db: MONGO_TEST_DB,
+          collection: "jobs"
+        )
+        expect(backend.instance_variable_get(:@db).name).to eq(MONGO_TEST_DB)
+        backend.close
+      end
+
+      it "writes jobs and dead-letters into the requested db, not admin" do
+        backend = Tina4::QueueBackends::MongoBackend.new(
+          uri: MONGO_TEST_URI,
+          db: MONGO_TEST_DB,
+          collection: "jobs",
+          max_retries: 3
+        )
+        # push -> pop -> complete
+        backend.enqueue(Tina4::Job.new(topic: "tasks", payload: { "n" => 1 }, id: "ok-1"))
+        backend.complete(backend.dequeue("tasks"))
+        # push -> fail past max_retries -> dead-letter
+        backend.enqueue(Tina4::Job.new(topic: "tasks", payload: { "n" => 2 }, id: "dl-1"))
+        3.times do
+          job = backend.dequeue("tasks")
+          break if job.nil?
+
+          backend.fail(job, "boom")
+        end
+
+        dead_count = backend.dead_letters("tasks").length
+
+        # Inspect with an independent client: docs must be in the test db, NOT admin.
+        inspector = Mongo::Client.new(MONGO_TEST_URI)
+        test_count = inspector.use(MONGO_TEST_DB)["jobs"].count_documents({})
+        admin_count = inspector.use("admin")["jobs"].count_documents({ "_id" => "dl-1" })
+        inspector.close
+        backend.close
+
+        expect(test_count).to be > 0
+        expect(admin_count).to eq(0)
+        expect(dead_count).to eq(1)
+      end
+    else
+      it "is skipped because MongoDB is not reachable at localhost:27017" do
+        skip "MongoDB not reachable at #{MONGO_TEST_URI} (or mongo gem missing)"
+      end
+    end
+  end
+
   # ── Retry Logic Tests ──────────────────────────────────────────
 
   describe "LiteBackend retry logic" do

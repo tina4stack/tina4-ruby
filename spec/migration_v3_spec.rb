@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "socket"
 
 RSpec.describe "Migration v3 features" do
   let(:tmp_dir) { Dir.mktmpdir("tina4_migration_v3") }
@@ -212,5 +213,130 @@ RSpec.describe "Migration v3 features" do
     it "run is an alias for migrate" do
       expect(migration.method(:run)).to eq(migration.method(:migrate))
     end
+  end
+end
+
+# Regression spec for the engine-aware migration tracking-table fix.
+#
+# Before the fix, ensure_tracking_table emitted SQLite-only DDL on every
+# non-Firebird engine: `id INTEGER PRIMARY KEY AUTOINCREMENT` (via the bare
+# `id INTEGER PRIMARY KEY` + AUTOINCREMENT semantics) — actually it emitted
+# `id INTEGER PRIMARY KEY` for the else branch, but the auto-increment keyword
+# variants (AUTOINCREMENT) are SQLite-specific. On PostgreSQL the CREATE blew
+# up with `syntax error at or near "AUTOINCREMENT"` so constructing the
+# Migration runner (which calls ensure_tracking_table) threw, making migrations
+# unusable on PG. The fix makes the non-Firebird branch engine-aware:
+# PostgreSQL -> SERIAL, MySQL -> AUTO_INCREMENT, MSSQL -> IDENTITY, SQLite ->
+# AUTOINCREMENT (unchanged).
+#
+# This boots a real PostgreSQL (Docker at localhost:55432) and asserts the
+# runner constructs, the tracking table is created, a real migration applies a
+# table + seeds a row, and a tracking row was recorded with an auto-assigned id.
+#
+# The spec skips automatically when the pg gem is missing or the database is
+# unreachable, so CI without PostgreSQL just no-ops (same gate as the other PG
+# specs).
+
+PGMIG_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
+PGMIG_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "55432").to_i
+PGMIG_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
+PGMIG_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+PGMIG_DB   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
+
+def pgmig_reachable?
+  TCPSocket.new(PGMIG_HOST, PGMIG_PORT).tap(&:close)
+  true
+rescue StandardError
+  false
+end
+
+def pgmig_gem_available?
+  require "pg"
+  true
+rescue LoadError
+  false
+end
+
+RSpec.describe "Migration tracking table on real PostgreSQL" do
+  before(:all) do
+    @skip_reason = if !pgmig_gem_available?
+                     "pg gem not installed (skip)"
+                   elsif !pgmig_reachable?
+                     "PostgreSQL not reachable at #{PGMIG_HOST}:#{PGMIG_PORT} (skip)"
+                   end
+  end
+
+  before(:each) do
+    skip(@skip_reason) if @skip_reason
+    @db = Tina4::Database.new(
+      "postgres://#{PGMIG_HOST}:#{PGMIG_PORT}/#{PGMIG_DB}",
+      username: PGMIG_USER, password: PGMIG_PASS
+    )
+    # DROP the tracking table AND the target table first so the create path
+    # actually runs (this is the call that used to throw AUTOINCREMENT).
+    @db.execute("DROP TABLE IF EXISTS mig_rb_widget")
+    @db.execute("DROP TABLE IF EXISTS tina4_migration")
+
+    @tmp_dir = Dir.mktmpdir("tina4_migration_pg")
+    @migrations_dir = File.join(@tmp_dir, "migrations")
+    FileUtils.mkdir_p(@migrations_dir)
+  end
+
+  after(:each) do
+    next unless @db
+    begin
+      @db.execute("DROP TABLE IF EXISTS mig_rb_widget")
+      @db.execute("DROP TABLE IF EXISTS tina4_migration")
+    ensure
+      @db.close rescue nil
+      FileUtils.rm_rf(@tmp_dir) if @tmp_dir
+    end
+  end
+
+  it "constructs the runner (creates the tracking table) without an AUTOINCREMENT syntax error" do
+    # This is the call that used to throw `syntax error at or near "AUTOINCREMENT"`.
+    expect { Tina4::Migration.new(@db, migrations_dir: @migrations_dir) }.not_to raise_error
+    expect(@db.table_exists?("tina4_migration")).to be(true)
+  end
+
+  it "emits a SERIAL auto-increment PK on the tracking table (not AUTOINCREMENT)" do
+    Tina4::Migration.new(@db, migrations_dir: @migrations_dir)
+    col = @db.columns("tina4_migration").find { |c| c[:name] == "id" }
+    expect(col).not_to be_nil
+    expect(col[:type]).to eq("integer")
+    # A SERIAL column is backed by a sequence -> default is nextval(...).
+    expect(col[:default].to_s).to include("nextval")
+  end
+
+  it "runs a real migration: creates mig_rb_widget, seeds a row, records a tracking row with an auto-assigned id" do
+    File.write(File.join(@migrations_dir, "20240101000001_create_mig_rb_widget.sql"), <<~SQL)
+      CREATE TABLE mig_rb_widget (id SERIAL PRIMARY KEY, name VARCHAR(50));
+      INSERT INTO mig_rb_widget (name) VALUES ('bolt');
+    SQL
+
+    migration = Tina4::Migration.new(@db, migrations_dir: @migrations_dir)
+    results = migration.migrate
+
+    expect(results.length).to eq(1)
+    expect(results.first[:status]).to eq("success")
+
+    # tina4_migration exists, mig_rb_widget exists.
+    expect(@db.table_exists?("tina4_migration")).to be(true)
+    expect(@db.table_exists?("mig_rb_widget")).to be(true)
+
+    # The seeded row is readable.
+    row = @db.fetch_one("SELECT name FROM mig_rb_widget WHERE name = ?", ["bolt"])
+    expect(row).not_to be_nil
+    expect(row[:name]).to eq("bolt")
+
+    # A tracking row was recorded with an auto-assigned (SERIAL) id.
+    tracked = @db.fetch_one(
+      "SELECT id, migration_name, batch, passed FROM tina4_migration WHERE migration_name = ?",
+      ["20240101000001_create_mig_rb_widget.sql"]
+    )
+    expect(tracked).not_to be_nil
+    expect(tracked[:id].to_i).to be > 0
+    expect(tracked[:batch].to_i).to eq(1)
+    expect(tracked[:passed].to_i).to eq(1)
   end
 end

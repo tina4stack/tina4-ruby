@@ -30,7 +30,12 @@ module Tina4
         @visibility_timeout = resolve_visibility_timeout(options[:visibility_timeout])
 
         if uri
-          @client = Mongo::Client.new(uri)
+          # Honour the explicit db: / TINA4_MONGO_DB even when a uri is given.
+          # Mongo::Client.new(uri) with no database path defaults to "admin", so
+          # without passing :database the requested db_name was silently dropped
+          # and every job/dead-letter landed in admin (a data-isolation footgun).
+          # The explicit db_name always wins over the URI's (often absent) default.
+          @client = Mongo::Client.new(uri, database: db_name)
         else
           conn_options = { database: db_name }
           conn_options[:user] = username if username
