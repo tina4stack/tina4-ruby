@@ -10,10 +10,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # Real-service test gate. Every backend the suite can touch runs for real in
+    # CI so the integration specs execute instead of skipping (the gap that let
+    # the migration / queue bugs ship). Service containers are health-checked, so
+    # the job fails if one never comes up. Ports mirror the local docker harness
+    # (/tmp/tina4_infra_up.sh) so the same TINA4_TEST_* values work locally and here.
     services:
-      # Cache backends — exercised by spec/cache_backends_spec.rb. Each backend's
-      # examples skip automatically when its service is unreachable, so the
-      # suite stays green even if a service fails to come up.
+      # Cache backends — exercised by spec/cache_backends_spec.rb.
       redis:
         image: redis:7
         ports:
@@ -54,6 +57,49 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      # PostgreSQL — exercised by the postgres ORM / migration / driver specs.
+      # DB tina4_rb matches the spec defaults (spec/postgres_*_spec.rb).
+      postgres:
+        image: postgres:16
+        ports:
+          - 55432:5432
+        env:
+          POSTGRES_USER: tina4
+          POSTGRES_PASSWORD: tina4
+          POSTGRES_DB: tina4_rb
+        options: >-
+          --health-cmd "pg_isready -U tina4 -d tina4_rb"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+      # RabbitMQ — the P1 broker (parity with the Python master's live RabbitMQ test).
+      rabbitmq:
+        image: rabbitmq:3-management
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Enable the real-service integration specs (they skip when unset). Ports
+      # mirror the local docker harness so the same values work locally and here.
+      TINA4_TEST_PG_HOST: localhost
+      TINA4_TEST_PG_PORT: '55432'
+      TINA4_TEST_PG_USER: tina4
+      TINA4_TEST_PG_PASS: tina4
+      TINA4_TEST_PG_DB: tina4_rb
+      TINA4_TEST_KAFKA_URL: localhost:9092
+      TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
+      TINA4_MONGO_URI: mongodb://localhost:27017
+      MONGO_TEST_URI: mongodb://localhost:27017
+      # Turn a missing provisioned service into a hard failure (no green skips).
+      TINA4_REQUIRE_SERVICES: '1'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +117,37 @@ jobs:
             fi
             sleep 1
           done
+
+      # Kafka in KRaft mode (single node, no ZooKeeper). GitHub service
+      # containers can't express the KRaft listener config cleanly, so run it as
+      # a plain container and FAIL the job if the broker never serves metadata.
+      - name: Start Kafka (KRaft)
+        run: |
+          docker run -d --name tina4-kafka -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+            apache/kafka:3.7.0
+          echo "Waiting for Kafka to serve metadata on :9092 ..."
+          for i in $(seq 1 60); do
+            if docker exec tina4-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
+              echo "Kafka ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Kafka did not become ready in 60s"; docker logs tina4-kafka | tail -40; exit 1
+
+      # librdkafka must be present BEFORE bundle install: tina4ruby.gemspec lists
+      # rdkafka as a development dependency and its native extension links against
+      # librdkafka — without these headers/libs `bundle install` fails to build
+      # the gem. Installed here so the bundler-cache install in setup-ruby (and any
+      # explicit bundle install) can compile rdkafka.
+      - name: Install librdkafka (for the rdkafka gem native build)
+        run: sudo apt-get update && sudo apt-get install -y librdkafka-dev
 
       - uses: ruby/setup-ruby@v1
         with:

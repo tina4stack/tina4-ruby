@@ -14,7 +14,73 @@ $LOAD_PATH.unshift File.join(File.dirname(__FILE__), "..", "lib")
 require "tina4"
 require "tina4/dev"
 
+# ── Real-service test gate (TINA4_REQUIRE_SERVICES) ───────────────────────────
+#
+# Mirror of tests/conftest.py in tina4-python (the master). CI provisions
+# PostgreSQL, Redis, Valkey, Memcached, MongoDB, RabbitMQ and Kafka and sets
+# every TINA4_TEST_* URL, so the real-service integration specs MUST run instead
+# of skipping (the gap that let the migration/queue bugs ship green). When
+# TINA4_REQUIRE_SERVICES is truthy, a spec that SKIPPED because one of those
+# PROVISIONED services (or its client gem) is unavailable is turned into a hard
+# FAILURE — the whole run exits non-zero. MySQL / MSSQL / Firebird are NOT
+# provisioned, so their skip reasons never match these keywords and stay green.
+#
+# RSpec marks `skip "msg"` as pending with that message in
+# example.execution_result.pending_message. An after(:each) (which still runs
+# for skipped examples) records any offending message; after(:suite) exits
+# non-zero if any were recorded. (Raising in after(:each) does NOT fail a
+# pending example — RSpec swallows it and the run stays green — so the failure
+# is forced at suite end, the clean equivalent of pytest's makereport
+# outcome-flip in the Python master.)
+TINA4_GATE_SERVICE_KEYWORDS = [
+  "postgres", "postgresql", "psycopg2", # psycopg2 kept for cross-framework message parity
+  "pg",                                  # Ruby's PostgreSQL client gem ("pg gem not installed")
+  "redis", "valkey", "memcached",
+  "mongo",                               # also matches "mongodb"
+  "rabbit", "amqp",
+  "kafka"                                # also matches "rdkafka"
+].freeze
+
+TINA4_GATE_UNAVAILABLE_HINTS = [
+  "not reachable", "unreachable", "not running", "not set",
+  "not installed", "could not connect", "not available", "refused"
+].freeze
+
+TINA4_GATE_VIOLATIONS = []
+
+def tina4_require_services?
+  %w[1 true yes on].include?(ENV["TINA4_REQUIRE_SERVICES"].to_s.strip.downcase)
+end
+
+def tina4_provisioned_service_skip?(reason)
+  low = reason.to_s.downcase
+  TINA4_GATE_SERVICE_KEYWORDS.any? { |k| low.include?(k) } &&
+    TINA4_GATE_UNAVAILABLE_HINTS.any? { |h| low.include?(h) }
+end
+
 RSpec.configure do |config|
+  # Record any provisioned-service skip so the suite can fail on it (see above).
+  config.after(:each) do |example|
+    if tina4_require_services?
+      reason = example.execution_result.pending_message
+      if reason && tina4_provisioned_service_skip?(reason)
+        TINA4_GATE_VIOLATIONS << "#{example.full_description} (#{example.location}): #{reason.strip}"
+      end
+    end
+  end
+
+  config.after(:suite) do
+    unless TINA4_GATE_VIOLATIONS.empty?
+      warn "\n#{'=' * 78}"
+      warn "TINA4_REQUIRE_SERVICES is set, but #{TINA4_GATE_VIOLATIONS.length} real-service " \
+           "spec(s) SKIPPED because a provisioned service or client gem is missing:"
+      TINA4_GATE_VIOLATIONS.each { |v| warn "  - #{v}" }
+      warn "Provision the service / install the client gem, or unset TINA4_REQUIRE_SERVICES."
+      warn "=" * 78
+      exit(1)
+    end
+  end
+
   config.expect_with :rspec do |expectations|
     expectations.include_chain_clauses_in_custom_matcher_descriptions = true
   end
@@ -56,5 +122,19 @@ RSpec.configure do |config|
     # isolation).
     Tina4::DevAdmin.reset_singletons! if defined?(Tina4::DevAdmin) && Tina4::DevAdmin.respond_to?(:reset_singletons!)
     ENV.delete("TINA4_MAILBOX_DIR") if ENV.key?("TINA4_MAILBOX_DIR")
+    # The global DB binding is process-wide state too. Many specs call
+    # Tina4.bind_database(db) in before(:each) and never reset it, so under the
+    # randomized order it leaks into specs that assume none is bound -- e.g.
+    # query_builder's "no database connection" tests fail when an earlier orm /
+    # crud / seeder / auto_crud spec left a connection bound (reproduces under
+    # --seed 37099 with the real-service env, passes in isolation). Reset the
+    # default + named registry after every example, exactly like the resets
+    # above. All current binds are before(:each)/in-example; a future
+    # before(:all) bind would need its own after(:all). The Python master never
+    # hit this because pytest runs in deterministic order.
+    if defined?(Tina4) && Tina4.respond_to?(:bind_database)
+      Tina4.instance_variable_set(:@database, nil)
+      Tina4.instance_variable_set(:@databases, {})
+    end
   end
 end

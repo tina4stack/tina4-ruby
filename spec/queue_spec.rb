@@ -861,282 +861,58 @@ RSpec.describe "Tina4::Queue visibility timeout" do
   end
 end
 
-# ── MongoDB backend visibility timeout (mocked collection) ─────────
+# ── MongoDB backend adapter contract (no mocks, no live service) ───
 #
-# No live mongo: build the backend via allocate (skipping the connecting
-# initialize) and stub its private `collection` with a double. Mirrors the
-# Python mongo mock tests in tests/test_queue_backends.py.
+# The kwarg contract is locked mock-free here: dead_letters/retry_failed must
+# accept the max_retries: keyword the Queue facade passes to whatever backend is
+# active (a missing kwarg raised ArgumentError at call time). This inspects the
+# real method signatures via Method#parameters — no double, no broker, no driver
+# — so the class of bug cannot silently reappear. Scoped to the backends that
+# implement the lifecycle (file + mongodb); RabbitMQ/Kafka delegate redelivery to
+# the broker and intentionally do not define these methods (the Queue guards them
+# with respond_to?), so asserting on them would be a false contract.
+#
+# This REPLACES the former mocked describe that wired an RSpec `double` onto the
+# private `collection` — a test double standing in for the real Mongo dependency,
+# which the project's absolute no-mock rule forbids and which never exercised real
+# Mongo (the kind of gap that let the queue bugs ship for releases). The actual
+# dead-letter / retry_failed behaviour is now proven against a LIVE MongoDB by
+# "Tina4::Queue MongoDB dead-letter (live, no mocks)" below.
+RSpec.describe "Tina4 queue adapter signature contract" do
+  let(:lifecycle_backends) do
+    {
+      "file" => Tina4::QueueBackends::LiteBackend,
+      "mongodb" => Tina4::QueueBackends::MongoBackend
+    }
+  end
+
+  def accepts_max_retries_kwarg?(klass, method_name)
+    klass.instance_method(method_name).parameters.any? do |type, pname|
+      %i[key keyreq].include?(type) && pname == :max_retries
+    end
+  end
+
+  it "accepts the max_retries kwarg on dead_letters for every lifecycle backend" do
+    lifecycle_backends.each do |name, klass|
+      expect(accepts_max_retries_kwarg?(klass, :dead_letters))
+        .to be(true), "#{name}.dead_letters is missing the max_retries: kwarg"
+    end
+  end
+
+  it "accepts the max_retries kwarg on retry_failed for every lifecycle backend" do
+    lifecycle_backends.each do |name, klass|
+      expect(accepts_max_retries_kwarg?(klass, :retry_failed))
+        .to be(true), "#{name}.retry_failed is missing the max_retries: kwarg"
+    end
+  end
+end
+
+# ── MongoDB backend visibility-timeout config (pure function, no mocks) ──
+#
+# resolve_visibility_timeout is a pure env/option parser — no collection, no
+# double, no live service. Allocate (skipping the connecting initialize) only to
+# reach the instance method; nothing about the Mongo collection is stubbed.
 RSpec.describe Tina4::QueueBackends::MongoBackend do
-  # Construct a backend with a mock collection and explicit policy, bypassing
-  # the connecting constructor (which would need a live mongod).
-  def mock_backend(visibility_timeout: 300.0, max_retries: 3, retry_backoff: 0)
-    backend = Tina4::QueueBackends::MongoBackend.allocate
-    backend.instance_variable_set(:@collection_name, "tina4_queue")
-    backend.visibility_timeout = visibility_timeout
-    backend.max_retries = max_retries
-    backend.retry_backoff = retry_backoff
-    collection = double("collection")
-    allow(backend).to receive(:collection).and_return(collection)
-    [backend, collection]
-  end
-
-  describe "#dequeue" do
-    it "advances available_at into the future and records reserved_at" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      captured = nil
-      # dequeue first runs reclaim_expired (status "processing" query) then the
-      # real claim (status "pending"). Model real Mongo: the reclaim finds
-      # nothing, the claim returns the message — otherwise reclaim's loop would
-      # never terminate against a mock that returns a doc for every call.
-      allow(collection).to receive(:find_one_and_update) do |filter, update, **_opts|
-        if filter[:status] == "processing"
-          nil
-        else
-          captured = update
-          { "_id" => "msg-1", "topic" => "emails", "payload" => { "x" => 1 } }
-        end
-      end
-
-      backend.dequeue("emails")
-
-      set = captured["$set"]
-      expect(set[:status]).to eq("processing")
-      expect(set[:reserved_at]).not_to be_nil
-      # available_at is pushed to a real future timestamp (not left unchanged).
-      expect(set[:available_at]).not_to be_nil
-      expect(set[:available_at]).to be > set[:reserved_at]
-    end
-
-    it "runs reclaim_expired before claiming the next message" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      # reclaim loop: no expired reservation, then the real dequeue claim.
-      expect(backend).to receive(:reclaim_expired).with("emails", 3).and_call_original
-      allow(collection).to receive(:find_one_and_update).and_return(nil)
-      backend.dequeue("emails")
-    end
-  end
-
-  describe "#reclaim_expired" do
-    it "requeues an expired reservation under the retry limit" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      # One expired reservation (attempts after inc = 1, below max 3), then none.
-      updates = []
-      responses = [
-        { "_id" => "msg-1", "topic" => "emails", "payload" => { "x" => 1 }, "attempts" => 1 },
-        nil
-      ]
-      allow(collection).to receive(:find_one_and_update) do |_filter, update, **_opts|
-        updates << update
-        responses.shift
-      end
-      allow(collection).to receive(:insert_one)
-      allow(collection).to receive(:delete_one)
-
-      count = backend.reclaim_expired("emails", 3)
-      expect(count).to eq(1)
-      # The reclaim flips processing -> pending and increments attempts.
-      expect(updates.first["$set"][:status]).to eq("pending")
-      expect(updates.first["$inc"][:attempts]).to eq(1)
-      # Under the limit: not dead-lettered, not deleted.
-      expect(collection).not_to have_received(:insert_one)
-      expect(collection).not_to have_received(:delete_one)
-    end
-
-    it "dead-letters an expired reservation past max_retries" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      responses = [
-        { "_id" => "msg-1", "topic" => "emails", "payload" => { "x" => 1 }, "attempts" => 3 },
-        nil
-      ]
-      allow(collection).to receive(:find_one_and_update) { |*_a, **_o| responses.shift }
-      dead = nil
-      allow(collection).to receive(:insert_one) { |doc| dead = doc }
-      expect(collection).to receive(:delete_one).once    # original removed
-
-      count = backend.reclaim_expired("emails", 3)
-      expect(count).to eq(1)
-      expect(dead[:topic]).to eq("emails.dead_letter")  # moved to dead-letter
-      expect(dead[:status]).to eq("dead")
-    end
-
-    it "is a no-op when visibility_timeout <= 0" do
-      backend, collection = mock_backend(visibility_timeout: 0)
-      expect(collection).not_to receive(:find_one_and_update)
-      expect(backend.reclaim_expired("emails", 3)).to eq(0)
-    end
-  end
-
-  # ── Bug B: requeue/fail/retry/retry_failed reset available_at ──────
-  #
-  # On dequeue a job is reserved with available_at = now + visibility_timeout.
-  # When it is re-queued (requeue/fail-with-retries-left/retry/retry_failed) the
-  # adapter MUST reset available_at to now (or now + retry_backoff) and clear
-  # reserved_at — otherwise the requeued job stays invisible for the whole
-  # visibility window (default 300s) instead of being retryable on the next pop.
-  describe "#requeue (Bug B: resets available_at, clears reserved_at)" do
-    it "sets available_at to now and clears reserved_at on requeue" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      captured = nil
-      allow(collection).to receive(:find_one_and_update) do |_filter, update, **_opts|
-        captured = update
-      end
-
-      job = Tina4::Job.new(topic: "emails", payload: { "x" => 1 }, id: "msg-1")
-      before = Time.now.utc
-      backend.requeue(job)
-
-      set = captured["$set"]
-      expect(set[:status]).to eq("pending")
-      expect(set[:reserved_at]).to be_nil
-      # available_at is reset to ~now (not left at now + 300s).
-      expect(set[:available_at]).to be_a(Time)
-      expect(set[:available_at]).to be >= before
-      expect(set[:available_at]).to be < before + 60  # nowhere near the 300s window
-      expect(captured["$inc"][:attempts]).to eq(1)    # requeue still counts an attempt
-    end
-
-    it "delays available_at by retry_backoff when configured" do
-      backend, collection = mock_backend(visibility_timeout: 300.0, retry_backoff: 30)
-      captured = nil
-      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
-
-      before = Time.now.utc
-      backend.requeue(Tina4::Job.new(topic: "emails", payload: {}, id: "m"))
-      # available_at is pushed out by ~retry_backoff, but far short of the 300s window.
-      expect(captured["$set"][:available_at]).to be >= before + 29
-      expect(captured["$set"][:available_at]).to be < before + 60
-    end
-  end
-
-  describe "#fail (Bug B + lifecycle parity with the lite backend)" do
-    it "requeues with a reset available_at while attempts < max_retries" do
-      backend, collection = mock_backend(visibility_timeout: 300.0, max_retries: 3)
-      captured = nil
-      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
-
-      job = Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1", attempts: 0)
-      before = Time.now.utc
-      backend.fail(job, "boom")
-
-      expect(job.attempts).to eq(1)                   # incremented
-      set = captured["$set"]
-      expect(set[:status]).to eq("pending")           # re-queued, not dead
-      expect(set[:error]).to eq("boom")               # failure reason carried over
-      expect(set[:reserved_at]).to be_nil
-      # The incremented attempt count MUST be persisted to the doc. Without this
-      # the next dequeue surfaced a stale count, fail()'s attempts >= max_retries
-      # check never tripped, and the job was re-queued forever (never dead-lettered).
-      expect(set[:attempts]).to eq(1)
-      expect(set[:available_at]).to be >= before
-      expect(set[:available_at]).to be < before + 60  # visible again immediately
-    end
-
-    it "dead-letters (does not requeue) once attempts >= max_retries" do
-      backend, collection = mock_backend(visibility_timeout: 300.0, max_retries: 1)
-      captured = nil
-      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
-
-      job = Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1", attempts: 0)
-      backend.fail(job, "boom")  # attempts -> 1 >= max_retries 1
-
-      expect(job.attempts).to eq(1)
-      set = captured["$set"]
-      expect(set[:status]).to eq("dead")
-      expect(set[:topic]).to eq("emails.dead_letter")
-      expect(set[:error]).to eq("boom")
-    end
-  end
-
-  describe "#retry (Bug B: explicit manual re-queue)" do
-    it "resets available_at, clears reserved_at, clears error and increments attempts" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      captured = nil
-      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
-
-      job = Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1", attempts: 2)
-      before = Time.now.utc
-      backend.retry(job)
-
-      expect(job.attempts).to eq(3)
-      set = captured["$set"]
-      expect(set[:status]).to eq("pending")
-      expect(set[:error]).to be_nil
-      expect(set[:reserved_at]).to be_nil
-      expect(set[:available_at]).to be >= before
-      expect(set[:available_at]).to be < before + 60
-    end
-
-    it "honours an explicit delay_seconds over retry_backoff" do
-      backend, collection = mock_backend(visibility_timeout: 300.0, retry_backoff: 5)
-      captured = nil
-      allow(collection).to receive(:find_one_and_update) { |_f, u, **_o| captured = u }
-
-      before = Time.now.utc
-      backend.retry(Tina4::Job.new(topic: "emails", payload: {}, id: "m"), delay_seconds: 30)
-      expect(captured["$set"][:available_at]).to be >= before + 29
-    end
-  end
-
-  describe "#complete (Bug A/lifecycle: terminal ack removes the doc)" do
-    it "deletes the job document so it is not stuck reserved/processing" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      expect(collection).to receive(:delete_one).with(_id: "msg-1")
-      backend.complete(Tina4::Job.new(topic: "emails", payload: {}, id: "msg-1"))
-    end
-  end
-
-  describe "#retry_failed (Bug B + Bug D: accepts max_retries, resets available_at)" do
-    it "accepts the max_retries kwarg the Queue passes (no ArgumentError)" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      allow(collection).to receive(:update_many).and_return(double("result", modified_count: 0))
-      expect { backend.retry_failed("emails", max_retries: 5) }.not_to raise_error
-    end
-
-    it "resets available_at and clears reserved_at on the re-queued failed jobs" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      captured = nil
-      allow(collection).to receive(:update_many) do |_filter, update, **_opts|
-        captured = update
-        double("result", modified_count: 2)
-      end
-
-      before = Time.now.utc
-      count = backend.retry_failed("emails", max_retries: 3)
-      expect(count).to eq(2)
-      set = captured["$set"]
-      expect(set[:status]).to eq("pending")
-      expect(set[:error]).to be_nil
-      expect(set[:reserved_at]).to be_nil
-      expect(set[:available_at]).to be >= before
-      expect(set[:available_at]).to be < before + 60
-    end
-  end
-
-  describe "#dequeue (Bug C: surfaces the live top-level attempts)" do
-    it "reads attempts from the top-level document, not a nested snapshot" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      allow(collection).to receive(:find_one_and_update) do |filter, _update, **_opts|
-        if filter[:status] == "pending"
-          # Top-level attempts = 2 (bumped by reclaim/reject); a stale nested
-          # snapshot inside payload would be 0. dequeue must surface the live 2.
-          { "_id" => "msg-1", "topic" => "emails",
-            "payload" => { "x" => 1, "attempts" => 0 }, "attempts" => 2 }
-        end
-      end
-
-      job = backend.dequeue("emails")
-      expect(job.attempts).to eq(2)
-    end
-  end
-
-  describe "#dead_letters (Bug D: accepts max_retries kwarg)" do
-    it "does not raise when the Queue passes max_retries" do
-      backend, collection = mock_backend(visibility_timeout: 300.0)
-      allow(collection).to receive(:find).and_return([])
-      expect { backend.dead_letters("emails", max_retries: 7) }.not_to raise_error
-    end
-  end
-
   describe "configuration" do
     around(:each) do |example|
       saved = ENV["TINA4_QUEUE_VISIBILITY_TIMEOUT"]
@@ -1160,3 +936,143 @@ RSpec.describe Tina4::QueueBackends::MongoBackend do
   end
 end
 
+# ── MongoDB queue dead-letter + retry_failed (LIVE MongoDB, NO mocks) ──
+#
+# End-to-end through the Tina4::Queue facade against a REAL MongoDB (mirrors the
+# Python master's TestMongoQueueDeadLetterLive). NO doubles/stubs of the Mongo
+# collection or client. Gated on a reachable Mongo (localhost:27017) + the mongo
+# gem; the skip reason contains "mongo" + "not reachable"/"not installed" so the
+# #252 service gate treats an unavailable Mongo as a failure under
+# TINA4_REQUIRE_SERVICES. Uses a THROWAWAY, framework-namespaced database
+# (tina4_test_queue_rb) and DROPS it on teardown — never touching app data.
+RSpec.describe "Tina4::Queue MongoDB dead-letter (live, no mocks)" do
+  mongo_test_uri = ENV["MONGO_TEST_URI"] || ENV["TINA4_MONGO_URI"] || "mongodb://localhost:27017"
+  topic = "tina4_test_dead_letter"
+  db_name = "tina4_test_queue_rb"
+  collection_name = "tina4_test_queue_jobs"
+
+  mongo_gem_present =
+    begin
+      require "mongo"
+      true
+    rescue LoadError
+      false
+    end
+
+  mongo_reachable =
+    begin
+      require "socket"
+      m = mongo_test_uri.match(%r{mongodb://([^:/]+)(?::(\d+))?})
+      host = m ? m[1] : "localhost"
+      port = (m && m[2]) ? m[2].to_i : 27017
+      sock = Socket.tcp(host, port, connect_timeout: 1.5)
+      sock.close
+      true
+    rescue StandardError
+      false
+    end
+
+  skip_reason =
+    if !mongo_gem_present
+      "mongo gem not installed"
+    elsif !mongo_reachable
+      "mongo not reachable at #{mongo_test_uri}"
+    end
+
+  if skip_reason
+    it "is skipped because MongoDB is unavailable" do
+      skip skip_reason
+    end
+  else
+    let(:topic) { topic }
+    let(:db_name) { db_name }
+    let(:collection_name) { collection_name }
+
+    around(:each) do |example|
+      keys = {
+        "TINA4_MONGO_URI" => mongo_test_uri,
+        "TINA4_MONGO_DB" => db_name,
+        "TINA4_MONGO_COLLECTION" => collection_name,
+        "TINA4_QUEUE_URL" => nil
+      }
+      saved = keys.keys.to_h { |k| [k, ENV[k]] }
+      # Point the Mongo queue backend at a throwaway, namespaced database.
+      keys.each { |k, v| v.nil? ? ENV.delete(k) : (ENV[k] = v) }
+      example.run
+    ensure
+      saved.each { |k, v| v.nil? ? ENV.delete(k) : (ENV[k] = v) }
+    end
+
+    def build_queue(test_topic)
+      queue = Tina4::Queue.new(topic: test_topic, backend: "mongodb", max_retries: 2)
+      backend = queue.backend
+      coll = backend.instance_variable_get(:@db)[backend.instance_variable_get(:@collection_name)]
+      # Pristine slate, even if a prior run left state behind.
+      coll.delete_many(topic: test_topic)
+      coll.delete_many(topic: "#{test_topic}.dead_letter")
+      [queue, backend, coll]
+    end
+
+    def drop_db(backend)
+      backend.instance_variable_get(:@db).drop
+    rescue StandardError
+      nil
+    ensure
+      backend.close if backend.respond_to?(:close)
+    end
+
+    it "moves a job past max_retries into the dead-letter store (real Mongo)" do
+      queue, backend, coll = build_queue(topic)
+      begin
+        queue.push({ "to" => "a@example.com" })
+        5.times do # bounded; converges in 2 cycles with max_retries: 2
+          job = queue.pop
+          break if job.nil?
+
+          job.fail("smtp 550")
+          break unless queue.dead_letters.empty?
+        end
+
+        dead = queue.dead_letters
+        expect(dead.length).to eq(1)
+        expect(dead.first.topic).to eq("#{topic}.dead_letter")
+        # The failure reason survives to the DLQ document (assert on the real
+        # stored doc, since the Queue facade's dead_letters Job does not re-expose
+        # error — the persisted record is the source of truth).
+        dead_doc = coll.find(topic: "#{topic}.dead_letter", status: "dead").first
+        expect(dead_doc["error"]).to eq("smtp 550")
+        # The original is no longer pending.
+        expect(queue.size(status: "pending")).to eq(0)
+      ensure
+        coll.delete_many(topic: topic)
+        coll.delete_many(topic: "#{topic}.dead_letter")
+        drop_db(backend)
+      end
+    end
+
+    it "retry_failed re-queues a real failed document back to pending (real Mongo)" do
+      queue, backend, coll = build_queue(topic)
+      begin
+        # The auto-retry fail() path never leaves a job in "failed" (it re-queues
+        # or dead-letters), so seed ONE real failed document directly in the live
+        # collection — real data, NOT a mock — to exercise the real update_many.
+        coll.insert_one(
+          _id: "tina4-test-failed-1", topic: topic, status: "failed",
+          attempts: 1, payload: { "x" => 1 }, error: "boom",
+          available_at: "1970-01-01T00:00:00+00:00"
+        )
+
+        n = queue.retry_failed(max_retries: 3)
+        expect(n).to eq(1)
+
+        doc = coll.find(_id: "tina4-test-failed-1").first
+        expect(doc["status"]).to eq("pending") # requeued
+        expect(doc["error"]).to be_nil         # cleared on requeue
+      ensure
+        coll.delete_many(topic: topic)
+        coll.delete_many(topic: "#{topic}.dead_letter")
+        drop_db(backend)
+      end
+    end
+  end
+end

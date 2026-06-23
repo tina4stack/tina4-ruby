@@ -486,9 +486,20 @@ module Tina4
       cache_invalidate if @cache_enabled
       drv = current_driver
 
-      # List of hashes — batch insert
+      # List of hashes — batch insert.
+      #
+      # Cross-framework parity (mirrors the Python master's DatabaseAdapter.insert
+      # → execute_many): build ONE parameterised INSERT and run it once per row
+      # inside a SINGLE transaction on a SINGLE connection (see #execute_many),
+      # then report a DatabaseResult whose affected_rows == the number of rows
+      # (deterministic — the batch is all-or-raise) and a sensible last_id read
+      # from that same connection. The per-driver #insert overrides (e.g.
+      # PostgreSQL's INSERT ... RETURNING *) call data.keys, so they only ever
+      # see a single Hash — the Array is intercepted here and never reaches them,
+      # which is exactly the crash Python hit when a list fell through to a
+      # keys-only override.
       if data.is_a?(Array)
-        return { success: true, affected_rows: 0 } if data.empty?
+        return Tina4::DatabaseResult.new([], affected_rows: 0, last_id: nil) if data.empty?
         keys = data.first.keys.map(&:to_s)
         placeholders = drv.placeholders(keys.length)
         sql = "INSERT INTO #{table} (#{keys.join(', ')}) VALUES (#{placeholders})"
@@ -627,20 +638,61 @@ module Tina4
       raise
     end
 
+    # Run one statement once per row in a SINGLE transaction on a SINGLE
+    # connection, returning a DatabaseResult.
+    #
+    # DB-contract / batch-insert parity (mirrors the Python master's
+    # execute_many): the WHOLE batch runs on ONE driver — pinned for the
+    # duration — so begin/execute*/commit can never scatter across pooled
+    # connections (which made affected_rows / last_id non-deterministic). It is
+    # all-or-raise (any row raising rolls the whole batch back), so:
+    #
+    #   * affected_rows is the ROW COUNT, computed deterministically from the
+    #     number of supplied rows — NOT read from a driver rowcount. PostgreSQL's
+    #     no-RETURNING INSERT reports cmd_tuples correctly, but other engines'
+    #     rowcounts after a batch are unreliable, and a follow-up probe (lastval/
+    #     SAVEPOINT) can clobber the rowcount, so the count is the supplied length.
+    #   * last_id is read from last_insert_id() on the SAME connection AFTER the
+    #     batch, so a SERIAL/AUTOINCREMENT table surfaces the last generated id
+    #     (nil for engines/tables with no sequence — Firebird, a no-PK table).
+    #
+    # The pin is set here only when no transaction is already open on the thread
+    # (an outer start_transaction already pinned the driver — leave it, and let
+    # the outer commit/rollback own the lifecycle). When we pin, we own the
+    # begin/commit/rollback; when an outer tx owns the pin, we just run the rows
+    # and let the outer transaction commit them.
     def execute_many(sql, params_list = [])
-      results = []
+      params_list ||= []
+      already_pinned = !Thread.current[@tx_pin_key].nil?
       drv = current_driver
-      drv.begin_transaction
+      Thread.current[@tx_pin_key] = drv unless already_pinned
+
       begin
-        params_list.each do |params|
-          results << drv.execute(sql, params)
+        drv.begin_transaction unless already_pinned
+        begin
+          params_list.each { |params| drv.execute(sql, params) }
+          drv.commit unless already_pinned
+        rescue => e
+          drv.rollback unless already_pinned
+          @last_error = e.message
+          raise e
         end
-        drv.commit
-      rescue => e
-        drv.rollback
-        raise e
+      ensure
+        Thread.current[@tx_pin_key] = nil unless already_pinned
       end
-      results
+
+      last_id = begin
+        drv.last_insert_id
+      rescue StandardError
+        nil
+      end
+
+      Tina4::DatabaseResult.new(
+        [],
+        affected_rows: params_list.length,
+        last_id: last_id,
+        db: self
+      )
     end
 
     def transaction

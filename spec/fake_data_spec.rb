@@ -3,6 +3,47 @@
 require "spec_helper"
 
 RSpec.describe Tina4::FakeData do
+  # ── Seed reproducibility: per-instance RNG (parity with the Python master) ──
+  # Two instances created with the same seed must produce IDENTICAL sequences
+  # even when their calls are INTERLEAVED, and must be immune to unrelated churn
+  # of the process-global RNG. This is the exact case that exposed a
+  # shared-global-RNG bug in the PHP FakeData (its constructor mt_srand()'d the
+  # process-global engine): a non-interleaved "consume a fully, then b fully"
+  # test passes even with that bug because b's constructor re-seeds the global
+  # before b's calls — only interleaving (both instances live, calls alternating)
+  # catches it. Ruby uses a per-instance Random.new(seed), so it is immune.
+  describe "seed reproducibility under interleaving" do
+    GENS = %i[name first_name last_name email phone word city country boolean uuid url address].freeze
+
+    it "two same-seed instances yield identical sequences when calls are interleaved" do
+      a = described_class.new(seed: 7)
+      b = described_class.new(seed: 7)
+      seq_a = []
+      seq_b = []
+      # Alternate per call (a, b, a, b, ...) across a mix of generators — a global
+      # RNG shared between the two would diverge on the very first pair.
+      GENS.each do |g|
+        seq_a << a.public_send(g)
+        seq_b << b.public_send(g)
+      end
+      expect(seq_a).to eq(seq_b)
+    end
+
+    it "a seeded instance is immune to global RNG churn between its calls" do
+      a = described_class.new(seed: 99)
+      b = described_class.new(seed: 99)
+      out_a = []
+      out_b = []
+      6.times do
+        out_a << a.name
+        Kernel.rand(1_000_000)   # churn the GLOBAL RNG ...
+        srand                    # ... and reseed it non-deterministically
+        out_b << b.name
+      end
+      expect(out_a).to eq(out_b)
+    end
+  end
+
   # ── Basic generators ──────────────────────────────────────────────
 
   describe "name generators" do
