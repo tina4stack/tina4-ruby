@@ -14,10 +14,12 @@
 # default still auto-resolves from TINA4_DATABASE_URL via auto_discover_db.
 #
 # The live two-database example boots real PostgreSQL (tina4_rb as the default,
-# tina4_node as the named :analytics connection), creates + inserts into a temp
+# tina4_rb2 as the named :analytics connection), creates + inserts into a temp
 # table in each, and proves via SELECT current_database() that a default model
 # and a `self.db = :analytics` model resolve to different physical databases.
 # It skips automatically when the pg gem is missing or PG is unreachable.
+# (CI sets TINA4_TEST_PG_DB_2=tina4_rb2 and creates that second database; see
+# .github/workflows/test.yml.)
 
 require "spec_helper"
 require "socket"
@@ -133,7 +135,7 @@ RSpec.describe "Tina4.bind_database + named connection registry" do
   end
 
   # ------------------------------------------------------------------
-  # Live two-database example (default = tina4_rb, named :analytics = tina4_node)
+  # Live two-database example (default = tina4_rb, named :analytics = tina4_rb2)
   # ------------------------------------------------------------------
   describe "live two-database routing (PostgreSQL)" do
     PGBD_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
@@ -141,7 +143,7 @@ RSpec.describe "Tina4.bind_database + named connection registry" do
     PGBD_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
     PGBD_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
     PGBD_DEFAULT_DB = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
-    PGBD_NAMED_DB   = ENV.fetch("TINA4_TEST_PG_DB2", "tina4_node")
+    PGBD_NAMED_DB   = ENV.fetch("TINA4_TEST_PG_DB_2", "tina4_rb2")
 
     def self.pg_reachable?
       TCPSocket.new(PGBD_HOST, PGBD_PORT).tap(&:close)

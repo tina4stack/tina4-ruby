@@ -126,6 +126,9 @@ jobs:
       TINA4_TEST_PG_USER: tina4
       TINA4_TEST_PG_PASS: tina4
       TINA4_TEST_PG_DB: tina4_rb
+      # Second Postgres database for the two-DB named-connection test
+      # (spec/bind_database_spec.rb). A later step creates it once PG is healthy.
+      TINA4_TEST_PG_DB_2: tina4_rb2
       # MySQL + MSSQL (#262) — match spec/database_mysql_mssql_live_spec.rb defaults.
       TINA4_TEST_MYSQL_HOST: localhost
       TINA4_TEST_MYSQL_PORT: '3306'
@@ -150,6 +153,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Second Postgres database for the two-DB named-connection test
+      # (spec/bind_database_spec.rb uses TINA4_TEST_PG_DB_2=tina4_rb2). The
+      # postgres service container only creates POSTGRES_DB=tina4_rb, so create
+      # the second database from the runner's psql client once PG is healthy.
+      - name: Create second Postgres database (tina4_rb2)
+        run: |
+          for i in $(seq 1 30); do
+            if PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_rb -c "SELECT 1" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_rb \
+            -c "CREATE DATABASE tina4_rb2" || echo "tina4_rb2 may already exist"
 
       # Password-protected Redis (requirepass s3cret) on 6381 — verifies the
       # AUTH round-trip and the wrong-password file-fallback path. Run as a
