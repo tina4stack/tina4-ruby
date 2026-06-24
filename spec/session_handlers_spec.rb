@@ -16,23 +16,11 @@ RSpec.describe "Session Handlers" do
     false
   end
 
-  # The Redis and Valkey handlers both speak RESP via the `redis` gem (Valkey is
-  # RESP-compatible). The gem is loaded lazily inside the handler, so probe it
-  # here. A missing gem yields a gate-recognised skip reason ("redis gem not
-  # installed") so a local run without the optional gem skips gracefully, while
-  # a CI run with TINA4_REQUIRE_SERVICES (which provisions the gem) turns the
-  # skip into a hard failure (see spec_helper.rb) — the real round-trip can
-  # never silently no-op.
-  def self.redis_gem?
-    require "redis"
-    # Guard against the in-spec fake Redis that cache_backends_spec.rb registers
-    # when the real gem is absent (it has no VERSION and ignores setex TTL). A
-    # real-service round-trip must hit the REAL client, never a test double, so
-    # only treat the gem as present when the genuine gem constant is loaded.
-    defined?(::Redis::VERSION) ? true : false
-  rescue LoadError
-    false
-  end
+  # The Redis and Valkey handlers no longer need the optional `redis` gem: they
+  # prefer it when installed but fall back to a zero-dependency raw RESP client
+  # (RespClient) otherwise, so a real round-trip runs whether or not the gem is
+  # present. The only gate left is reachability — a provisioned service that is
+  # unreachable becomes a hard failure under TINA4_REQUIRE_SERVICES.
 
   REDIS_HOST  = ENV.fetch("TINA4_REDIS_HOST", "localhost")
   REDIS_PORT  = ENV.fetch("TINA4_REDIS_PORT", "6379").to_i
@@ -154,7 +142,6 @@ RSpec.describe "Session Handlers" do
 
   describe Tina4::SessionHandlers::RedisHandler do
     before(:each) do
-      skip "redis gem not installed" unless self.class.redis_gem?
       skip "redis not running" unless self.class.service_reachable?(REDIS_HOST, REDIS_PORT)
     end
 
@@ -215,8 +202,6 @@ RSpec.describe "Session Handlers" do
 
   describe Tina4::SessionHandlers::ValkeyHandler do
     before(:each) do
-      # Valkey speaks RESP via the same `redis` gem.
-      skip "redis gem not installed" unless self.class.redis_gem?
       skip "valkey not running" unless self.class.service_reachable?(VALKEY_HOST, VALKEY_PORT)
     end
 
@@ -397,10 +382,10 @@ RSpec.describe "Session Handlers" do
       @sqlite_dbs << sqlite_db
       list << ["DatabaseHandler", Tina4::SessionHandlers::DatabaseHandler.new(db: sqlite_db, ttl: ttl)]
 
-      if self.class.redis_gem? && self.class.service_reachable?(REDIS_HOST, REDIS_PORT)
+      if self.class.service_reachable?(REDIS_HOST, REDIS_PORT)
         list << ["RedisHandler", Tina4::SessionHandlers::RedisHandler.new(host: REDIS_HOST, port: REDIS_PORT, ttl: ttl)]
       end
-      if self.class.redis_gem? && self.class.service_reachable?(VALKEY_HOST, VALKEY_PORT)
+      if self.class.service_reachable?(VALKEY_HOST, VALKEY_PORT)
         list << ["ValkeyHandler", Tina4::SessionHandlers::ValkeyHandler.new(host: VALKEY_HOST, port: VALKEY_PORT, ttl: ttl)]
       end
       if self.class.service_reachable?(MONGO_HOST, MONGO_PORT)
