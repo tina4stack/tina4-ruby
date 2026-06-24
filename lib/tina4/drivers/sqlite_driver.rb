@@ -71,12 +71,30 @@ module Tina4
       end
 
       def execute_query(sql, params = [])
-        results = @connection.execute(sql, params)
+        results = @connection.execute(sql, coerce_params(params))
         results.map { |row| symbolize_keys(row) }
       end
 
       def execute(sql, params = [])
-        @connection.execute(sql, params)
+        @connection.execute(sql, coerce_params(params))
+      end
+
+      # Coerce Ruby values to types the sqlite3 gem can bind. The gem RAISES
+      # ("can't prepare TrueClass") on a raw boolean, so map true/false to 1/0 —
+      # SQLite stores booleans as INTEGER 0/1. Time/DateTime serialise to ISO-8601
+      # so a datetime field round-trips. Parity with the Python/PHP/Node adapters,
+      # which coerce booleans at the same bind boundary.
+      def coerce_params(params)
+        return params unless params.is_a?(Array)
+
+        params.map do |value|
+          case value
+          when true then 1
+          when false then 0
+          when Time, DateTime then value.respond_to?(:iso8601) ? value.iso8601 : value.to_s
+          else value
+          end
+        end
       end
 
       def last_insert_id
