@@ -10,11 +10,11 @@ RSpec.describe "Tina4::VERSION" do
     # is caught, and confirm the gem the gemspec actually publishes carries
     # the SAME string (spec.version = Tina4::VERSION) — no drift between the
     # constant and the publishable artifact.
-    expect(Tina4::VERSION).to eq("3.13.45")
+    expect(Tina4::VERSION).to eq("3.13.46")
 
     gemspec_path = File.expand_path("../tina4ruby.gemspec", __dir__)
     built_gemspec = Gem::Specification.load(gemspec_path)
-    expect(built_gemspec.version.to_s).to eq("3.13.45")
+    expect(built_gemspec.version.to_s).to eq("3.13.46")
   end
 
   it "follows semver format" do
