@@ -76,7 +76,13 @@ module Tina4
       end
 
       def apply_limit(sql, limit, offset = 0)
-        "#{sql} OFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY"
+        # SQL Server's OFFSET/FETCH paging REQUIRES an ORDER BY. A query with
+        # none (a fetch_one aggregate like "SELECT COUNT(*)" / "SELECT MAX(id)",
+        # or any unordered SELECT given a limit) otherwise raises "Incorrect
+        # syntax near '0'" at the OFFSET. Append a no-op ORDER BY (SELECT NULL)
+        # when the SQL has no ORDER BY, mirroring the Python master (mssql.py).
+        ordered = sql =~ /\bORDER\s+BY\b/i ? sql : "#{sql} ORDER BY (SELECT NULL)"
+        "#{ordered} OFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY"
       end
 
       def begin_transaction

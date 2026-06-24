@@ -88,7 +88,7 @@ RSpec.describe "Database Driver Registration" do
     it "mssql driver translates LIMIT to OFFSET/FETCH and escapes params" do
       driver = Tina4::Drivers::MssqlDriver.new
       expect(driver.apply_limit("SELECT * FROM users", 10, 5))
-        .to eq("SELECT * FROM users OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
+        .to eq("SELECT * FROM users ORDER BY (SELECT NULL) OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
       # Real param interpolation: single quotes are doubled (SQL-escaped).
       expect(driver.send(:interpolate_params, "WHERE name = ?", ["O'Brien"]))
         .to eq("WHERE name = 'O''Brien'")
@@ -164,12 +164,20 @@ RSpec.describe "Database Driver Registration" do
 
     it "applies OFFSET/FETCH NEXT syntax for MSSQL" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
-      expect(result).to eq("SELECT * FROM users OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
+      expect(result).to eq("SELECT * FROM users ORDER BY (SELECT NULL) OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
     end
 
     it "applies OFFSET 0 when no offset given" do
       result = driver.apply_limit("SELECT * FROM users", 10, 0)
-      expect(result).to eq("SELECT * FROM users OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY")
+      expect(result).to eq("SELECT * FROM users ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY")
+    end
+
+    it "preserves an existing ORDER BY instead of adding the (SELECT NULL) default" do
+      # OFFSET/FETCH needs an ORDER BY; when the query already has one the
+      # driver must NOT append a second (which would be a syntax error) — the
+      # default is only for unordered queries (a fetch_one aggregate).
+      result = driver.apply_limit("SELECT * FROM users ORDER BY id", 10, 5)
+      expect(result).to eq("SELECT * FROM users ORDER BY id OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
     end
   end
 
@@ -402,7 +410,7 @@ RSpec.describe "Database Driver Registration" do
       "SqliteDriver"   => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
       "PostgresDriver" => { placeholders: "$1, $2, $3", limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
       "MysqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
-      "MssqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY" },
+      "MssqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t ORDER BY (SELECT NULL) OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY" },
       "FirebirdDriver" => { placeholders: "?, ?, ?",   limit: "SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM t)" }
     }.each do |driver_class_name, expected|
       describe driver_class_name do
