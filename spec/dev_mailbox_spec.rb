@@ -323,4 +323,70 @@ RSpec.describe Tina4::DevMailbox do
       expect(result[:total]).to eq(3)
     end
   end
+
+  # ── Non-ASCII round-trip (locale crash regression) ─────────────
+  #
+  # Ruby is the genuinely vulnerable framework here: JSON.pretty_generate
+  # writes RAW UTF-8 bytes to disk (it does NOT escape to \uXXXX). Before
+  # dev_mailbox.rb pinned File.read/File.write to encoding: "UTF-8", a
+  # locale-less CI box (Encoding.default_external == US-ASCII, no LANG/LC_ALL)
+  # would read those raw UTF-8 bytes back as US-ASCII and raise
+  # Encoding::InvalidByteSequenceError, crashing inbox/read/count.
+  #
+  # This example forces that failing locale (default_external = US-ASCII)
+  # around the assertions to make it a TRUE guard for the bug, AND verifies
+  # the on-disk file holds raw UTF-8 bytes that decode under UTF-8.
+  describe "non-ASCII round-trip" do
+    it "round-trips accented/smart-quote/euro content through real on-disk JSON under a US-ASCII locale" do
+      subject_line = "Réservation confirmée — José's café"
+      body_text = "Dvořák, naïve façade, smart quotes “hello”, euro sign €"
+
+      result = mailbox.capture(
+        to: "dévelopeur@exàmple.com",
+        subject: subject_line,
+        body: body_text,
+        from_name: "José Müller",
+        from_address: "josé@exàmple.com"
+      )
+      expect(result[:success]).to be true
+
+      path = File.join(tmp_dir, "messages", "#{result[:id]}.json")
+
+      # The on-disk JSON must contain the RAW UTF-8 bytes (not \uXXXX escapes),
+      # which is precisely why a US-ASCII read crashed before the fix.
+      raw_bytes = File.binread(path)
+      expect(raw_bytes.b).to include(subject_line.b)
+      expect(raw_bytes.b).to include(body_text.b)
+      # Confirm the bytes are valid UTF-8 and decode cleanly under UTF-8.
+      expect(raw_bytes.force_encoding("UTF-8").valid_encoding?).to be true
+
+      # Force the locale-less CI default (US-ASCII) around the reads. Without
+      # the encoding pin in dev_mailbox.rb, inbox/read/count would raise
+      # Encoding::InvalidByteSequenceError here.
+      original_external = Encoding.default_external
+      begin
+        Encoding.default_external = Encoding::US_ASCII
+
+        # count must not raise
+        counts = mailbox.count
+        expect(counts[:total]).to eq(1)
+        expect(counts[:outbox]).to eq(1)
+
+        # inbox must not raise and must round-trip the content
+        listed = mailbox.inbox
+        expect(listed.length).to eq(1)
+        expect(listed.first[:subject]).to eq(subject_line)
+        expect(listed.first[:body]).to eq(body_text)
+
+        # read must not raise and must round-trip the content
+        msg = mailbox.read(result[:id])
+        expect(msg[:subject]).to eq(subject_line)
+        expect(msg[:body]).to eq(body_text)
+        expect(msg[:from][:name]).to eq("José Müller")
+        expect(msg[:to]).to eq(["dévelopeur@exàmple.com"])
+      ensure
+        Encoding.default_external = original_external
+      end
+    end
+  end
 end

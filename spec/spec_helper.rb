@@ -17,13 +17,16 @@ require "tina4/dev"
 # ── Real-service test gate (TINA4_REQUIRE_SERVICES) ───────────────────────────
 #
 # Mirror of tests/conftest.py in tina4-python (the master). CI provisions
-# PostgreSQL, Redis, Valkey, Memcached, MongoDB, RabbitMQ and Kafka and sets
-# every TINA4_TEST_* URL, so the real-service integration specs MUST run instead
-# of skipping (the gap that let the migration/queue bugs ship green). When
-# TINA4_REQUIRE_SERVICES is truthy, a spec that SKIPPED because one of those
-# PROVISIONED services (or its client gem) is unavailable is turned into a hard
-# FAILURE — the whole run exits non-zero. MySQL / MSSQL / Firebird are NOT
-# provisioned, so their skip reasons never match these keywords and stay green.
+# PostgreSQL, MySQL, MSSQL, Redis, Valkey, Memcached, MongoDB, RabbitMQ and
+# Kafka and sets every TINA4_TEST_* URL, so the real-service integration specs
+# MUST run instead of skipping (the gap that let the migration/queue bugs ship
+# green). When TINA4_REQUIRE_SERVICES is truthy, a spec that SKIPPED because one
+# of those PROVISIONED services (or its client gem) is unavailable is turned
+# into a hard FAILURE — the whole run exits non-zero. MySQL and MSSQL joined the
+# provisioned set in #262 (mysql2 + tiny_tds in the OPTIONAL :databases bundle
+# group, CI installs the native client libs), so their reachability / driver
+# skips now fail the gate too. Firebird is NOT provisioned, so its skip reasons
+# never match these keywords and stay green.
 #
 # RSpec marks `skip "msg"` as pending with that message in
 # example.execution_result.pending_message. An after(:each) (which still runs
@@ -35,6 +38,8 @@ require "tina4/dev"
 TINA4_GATE_SERVICE_KEYWORDS = [
   "postgres", "postgresql", "psycopg2", # psycopg2 kept for cross-framework message parity
   "pg",                                  # Ruby's PostgreSQL client gem ("pg gem not installed")
+  "mysql",                               # MySQL + its mysql2 client gem (#262)
+  "mssql", "sqlserver",                  # MSSQL + its tiny_tds client gem (#262)
   "redis", "valkey", "memcached",
   "mongo",                               # also matches "mongodb"
   "rabbit", "amqp",

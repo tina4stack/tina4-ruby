@@ -77,9 +77,12 @@ RSpec.describe "Database Driver Registration" do
       expect(driver.placeholder).to eq("?")
       expect(driver.placeholders(3)).to eq("?, ?, ?")
       expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t LIMIT 10 OFFSET 5")
-      # No connection yet: last_insert_id has no @connection to probe, so it
-      # surfaces the dead-connection error rather than a (wrong) nil id.
-      expect { driver.last_insert_id }.to raise_error(NoMethodError)
+      # #262: last_insert_id now returns the id CAPTURED AT WRITE TIME on the last
+      # INSERT (mirroring Python's mysql.py cursor.lastrowid) rather than re-reading
+      # @connection.last_id — which a follow-up autocommit COMMIT had clobbered to 0,
+      # making db.get_last_id return 0 after an insert. With no insert yet the cache
+      # is nil (same contract as the Firebird driver below), not a probe error.
+      expect(driver.last_insert_id).to be_nil
     end
 
     it "mssql driver translates LIMIT to OFFSET/FETCH and escapes params" do

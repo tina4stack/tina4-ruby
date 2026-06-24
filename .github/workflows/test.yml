@@ -73,6 +73,39 @@ jobs:
           --health-timeout 3s
           --health-retries 20
 
+      # MySQL — exercised by spec/database_mysql_mssql_live_spec.rb (#262).
+      # DB/user/pass match the spec defaults (localhost:3306 / tina4 / tina4_test).
+      mysql:
+        image: mysql:8
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_DATABASE: tina4_test
+          MYSQL_USER: tina4
+          MYSQL_PASSWORD: tina4
+          MYSQL_ROOT_PASSWORD: tina4
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ptina4"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      # MSSQL — exercised by spec/database_mysql_mssql_live_spec.rb (#262). The
+      # image starts EMPTY (no user DB), so a later step creates tina4_test.
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+          - 1433:1433
+        env:
+          ACCEPT_EULA: 'Y'
+          SA_PASSWORD: 'TinaSQL123!Secure'
+          MSSQL_PID: Developer
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'TinaSQL123!Secure' -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'TinaSQL123!Secure' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
       # RabbitMQ — the P1 broker (parity with the Python master's live RabbitMQ test).
       rabbitmq:
         image: rabbitmq:3-management
@@ -93,10 +126,25 @@ jobs:
       TINA4_TEST_PG_USER: tina4
       TINA4_TEST_PG_PASS: tina4
       TINA4_TEST_PG_DB: tina4_rb
+      # MySQL + MSSQL (#262) — match spec/database_mysql_mssql_live_spec.rb defaults.
+      TINA4_TEST_MYSQL_HOST: localhost
+      TINA4_TEST_MYSQL_PORT: '3306'
+      TINA4_TEST_MYSQL_USER: tina4
+      TINA4_TEST_MYSQL_PASS: tina4
+      TINA4_TEST_MYSQL_DB: tina4_test
+      TINA4_TEST_MSSQL_HOST: localhost
+      TINA4_TEST_MSSQL_PORT: '1433'
+      TINA4_TEST_MSSQL_USER: sa
+      TINA4_TEST_MSSQL_PASS: 'TinaSQL123!Secure'
+      TINA4_TEST_MSSQL_DB: tina4_test
       TINA4_TEST_KAFKA_URL: localhost:9092
       TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
       TINA4_MONGO_URI: mongodb://localhost:27017
       MONGO_TEST_URI: mongodb://localhost:27017
+      # Compile + load the optional MySQL/MSSQL driver gems (mysql2 + tiny_tds)
+      # for the live #262 specs. The :databases group is OPTIONAL, so it is only
+      # installed where BUNDLE_WITH names it (here) plus the native client libs.
+      BUNDLE_WITH: databases
       # Turn a missing provisioned service into a hard failure (no green skips).
       TINA4_REQUIRE_SERVICES: '1'
 
@@ -141,13 +189,36 @@ jobs:
           done
           echo "Kafka did not become ready in 60s"; docker logs tina4-kafka | tail -40; exit 1
 
-      # librdkafka must be present BEFORE bundle install: tina4ruby.gemspec lists
-      # rdkafka as a development dependency and its native extension links against
-      # librdkafka — without these headers/libs `bundle install` fails to build
-      # the gem. Installed here so the bundler-cache install in setup-ruby (and any
-      # explicit bundle install) can compile rdkafka.
-      - name: Install librdkafka (for the rdkafka gem native build)
-        run: sudo apt-get update && sudo apt-get install -y librdkafka-dev
+      # The mssql service image starts with NO user database, so create
+      # tina4_test before the specs connect. sqlcmd ships at the 2022 path
+      # (mssql-tools18, -C to trust the self-signed cert); fall back to the
+      # legacy path for older images.
+      - name: Create MSSQL tina4_test database
+        run: |
+          for i in $(seq 1 30); do
+            if docker ps --format '{{.Names}}' | grep -q mssql; then break; fi
+            sleep 1
+          done
+          MSSQL_CID=$(docker ps --filter "ancestor=mcr.microsoft.com/mssql/server:2022-latest" --format '{{.ID}}' | head -1)
+          for i in $(seq 1 30); do
+            if docker exec "$MSSQL_CID" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'TinaSQL123!Secure' -Q "IF DB_ID('tina4_test') IS NULL CREATE DATABASE tina4_test" 2>/dev/null \
+               || docker exec "$MSSQL_CID" /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'TinaSQL123!Secure' -Q "IF DB_ID('tina4_test') IS NULL CREATE DATABASE tina4_test" 2>/dev/null; then
+              echo "tina4_test database ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Could not create tina4_test on MSSQL"; exit 1
+
+      # Native client libs for the optional #262 driver gems, installed BEFORE
+      # bundle install so the native extensions compile:
+      #   - librdkafka-dev: tina4ruby.gemspec lists rdkafka (dev dep) whose
+      #     extension links against librdkafka.
+      #   - default-libmysqlclient-dev: mysql2 links against libmysqlclient.
+      #   - freetds-dev: tiny_tds links against FreeTDS.
+      - name: Install native client libraries (rdkafka, mysql2, tiny_tds)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librdkafka-dev default-libmysqlclient-dev freetds-dev
 
       - uses: ruby/setup-ruby@v1
         with:

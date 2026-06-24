@@ -56,11 +56,11 @@ module Tina4
       path = message_path(msg_id)
       return nil unless File.exist?(path)
 
-      message = JSON.parse(File.read(path), symbolize_names: true)
+      message = JSON.parse(File.read(path, encoding: "UTF-8"), symbolize_names: true)
       unless message[:read]
         message[:read] = true
         message[:updated_at] = Time.now.iso8601
-        File.write(path, JSON.pretty_generate(message))
+        File.write(path, JSON.pretty_generate(message), encoding: "UTF-8")
       end
       message
     end
@@ -140,13 +140,17 @@ module Tina4
     end
 
     def write_message(msg_id, message)
-      File.write(message_path(msg_id), JSON.pretty_generate(message))
+      # JSON is UTF-8 by spec, and seed/captured bodies may carry non-ASCII
+      # (accented fake names, smart quotes). Pin the I/O encoding to UTF-8 so a
+      # locale-less environment (Encoding.default_external == US-ASCII) does not
+      # mangle the write or raise on the read-back.
+      File.write(message_path(msg_id), JSON.pretty_generate(message), encoding: "UTF-8")
     end
 
     def load_all_messages
       pattern = File.join(@mailbox_dir, "messages", "*.json")
       Dir.glob(pattern).filter_map do |path|
-        JSON.parse(File.read(path), symbolize_names: true)
+        JSON.parse(File.read(path, encoding: "UTF-8"), symbolize_names: true)
       rescue JSON::ParserError => e
         Tina4::Log.error("DevMailbox: corrupt message file #{path}: #{e.message}")
         nil

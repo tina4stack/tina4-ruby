@@ -18,8 +18,18 @@ module Tina4
                 "    gem install mysql2    # bare driver"
         end
         uri = URI.parse(connection_string)
+        # libmysqlclient connects over a UNIX socket whenever host is "localhost"
+        # (its historical convention) and silently ignores the port. A URL that
+        # names a port clearly intends TCP, so rewrite "localhost" to "127.0.0.1"
+        # in that case to force the TCP path — without it a Docker/TCP-only MySQL
+        # fails with "Can't connect ... through socket '/tmp/mysql.sock'". A
+        # port-less "localhost" keeps the socket path so socket deployments still
+        # work. Parity with PHP's MySQLAdapter::rewriteHostForTcp (mysqli has the
+        # identical socket trap).
+        host = uri.host || "127.0.0.1"
+        host = "127.0.0.1" if host == "localhost" && uri.port
         @connection = Mysql2::Client.new(
-          host: uri.host || "localhost",
+          host: host,
           port: uri.port || 3306,
           username: username || uri.user,
           password: password || uri.password,
@@ -42,16 +52,27 @@ module Tina4
       end
 
       def execute(sql, params = [])
-        if params.empty?
-          @connection.query(sql)
-        else
-          stmt = @connection.prepare(sql)
-          stmt.execute(*params)
-        end
+        result =
+          if params.empty?
+            @connection.query(sql)
+          else
+            stmt = @connection.prepare(sql)
+            stmt.execute(*params)
+          end
+        # Capture the generated id AT WRITE TIME — mirrors the Python master
+        # (mysql.py execute(): `last_id = cursor.lastrowid` is read straight after
+        # the statement, never re-read later). mysql2's @connection.last_id reflects
+        # the LAST statement on this connection, so a follow-up autocommit COMMIT
+        # (a separate query) clobbers it to 0 — that is exactly why db.get_last_id
+        # returned 0 after an insert (issue #262). Snapshot it for every INSERT so
+        # last_insert_id keeps the id of the last insert regardless of any
+        # subsequent COMMIT / SELECT on the connection.
+        @last_insert_id = @connection.last_id if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
+        result
       end
 
       def last_insert_id
-        @connection.last_id
+        @last_insert_id
       end
 
       def placeholder

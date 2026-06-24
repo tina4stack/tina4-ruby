@@ -41,15 +41,30 @@ module Tina4
 
       def execute(sql, params = [])
         effective_sql = interpolate_params(sql, params)
+
+        # Capture the generated IDENTITY AT WRITE TIME — mirror of the Python
+        # master (mssql.py execute(): SELECT SCOPE_IDENTITY() runs straight after
+        # the INSERT on the SAME cursor). tiny_tds runs each #execute as its OWN
+        # T-SQL batch, and SCOPE_IDENTITY() is batch-scoped: read in a separate
+        # later batch it is always NULL — which is why both insert(...).last_id
+        # and db.get_last_id came back nil (issue #262). So for an INSERT we run
+        # the INSERT and SELECT SCOPE_IDENTITY() in ONE batch (a single
+        # @connection.execute), read the id from the SAME batch, and cache it.
+        if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
+          result = @connection.execute("#{effective_sql}; SELECT SCOPE_IDENTITY() AS id")
+          rows = result.each(symbolize_keys: true).to_a
+          result.cancel if result.respond_to?(:cancel)
+          row = rows.last
+          @last_insert_id = row && row[:id] ? row[:id].to_i : nil
+          return true
+        end
+
         result = @connection.execute(effective_sql)
         result.do
       end
 
       def last_insert_id
-        result = @connection.execute("SELECT SCOPE_IDENTITY() AS id")
-        row = result.first
-        result.cancel if result.respond_to?(:cancel)
-        row[:id]&.to_i
+        @last_insert_id
       end
 
       def placeholder
@@ -129,6 +144,16 @@ module Tina4
           escaped =
             if param.nil?
               "NULL"
+            elsif param == true
+              # SQL Server has no boolean literal — BIT stores 0/1. A raw `true`
+              # would interpolate as the bareword `true` ("Invalid column name
+              # 'true'"). Coerce at the bind boundary, parity with the SQLite
+              # driver's coerce_params and the Python/PHP/Node bind contract.
+              "1"
+            elsif param == false
+              "0"
+            elsif param.is_a?(Time) || param.is_a?(DateTime)
+              "'#{(param.respond_to?(:iso8601) ? param.iso8601 : param.to_s).gsub("'", "''")}'"
             elsif param.is_a?(String)
               "'#{param.gsub("'", "''")}'"
             else

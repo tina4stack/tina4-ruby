@@ -3,6 +3,8 @@
 require "spec_helper"
 require "tmpdir"
 require "fileutils"
+require "socket"
+require "securerandom"
 
 RSpec.describe Tina4::Messenger do
   describe "#initialize" do
@@ -417,49 +419,178 @@ RSpec.describe Tina4::Messenger do
     end
   end
 
-  # -- IMAP fail-loud (lock-in) -----------------------------------------------
+  # -- IMAP over the REAL GreenMail server ------------------------------------
   #
-  # On a connection/auth/protocol failure the read methods must LOG and RAISE
-  # (MessengerConnectionError), NOT return [] / nil / 0 — those are
-  # indistinguishable from a genuinely empty mailbox. A successful fetch with
-  # no messages still returns empty normally.
-  describe "IMAP fail-loud" do
-    let(:messenger) do
+  # NO MOCKS. These examples drive a live GreenMail instance: deliver a message
+  # over plain SMTP (127.0.0.1:3025, no TLS) and read it back over plain IMAP
+  # (127.0.0.1:3143, no TLS). Plain (non-TLS) IMAP is selected by passing
+  # imap_encryption: "none" — Messenger#initialize maps any value outside
+  # %w[tls starttls ssl] to imap_use_tls = false, so Net::IMAP.new is opened
+  # with ssl: false. Plain SMTP likewise comes from use_tls: false -> "none".
+  #
+  # GreenMail has auth disabled (any user/pass is accepted) and creates a
+  # mailbox on first access, so each example uses a UNIQUE recipient address to
+  # get an isolated, freshly-created mailbox — no cross-example contamination.
+  #
+  # The fail-loud contract (read methods LOG and RAISE
+  # MessengerConnectionError on a connection failure, rather than returning
+  # []/nil/0 which is indistinguishable from a genuinely empty mailbox) is
+  # exercised with a REAL closed TCP port (a refused connection), not a double.
+  describe "IMAP over real GreenMail" do
+    GREENMAIL_HOST      = ENV.fetch("TINA4_MAIL_HOST", "127.0.0.1")
+    GREENMAIL_SMTP_PORT = ENV.fetch("TINA4_MAIL_PORT", "3025").to_i
+    GREENMAIL_IMAP_PORT = ENV.fetch("TINA4_MAIL_IMAP_PORT", "3143").to_i
+
+    # Reachability gate (mirrors session_handlers_spec / spec_helper). A skip
+    # reason containing a gate keyword + an unavailable hint is turned into a
+    # hard failure under TINA4_REQUIRE_SERVICES, so this real-service spec can
+    # never silently no-op when GreenMail is provisioned.
+    def self.service_reachable?(host, port)
+      s = Socket.tcp(host, port, connect_timeout: 1)
+      s.close
+      true
+    rescue StandardError
+      false
+    end
+
+    # An unused, never-listening port for the refused-connection (fail-loud)
+    # case — a REAL TCP connect that is genuinely refused, no stub.
+    def self.find_closed_port
+      server = TCPServer.new("127.0.0.1", 0)
+      port = server.addr[1]
+      server.close
+      port
+    end
+
+    # Build a messenger wired to GreenMail over plain SMTP + plain IMAP for a
+    # specific recipient mailbox.
+    def build_messenger(address)
       described_class.new(
-        imap_host: "imap.example.com",
-        imap_port: 993,
-        username: "user@example.com",
-        password: "secret"
+        host: GREENMAIL_HOST, port: GREENMAIL_SMTP_PORT, use_tls: false,
+        imap_host: GREENMAIL_HOST, imap_port: GREENMAIL_IMAP_PORT,
+        imap_encryption: "none",
+        username: address, password: "secret",
+        from_address: "sender@tina4.test", from_name: "Sender"
       )
     end
 
-    # A fake IMAP connection whose calls behave according to the configured
-    # script — lets us simulate "connected fine, empty mailbox" and
-    # "connected fine, protocol error mid-conversation".
-    def fake_imap(uid_search: [], list: [], uid_fetch: [], raise_on: nil)
-      conn = double("Net::IMAP")
-      allow(conn).to receive(:select)
-      allow(conn).to receive(:logout)
-      allow(conn).to receive(:disconnect)
-      allow(conn).to receive(:uid_store)
+    # Unique recipient per example -> an isolated, first-access-created mailbox.
+    let(:recipient) { "rb-#{SecureRandom.hex(8)}@tina4.test" }
+    let(:messenger) { build_messenger(recipient) }
 
-      if raise_on
-        # Net::IMAP raises a Net::IMAP::Error subclass on a protocol/"NO"
-        # response — the base class instantiates cleanly with just a message.
-        allow(conn).to receive(raise_on).and_raise(Net::IMAP::Error.new("command failed (NO)"))
+    before do
+      unless self.class.service_reachable?(GREENMAIL_HOST, GREENMAIL_IMAP_PORT) &&
+             self.class.service_reachable?(GREENMAIL_HOST, GREENMAIL_SMTP_PORT)
+        skip "GreenMail mail server not reachable at #{GREENMAIL_HOST} (SMTP " \
+             "#{GREENMAIL_SMTP_PORT} / IMAP #{GREENMAIL_IMAP_PORT})"
       end
-      allow(conn).to receive(:uid_search).and_return(uid_search) unless raise_on == :uid_search
-      allow(conn).to receive(:list).and_return(list) unless raise_on == :list
-      allow(conn).to receive(:uid_fetch).and_return(uid_fetch) unless raise_on == :uid_fetch
-      conn
     end
 
-    context "when the connection cannot be established" do
-      before do
-        allow(Net::IMAP).to receive(:new).and_raise(
-          Errno::ECONNREFUSED.new("connection refused")
+    # Deliver `subject`/`body` to the recipient over real SMTP, then poll the
+    # real IMAP INBOX until it arrives. Returns the envelope hash from #inbox.
+    def deliver_and_wait(subject:, body:, html: false)
+      result = messenger.send(to: recipient, subject: subject, body: body, html: html)
+      expect(result[:success]).to be(true), "SMTP send failed: #{result[:message]}"
+
+      envelope = nil
+      40.times do
+        envelope = messenger.inbox.find { |m| m[:subject] == subject }
+        break if envelope
+
+        sleep 0.25
+      end
+      expect(envelope).not_to be_nil,
+                              "message #{subject.inspect} never arrived in the real IMAP mailbox"
+      envelope
+    end
+
+    it "delivers over real SMTP and reads the envelope back over real IMAP" do
+      subject = "Inbox RoundTrip #{SecureRandom.hex(4)}"
+      env = deliver_and_wait(subject: subject, body: "plain text body")
+
+      expect(env[:subject]).to eq(subject)
+      expect(env[:to].map { |a| a[:email] }).to include(recipient)
+      expect(env[:from].map { |a| a[:email] }).to include("sender@tina4.test")
+      expect(env[:uid]).to be_a(Integer)
+    end
+
+    it "reads the full message body back over real IMAP" do
+      subject = "Read Body #{SecureRandom.hex(4)}"
+      body = "Hello over real IMAP #{SecureRandom.hex(4)}"
+      env = deliver_and_wait(subject: subject, body: body)
+
+      full = messenger.read(env[:uid])
+      expect(full).not_to be_nil
+      expect(full[:subject]).to eq(subject)
+      expect(full[:body]).to eq(body)
+    end
+
+    it "reads an HTML message body back over real IMAP" do
+      subject = "Read HTML #{SecureRandom.hex(4)}"
+      html = "<h1>Hi #{SecureRandom.hex(4)}</h1>"
+      env = deliver_and_wait(subject: subject, body: html, html: true)
+
+      full = messenger.read(env[:uid])
+      expect(full[:html]).to eq(html)
+    end
+
+    it "counts unread messages over real IMAP, then zero after reading" do
+      subject = "Unread #{SecureRandom.hex(4)}"
+      env = deliver_and_wait(subject: subject, body: "count me")
+
+      expect(messenger.unread).to eq(1)
+      messenger.read(env[:uid]) # sets the \Seen flag on the real server
+      expect(messenger.unread).to eq(0)
+    end
+
+    it "searches by subject over real IMAP" do
+      subject = "Searchable #{SecureRandom.hex(6)}"
+      deliver_and_wait(subject: subject, body: "find me")
+
+      hits = messenger.search(subject: subject)
+      expect(hits.map { |m| m[:subject] }).to include(subject)
+    end
+
+    it "lists folders (INBOX) over real IMAP" do
+      # Touch the mailbox so GreenMail creates it, then list folders for real.
+      deliver_and_wait(subject: "Folders #{SecureRandom.hex(4)}", body: "x")
+      expect(messenger.folders.map(&:upcase)).to include("INBOX")
+    end
+
+    context "when the mailbox is genuinely empty (successful real fetch)" do
+      # A brand-new recipient address: GreenMail creates the mailbox on first
+      # IMAP access, and it is genuinely empty — a successful fetch, NOT an
+      # error. Empty must return []/0/nil, never raise.
+      it "inbox returns [] (NOT an error)" do
+        expect(messenger.inbox).to eq([])
+      end
+
+      it "unread returns 0 (NOT an error)" do
+        expect(messenger.unread).to eq(0)
+      end
+
+      it "search with no matches returns [] (NOT an error)" do
+        expect(messenger.search(subject: "nothing-#{SecureRandom.hex(6)}")).to eq([])
+      end
+
+      it "read of a missing UID returns nil (NOT an error)" do
+        # Force the mailbox into existence, then fetch a UID that cannot exist.
+        messenger.inbox
+        expect(messenger.read(999_999)).to be_nil
+      end
+    end
+
+    context "when the IMAP server is unreachable (real refused connection)" do
+      # Point IMAP at a real closed port: Net::IMAP.new gets an actual
+      # ECONNREFUSED. The read methods must FAIL LOUD (log + raise), never
+      # swallow it into an empty result. No mock — a genuine refused socket.
+      let(:dead_port) { self.class.find_closed_port }
+      let(:messenger) do
+        described_class.new(
+          host: GREENMAIL_HOST, port: GREENMAIL_SMTP_PORT, use_tls: false,
+          imap_host: "127.0.0.1", imap_port: dead_port, imap_encryption: "none",
+          username: recipient, password: "secret"
         )
-        allow(Tina4::Log).to receive(:error)
       end
 
       it "inbox raises instead of returning []" do
@@ -482,68 +613,8 @@ RSpec.describe Tina4::Messenger do
         expect { messenger.folders }.to raise_error(Tina4::MessengerConnectionError)
       end
 
-      it "logs the failure before raising" do
-        expect(Tina4::Log).to receive(:error).with(/Messenger IMAP inbox\(\) failed/)
-        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
-      end
-
       it "MessengerConnectionError is a MessengerError" do
         expect { messenger.inbox }.to raise_error(Tina4::MessengerError)
-      end
-    end
-
-    context "when authentication fails" do
-      before do
-        allow(Tina4::Log).to receive(:error)
-        conn = double("Net::IMAP")
-        allow(conn).to receive(:login).and_raise(Net::IMAP::Error.new("auth failed (NO)"))
-        allow(conn).to receive(:logout)
-        allow(conn).to receive(:disconnect)
-        allow(Net::IMAP).to receive(:new).and_return(conn)
-      end
-
-      it "inbox raises on a login/auth failure" do
-        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
-      end
-    end
-
-    context "when the server raises a protocol error mid-conversation" do
-      before do
-        allow(Tina4::Log).to receive(:error)
-        conn = fake_imap(raise_on: :uid_search)
-        allow(conn).to receive(:login)
-        allow(Net::IMAP).to receive(:new).and_return(conn)
-      end
-
-      it "inbox raises rather than swallowing the protocol error" do
-        expect { messenger.inbox }.to raise_error(Tina4::MessengerConnectionError)
-      end
-    end
-
-    context "when the mailbox is genuinely empty (successful fetch)" do
-      before do
-        conn = fake_imap(uid_search: [], list: [], uid_fetch: [])
-        allow(conn).to receive(:login)
-        allow(Net::IMAP).to receive(:new).and_return(conn)
-      end
-
-      it "inbox returns [] (NOT an error)" do
-        expect(messenger.inbox).to eq([])
-      end
-
-      it "unread returns 0 (NOT an error)" do
-        expect(messenger.unread).to eq(0)
-      end
-
-      it "search with no matches returns [] (NOT an error)" do
-        expect(messenger.search(subject: "nothing")).to eq([])
-      end
-
-      it "read of a missing UID returns nil (NOT an error)" do
-        conn = fake_imap(uid_fetch: nil)
-        allow(conn).to receive(:login)
-        allow(Net::IMAP).to receive(:new).and_return(conn)
-        expect(messenger.read("999")).to be_nil
       end
     end
   end

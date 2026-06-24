@@ -3,6 +3,7 @@
 require "spec_helper"
 require "json"
 require "stringio"
+require "socket"
 
 RSpec.describe "Tina4::Feedback" do
   def make_env(method, path, query: "", body: nil, auth: nil)
@@ -17,31 +18,121 @@ RSpec.describe "Tina4::Feedback" do
     env
   end
 
-  # Captures the request the feedback handler would have fired at the
-  # Rust agent and returns a canned response. Mirrors the stub pattern
-  # used in dev_admin_parity_spec.rb (Tier 3 supervisor proxies).
-  def stub_supervisor(response_body: "{}", content_type: "application/json", status_code: "200")
-    captured = { method: nil, host: nil, port: nil, path: nil, body: nil, headers: {} }
+  # Real loopback HTTP server standing in for the Rust supervisor.
+  #
+  # This is NOT a mock — it is a genuine TCPServer bound to 127.0.0.1 on an
+  # ephemeral port, accepting real connections and serving canned responses
+  # over a real socket. The feedback handler's Net::HTTP.start round-trips to
+  # it for real (handshake, request line, headers, body, response parse), so
+  # the test exercises the actual HTTP client path end to end. It records the
+  # request it received so the spec can assert on what was forwarded.
+  class FeedbackSupervisor
+    attr_reader :port
 
-    allow(Net::HTTP).to receive(:start) do |host, port, _opts = {}, &block|
-      captured[:host] = host
-      captured[:port] = port
-      session = Object.new
-      session.define_singleton_method(:request) do |req|
-        captured[:method] = req.method
-        captured[:path] = req.path
-        captured[:body] = req.body
-        req.each_header { |k, v| captured[:headers][k.downcase] = v }
-        resp = Net::HTTPResponse.send(:response_class, status_code).new("1.1", status_code, "OK")
-        resp.instance_variable_set(:@read, true)
-        resp.body = response_body
-        resp["content-type"] = content_type
-        resp
-      end
-      block ? block.call(session) : session
+    def initialize(response_body: "{}", content_type: "application/json", status_code: 200)
+      @response_body = response_body
+      @content_type = content_type
+      @status_code = status_code
+      @mutex = Mutex.new
+      @captured = { method: nil, host: nil, port: nil, path: nil, body: nil, headers: {} }
+      @server = TCPServer.new("127.0.0.1", 0)
+      @port = @server.addr[1]
+      @running = true
+      @thread = Thread.new { serve_loop }
     end
 
-    captured
+    # Snapshot of the last request the server received over the real socket.
+    def captured
+      @mutex.synchronize { @captured.dup }
+    end
+
+    def stop
+      @running = false
+      begin
+        @server.close unless @server.closed?
+      rescue StandardError
+        nil
+      end
+      @thread.join(1) if @thread&.alive?
+      @thread.kill if @thread&.alive?
+    end
+
+    private
+
+    def serve_loop
+      while @running
+        client = begin
+          @server.accept
+        rescue StandardError
+          nil
+        end
+        break if client.nil?
+
+        handle(client)
+      end
+    end
+
+    def handle(client)
+      request_line = client.gets
+      return if request_line.nil?
+
+      method, path, = request_line.split(" ")
+      headers = {}
+      content_length = 0
+      while (line = client.gets)
+        break if line == "\r\n"
+
+        key, value = line.split(":", 2)
+        next unless value
+
+        name = key.strip.downcase
+        headers[name] = value.strip
+        content_length = value.strip.to_i if name == "content-length"
+      end
+      body = content_length.positive? ? client.read(content_length) : nil
+
+      @mutex.synchronize do
+        @captured = {
+          method: method,
+          host: headers["host"],
+          port: @port,
+          path: path,
+          body: body,
+          headers: headers
+        }
+      end
+
+      client.write(
+        "HTTP/1.1 #{@status_code} OK\r\n" \
+        "Content-Type: #{@content_type}\r\n" \
+        "Content-Length: #{@response_body.bytesize}\r\n" \
+        "Connection: close\r\n" \
+        "\r\n#{@response_body}"
+      )
+    rescue StandardError
+      nil
+    ensure
+      begin
+        client.close
+      rescue StandardError
+        nil
+      end
+    end
+  end
+
+  # Start a real loopback supervisor, point the feedback handler at it via
+  # TINA4_SUPERVISOR_URL, and tear it down after the block. Returns the
+  # running server so the caller can read `.captured`.
+  def with_supervisor(response_body: "{}", content_type: "application/json", status_code: 200)
+    server = FeedbackSupervisor.new(
+      response_body: response_body, content_type: content_type, status_code: status_code
+    )
+    ENV["TINA4_SUPERVISOR_URL"] = "http://127.0.0.1:#{server.port}"
+    begin
+      yield server
+    ensure
+      server.stop
+    end
   end
 
   before(:each) do
@@ -135,46 +226,48 @@ RSpec.describe "Tina4::Feedback" do
     ENV["TINA4_ENABLE_FEEDBACK"] = "true"
     ENV["TINA4_FEEDBACK_WHITELIST"] = "dev@example.com"
     ENV["TINA4_FEEDBACK_DEV_USER"] = "dev@example.com"
-    stub_supervisor(response_body: '{"ok":true}')
+    with_supervisor(response_body: '{"ok":true}') do
+      # 5 allowed calls
+      5.times do
+        status, _, _ = Tina4::Feedback.handle_request(
+          make_env("POST", "/__feedback/api/turn", body: { message: "ping" })
+        )
+        expect(status).to eq(200)
+      end
 
-    # 5 allowed calls
-    5.times do
-      status, _, _ = Tina4::Feedback.handle_request(
-        make_env("POST", "/__feedback/api/turn", body: { message: "ping" })
+      # 6th must be rate-limited
+      status, _, body = Tina4::Feedback.handle_request(
+        make_env("POST", "/__feedback/api/turn", body: { message: "too much" })
       )
-      expect(status).to eq(200)
+      expect(status).to eq(429)
+      data = JSON.parse(body.first)
+      expect(data["error"]).to include("rate limit")
     end
-
-    # 6th must be rate-limited
-    status, _, body = Tina4::Feedback.handle_request(
-      make_env("POST", "/__feedback/api/turn", body: { message: "too much" })
-    )
-    expect(status).to eq(429)
-    data = JSON.parse(body.first)
-    expect(data["error"]).to include("rate limit")
   end
 
   it "forwards turn to supervisor" do
     ENV["TINA4_ENABLE_FEEDBACK"] = "true"
     ENV["TINA4_FEEDBACK_WHITELIST"] = "dev@example.com"
     ENV["TINA4_FEEDBACK_DEV_USER"] = "dev@example.com"
-    captured = stub_supervisor(response_body: '{"thread_id":"fb-123"}')
+    with_supervisor(response_body: '{"thread_id":"fb-123"}') do |server|
+      status, _, body = Tina4::Feedback.handle_request(
+        make_env("POST", "/__feedback/api/turn",
+                 body: { message: "page is broken", sender: "client-spoofed@bad.com" })
+      )
+      expect(status).to eq(200)
 
-    status, _, body = Tina4::Feedback.handle_request(
-      make_env("POST", "/__feedback/api/turn",
-               body: { message: "page is broken", sender: "client-spoofed@bad.com" })
-    )
-    expect(status).to eq(200)
-    expect(captured[:method]).to eq("POST")
-    expect(captured[:path]).to eq("/feedback/intake")
-    expect(captured[:headers]["content-type"]).to include("application/json")
+      captured = server.captured
+      expect(captured[:method]).to eq("POST")
+      expect(captured[:path]).to eq("/feedback/intake")
+      expect(captured[:headers]["content-type"]).to include("application/json")
 
-    forwarded = JSON.parse(captured[:body])
-    # Server-stamped — client-supplied sender must be overwritten.
-    expect(forwarded["sender"]).to eq("dev@example.com")
-    expect(forwarded["message"]).to eq("page is broken")
+      forwarded = JSON.parse(captured[:body])
+      # Server-stamped — client-supplied sender must be overwritten.
+      expect(forwarded["sender"]).to eq("dev@example.com")
+      expect(forwarded["message"]).to eq("page is broken")
 
-    expect(JSON.parse(body.first)["thread_id"]).to eq("fb-123")
+      expect(JSON.parse(body.first)["thread_id"]).to eq("fb-123")
+    end
   end
 
   it "serves widget.js with no-cache headers" do

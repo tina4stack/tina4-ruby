@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "socket"
+require "openssl"
 
 RSpec.describe Tina4::API do
   describe "#initialize" do
@@ -73,71 +74,145 @@ RSpec.describe Tina4::API do
 
   # ── verify_ssl proof (the 3.13.39 dead-kwarg fix) ───────────────────────
   #
-  # We capture the Net::HTTP instance the client builds and inspect the
-  # verify_mode it configures. Positive AND negative: verify_ssl: false must
-  # set VERIFY_NONE; the default (and explicit true) must leave VERIFY_PEER.
+  # Driven against a REAL self-signed HTTPS loopback server (a TCPServer
+  # wrapped in OpenSSL::SSL::SSLServer, bound to 127.0.0.1 on an ephemeral
+  # port — see TlsLoopbackServer below). This is the real TLS round-trip
+  # proof of the kwarg, NOT a Net::HTTP double:
+  #
+  #   - verify_ssl: false  => verification is disabled, the TLS handshake to a
+  #     self-signed cert SUCCEEDS, the client gets a real 200 over the socket.
+  #   - default / verify_ssl: true => the secure VERIFY_PEER default is kept,
+  #     so the handshake to a self-signed cert FAILS with "certificate verify
+  #     failed" and #attempt_request returns the status-0 transport-error
+  #     sentinel (error message preserved).
+  #
+  # A single real socket exercise proves both the positive (kwarg works) and
+  # the negative (we never silently downgrade) far more strongly than the old
+  # instance_double-on-verify_mode= probe could.
   describe "verify_ssl handling" do
-    # Build a fake Net::HTTP that records verify_mode and short-circuits the
-    # actual network call with a canned 200 so #execute returns cleanly.
-    def stub_https_and_capture(api)
-      captured = nil
-      fake_http = instance_double(Net::HTTP)
-      allow(fake_http).to receive(:use_ssl=)
-      allow(fake_http).to receive(:open_timeout=)
-      allow(fake_http).to receive(:read_timeout=)
-      allow(fake_http).to receive(:verify_mode=) { |mode| captured = mode }
-      fake_response = instance_double(Net::HTTPResponse, code: "200", body: "{}", to_hash: {})
-      allow(fake_http).to receive(:request).and_return(fake_response)
-      allow(Net::HTTP).to receive(:new).and_return(fake_http)
-      api.get("/")
-      captured
+    # Real in-process HTTPS server with a self-signed certificate. Accepts a
+    # genuine TLS connection on 127.0.0.1 and returns a canned 200. Connecting
+    # to it with peer verification ON fails the handshake (self-signed); with
+    # verification OFF it succeeds — exactly the contract under test.
+    class TlsLoopbackServer
+      attr_reader :port
+
+      def initialize
+        @tcp = TCPServer.new("127.0.0.1", 0)
+        @port = @tcp.addr[1]
+        @ctx = build_ssl_context
+        @ssl_server = OpenSSL::SSL::SSLServer.new(@tcp, @ctx)
+        @running = true
+        @thread = Thread.new { serve_loop }
+      end
+
+      def stop
+        @running = false
+        begin
+          @ssl_server.close unless @tcp.closed?
+        rescue StandardError
+          nil
+        end
+        @thread.join(1) if @thread&.alive?
+        @thread.kill if @thread&.alive?
+      end
+
+      private
+
+      def build_ssl_context
+        key = OpenSSL::PKey::RSA.new(2048)
+        name = OpenSSL::X509::Name.parse("CN=localhost")
+        cert = OpenSSL::X509::Certificate.new
+        cert.version = 2
+        cert.serial = 1
+        cert.subject = name
+        cert.issuer = name
+        cert.public_key = key.public_key
+        cert.not_before = Time.now - 60
+        cert.not_after = Time.now + 3600
+        ef = OpenSSL::X509::ExtensionFactory.new
+        ef.subject_certificate = cert
+        ef.issuer_certificate = cert
+        cert.add_extension(ef.create_extension("subjectAltName", "IP:127.0.0.1,DNS:localhost", false))
+        cert.sign(key, OpenSSL::Digest::SHA256.new)
+
+        ctx = OpenSSL::SSL::SSLContext.new
+        ctx.cert = cert
+        ctx.key = key
+        ctx
+      end
+
+      def serve_loop
+        while @running
+          conn = begin
+            @ssl_server.accept
+          rescue StandardError
+            # A failed handshake (peer verification rejecting our self-signed
+            # cert) raises here — that is the negative path under test, not a
+            # server fault. Keep accepting.
+            nil
+          end
+          next if conn.nil?
+
+          handle(conn)
+        end
+      end
+
+      def handle(conn)
+        while (line = conn.gets)
+          break if line == "\r\n"
+        end
+        body = "{}"
+        conn.write(
+          "HTTP/1.1 200 OK\r\n" \
+          "Content-Type: application/json\r\n" \
+          "Content-Length: #{body.bytesize}\r\n" \
+          "Connection: close\r\n" \
+          "\r\n#{body}"
+        )
+      rescue StandardError
+        nil
+      ensure
+        begin
+          conn.close
+        rescue StandardError
+          nil
+        end
+      end
     end
 
-    it "sets verify_mode to VERIFY_NONE when verify_ssl: false (positive)" do
-      api = Tina4::API.new("https://self-signed.local", verify_ssl: false)
-      expect(stub_https_and_capture(api)).to eq(OpenSSL::SSL::VERIFY_NONE)
+    around(:each) do |example|
+      @tls_server = TlsLoopbackServer.new
+      @tls_base = "https://127.0.0.1:#{@tls_server.port}"
+      begin
+        example.run
+      ensure
+        @tls_server.stop
+      end
     end
 
-    it "does NOT touch verify_mode by default (keeps the secure VERIFY_PEER default)" do
-      api = Tina4::API.new("https://api.example.com")
-      # nil verify_ssl => verify_mode= is never called => stays the Net::HTTP default
-      expect(stub_https_and_capture(api)).to be_nil
+    it "completes the TLS round-trip to a self-signed server when verify_ssl: false (positive)" do
+      api = Tina4::API.new(@tls_base, verify_ssl: false)
+      resp = api.get("/")
+      # Verification disabled => the handshake succeeds and we get a real 200.
+      expect(resp.status).to eq(200)
+      expect(resp.error).to be_nil
+    end
+
+    it "keeps the secure VERIFY_PEER default by default (rejects the self-signed cert)" do
+      api = Tina4::API.new(@tls_base)
+      resp = api.get("/")
+      # Secure default kept => the self-signed handshake fails => status-0
+      # transport sentinel with the real verification error preserved.
+      expect(resp.status).to eq(0)
+      expect(resp.error).to match(/certificate verify failed/i)
     end
 
     it "does NOT disable verification when verify_ssl: true (negative)" do
-      api = Tina4::API.new("https://api.example.com", verify_ssl: true)
-      expect(stub_https_and_capture(api)).to be_nil
-    end
-
-    it "leaves a real https Net::HTTP object at the secure default by default" do
-      # End-to-end on the configured object: build a real Net::HTTP via the
-      # client's seam and confirm the client never forces VERIFY_NONE when
-      # verify_ssl is unset (Net::HTTP applies its secure VERIFY_PEER default
-      # lazily on connect, so verify_mode is nil until then — the contract is
-      # simply that we did NOT downgrade it).
-      api = Tina4::API.new("https://api.example.com")
-      built = nil
-      allow(Net::HTTP).to receive(:new).and_wrap_original do |orig, *args|
-        built = orig.call(*args)
-        # Avoid a real network hop — raise so #attempt_request returns status 0.
-        allow(built).to receive(:request).and_raise(StandardError, "no network")
-        built
-      end
-      api.get("/")
-      expect(built.use_ssl?).to be true
-      expect(built.verify_mode).not_to eq(OpenSSL::SSL::VERIFY_NONE)
-    end
-
-    it "configures VERIFY_NONE on a real https Net::HTTP object when verify_ssl: false" do
-      api = Tina4::API.new("https://api.example.com", verify_ssl: false)
-      built = nil
-      allow(Net::HTTP).to receive(:new).and_wrap_original do |orig, *args|
-        built = orig.call(*args)
-        allow(built).to receive(:request).and_raise(StandardError, "no network")
-        built
-      end
-      api.get("/")
-      expect(built.verify_mode).to eq(OpenSSL::SSL::VERIFY_NONE)
+      api = Tina4::API.new(@tls_base, verify_ssl: true)
+      resp = api.get("/")
+      expect(resp.status).to eq(0)
+      expect(resp.error).to match(/certificate verify failed/i)
     end
   end
 
@@ -193,6 +268,15 @@ RSpec.describe Tina4::API do
         idx = [@hits, @statuses.length - 1].min
         status = @statuses[idx]
         @hits += 1
+        # A `:close` entry drops the connection WITHOUT writing a response —
+        # a real transport error (the client sees a premature EOF on a real
+        # socket and #attempt_request returns its status-0 sentinel). This is
+        # how we reproduce a transport failure for real instead of scripting a
+        # seam, then recover on the next (200) entry.
+        if status == :close
+          client.close
+          return
+        end
         body = %({"hit":#{@hits}})
         client.write(
           "HTTP/1.1 #{status} X\r\n" \
@@ -236,20 +320,17 @@ RSpec.describe Tina4::API do
     end
 
     it "recovers after a transport error then a 200" do
-      # First "server" is dead (connection refused -> status 0), so we point the
-      # client at a port nobody is listening on, then bring a real server up on a
-      # second client call. Simpler: script the seam to error once, then 200.
-      api = Tina4::API.new("http://127.0.0.1:1", max_retries: 2, retry_backoff: 0.01)
-      good = Tina4::APIResponse.new(status: 200, body: "{}", headers: {})
-      bad  = Tina4::APIResponse.new(status: 0, body: "", headers: {}, error: "refused")
-      call = 0
-      allow(api).to receive(:attempt_request) do
-        call += 1
-        call == 1 ? bad : good
+      # The real loopback server drops the FIRST connection without a response
+      # (a genuine transport error over the socket -> status 0), then serves a
+      # real 200 on the retry. No seam stubbing — the recovery is driven end to
+      # end through Net::HTTP against a real server.
+      with_server([:close, 200]) do |server|
+        api = Tina4::API.new("http://127.0.0.1:#{server.port}",
+                             max_retries: 2, retry_backoff: 0.01)
+        resp = api.get("/")
+        expect(resp.status).to eq(200)
+        expect(server.hits).to eq(2)
       end
-      resp = api.get("/")
-      expect(resp.status).to eq(200)
-      expect(call).to eq(2)
     end
 
     it "exhausts retries and returns the last 503" do
@@ -294,16 +375,25 @@ RSpec.describe Tina4::API do
     end
 
     it "sleeps with exponential backoff between attempts" do
-      slept = []
+      # Two 503s force two real backoff sleeps before the recovering 200.
+      # We measure REAL elapsed wall-clock time against a real server rather
+      # than stubbing sleep: attempt 0 backoff = base * 2**0, attempt 1 backoff
+      # = base * 2**1, so the run must take at least base * (1 + 2) of real
+      # sleeping. A larger base keeps the lower bound comfortably above timing
+      # jitter while staying fast (0.15s total).
+      base = 0.05
+      elapsed = nil
       with_server([503, 503, 200]) do |server|
         api = Tina4::API.new("http://127.0.0.1:#{server.port}",
-                             max_retries: 3, retry_backoff: 0.01)
-        allow(api).to receive(:sleep) { |n| slept << n }
+                             max_retries: 3, retry_backoff: base)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         resp = api.get("/")
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
         expect(resp.status).to eq(200)
+        expect(server.hits).to eq(3)
       end
-      # attempt 0 -> 0.01 * 2**0, attempt 1 -> 0.01 * 2**1
-      expect(slept).to eq([0.01, 0.02])
+      # Exponential backoff: base * 2**0 + base * 2**1 = base * 3 of real sleep.
+      expect(elapsed).to be >= base * 3
     end
   end
 end
