@@ -366,59 +366,134 @@ module Tina4
       sql.gsub(SMART_QUOTE_RE, SMART_QUOTES)
     end
 
-    # Split SQL into individual statements, handling:
-    # - $$ delimited stored procedure blocks
-    # - // delimited blocks
-    # - Block comments /* ... */
-    # - Line comments -- ...
-    # Matches the Python/Node.js approach: extract blocks first, split on ;, restore blocks.
+    # Split SQL into individual statements with a single-pass, quote- and
+    # comment-aware scanner. The split decision is made character by character so
+    # the delimiter only ever fires in real statement position.
+    #
+    # This is the fix for issue #54: the old implementation split on +delimiter+
+    # BEFORE stripping +-- …+ line comments, so a +;+ inside a line comment
+    # fragmented one statement into several broken pieces. A scanner that knows
+    # where it is (code / comment / string) cannot make that mistake.
+    #
+    # Handled, in priority order, only when NOT already inside a stored-proc block:
+    # - $$ … $$ and // … // stored-proc blocks are kept intact (inner ; never
+    #   splits). A // preceded by ':' is a URL scheme (https://…), not a delimiter.
+    # - /* … */ block comments are stripped.
+    # - -- … line comments are stripped to end of line (the newline is kept).
+    # - '…' single-quoted strings and "…" double-quoted identifiers are copied
+    #   verbatim, honouring the SQL doubled-quote escape ('' / ""); a ;, -- or /*
+    #   inside a literal is data, not a delimiter or comment.
+    # Mirrors the tina4-python _split_statements / tina4-php scanner (parity).
     def split_sql_statements(sql, delimiter = ";")
       # Normalize smart/curly quotes to straight ASCII first, so SQL pasted from
       # an editor/doc (which converts " → “ ” and ' → ‘ ’) actually runs.
       sql = normalize_quotes(sql)
 
-      blocks = []
-
-      # Extract $$ ... $$ blocks (stored procedures, triggers, etc.)
-      processed = sql.gsub(/\$\$(.*?)\$\$/m) do
-        blocks << $~.to_s
-        "__BLOCK_#{blocks.length - 1}__"
-      end
-
-      # Extract // ... // blocks (stored procedures, triggers, etc.). The `//`
-      # delimiters must NOT be preceded by a colon, so a URL scheme
-      # (`https://…`) or other `://` literal inside a migration is never
-      # captured as an opaque stored-proc block (it would otherwise swallow
-      # everything between two `//` occurrences and skip statement splitting).
-      processed = processed.gsub(/(?<!:)\/\/(.*?)(?<!:)\/\//m) do
-        blocks << $~.to_s
-        "__BLOCK_#{blocks.length - 1}__"
-      end
-
-      # Remove block comments (/* ... */) but not inside stored proc blocks (already extracted)
-      clean = processed.gsub(/\/\*.*?\*\//m, "")
-
       statements = []
-      clean.split(delimiter).each do |stmt|
-        lines = []
-        stmt.split("\n").each do |line|
-          stripped = line.strip
-          next if stripped.empty? || stripped.start_with?("--")
-          # Remove inline comments (-- after SQL)
-          comment_pos = line.index("--")
-          line = line[0...comment_pos] if comment_pos && comment_pos >= 0
-          lines << line
-        end
-        cleaned = lines.join("\n").strip
+      current = +""
+      n = sql.length
+      dlen = delimiter.length
+      i = 0
+      in_dollar_block = false
+      in_slash_block = false
 
-        # Restore block placeholders
-        blocks.each_with_index do |block, i|
-          cleaned = cleaned.gsub("__BLOCK_#{i}__", block)
+      while i < n
+        ch = sql[i]
+
+        # $$ … $$ stored-proc block (toggle).
+        if !in_slash_block && ch == "$" && i + 1 < n && sql[i + 1] == "$"
+          current << "$$"
+          i += 2
+          in_dollar_block = !in_dollar_block
+          next
         end
 
-        statements << cleaned unless cleaned.empty?
+        # // … // stored-proc block (toggle) — but NOT a `://` URL scheme.
+        if !in_dollar_block && ch == "/" && i + 1 < n && sql[i + 1] == "/" &&
+           !(i.positive? && sql[i - 1] == ":")
+          current << "//"
+          i += 2
+          in_slash_block = !in_slash_block
+          next
+        end
+
+        # Inside a stored-proc block: consume verbatim (inner ; never splits).
+        if in_dollar_block || in_slash_block
+          current << ch
+          i += 1
+          next
+        end
+
+        # Block comment /* … */ — stripped.
+        if ch == "/" && i + 1 < n && sql[i + 1] == "*"
+          endpos = sql.index("*/", i + 2)
+          i = endpos ? endpos + 2 : n
+          next
+        end
+
+        # Line comment -- … — stripped to end of line; the newline is left for the
+        # next iteration so line structure (and NEXT-line boundaries) survive.
+        if ch == "-" && i + 1 < n && sql[i + 1] == "-"
+          endpos = sql.index("\n", i + 2)
+          i = endpos || n
+          next
+        end
+
+        # Single-quoted string literal — '' escapes a quote. Copied verbatim.
+        if ch == "'"
+          current << "'"
+          i += 1
+          while i < n
+            if sql[i] == "'" && i + 1 < n && sql[i + 1] == "'"
+              current << "''"
+              i += 2
+            elsif sql[i] == "'"
+              current << "'"
+              i += 1
+              break
+            else
+              current << sql[i]
+              i += 1
+            end
+          end
+          next
+        end
+
+        # Double-quoted identifier — "" escapes a quote. Same verbatim handling.
+        if ch == '"'
+          current << '"'
+          i += 1
+          while i < n
+            if sql[i] == '"' && i + 1 < n && sql[i + 1] == '"'
+              current << '""'
+              i += 2
+            elsif sql[i] == '"'
+              current << '"'
+              i += 1
+              break
+            else
+              current << sql[i]
+              i += 1
+            end
+          end
+          next
+        end
+
+        # Statement delimiter — only reached outside blocks/comments/strings.
+        if !delimiter.empty? && sql[i, dlen] == delimiter
+          stmt = current.strip
+          statements << stmt unless stmt.empty?
+          current = +""
+          i += dlen
+          next
+        end
+
+        current << ch
+        i += 1
       end
 
+      stmt = current.strip
+      statements << stmt unless stmt.empty?
       statements
     end
 

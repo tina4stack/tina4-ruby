@@ -114,4 +114,75 @@ RSpec.describe "Tina4::Migration footguns" do
       expect(skip_reason("mssql", true, "INSERT INTO users VALUES (1)")).to be_nil
     end
   end
+
+  # ── [#54] a ';' inside a comment or string literal must NOT split a statement ──
+
+  describe "split_sql_statements is comment- and string-aware (#54)" do
+    it "does not fragment on a ';' inside a -- line comment" do
+      sql = <<~SQL
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,   -- drop then re-add; old way
+            name TEXT NOT NULL
+        );
+      SQL
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(1), "';' inside a -- comment fragmented the statement: #{stmts.inspect}"
+      expect(stmts[0]).to include("id INTEGER PRIMARY KEY")
+      expect(stmts[0]).to include("name TEXT NOT NULL")
+      expect(stmts[0]).not_to include("old way"), "line comment text was not stripped"
+    end
+
+    it "does not fragment on a ';' inside a /* */ block comment" do
+      sql = "CREATE TABLE t (id INTEGER /* a; b; c */, name TEXT);"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(1), stmts.inspect
+      expect(stmts[0]).not_to include("a; b; c"), "block comment text was not stripped"
+    end
+
+    it "does not split on a ';' inside a string literal" do
+      sql = "INSERT INTO t (v) VALUES ('a;b;c'); INSERT INTO t (v) VALUES ('d');"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(2), "';' inside a string literal split the statement: #{stmts.inspect}"
+      expect(stmts[0]).to include("'a;b;c'")
+    end
+
+    it "does not treat '--' inside a string literal as a comment" do
+      sql = "INSERT INTO t (v) VALUES ('a--b'); INSERT INTO t (v) VALUES ('c');"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(2), stmts.inspect
+      expect(stmts[0]).to include("'a--b'")
+    end
+
+    it "honours the '' doubled-quote escape so a later ';' still splits" do
+      sql = "INSERT INTO t (v) VALUES ('O''Brien; Jr'); SELECT 1;"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(2), stmts.inspect
+      expect(stmts[0]).to include("'O''Brien; Jr'")
+    end
+
+    it "applies a real migration whose CREATE TABLE has a ';' in a -- comment" do
+      Dir.mktmpdir("tina4_mig54") do |dir|
+        db = Tina4::Database.new("sqlite:///" + File.join(dir, "mig54.db"))
+        mig_dir = File.join(dir, "migrations")
+        FileUtils.mkdir_p(mig_dir)
+        File.write(File.join(mig_dir, "000001_create_users.sql"), <<~SQL)
+          CREATE TABLE users (
+              id INTEGER PRIMARY KEY,   -- drop then re-add; old way
+              name TEXT NOT NULL
+          );
+        SQL
+        ran = Tina4::Migration.new(db, migrations_dir: mig_dir).migrate
+        # migrate returns [{name:, status:}] — the file applied successfully.
+        expect(ran.length).to eq(1)
+        expect(ran[0][:name]).to eq("000001_create_users.sql")
+        expect(ran[0][:status]).to eq("success")
+        expect(db.table_exists?("users")).to be(true)
+        # The table is real and usable (count is key-shape-agnostic via values.first).
+        db.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])
+        count = db.fetch("SELECT COUNT(*) AS c FROM users").records[0].values.first
+        expect(count).to eq(1)
+        db.close
+      end
+    end
+  end
 end

@@ -103,6 +103,9 @@ module Tina4
           ""
         end
 
+        # Resolve #{ ... } interpolation (before $var substitution + nesting).
+        content = resolve_interpolation(content, variables)
+
         # Replace variable references
         variables.each do |name, value|
           content = content.gsub("$#{name}", value)
@@ -115,6 +118,22 @@ module Tina4
         content = content.gsub(/&/, "")
 
         content
+      end
+
+      # Resolve SCSS #{ ... } interpolation. Each #{ expr } is replaced by its
+      # resolved inner text: a $variable inside the braces resolves to its value,
+      # anything else is inlined verbatim (trimmed). Lets a value carry a
+      # variable inside a string context plain $var substitution can't reach --
+      # e.g. calc(100% - #{$gap}) -> calc(100% - 20px) -- and lets a variable
+      # appear in a selector (.icon-#{$name} -> .icon-home). Run BEFORE nesting
+      # flatten so the literal braces never confuse the block matcher.
+      def resolve_interpolation(content, variables)
+        names = variables.keys.sort_by { |k| -k.length }
+        content.gsub(/#\{([^{}]*)\}/) do
+          inner = Regexp.last_match(1).strip
+          names.each { |name| inner = inner.gsub("$#{name}", variables[name]) }
+          inner
+        end
       end
 
       def process_imports(content, base_dir)
