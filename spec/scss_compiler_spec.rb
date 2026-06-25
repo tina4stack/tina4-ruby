@@ -463,4 +463,25 @@ RSpec.describe Tina4::ScssCompiler do
       expect(css).to include("// Another comment")
     end
   end
+
+  describe "interpolation (hash-brace, issue #116)" do
+    it "resolves a variable interpolation inside calc()" do
+      css = basic_compile("$gap: 20px;\n.box { width: calc(100% - \#{$gap}); }")
+      expect(css).to include("calc(100% - 20px)")
+      expect(css).not_to include("\#{")
+      expect(css).not_to include("$gap")
+    end
+
+    it "resolves interpolation in a selector" do
+      css = basic_compile("$name: home;\n.icon-\#{$name} { color: red; }")
+      expect(css).to include(".icon-home")
+      expect(css).not_to include("\#{")
+    end
+
+    it "inlines a literal interpolation verbatim" do
+      css = basic_compile(".x { margin: \#{10px}; }")
+      expect(css).to include("margin: 10px")
+      expect(css).not_to include("\#{")
+    end
+  end
 end
