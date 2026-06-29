@@ -307,5 +307,21 @@ RSpec.describe Tina4::Swagger do
       expect(names).to include("user_id")
       expect(names).to include("post_id")
     end
+
+    # Parity with the Python decorator-stacking regression (issue #59):
+    # combining multiple fields in one swagger_meta must preserve all of them.
+    it "preserves all swagger_meta fields when combined (parity issue #59)" do
+      Tina4.post("/api/regr", swagger_meta: {
+        summary: "Create a user",
+        description: "Creates a user account",
+        tags: ["Users"],
+        example: { "email" => "a@b.c" }
+      }) { |_req, res| res.json({}) }
+      op = Tina4::Swagger.generate["paths"]["/api/regr"]["post"]
+      expect(op["summary"]).to eq("Create a user")
+      expect(op["description"]).to include("Creates a user account")
+      expect(op["tags"]).to eq(["Users"])
+      expect(op).to have_key("requestBody")
+    end
   end
 end
