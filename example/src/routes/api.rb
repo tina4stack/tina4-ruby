@@ -32,7 +32,13 @@ Tina4.get "/api/users/{id}" do |request, response|
 end
 
 # POST /api/users — Create a new user
-Tina4.post "/api/users" do |request, response|
+#
+# Write routes (POST/PUT/PATCH/DELETE) are SECURE BY DEFAULT in Tina4 v3. Two
+# independent gates guard them: `Tina4.post` attaches the default bearer-token
+# auth_handler (opt out with `auth: false`), and the router additionally sets
+# `auth_required` for write methods (opt out with `.no_auth`). This demo endpoint
+# is public, so we clear BOTH — otherwise it returns 403/401 without a token.
+Tina4.post("/api/users", auth: false) do |request, response|
   begin
     user = User.create(request.body)
     response.json(user.to_h, Tina4::HTTP_CREATED)
@@ -40,4 +46,4 @@ Tina4.post "/api/users" do |request, response|
     Tina4::Log.error("POST /api/users failed: #{e.message}")
     response.json({ error: e.message }, Tina4::HTTP_INTERNAL_SERVER_ERROR)
   end
-end
+end.no_auth

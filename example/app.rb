@@ -12,7 +12,13 @@ Tina4.initialize!(__dir__)
 
 # Database setup — SQLite for this example
 DB_PATH = File.join(__dir__, "example.db")
-db = Tina4::Database.new("sqlite://#{DB_PATH}")
+# SQLite DSN convention (parity with Python/PHP/Node): `sqlite:///path` treats
+# `path` as RELATIVE to the cwd, while `sqlite:////abs/path` (four slashes) is an
+# ABSOLUTE filesystem path. DB_PATH is already absolute, so prefix `sqlite:///`
+# to land on `sqlite:////Users/.../example.db` and bind the file in place —
+# otherwise the two-slash form yields a three-slash DSN that is resolved
+# relative to the cwd (creating a stray nested directory).
+db = Tina4::Database.new("sqlite:///#{DB_PATH}")
 Tina4.bind_database(db)
 
 # Create users table
