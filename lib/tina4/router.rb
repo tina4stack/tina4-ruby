@@ -84,6 +84,13 @@ module Tina4
         params = {}
         @param_names.each_with_index do |param_def, i|
           raw_value = match[i + 1]
+          # Rack delivers PATH_INFO (and therefore these captures) as
+          # ASCII-8BIT. Relabel as UTF-8 so an untyped param binds to SQL as
+          # TEXT, not a BLOB: SQLite gives a BLOB no numeric affinity, so a
+          # `{id}` bound as ASCII-8BIT never matches an INTEGER column
+          # (GET /users/{id} 404s a real row). No transcode — URL path bytes
+          # are already UTF-8. Parity: Python/PHP/Node path params are text.
+          raw_value = raw_value.dup.force_encoding(Encoding::UTF_8) if raw_value.is_a?(::String)
           params[param_def[:name]] = cast_param(raw_value, param_def[:type])
         end
         params
@@ -252,6 +259,9 @@ module Tina4
         params = {}
         @param_names.each_with_index do |param_def, i|
           raw_value = match[i + 1]
+          # Same ASCII-8BIT -> UTF-8 relabel as the HTTP Route matcher above,
+          # so a WS path param binds to SQL as TEXT (not a BLOB).
+          raw_value = raw_value.dup.force_encoding(Encoding::UTF_8) if raw_value.is_a?(::String)
           params[param_def[:name]] = raw_value
         end
         params
