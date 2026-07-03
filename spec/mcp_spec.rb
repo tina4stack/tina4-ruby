@@ -481,7 +481,8 @@ RSpec.describe "Tina4 MCP" do
           expect(File.exist?(config_file)).to be true
 
           config = JSON.parse(File.read(config_file))
-          expect(config["mcpServers"]["my-tools"]["url"]).to eq("http://localhost:7145/my-mcp/sse")
+          expect(config["mcpServers"]["my-tools"]["url"]).to eq("http://localhost:7145/my-mcp")
+          expect(config["mcpServers"]["my-tools"]["type"]).to eq("http")
         ensure
           Dir.chdir(old_cwd)
         end

@@ -29,6 +29,12 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     )
   end
 
+  def delete_path(path)
+    Tina4::DevAdmin.handle_request(
+      "PATH_INFO" => path, "REQUEST_METHOD" => "DELETE", "QUERY_STRING" => ""
+    )
+  end
+
   around(:each) do |example|
     # Dispatch calls auto_discover_mcp! which writes .tina4/mcp.json to the
     # CWD — run inside a tmpdir so nothing lands in the repo working tree.
@@ -140,10 +146,35 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     end
 
     describe "notification (no id)" do
-      it "returns an empty 204" do
+      it "returns an empty 202 (Streamable HTTP accepts the notification)" do
         status, _headers, body = post_jsonrpc({
           "jsonrpc" => "2.0", "method" => "notifications/initialized"
         })
+        expect(status).to eq(202)
+        expect(body).to eq([])
+      end
+    end
+
+    describe "Streamable HTTP session + method handling" do
+      it "issues an Mcp-Session-Id on initialize (POST /__dev/mcp)" do
+        status, headers, body = post_jsonrpc({
+          "jsonrpc" => "2.0", "id" => 1, "method" => "initialize",
+          "params"  => { "protocolVersion" => "2025-06-18" }
+        }, path: "/__dev/mcp")
+        expect(status).to eq(200)
+        expect(headers["Mcp-Session-Id"]).to be_a(String)
+        expect(headers["Mcp-Session-Id"]).not_to be_empty
+        expect(JSON.parse(body.first)["result"]["protocolVersion"]).to eq("2025-06-18")
+      end
+
+      it "405s a GET on the endpoint with Allow: POST, DELETE" do
+        status, headers, _body = get_path("/__dev/mcp")
+        expect(status).to eq(405)
+        expect(headers["allow"]).to eq("POST, DELETE")
+      end
+
+      it "204s a DELETE on the endpoint (session termination)" do
+        status, _headers, body = delete_path("/__dev/mcp")
         expect(status).to eq(204)
         expect(body).to eq([])
       end

@@ -22,6 +22,7 @@ require "json"
 require "socket"
 require "fileutils"
 require "open3"
+require "securerandom"
 
 module Tina4
   # ── JSON-RPC 2.0 codec ────────────────────────────────────────────
@@ -216,6 +217,12 @@ module Tina4
 
   # ── McpServer ─────────────────────────────────────────────────────
   class McpServer
+    # MCP protocol versions this server can speak, newest first. The 2025-*
+    # versions are the Streamable HTTP era; 2024-11-05 is the legacy HTTP+SSE
+    # transport we still accept for older clients (Claude Desktop et al.).
+    SUPPORTED_PROTOCOL_VERSIONS = %w[2025-06-18 2025-03-26 2024-11-05].freeze
+    LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS.first
+
     attr_reader :path, :name, :version
 
     # Class-level registry of all MCP server instances
@@ -231,6 +238,10 @@ module Tina4
       @tools       = {}
       @resources   = {}
       @initialized = false
+      # Streamable HTTP sessions: id => opened-at epoch. `initialize` mints one
+      # (returned in the Mcp-Session-Id header); a request bearing an unknown id
+      # gets a 404 so the client re-initializes.
+      @sessions    = {}
       self.class.instances << self
     end
 
@@ -292,23 +303,102 @@ module Tina4
       end
     end
 
-    # Register HTTP routes for this MCP server on the Tina4 router.
-    def register_routes(router = nil)
-      server   = self
-      msg_path = "#{@path}/message"
-      sse_path = "#{@path}/sse"
+    # ── Streamable HTTP transport ─────────────────────────────────────
+    # Session lifecycle + protocol negotiation shared by every transport
+    # entry point so the wire behaviour is identical across all 4 frameworks.
 
-      Tina4::Router.post(msg_path) do |request, response|
-        body = request.body
-        raw  = body.is_a?(Hash) ? body : (body.is_a?(String) ? body : body.to_s)
-        result = server.handle_message(raw)
-        if result.nil? || result.empty?
-          response.call("", 204)
-        else
-          response.call(JSON.parse(result))
-        end
+    # Mint a new session id and remember it. Called on `initialize`.
+    def open_session
+      sid = SecureRandom.hex(16)
+      @sessions[sid] = Time.now.to_f
+      sid
+    end
+
+    # True when +session_id+ was issued by this server and is still open.
+    def is_valid_session(session_id)
+      !session_id.to_s.empty? && @sessions.key?(session_id)
+    end
+
+    # Forget a session (client DELETE or SSE stream close). Returns true when a
+    # live session was actually removed.
+    def close_session(session_id)
+      !@sessions.delete(session_id).nil?
+    end
+
+    # Pick the protocol version to run on. Echo the client's requested version
+    # when we support it (proper negotiation), else fall back to the newest
+    # version we speak so an unversioned/old client still connects.
+    def negotiate_protocol_version(requested)
+      return requested if SUPPORTED_PROTOCOL_VERSIONS.include?(requested)
+
+      LATEST_PROTOCOL_VERSION
+    end
+
+    # Transport-agnostic Streamable HTTP POST handler. Every transport calls
+    # this so the wire behaviour stays identical:
+    #   - `initialize` mints a session id, returned in the Mcp-Session-Id header.
+    #   - a non-initialize request carrying an unknown session id is a 404
+    #     (JSON-RPC error) so the client knows to re-initialize.
+    #   - a notification / response-only POST (no id) yields 202 with an empty
+    #     body.
+    #   - anything else returns 200 with the JSON-RPC response as
+    #     application/json (the MCP Streamable HTTP spec permits a POST that
+    #     resolves to a single response to answer inline).
+    # Returns { status:, headers:, body: }.
+    def dispatch_http(raw_data, session_id = "")
+      is_init = peek_method(raw_data) == "initialize"
+      if !is_init && !session_id.to_s.empty? && !is_valid_session(session_id)
+        return {
+          status: 404,
+          headers: {},
+          body: McpProtocol.encode_error(nil, McpProtocol::INVALID_REQUEST, "session not found")
+        }
       end
 
+      body = handle_message(raw_data)
+      headers = {}
+      headers["Mcp-Session-Id"] = open_session if is_init
+      return { status: 202, headers: headers, body: "" } if body.nil? || body.empty?
+
+      { status: 200, headers: headers, body: body }
+    end
+
+    # Register HTTP routes for this MCP server on the Tina4 router. Custom
+    # (developer-created) MCP servers use this; the built-in dev server mounts
+    # the same transport via DevAdmin's dispatcher.
+    def register_routes(router = nil)
+      server    = self
+      base_path = @path
+      msg_path  = "#{@path}/message"
+      sse_path  = "#{@path}/sse"
+
+      # Streamable HTTP (current transport) — single POST endpoint.
+      Tina4::Router.post(base_path) do |request, response|
+        out = server.dispatch_http(request.body, (request.header("mcp-session-id") || "").to_s)
+        out[:headers].each { |k, v| response.header(k, v) }
+        response.call(out[:body], out[:status], "application/json")
+      end
+
+      # DELETE terminates the session (Streamable HTTP spec).
+      Tina4::Router.delete(base_path) do |request, response|
+        server.close_session((request.header("mcp-session-id") || "").to_s)
+        response.call("", 204)
+      end
+
+      # GET on the endpoint is a server->client stream we do not open here.
+      Tina4::Router.get(base_path) do |_request, response|
+        response.header("allow", "POST, DELETE")
+        response.call({ "error" => "Method Not Allowed" }, 405, "application/json")
+      end
+
+      # Legacy HTTP+SSE POST target — inline, session-lenient.
+      Tina4::Router.post(msg_path) do |request, response|
+        out = server.dispatch_http(request.body, "")
+        out[:headers].each { |k, v| response.header(k, v) }
+        response.call(out[:body], out[:status], "application/json")
+      end
+
+      # Legacy HTTP+SSE handshake — one-shot endpoint event.
       Tina4::Router.get(sse_path) do |request, response|
         endpoint_url = "#{request.url.sub(%r{/sse\z}, "")}/message"
         sse_data = "event: endpoint\ndata: #{endpoint_url}\n\n"
@@ -334,7 +424,8 @@ module Tina4
       config["mcpServers"] ||= {}
       server_key = @name.downcase.gsub(" ", "-")
       config["mcpServers"][server_key] = {
-        "url" => "http://localhost:#{port}#{@path}/sse"
+        "type" => "http",
+        "url"  => "http://localhost:#{port}#{@path}"
       }
 
       File.write(config_file, JSON.pretty_generate(config) + "\n")
@@ -352,10 +443,24 @@ module Tina4
 
     private
 
-    def _handle_initialize(_params)
+    # Read the JSON-RPC `method` from a raw request without dispatching. Used by
+    # the transport to spot `initialize` (mint a session) before handing the
+    # message to handle_message. Accepts a parsed Hash or a raw JSON string.
+    def peek_method(raw_data)
+      obj = if raw_data.is_a?(Hash)
+              raw_data
+            else
+              str = raw_data.to_s
+              str.empty? ? {} : (JSON.parse(str) rescue nil)
+            end
+      obj.is_a?(Hash) ? obj["method"] : nil
+    end
+
+    def _handle_initialize(params)
       @initialized = true
+      requested = params.is_a?(Hash) ? params["protocolVersion"] : nil
       {
-        "protocolVersion" => "2024-11-05",
+        "protocolVersion" => negotiate_protocol_version(requested),
         "capabilities"    => {
           "tools"     => { "listChanged" => false },
           "resources" => { "subscribe" => false, "listChanged" => false }

@@ -339,12 +339,13 @@ module Tina4
         return unless enabled?
 
         port = ENV["TINA4_PORT"] || ENV["PORT"] || "7147"
-        url  = "http://localhost:#{port}/__dev/api/mcp"
+        url  = "http://localhost:#{port}/__dev/mcp"
         target_dir = File.join(project_root, ".tina4")
         target = File.join(target_dir, "mcp.json")
         payload = {
           "mcpServers" => {
             "tina4-live-docs" => {
+              "type" => "http",
               "url" => url,
               "description" => "Live API docs for this Tina4 project (framework + user code)",
             },
@@ -659,8 +660,14 @@ module Tina4
             body = read_json_body(env) || {}
             json_response(mcp_tool_call(body))
           end
-        when ["POST", "/__dev/mcp"], ["POST", "/__dev/mcp/message"]
-          with_mcp_gate(env) { mcp_jsonrpc(env) }
+        when ["POST", "/__dev/mcp"]
+          with_mcp_gate(env) { mcp_streamable(env) }
+        when ["DELETE", "/__dev/mcp"]
+          with_mcp_gate(env) { mcp_delete(env) }
+        when ["GET", "/__dev/mcp"]
+          with_mcp_gate(env) { mcp_get_405 }
+        when ["POST", "/__dev/mcp/message"]
+          with_mcp_gate(env) { mcp_legacy_message(env) }
         when ["GET", "/__dev/mcp/sse"]
           with_mcp_gate(env) { mcp_sse_handshake }
         when ["GET", "/__dev/api/scaffold"]
@@ -1683,15 +1690,45 @@ module Tina4
       # clients POST a JSON-RPC 2.0 request; we hand the parsed body straight
       # to the default server's handle_message and echo the response. A
       # notification (no id) yields an empty 204, mirroring Python.
-      def mcp_jsonrpc(env)
-        body = read_json_body(env) || {}
+      # Streamable HTTP POST /__dev/mcp — the current MCP transport. initialize
+      # issues an Mcp-Session-Id; an unknown session on a non-initialize request
+      # is a 404; a notification is 202; anything else answers inline (200).
+      def mcp_streamable(env)
         server = Tina4._default_mcp_server
-        raw = server.handle_message(body)
-        if raw.nil? || raw.empty?
-          [204, { "content-type" => "application/json; charset=utf-8" }, []]
-        else
-          [200, { "content-type" => "application/json; charset=utf-8" }, [raw]]
-        end
+        out = server.dispatch_http(read_json_body(env) || {}, mcp_session_id(env))
+        mcp_triple(out)
+      end
+
+      # Legacy HTTP+SSE POST /__dev/mcp/message — inline, session-lenient.
+      def mcp_legacy_message(env)
+        server = Tina4._default_mcp_server
+        out = server.dispatch_http(read_json_body(env) || {}, "")
+        mcp_triple(out)
+      end
+
+      # DELETE /__dev/mcp — terminate the session (Streamable HTTP spec).
+      def mcp_delete(env)
+        Tina4._default_mcp_server.close_session(mcp_session_id(env))
+        [204, {}, []]
+      end
+
+      # GET /__dev/mcp — a server->client stream we do not open here.
+      def mcp_get_405
+        [405,
+         { "allow" => "POST, DELETE", "content-type" => "application/json; charset=utf-8" },
+         [McpProtocol.encode_error(nil, McpProtocol::INVALID_REQUEST, "Method Not Allowed")]]
+      end
+
+      # Read the Mcp-Session-Id request header (Rack: HTTP_MCP_SESSION_ID).
+      def mcp_session_id(env)
+        (env["HTTP_MCP_SESSION_ID"] || "").to_s
+      end
+
+      # Turn a dispatch_http result hash into a Rack [status, headers, body].
+      def mcp_triple(out)
+        headers = { "content-type" => "application/json; charset=utf-8" }.merge(out[:headers] || {})
+        body = out[:body].to_s
+        [out[:status], headers, body.empty? ? [] : [body]]
       end
 
       # SSE handshake (GET /__dev/mcp/sse). Tells the client where to POST
