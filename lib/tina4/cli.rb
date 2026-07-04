@@ -200,6 +200,10 @@ module Tina4
       # Register health check endpoint
       Tina4::Health.register!
 
+      # Register the always-on Frond {% live %} refresh endpoint
+      # (GET /__frond/live/{name}) so server-rendered live blocks can poll/SSE.
+      Tina4::Frond.register_live_endpoint!
+
       # Load route files
       load_routes(root_dir)
 

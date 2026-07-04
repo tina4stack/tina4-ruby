@@ -135,6 +135,16 @@ module Tina4
   class WebSocket
     GUID = WEBSOCKET_GUID
 
+    # Process-wide handle to the live route-serving WebSocket engine. RackApp
+    # sets this on construction so framework code (Frond.push_live, background
+    # tasks) can broadcast without threading an engine reference through every
+    # call site. Mirrors PHP's \Tina4\Server::getInstance(). Nil until a RackApp
+    # is built (e.g. in unit specs) — best-effort callers degrade silently.
+    @current = nil
+    class << self
+      attr_accessor :current
+    end
+
     attr_reader :connections
 
     def initialize

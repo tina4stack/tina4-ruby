@@ -34,8 +34,11 @@ module Tina4
       fallback = Dir.exist?(FRAMEWORK_PUBLIC_DIR) ? [FRAMEWORK_PUBLIC_DIR] : []
       @static_roots = (project_roots + fallback).freeze
 
-      # Shared WebSocket engine for route-based WS handling
+      # Shared WebSocket engine for route-based WS handling. Publish it as the
+      # process-wide "current" engine so Frond.push_live (and other framework
+      # code) can broadcast live-block updates without a threaded reference.
       @websocket_engine = Tina4::WebSocket.new
+      Tina4::WebSocket.current = @websocket_engine
 
       # Register the dev-reload WebSocket route (debug mode only) so a browser
       # handshake to /__dev_reload is accepted and held open by the connection

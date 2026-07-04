@@ -39,7 +39,23 @@ module Tina4
     @@class_globals = {}
     @@class_tests   = {}
 
-    # Clear the class-level globals/filters/tests registries.
+    # -- Live-block registries (server-rendered {% live %} regions) -----------
+    # A {% live %} block registers three things when its page first renders:
+    #   * class_live_fragments[name]  -> the raw body source, re-rendered on
+    #                                    every refresh by the /__frond/live/<name>
+    #                                    endpoint or push_live
+    #   * class_live_sources[name]    -> an optional data provider (live_source)
+    #                                    that re-runs with the LIVE request each
+    #                                    refresh, so auth re-applies (IDOR guard)
+    #   * class_live_ws_paths[name]   -> the ws path a `ws "path"` block declared,
+    #                                    used as the push_live broadcast target
+    # These persist across requests in the long-lived server (parity with the
+    # Python master's class-level dicts and PHP's static registries).
+    @@class_live_fragments = {}
+    @@class_live_sources   = {}
+    @@class_live_ws_paths  = {}
+
+    # Clear the class-level globals/filters/tests/live registries.
     #
     # Useful in test fixtures to prevent leaking state between tests. Does
     # NOT affect built-in filters or globals — only user-registered ones.
@@ -47,6 +63,9 @@ module Tina4
       @@class_filters = {}
       @@class_globals = {}
       @@class_tests   = {}
+      @@class_live_fragments = {}
+      @@class_live_sources   = {}
+      @@class_live_ws_paths  = {}
     end
 
     # -- Token types ----------------------------------------------------------
@@ -91,6 +110,18 @@ module Tina4
     SET_RE          = /\Aset\s+(\w+)\s*=\s*(.+)\z/m
     INCLUDE_RE      = /\Ainclude\s+["'](.+?)["'](?:\s+with\s+(.+))?\z/
     MACRO_RE        = /\Amacro\s+(\w+)\s*\(([^)]*)\)/
+    # {% live "name" poll N | sse | ws "path" [src "url"] %}
+    LIVE_RE         = /\Alive\s+["']([^"']+)["'](.*)\z/m
+    LIVE_WS_RE      = /ws\s+["']([^"']+)["']/
+    LIVE_SRC_RE     = /src\s+["']([^"']+)["']/
+
+    # Escape a value for use inside an HTML attribute on a live marker.
+    # Byte-identical order to the Python master / PHP liveAttr so the emitted
+    # marker element matches across all four frameworks.
+    def self.live_attr(value)
+      value.to_s.gsub("&", "&amp;").gsub('"', "&quot;")
+           .gsub("<", "&lt;").gsub(">", "&gt;")
+    end
     FROM_IMPORT_RE  = /\Afrom\s+["'](.+?)["']\s+import\s+(.+)/
     CACHE_RE        = /\Acache\s+["'](.+?)["']\s*(\d+)?/
     SPACELESS_RE    = />\s+</
@@ -586,6 +617,9 @@ module Tina4
             i += 1
           when "cache"
             result, i = handle_cache(tokens, i, context)
+            output << result
+          when "live"
+            result, i = handle_live(tokens, i, context)
             output << result
           when "spaceless"
             result, i = handle_spaceless(tokens, i, context)
@@ -1792,6 +1826,181 @@ module Tina4
       rendered = render_tokens(body_tokens.dup, context)
       @fragment_cache[cache_key] = [rendered, Time.now.to_f + ttl]
       [rendered, i]
+    end
+
+    # Handle {% live "name" poll N | sse | ws "path" [src "url"] %}...{% endlive %}.
+    #
+    # Server-rendered live region. The body renders once for first paint, is
+    # registered under <name> so the /__frond/live/<name> endpoint (or a
+    # live_source provider) can re-render it, and is wrapped in a marker element
+    # that frond.js wires to the chosen transport (poll / sse / ws). Mirrors the
+    # Python master's _handle_live and PHP's handleLive.
+    def handle_live(tokens, start, context)
+      content, _, _ = strip_tag(tokens[start][1])
+      m = LIVE_RE.match(content)
+      raise 'live: expected {% live "name" poll N | sse | ws "path" %}' unless m
+
+      name = m[1]
+      rest = (m[2] || "").strip
+      parts = rest.split
+      mode = parts[0] || ""
+
+      src = nil
+      if (sm = LIVE_SRC_RE.match(rest))
+        src = sm[1]
+      end
+      if src && (src.start_with?("http://") || src.start_with?("https://") || src.start_with?("//"))
+        raise "live: src must be a same-origin path, not an absolute URL"
+      end
+
+      interval = nil
+      ws_path  = nil
+      case mode
+      when "poll"
+        raise 'live: poll requires seconds, e.g. {% live "x" poll 5 %}' unless parts[1]&.match?(/\A\d+\z/)
+        interval = parts[1].to_i
+      when "sse"
+        # no extra config
+      when "ws"
+        wm = LIVE_WS_RE.match(rest)
+        raise 'live: ws requires a path, e.g. {% live "x" ws "/ws/x" %}' unless wm
+        ws_path = wm[1]
+      else
+        raise %(live: unknown transport "#{mode}" (use poll N, sse, or ws "path"))
+      end
+
+      # Collect body tokens up to {% endlive %}. Nested live is unsupported.
+      body_tokens = []
+      i = start + 1
+      while i < tokens.length
+        if tokens[i][0] == BLOCK
+          tc, _, _ = strip_tag(tokens[i][1])
+          tag = tc.split[0] || ""
+          raise "live: nested live blocks are not supported" if tag == "live"
+          if tag == "endlive"
+            i += 1
+            break
+          end
+          body_tokens << tokens[i]
+        else
+          body_tokens << tokens[i]
+        end
+        i += 1
+      end
+
+      # Register the raw body source so the auto endpoint can re-render it.
+      @@class_live_fragments[name] = body_tokens.map { |t| t[1] }.join
+
+      endpoint = src || ("/__frond/live/" + name)
+      attrs = [%(data-frond-live="#{Frond.live_attr(name)}"), %(id="live-#{Frond.live_attr(name)}")]
+      case mode
+      when "poll"
+        attrs << 'data-mode="poll"' << %(data-interval="#{interval}") << %(data-src="#{Frond.live_attr(endpoint)}")
+      when "sse"
+        attrs << 'data-mode="sse"' << %(data-src="#{Frond.live_attr(endpoint)}")
+      when "ws"
+        @@class_live_ws_paths[name] = ws_path
+        attrs << 'data-mode="ws"' << %(data-ws="#{Frond.live_attr(ws_path)}")
+      end
+
+      first_paint = render_tokens(body_tokens.dup, context)
+      [%(<div #{attrs.join(' ')}>#{first_paint}</div>), i]
+    end
+
+    # -- Live-block class API (mirrors Python master + PHP static facade) -----
+
+    # Re-render a registered {% live %} fragment by name with fresh data.
+    # Returns the rendered HTML, or nil if no fragment is registered under that
+    # name yet (its page has not rendered). The /__frond/live/<name> endpoint
+    # calls this after resolving the provider data.
+    def self.render_live(name, data = {})
+      source = @@class_live_fragments[name]
+      return nil if source.nil?
+
+      new.render_string(source, data || {})
+    end
+
+    # Register a data provider for a {% live %} block. Accepts a block OR a
+    # callable (proc/lambda); it is invoked with the live request on every
+    # refresh so auth re-applies (IDOR guard). Mirrors Python's @live_source.
+    def self.live_source(name, callable = nil, &blk)
+      @@class_live_sources[name] = callable || blk
+    end
+
+    # The provider registered for a live block, or nil.
+    def self.get_live_source(name)
+      @@class_live_sources[name]
+    end
+
+    # Whether a live fragment has been registered (its page rendered).
+    def self.has_live_fragment?(name)
+      @@class_live_fragments.key?(name)
+    end
+
+    # The ws path a live block declared (data-ws), or nil.
+    def self.get_live_ws_path(name)
+      @@class_live_ws_paths[name]
+    end
+
+    # Handle GET /__frond/live/{name}: resolve the provider, run it with the
+    # live request (auth re-applies), re-render the fragment, return via the
+    # response callable. 404 for unknown name / unrendered fragment. Mirrors
+    # Python's live_endpoint and PHP's respondLive.
+    def self.respond_live(request, response, name)
+      provider = @@class_live_sources[name]
+      if !@@class_live_fragments.key?(name) && provider.nil?
+        return response.call("live block not found: #{name}", 404)
+      end
+
+      context = {}
+      unless provider.nil?
+        result = provider.call(request)
+        context = result.is_a?(Hash) ? result : {}
+      end
+
+      html = render_live(name, context)
+      return response.call("live fragment not registered yet: #{name}", 404) if html.nil?
+
+      response.call(html)
+    end
+
+    # Re-render the '<name>' live fragment and push it to connected clients.
+    # Broadcasts a {type,name,html} envelope over WebSocket to the block's
+    # declared data-ws path (else a room named <name>). Returns the rendered
+    # HTML, or nil if the fragment is not registered. Mirrors Python push_live
+    # / PHP pushLive. The broadcast is best-effort — a missing/failed WS engine
+    # never raises into the caller.
+    def self.push_live(name, data = {})
+      html = render_live(name, data)
+      return nil if html.nil?
+
+      envelope = { "type" => "live", "name" => name, "html" => html }.to_json
+      engine = (Tina4::WebSocket.current if defined?(Tina4::WebSocket))
+      if engine
+        begin
+          ws_path = get_live_ws_path(name)
+          if ws_path
+            engine.broadcast(envelope, path: ws_path)
+          else
+            engine.broadcast_to_room(name, envelope)
+          end
+        rescue StandardError => e
+          Tina4::Log.error("push_live(#{name}) broadcast failed: #{e.message}") if defined?(Tina4::Log)
+        end
+      end
+      html
+    end
+
+    # Register the always-on GET /__frond/live/{name} endpoint that re-renders
+    # a live block on demand. Idempotent — guarded against a re-register after a
+    # Router.clear! (specs / hot-reload rescans). Mirrors PHP App::registerLiveEndpoint.
+    def self.register_live_endpoint!
+      return if Tina4::Router.find_route("GET", "/__frond/live/live-probe")
+
+      Tina4::Router.add(
+        "GET", "/__frond/live/{name}",
+        lambda { |request, response, name| Tina4::Frond.respond_live(request, response, name) }
+      )
     end
 
     def handle_spaceless(tokens, start, context)
