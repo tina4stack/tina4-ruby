@@ -20,6 +20,11 @@ RSpec.describe "Database Driver Registration" do
       expect(Tina4::Database::DRIVERS["postgresql"]).to eq("Tina4::Drivers::PostgresDriver")
     end
 
+    it "maps pgsql to PostgresDriver" do
+      # pgsql:// is the PDO / Laravel / Doctrine scheme name (issue #58)
+      expect(Tina4::Database::DRIVERS["pgsql"]).to eq("Tina4::Drivers::PostgresDriver")
+    end
+
     it "maps mysql to MysqlDriver" do
       expect(Tina4::Database::DRIVERS["mysql"]).to eq("Tina4::Drivers::MysqlDriver")
     end

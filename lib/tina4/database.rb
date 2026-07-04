@@ -111,6 +111,7 @@ module Tina4
       "sqlite3" => "Tina4::Drivers::SqliteDriver",
       "postgres" => "Tina4::Drivers::PostgresDriver",
       "postgresql" => "Tina4::Drivers::PostgresDriver",
+      "pgsql" => "Tina4::Drivers::PostgresDriver",
       "mysql" => "Tina4::Drivers::MysqlDriver",
       "mssql" => "Tina4::Drivers::MssqlDriver",
       "sqlserver" => "Tina4::Drivers::MssqlDriver",
