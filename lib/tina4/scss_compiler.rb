@@ -111,6 +111,10 @@ module Tina4
           content = content.gsub("$#{name}", value)
         end
 
+        # Resolve color functions (lighten/darken/rgba/rgb/mix) — after variable
+        # substitution so a $colour arg is already a hex literal (issue #124).
+        content = resolve_color_functions(content)
+
         # Handle nesting (basic single-level)
         content = flatten_nesting(content)
 
@@ -118,6 +122,109 @@ module Tina4
         content = content.gsub(/&/, "")
 
         content
+      end
+
+      # Resolve lighten/darken/rgba/rgb/mix color functions. rgba(<hex>, a) is
+      # the damaging case (issue #124): the functional rgba() notation cannot
+      # take a hex, so rgba(#0f3460, 0.12) is invalid CSS and browsers drop the
+      # whole declaration. Convert the hex to its r,g,b components. hex_to_rgb /
+      # adjust_lightness are regex-free so they never clobber the match globals.
+      def resolve_color_functions(content)
+        content = content.gsub(/lighten\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/) do
+          adjust_lightness(Regexp.last_match(1).strip, Regexp.last_match(2).strip.chomp("%").to_f / 100)
+        end
+        content = content.gsub(/darken\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/) do
+          adjust_lightness(Regexp.last_match(1).strip, -(Regexp.last_match(2).strip.chomp("%").to_f / 100))
+        end
+        # rgba(<hex>, <alpha>) — only the two-arg hex form; leave rgba(r,g,b,a).
+        content = content.gsub(/rgba\(\s*(#[0-9a-fA-F]{3,8})\s*,\s*([\d.]+)\s*\)/) do
+          hex = Regexp.last_match(1)
+          alpha = Regexp.last_match(2).strip
+          whole = Regexp.last_match(0)
+          rgb = hex_to_rgb(hex)
+          rgb ? "rgba(#{rgb[0]}, #{rgb[1]}, #{rgb[2]}, #{alpha})" : whole
+        end
+        content = content.gsub(/rgb\(\s*(#[0-9a-fA-F]{3,8})\s*\)/) do
+          hex = Regexp.last_match(1)
+          whole = Regexp.last_match(0)
+          rgb = hex_to_rgb(hex)
+          rgb ? "rgb(#{rgb[0]}, #{rgb[1]}, #{rgb[2]})" : whole
+        end
+        # mix(<c1>, <c2>[, <weight>]) — Sass weight is c1's proportion (default 50%).
+        content.gsub(/mix\(\s*(#[0-9a-fA-F]{3,8})\s*,\s*(#[0-9a-fA-F]{3,8})\s*(?:,\s*([\d.]+%?)\s*)?\)/) do
+          hex1 = Regexp.last_match(1)
+          hex2 = Regexp.last_match(2)
+          weight = Regexp.last_match(3)
+          whole = Regexp.last_match(0)
+          c1 = hex_to_rgb(hex1)
+          c2 = hex_to_rgb(hex2)
+          if c1 && c2
+            w = weight ? weight.chomp("%").to_f / 100 : 0.5
+            mixed = (0..2).map { |i| (c1[i] * w + c2[i] * (1 - w)).round }
+            format("#%02x%02x%02x", *mixed)
+          else
+            whole
+          end
+        end
+      end
+
+      # Parse a #rgb / #rrggbb hex string into an [r, g, b] int array, or nil.
+      # Regex-free (uses Integer()) so it never touches the match globals.
+      def hex_to_rgb(color)
+        c = color.strip.delete_prefix("#")
+        c = c.chars.map { |ch| ch * 2 }.join if c.length == 3
+        return nil unless c.length == 6
+
+        [Integer(c[0, 2], 16), Integer(c[2, 2], 16), Integer(c[4, 2], 16)]
+      rescue ArgumentError
+        nil
+      end
+
+      # Adjust the HSL lightness of a hex color by `amount` (-1..1), return hex.
+      # Truncates (to_i) to match the Python master's int(x*255) byte-for-byte.
+      def adjust_lightness(color, amount)
+        rgb = hex_to_rgb(color)
+        return color if rgb.nil?
+
+        r, g, b = rgb.map { |v| v / 255.0 }
+        max = [r, g, b].max
+        min = [r, g, b].min
+        l = (max + min) / 2.0
+        d = max - min
+        h = 0.0
+        s = 0.0
+        if d != 0.0
+          s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+          h = if max == r
+                (g - b) / d + (g < b ? 6 : 0)
+              elsif max == g
+                (b - r) / d + 2
+              else
+                (r - g) / d + 4
+              end
+          h /= 6.0
+        end
+        l = [0.0, [1.0, l + amount].min].max
+        if s.zero?
+          r = g = b = l
+        else
+          q = l < 0.5 ? l * (1 + s) : l + s - l * s
+          p = 2 * l - q
+          r = _hue_to_rgb(p, q, h + 1.0 / 3)
+          g = _hue_to_rgb(p, q, h)
+          b = _hue_to_rgb(p, q, h - 1.0 / 3)
+        end
+        format("#%02x%02x%02x", (r * 255).to_i, (g * 255).to_i, (b * 255).to_i)
+      end
+
+      def _hue_to_rgb(p, q, t)
+        t += 1 if t < 0
+        t -= 1 if t > 1
+        return p + (q - p) * 6 * t if t < 1.0 / 6
+        return q if t < 1.0 / 2
+        return p + (q - p) * (2.0 / 3 - t) * 6 if t < 2.0 / 3
+
+        p
       end
 
       # Resolve SCSS #{ ... } interpolation. Each #{ expr } is replaced by its

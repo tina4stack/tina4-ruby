@@ -332,21 +332,37 @@ RSpec.describe Tina4::ScssCompiler do
 
   # ── Color Function Tests ───────────────────────────────────────
 
-  describe "color functions" do
-    it "does not resolve the lighten function (passes the call through verbatim)" do
-      scss = ".box { color: lighten(#333, 20%); }"
-      css = basic_compile(scss)
-      # The fallback compiler leaves SCSS color functions untouched — it does NOT
-      # compute the lightened hex. Assert the verbatim call so the test documents
-      # (and locks) the no-resolve behaviour.
-      expect(css).to include("color: lighten(#333, 20%)")
+  describe "color functions (issue #124)" do
+    it "resolves lighten/darken byte-identically to the Python master" do
+      css = basic_compile(".box { color: lighten(#0f3460, 20%); border-color: darken(#336699, 10%); }")
+      expect(css).to include("#1c63b8")
+      expect(css).to include("#264c72")
+      expect(css).not_to include("lighten(")
+      expect(css).not_to include("darken(")
     end
 
-    it "does not resolve the darken function (passes the call through verbatim)" do
-      scss = ".box { color: darken(#ccc, 20%); }"
-      css = basic_compile(scss)
-      # Mirror of lighten: the call survives unevaluated.
-      expect(css).to include("color: darken(#ccc, 20%)")
+    it "converts rgba(<hex>, a) to valid rgba(r, g, b, a)" do
+      # rgba(<hex>, a) is invalid CSS and browsers drop the declaration; the
+      # hex must be expanded to its r,g,b components.
+      css = basic_compile("$c: #0f3460;\n.box { box-shadow: 0 0 4px rgba($c, 0.12); }")
+      expect(css).to include("rgba(15, 52, 96, 0.12)")
+      expect(css).not_to include("rgba(#")
+    end
+
+    it "leaves a numeric rgba(r, g, b, a) untouched" do
+      css = basic_compile(".box { color: rgba(10, 20, 30, 0.4); }")
+      expect(css).to include("rgba(10, 20, 30, 0.4)")
+    end
+
+    it "converts rgb(<hex>) to valid rgb(r, g, b)" do
+      css = basic_compile(".box { color: rgb(#ffffff); }")
+      expect(css).to include("rgb(255, 255, 255)")
+    end
+
+    it "evaluates mix() to a hex" do
+      css = basic_compile(".box { background: mix(#ffffff, #000000, 50%); }")
+      expect(css).to include("#808080")
+      expect(css).not_to include("mix(")
     end
   end
 
