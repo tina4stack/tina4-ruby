@@ -419,6 +419,20 @@ module Tina4
                        else "DATETIME"
                        end
 
+        # Engine-aware JSON column type (parity with the Python master's
+        # JSONField DDL). PostgreSQL gets native JSONB (indexable, canonical);
+        # MySQL native JSON; MSSQL stores JSON as NVARCHAR(MAX) (its JSON
+        # functions read that); Firebird has no TEXT type so it uses a text
+        # BLOB; SQLite and everything else store the JSON text in TEXT
+        # (queryable via json1).
+        json_sql = case engine
+                   when "postgres", "postgresql" then "JSONB"
+                   when "mysql" then "JSON"
+                   when "mssql", "sqlserver" then "NVARCHAR(MAX)"
+                   when "firebird" then "BLOB SUB_TYPE TEXT"
+                   else "TEXT"
+                   end
+
         type_map = {
           integer: "INTEGER",
           string: "VARCHAR(255)",
@@ -430,7 +444,7 @@ module Tina4
           datetime: datetime_sql,
           timestamp: "TIMESTAMP",
           blob: "BLOB",
-          json: "TEXT"
+          json: json_sql
         }
 
         col_defs = []
@@ -444,7 +458,11 @@ module Tina4
           parts << "PRIMARY KEY" if opts[:primary_key]
           parts << "AUTOINCREMENT" if opts[:auto_increment]
           parts << "NOT NULL" if !opts[:nullable] && !opts[:primary_key]
-          if opts[:default] && !opts[:auto_increment]
+          # A JSON column carries no DDL DEFAULT (parity with the Python master):
+          # a dict/list default is an application-level concern, applied per
+          # instance, not a portable SQL literal (PG needs a ::jsonb cast, MySQL
+          # an expression default). The instance still gets its default at new.
+          if opts[:default] && !opts[:auto_increment] && opts[:type] != :json
             parts << "DEFAULT #{default_literal(opts[:default], opts[:type], bool_sql)}"
           end
           col_defs << parts.join(" ")
@@ -486,6 +504,21 @@ module Tina4
         hash.each do |key, value|
           # Apply field mapping (db_col => ruby_attr)
           attr_name = mapping_reverse[key.to_s] || key
+          # A JSON column comes back from the driver as a JSON string (SQLite
+          # TEXT, MySQL JSON, PostgreSQL JSONB via the text protocol, MSSQL
+          # NVARCHAR). Decode it to the Hash/Array the attribute expects
+          # (parity with the Python master's JSONField parse-on-read). A value
+          # already a Hash/Array is left untouched; nil stays nil; a
+          # non-decodable string keeps its raw form rather than crashing a
+          # normal read.
+          fdef = field_definitions[attr_name.to_sym]
+          if fdef && fdef[:type] == :json && value.is_a?(String)
+            begin
+              value = JSON.parse(value)
+            rescue JSON::ParserError
+              # leave the raw string in place
+            end
+          end
           setter = "#{attr_name}="
           instance.__send__(setter, value) if instance.respond_to?(setter)
         end
@@ -610,6 +643,11 @@ module Tina4
         if __send__(name).nil? && opts[:default]
           d = opts[:default]
           d = d.call if d.respond_to?(:call) && !d.is_a?(Class)
+          # Deep-copy a mutable Hash/Array default so two instances never alias
+          # the same object (e.g. `json_field :meta, default: {}` — mutating
+          # a.meta must not leak into b.meta). Parity with the Python master,
+          # which deepcopies a JSONField's dict/list default per instance.
+          d = Marshal.load(Marshal.dump(d)) if d.is_a?(Hash) || d.is_a?(Array)
           __send__("#{name}=", d)
         end
       end
@@ -667,7 +705,6 @@ module Tina4
         return false
       end
 
-      data = to_db_hash(exclude_nil: true)
       pk = self.class.primary_key_field || :id
       pk_value = __send__(pk)
       pk_opts = self.class.field_definitions[pk] || {}
@@ -694,6 +731,10 @@ module Tina4
         end
 
       begin
+        # Built here (inside the rescue's reach) so a JSON column that can't be
+        # serialised (to_db_hash raises JSON::GeneratorError) fails loud through
+        # the same path as a driver error — rolled back, false, cause recorded.
+        data = to_db_hash(exclude_nil: true)
         self.class.db.transaction do |db|
           if is_update
             filter = { pk => pk_value }
@@ -941,9 +982,19 @@ module Tina4
     def to_db_hash(exclude_nil: false)
       hash = {}
       mapping = self.class.field_mapping
-      self.class.field_definitions.each_key do |name|
+      self.class.field_definitions.each do |name, opts|
         value = __send__(name)
         next if exclude_nil && value.nil?
+        # A JSON column serialises its Hash/Array to a JSON string for the
+        # driver (parity with the Python master's JSONField.to_db). A value
+        # that can't be encoded (e.g. Float::NAN) raises JSON::GeneratorError;
+        # save() computes this hash inside its rescue, so it fails loud —
+        # rolls back, returns false, records the cause. A value already a
+        # String is left as-is (a caller who pre-encoded stays in control);
+        # nil passes through untouched.
+        if opts[:type] == :json && !value.nil? && !value.is_a?(String)
+          value = JSON.generate(value)
+        end
         db_col = mapping[name.to_s] || name
         hash[db_col.to_sym] = value
       end
