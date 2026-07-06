@@ -1688,8 +1688,9 @@ module Tina4
 
       # Native MCP JSON-RPC endpoint (POST /__dev/mcp[/message]). Real MCP
       # clients POST a JSON-RPC 2.0 request; we hand the parsed body straight
-      # to the default server's handle_message and echo the response. A
-      # notification (no id) yields an empty 204, mirroring Python.
+      # to the default server's dispatch_http and echo the response. A
+      # notification (no id) yields an empty 202 Accepted (the MCP Streamable
+      # HTTP contract), mirroring the Python master, PHP and Node.
       # Streamable HTTP POST /__dev/mcp — the current MCP transport. initialize
       # issues an Mcp-Session-Id; an unknown session on a non-initialize request
       # is a 404; a notification is 202; anything else answers inline (200).
