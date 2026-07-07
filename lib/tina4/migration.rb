@@ -229,19 +229,34 @@ module Tina4
       end
     end
 
+    # Return a result row keyed by lower-case symbols. Firebird returns rows keyed
+    # by UPPERCASE string column names while SQLite/others return lower-case symbol
+    # keys, so the tracking-table reads below are normalised to one shape. Without
+    # this, `row[:migration_name]` is nil on Firebird and every applied migration
+    # is treated as pending and re-run.
+    def normalize_row(row)
+      return {} if row.nil?
+
+      source = row.respond_to?(:to_h) ? row.to_h : row
+      source.each_with_object({}) { |(k, v), h| h[k.to_s.downcase.to_sym] = v }
+    end
+
     def completed_migrations
       result = @db.fetch("SELECT migration_name FROM #{TRACKING_TABLE} WHERE passed = 1 ORDER BY id")
-      result.map { |r| r[:migration_name] }
+      result.map { |r| normalize_row(r)[:migration_name] }
     end
 
     def completed_migrations_with_batch
       result = @db.fetch("SELECT id, migration_name, batch FROM #{TRACKING_TABLE} WHERE passed = 1 ORDER BY id")
-      result.map { |r| { id: r[:id], migration_name: r[:migration_name], batch: r[:batch] } }
+      result.map do |r|
+        row = normalize_row(r)
+        { id: row[:id], migration_name: row[:migration_name], batch: row[:batch] }
+      end
     end
 
     def next_batch_number
-      result = @db.fetch_one("SELECT MAX(batch) as max_batch FROM #{TRACKING_TABLE} WHERE passed = 1")
-      (result && result[:max_batch] ? result[:max_batch].to_i : 0) + 1
+      result = normalize_row(@db.fetch_one("SELECT MAX(batch) as max_batch FROM #{TRACKING_TABLE} WHERE passed = 1"))
+      (result[:max_batch] ? result[:max_batch].to_i : 0) + 1
     end
 
     def pending_migrations
@@ -479,12 +494,22 @@ module Tina4
           next
         end
 
-        # Statement delimiter — only reached outside blocks/comments/strings.
+        # Statement delimiter — only reached outside blocks/comments/strings. A
+        # SET TERM directive switches the active terminator and is consumed
+        # (never emitted); any other completed statement is collected.
         if !delimiter.empty? && sql[i, dlen] == delimiter
-          stmt = current.strip
-          statements << stmt unless stmt.empty?
-          current = +""
           i += dlen
+          stmt = current.strip
+          current = +""
+          unless stmt.empty?
+            new_term = parse_set_term(stmt)
+            if new_term
+              delimiter = new_term
+              dlen = delimiter.length
+            else
+              statements << stmt
+            end
+          end
           next
         end
 
@@ -492,9 +517,28 @@ module Tina4
         i += 1
       end
 
+      # Trailing statement (may not end with a delimiter). A trailing SET TERM
+      # directive is a no-op — consume it, don't emit it.
       stmt = current.strip
-      statements << stmt unless stmt.empty?
+      statements << stmt unless stmt.empty? || parse_set_term(stmt)
       statements
+    end
+
+    # Return the new terminator from a `SET TERM <new> <current>` directive, or
+    # nil when +statement+ is not a SET TERM directive.
+    #
+    # SET TERM is a script-level directive (recognised by isql and other
+    # InterBase/Firebird tooling, not run by the engine) that changes the
+    # terminator separating statements. Recognising it lets a statement whose own
+    # body contains the default ";" terminator — a trigger, stored procedure or
+    # EXECUTE BLOCK — be kept intact rather than split on those inner ";". The
+    # terminator may be more than one character (e.g. "!!").
+    #
+    # @param statement [String] a single, already-stripped statement
+    # @return [String, nil] the new terminator, or nil when not a SET TERM directive
+    def parse_set_term(statement)
+      m = statement.strip.match(/\ASET\s+TERM\s+(\S+)\z/i)
+      m && m[1]
     end
 
     def execute_sql_file(file)

@@ -185,4 +185,90 @@ RSpec.describe "Tina4::Migration footguns" do
       end
     end
   end
+
+  # ── SET TERM switches the terminator so PSQL bodies survive ─────────────
+  #
+  # A Firebird trigger / procedure / EXECUTE BLOCK body has ';'-terminated inner
+  # statements; under the default ';' runner it must survive as ONE statement, not
+  # be split on those inner ';'. A `SET TERM <new> <cur>` directive switches the
+  # terminator so the body stays intact.
+  describe "SET TERM directive support" do
+    it "keeps a trigger body intact" do
+      sql = "SET TERM ^ ;\n" \
+            "CREATE OR ALTER TRIGGER t_bi FOR t ACTIVE BEFORE INSERT AS\n" \
+            "BEGIN\n" \
+            "  IF (NEW.id IS NULL) THEN NEW.id = GEN_ID(GEN_T, 1);\n" \
+            "END^\n" \
+            "SET TERM ; ^"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(1), "trigger body was split on its inner ';': #{stmts.inspect}"
+      expect(stmts[0]).to start_with("CREATE OR ALTER TRIGGER")
+      expect(stmts[0]).to end_with("END")
+      expect(stmts[0]).to include("NEW.id = GEN_ID(GEN_T, 1);")
+    end
+
+    it "consumes the SET TERM directives instead of emitting them" do
+      sql = "SET TERM ^ ;\nEXECUTE BLOCK AS BEGIN a; b; END^\nSET TERM ; ^"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(1)
+      expect(stmts.none? { |s| s.include?("SET TERM") }).to be(true), "SET TERM leaked: #{stmts.inspect}"
+    end
+
+    it "restores the previous delimiter after the block" do
+      sql = "CREATE TABLE a (id INT);\n" \
+            "SET TERM ^ ;\n" \
+            "CREATE TRIGGER a_bi FOR a AS BEGIN NEW.id = 1; END^\n" \
+            "SET TERM ; ^\n" \
+            "INSERT INTO a VALUES (1);\nUPDATE a SET id = 2;"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(4), "delimiter not restored to ';': #{stmts.inspect}"
+      expect(stmts[0]).to start_with("CREATE TABLE")
+      expect(stmts[1]).to start_with("CREATE TRIGGER")
+      expect(stmts[2]).to start_with("INSERT INTO")
+      expect(stmts[3]).to start_with("UPDATE")
+    end
+
+    it "supports a multi-character terminator" do
+      sql = "SET TERM !! ;\nCREATE TRIGGER t FOR x AS BEGIN NEW.a = 1; END!!\nSET TERM ; !!"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(1)
+      expect(stmts[0]).not_to include("!!")
+      expect(stmts[0]).not_to include("SET TERM")
+    end
+
+    it "leaves a plain ';' script unchanged" do
+      sql = "CREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);\nUPDATE a SET id = 2;"
+      stmts = migration.send(:split_sql_statements, sql, ";")
+      expect(stmts.length).to eq(3)
+      expect(stmts.any? { |s| s.end_with?(";") }).to be(false)
+    end
+
+    it "recognises a SET TERM directive only" do
+      expect(migration.send(:parse_set_term, "SET TERM ^")).to eq("^")
+      expect(migration.send(:parse_set_term, "set term !!")).to eq("!!")
+      expect(migration.send(:parse_set_term, "CREATE TABLE a (id INT)")).to be_nil
+    end
+  end
+
+  # ── Firebird UPPERCASE result keys must not cause a migration re-run ─────
+  #
+  # Firebird returns rows keyed by uppercase strings; the runner reads
+  # migration-table columns by lower-case symbol. normalize_row bridges the two
+  # so completed_migrations resolves real values on Firebird (otherwise every
+  # applied migration is treated as pending and re-run).
+  describe "normalize_row lower-cases result keys" do
+    it "maps uppercase string keys (Firebird) to lower-case symbols" do
+      row = { "MIGRATION_NAME" => "000001_x.sql", "ID" => 1, "BATCH" => 1 }
+      expect(migration.send(:normalize_row, row)).to eq(migration_name: "000001_x.sql", id: 1, batch: 1)
+    end
+
+    it "leaves lower-case symbol keys (SQLite) usable" do
+      row = { migration_name: "000002_y.sql", batch: 2 }
+      expect(migration.send(:normalize_row, row)[:migration_name]).to eq("000002_y.sql")
+    end
+
+    it "returns an empty hash for nil (fetch_one miss)" do
+      expect(migration.send(:normalize_row, nil)).to eq({})
+    end
+  end
 end
