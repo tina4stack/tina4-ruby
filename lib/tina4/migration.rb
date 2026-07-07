@@ -185,9 +185,9 @@ module Tina4
             CREATE TABLE #{TRACKING_TABLE} (
               id INTEGER NOT NULL PRIMARY KEY,
               migration_name VARCHAR(500) NOT NULL UNIQUE,
-              description VARCHAR(500) DEFAULT '',
+              description VARCHAR(500),
               batch INTEGER NOT NULL DEFAULT 1,
-              executed_at VARCHAR(50) DEFAULT CURRENT_TIMESTAMP,
+              executed_at VARCHAR(50) NOT NULL,
               passed INTEGER NOT NULL DEFAULT 1
             )
           SQL
@@ -211,16 +211,16 @@ module Tina4
                       when "mssql", "sqlserver" then "id INTEGER IDENTITY(1,1) PRIMARY KEY"
                       else "id INTEGER PRIMARY KEY AUTOINCREMENT" # sqlite (default)
                       end
-          executed_at_column = %w[mssql sqlserver].include?(engine) ?
-            "executed_at DATETIME DEFAULT CURRENT_TIMESTAMP" :
-            "executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+          # Canonical executed_at is a written VARCHAR(50) string (no
+          # CURRENT_TIMESTAMP default — a timestamp default on a VARCHAR is
+          # rejected by PostgreSQL/MySQL). recordMigration writes it explicitly.
           @db.execute(<<~SQL)
             CREATE TABLE #{TRACKING_TABLE} (
               #{id_column},
-              migration_name VARCHAR(255) NOT NULL UNIQUE,
-              description VARCHAR(255) DEFAULT '',
+              migration_name VARCHAR(500) NOT NULL UNIQUE,
+              description VARCHAR(500),
               batch INTEGER NOT NULL DEFAULT 1,
-              #{executed_at_column},
+              executed_at VARCHAR(50) NOT NULL,
               passed INTEGER NOT NULL DEFAULT 1
             )
           SQL
@@ -628,6 +628,9 @@ module Tina4
       # Extract description from filename (strip numeric prefix and extension)
       stem = File.basename(name, File.extname(name))
       desc = stem.sub(/\A\d+_/, "").tr("_", " ")
+      # executed_at is a written VARCHAR(50) string (canonical shape has no
+      # CURRENT_TIMESTAMP default), ISO-8601 UTC. strftime avoids a require "time".
+      executed_at = Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
       if firebird?
         # Firebird: generate ID from sequence
         row = @db.fetch_one(
@@ -635,13 +638,13 @@ module Tina4
         )
         next_id = row ? (row[:NEXT_ID] || row[:next_id] || 1).to_i : 1
         @db.execute(
-          "INSERT INTO #{TRACKING_TABLE} (id, migration_name, description, batch, passed) VALUES (?, ?, ?, ?, ?)",
-          [next_id, name, desc, batch, passed]
+          "INSERT INTO #{TRACKING_TABLE} (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, ?)",
+          [next_id, name, desc, batch, executed_at, passed]
         )
       else
         @db.execute(
-          "INSERT INTO #{TRACKING_TABLE} (migration_name, description, batch, passed) VALUES (?, ?, ?, ?)",
-          [name, desc, batch, passed]
+          "INSERT INTO #{TRACKING_TABLE} (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?)",
+          [name, desc, batch, executed_at, passed]
         )
       end
     end
