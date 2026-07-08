@@ -25,22 +25,21 @@ RSpec.describe Tina4::WebSocket do
     it "drives the Sec-WebSocket-Accept handshake computation" do
       # The GUID is only meaningful because it is concatenated with the
       # client's Sec-WebSocket-Key, SHA-1 hashed, and base64-encoded to form
-      # the handshake Accept value. Prove the constant is actually wired into
-      # the handshake: Tina4.compute_accept_key (the helper handle_upgrade uses)
-      # must equal the value derived from the GUID by hand, for the well-known
-      # key "dGhlIHNhbXBsZSBub25jZQ==".
-      #
-      # NOTE: Tina4's GUID ends in ...AD37 whereas RFC 6455 §1.3 specifies the
-      # magic string ...AD3A, so this is NOT the canonical RFC accept value
-      # ("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="). It is the value Tina4's own GUID
-      # produces — internally consistent, but see bug_detail re: the deviation.
+      # the handshake Accept value. Prove the constant is wired into the
+      # handshake AND that it is the RFC 6455 §1.3 magic string
+      # (258EAFA5-E914-47DA-95CA-C5AB0DC85B11): for the well-known key
+      # "dGhlIHNhbXBsZSBub25jZQ==" the accept MUST be the canonical
+      # "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=". A wrong GUID still self-agrees with a
+      # by-hand derivation (so that check alone can't catch a corrupt GUID) but
+      # every real browser validates the accept per spec and refuses the
+      # upgrade — which is why this pins the literal RFC vector.
       key = "dGhlIHNhbXBsZSBub25jZQ=="
       expected = Base64.strict_encode64(
-        Digest::SHA1.digest(key + Tina4::WebSocket::GUID)
+        Digest::SHA1.digest(key + Tina4::WEBSOCKET_GUID)
       )
 
       expect(Tina4.compute_accept_key(key)).to eq(expected)
-      expect(Tina4.compute_accept_key(key)).to eq("D4qa2Z4pLFy+ljLtx1mLy9gY3R4=")
+      expect(Tina4.compute_accept_key(key)).to eq("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
     end
   end
 

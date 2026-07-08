@@ -122,6 +122,16 @@ module Tina4
 
       route, path_params = result
 
+      # Route through the REAL auth gate (parity with the live server). A write
+      # to an auth-required route (POST/PUT/PATCH/DELETE by default, or any
+      # secured route) with no valid token / API key / formToken 401s here
+      # exactly as it would in production. The TestClient used to skip this and
+      # run the handler directly, so a green test could hide a live 401 — the
+      # verification layer lied. A public route (GET, or a write marked
+      # .no_auth) has auth_required false, so this is a no-op. (#PY2 parity)
+      unauthorized = Tina4::RackApp.enforce_route_auth(env, route)
+      return TestResponse.new(unauthorized) if unauthorized
+
       # Create request and response
       req = Tina4::Request.new(env, path_params || {})
       res = Tina4::Response.new

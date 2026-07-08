@@ -298,6 +298,30 @@ module Tina4
       data
     end
 
+    # Resolve the parsed multipart form fields (+ file entries) for this request.
+    #
+    # A live Rack server (Puma/WEBrick) does NOT parse the request body for us -
+    # it hands the app the raw `rack.input` stream. `Rack::Request#POST` parses
+    # a multipart (or urlencoded) body and caches the result into the standard
+    # `rack.request.form_hash` env key, which both #parse_body and #extract_files
+    # then read. We only invoke it when the key isn't already populated, so a
+    # spec that injects `rack.request.form_hash` directly still short-circuits
+    # here (and we never re-parse a body twice). Without this, live multipart
+    # uploads arrived empty (fields AND files) - the parse only ran in specs.
+    def multipart_form_hash
+      existing = @env["rack.request.form_hash"] rescue nil
+      return existing if existing
+
+      parsed = begin
+        require "rack"
+        Rack::Request.new(@env).POST
+      rescue StandardError => e
+        Tina4::Log.warning("multipart parse failed: #{e.message}") if defined?(Tina4::Log)
+        nil
+      end
+      @env["rack.request.form_hash"] || parsed
+    end
+
     def parse_body
       if @content_type.include?("application/json")
         json_body
@@ -307,7 +331,7 @@ module Tina4
         # Extract form fields from Rack's parsed multipart data.
         # Files are handled separately by extract_files.
         result = {}
-        form_hash = @env["rack.request.form_hash"] rescue nil
+        form_hash = multipart_form_hash
         if form_hash
           form_hash.each do |key, value|
             # Skip file entries (handled by extract_files)
@@ -349,7 +373,7 @@ module Tina4
       result = {}
       return result unless @content_type.include?("multipart/form-data")
       begin
-        form_hash = @env["rack.request.form_hash"]
+        form_hash = multipart_form_hash
         if form_hash
           form_hash.each do |key, value|
             if value.is_a?(Hash) && value[:tempfile]

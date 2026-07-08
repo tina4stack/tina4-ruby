@@ -52,6 +52,7 @@ require_relative "tina4/test"
 require_relative "tina4/docs"
 require_relative "tina4/docstore"
 require_relative "tina4/mcp"
+require_relative "tina4/realtime"
 
 module Tina4
   # ── Lazy-loaded: database drivers ─────────────────────────────────────

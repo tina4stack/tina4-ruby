@@ -44,11 +44,15 @@ RSpec.describe Tina4::Test do
     let(:suite) { fixture_class.new }
 
     it "issues real HTTP requests through TestClient for each verb" do
+      # Write routes are .no_auth here: this test exercises the Tina4::Test HTTP
+      # helper PLUMBING (each verb dispatches through TestClient), not auth. The
+      # TestClient now enforces the real secure-by-default gate (#PY2 parity), so
+      # an auth-required write with no token would 401 before the handler runs.
       Tina4::Router.get("/ping") { |_req, res| res.json({ pong: true }) }
-      Tina4::Router.post("/echo") { |req, res| res.json({ echoed: req.body }) }
-      Tina4::Router.put("/replace") { |_req, res| res.json({ verb: "PUT" }) }
-      Tina4::Router.patch("/tweak") { |_req, res| res.json({ verb: "PATCH" }) }
-      Tina4::Router.delete("/remove") { |_req, res| res.json({ verb: "DELETE" }) }
+      Tina4::Router.post("/echo") { |req, res| res.json({ echoed: req.body }) }.no_auth
+      Tina4::Router.put("/replace") { |_req, res| res.json({ verb: "PUT" }) }.no_auth
+      Tina4::Router.patch("/tweak") { |_req, res| res.json({ verb: "PATCH" }) }.no_auth
+      Tina4::Router.delete("/remove") { |_req, res| res.json({ verb: "DELETE" }) }.no_auth
 
       # GET round-trips and the handler's JSON body comes back intact.
       get_resp = suite.get("/ping")
