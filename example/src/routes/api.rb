@@ -12,7 +12,7 @@ Tina4.get "/api/users" do |_request, response|
     response.json(users.map(&:to_h), Tina4::HTTP_OK)
   rescue => e
     Tina4::Log.error("GET /api/users failed: #{e.message}")
-    response.json({ error: e.message }, Tina4::HTTP_INTERNAL_SERVER_ERROR)
+    response.json({ error: e.message }, Tina4::HTTP_SERVER_ERROR)
   end
 end
 
@@ -27,7 +27,7 @@ Tina4.get "/api/users/{id}" do |request, response|
     end
   rescue => e
     Tina4::Log.error("GET /api/users/{id} failed: #{e.message}")
-    response.json({ error: e.message }, Tina4::HTTP_INTERNAL_SERVER_ERROR)
+    response.json({ error: e.message }, Tina4::HTTP_SERVER_ERROR)
   end
 end
 
@@ -44,6 +44,6 @@ Tina4.post("/api/users", auth: false) do |request, response|
     response.json(user.to_h, Tina4::HTTP_CREATED)
   rescue => e
     Tina4::Log.error("POST /api/users failed: #{e.message}")
-    response.json({ error: e.message }, Tina4::HTTP_INTERNAL_SERVER_ERROR)
+    response.json({ error: e.message }, Tina4::HTTP_SERVER_ERROR)
   end
 end.no_auth
