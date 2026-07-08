@@ -607,8 +607,10 @@ RSpec.describe "Tina4 Smoke Test" do
       # The accept key should be a non-empty Base64 string
       expect(accept).to be_a(String)
       expect(accept).not_to be_empty
-      # Verify the GUID constant is the RFC 6455 value
-      expect(Tina4::WebSocket::GUID).to eq("258EAFA5-E914-47DA-95CA-5AB5DC11AD37")
+      # Verify the GUID constant is the RFC 6455 §1.3 magic value: a wrong GUID
+      # makes every real browser refuse the upgrade (raw clients still connect).
+      expect(Tina4::WebSocket::GUID).to eq("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+      expect(accept).to eq("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
     end
 
     it "builds a valid WebSocket frame" do

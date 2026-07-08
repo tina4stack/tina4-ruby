@@ -7,7 +7,13 @@ require "set"
 require "securerandom"
 
 module Tina4
-  WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-5AB5DC11AD37"
+  # RFC 6455 section 1.3 magic value. MUST be exactly this string - the client
+  # concatenates it to its Sec-WebSocket-Key, SHA-1s, base64s, and compares to
+  # our Sec-WebSocket-Accept. A wrong GUID yields a wrong Accept: raw clients
+  # that skip the check still connect, but a browser validates it per spec and
+  # refuses the upgrade (silent failure). Verified against the RFC test vector:
+  # key "dGhlIHNhbXBsZSBub25jZQ==" -> accept "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".
+  WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
   # Shared pub/sub channel name + envelope shape for the WebSocket backplane.
   # MUST stay byte-identical across all four frameworks (Python/PHP/Ruby/Node)
