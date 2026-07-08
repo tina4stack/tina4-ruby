@@ -109,6 +109,13 @@ RSpec.describe Tina4::AI do
       expect(content).to include("tina4-skills:start")
     end
 
+    it "tells the assistant how to report a stale or wrong skill" do
+      Tina4::AI.install_selected(tmp_dir, "1") # claude-code -> CLAUDE.md
+      content = File.read(File.join(tmp_dir, "CLAUDE.md"))
+      # Every generated context carries the report pointer so any AI coder can flag drift.
+      expect(content).to include("report-a-skill")
+    end
+
     it "installs nothing for an out-of-range selection number" do
       result = Tina4::AI.install_selected(tmp_dir, "99")
       expect(result).to eq([])
