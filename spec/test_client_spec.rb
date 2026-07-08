@@ -2,14 +2,19 @@ require_relative "spec_helper"
 
 RSpec.describe Tina4::TestClient do
   before(:each) do
-    # Register test routes (re-registered each test since spec_helper clears routes)
+    # Register test routes (re-registered each test since spec_helper clears routes).
+    # The write routes below are marked .no_auth on purpose: this spec exercises the
+    # TestClient PLUMBING (JSON body, path params, query, headers), not auth. Since
+    # the TestClient now routes through the real secure-by-default gate (#PY2 parity),
+    # an auth-required write with no token would 401 before the handler runs — which
+    # is exactly the contract locked in by test_client_auth_spec.rb.
     Tina4::Router.get("/api/test/hello") do |request, response|
       response.json({ message: "hello" })
     end
 
     Tina4::Router.post("/api/test/echo") do |request, response|
       response.json(request.json_body || {}, 201)
-    end
+    end.no_auth
 
     Tina4::Router.get("/api/test/users/{id:int}") do |id, request, response|
       response.json({ id: id, name: "User #{id}" })
@@ -18,11 +23,11 @@ RSpec.describe Tina4::TestClient do
     Tina4::Router.put("/api/test/items/{id:int}") do |id, request, response|
       data = request.json_body || {}
       response.json({ id: id, updated: true, name: data["name"] })
-    end
+    end.no_auth
 
     Tina4::Router.delete("/api/test/items/{id:int}") do |id, request, response|
       response.json({ id: id, deleted: true })
-    end
+    end.no_auth
 
     Tina4::Router.get("/api/test/query") do |request, response|
       response.json({ search: request.params["q"], page: request.params["page"] })

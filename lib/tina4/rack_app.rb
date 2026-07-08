@@ -298,56 +298,12 @@ module Tina4
         return handle_403(env["PATH_INFO"] || "/") unless auth_result
       end
 
-      # Secure-by-default: enforce bearer-token auth on write routes
-      if route.auth_required
-        token = nil
-        token_source = nil  # :header, :body, :session
-
-        # Priority 1: Authorization Bearer header
-        auth_header = env["HTTP_AUTHORIZATION"] || ""
-        if auth_header =~ /\ABearer\s+(.+)\z/i
-          token = Regexp.last_match(1)
-          token_source = :header
-        end
-
-        # Priority 2: formToken from request body (for frond.js saveForm with {{ form_token() }})
-        if token.nil?
-          body_str = _read_rack_body(env)
-          form_token = _extract_form_token(body_str, env)
-          if form_token && !form_token.empty?
-            token = form_token
-            token_source = :body
-          end
-        end
-
-        # Priority 3: Session token (for secured GET routes after login)
-        if token.nil?
-          session = Tina4::Session.new(env)
-          session_token = session.get("token")
-          if session_token && !session_token.empty?
-            token = session_token
-            token_source = :session
-          end
-        end
-
-        # API_KEY bypass — matches tina4_python behavior
-        api_key = ENV["TINA4_API_KEY"]
-        if api_key && !api_key.empty? && token == api_key
-          env["tina4.auth_payload"] = { "api_key" => true }
-        elsif token
-          unless Tina4::Auth.valid_token(token)
-            return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
-          end
-          env["tina4.auth_payload"] = Tina4::Auth.get_payload(token)
-
-          # When body formToken validates, store a refreshed token for the FreshToken response header
-          if token_source == :body
-            env["tina4.fresh_token"] = Tina4::Auth.refresh_token(token)
-          end
-        else
-          return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
-        end
-      end
+      # Secure-by-default: enforce bearer-token auth on write routes.
+      # Extracted into a class method so the in-process TestClient enforces the
+      # EXACT same gate (parity with Python #PY2 — a tokenless write must 401 in
+      # tests too, or a green test hides a live 401 and the verification lies).
+      unauthorized = self.class.enforce_route_auth(env, route)
+      return unauthorized if unauthorized
 
       request = Tina4::Request.new(env, path_params)
       request.user = env["tina4.auth_payload"] if env["tina4.auth_payload"]
@@ -1158,7 +1114,70 @@ module Tina4
 
 
     # Read and rewind the Rack input body. Returns the raw body string.
-    def _read_rack_body(env)
+    # Enforce the secure-by-default write-route auth gate.
+    #
+    # Returns nil when the route is public OR a valid token is present (and, as a
+    # side effect, sets env["tina4.auth_payload"] and, for a body formToken,
+    # env["tina4.fresh_token"]). Returns a Rack 401 tuple when an auth-required
+    # route has no valid token.
+    #
+    # A CLASS method on purpose: both the live RackApp#handle_route and the
+    # in-process TestClient call it, so the test surface enforces the identical
+    # gate as production (Python #PY2 parity). Instantiating a RackApp just to
+    # reach the check would run full boot/route-discovery — this needs none of it.
+    def self.enforce_route_auth(env, route)
+      return nil unless route.auth_required
+
+      token = nil
+      token_source = nil  # :header, :body, :session
+
+      # Priority 1: Authorization Bearer header
+      auth_header = env["HTTP_AUTHORIZATION"] || ""
+      if auth_header =~ /\ABearer\s+(.+)\z/i
+        token = Regexp.last_match(1)
+        token_source = :header
+      end
+
+      # Priority 2: formToken from request body (for frond.js saveForm with {{ form_token() }})
+      if token.nil?
+        body_str = _read_rack_body(env)
+        form_token = _extract_form_token(body_str, env)
+        if form_token && !form_token.empty?
+          token = form_token
+          token_source = :body
+        end
+      end
+
+      # Priority 3: Session token (for secured GET routes after login)
+      if token.nil?
+        session = Tina4::Session.new(env)
+        session_token = session.get("token")
+        if session_token && !session_token.empty?
+          token = session_token
+          token_source = :session
+        end
+      end
+
+      # API_KEY bypass — matches tina4_python behavior
+      api_key = ENV["TINA4_API_KEY"]
+      if api_key && !api_key.empty? && token == api_key
+        env["tina4.auth_payload"] = { "api_key" => true }
+      elsif token
+        unless Tina4::Auth.valid_token(token)
+          return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
+        end
+        env["tina4.auth_payload"] = Tina4::Auth.get_payload(token)
+
+        # When body formToken validates, store a refreshed token for the FreshToken response header
+        env["tina4.fresh_token"] = Tina4::Auth.refresh_token(token) if token_source == :body
+      else
+        return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
+      end
+
+      nil
+    end
+
+    def self._read_rack_body(env)
       input = env["rack.input"]
       return "" unless input
       input.rewind if input.respond_to?(:rewind)
@@ -1169,7 +1188,7 @@ module Tina4
 
     # Extract a formToken from the request body.
     # Supports JSON body ({ "formToken": "..." }) and URL-encoded form data (formToken=...).
-    def _extract_form_token(body_str, env)
+    def self._extract_form_token(body_str, env)
       return nil if body_str.nil? || body_str.empty?
 
       content_type = env["CONTENT_TYPE"] || env["HTTP_CONTENT_TYPE"] || ""
