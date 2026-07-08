@@ -462,7 +462,12 @@ module Tina4
           # a dict/list default is an application-level concern, applied per
           # instance, not a portable SQL literal (PG needs a ::jsonb cast, MySQL
           # an expression default). The instance still gets its default at new.
-          if opts[:default] && !opts[:auto_increment] && opts[:type] != :json
+          # A callable default (e.g. `datetime_field :created_at, default: -> { Time.now }`)
+          # is resolved per-row at instance creation; it must NOT reach the DDL, where
+          # default_literal would stringify the Proc to `DEFAULT #<Proc:...>` — invalid
+          # SQL that silently fails table creation (parity with the Python master, #61).
+          callable_default = opts[:default].respond_to?(:call) && !opts[:default].is_a?(Class)
+          if opts[:default] && !opts[:auto_increment] && opts[:type] != :json && !callable_default
             parts << "DEFAULT #{default_literal(opts[:default], opts[:type], bool_sql)}"
           end
           col_defs << parts.join(" ")
