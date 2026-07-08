@@ -1,20 +1,32 @@
-# Templates & Frontend
+# Templates & Frontend (Ruby)
 
 ## Frond Templates
 
-Tina4 uses Frond, a Twig-compatible template engine. Templates go in `src/templates/`.
+Tina4 uses Frond, a Twig-compatible template engine. Templates go in `src/templates/`. The template
+syntax is identical across every Tina4 language; only how you render them from a route is Ruby.
 
 ### Rendering
-```python
-@get("/")
-async def home(request, response):
-    return response.render("index.twig", {
-        "title": "My App",
-        "users": User().select("*").fetch()
-    })
+
+From a route, render + respond with `response.render`:
+```ruby
+Tina4.get "/" do |request, response|
+  response.render("index.twig", {
+    title: "My App",
+    users: User.all.map(&:to_h)
+  })
+end
+```
+
+Need the rendered HTML as a String (e.g. to build an email body)? Use `Tina4::Template.render` or a
+`Tina4::Frond` instance:
+```ruby
+html = Tina4::Template.render("index.twig", { title: "My App" })
+# or
+html = Tina4::Frond.new(template_dir: "src/templates").render("index.twig", data)
 ```
 
 ### Basic Syntax
+
 ```twig
 {# Output variables #}
 <h1>{{ title }}</h1>
@@ -43,6 +55,7 @@ async def home(request, response):
 ```
 
 ### Useful Filters
+
 ```twig
 {{ name | upper }}                 → UPPERCASE
 {{ name | lower }}                 → lowercase
@@ -52,20 +65,22 @@ async def home(request, response):
 {{ value | default("N/A") }}       → Default if null
 {{ html | raw }}                   → No auto-escaping
 {{ price | number_format(2) }}     → 1,234.56
-{{ date | date("Y-m-d") }}        → Formatted date
+{{ date | date("Y-m-d") }}         → Formatted date
 {{ text | slug }}                  → url-friendly-slug
 {{ created | timeago }}            → "3 hours ago"
 ```
 
-All filter names use **snake_case** regardless of language.
+All filter names use **snake_case**. Register a custom filter in Ruby:
+```ruby
+Tina4::Frond.new.add_filter("shout") { |value| value.to_s.upcase + "!" }
+```
 
 ### Includes and Macros
+
 ```twig
-{# Include a partial #}
 {% include "partials/header.twig" %}
 {% include "partials/card.twig" with {"title": "Hello"} %}
 
-{# Reusable macros #}
 {% macro input(name, value, type) %}
     <input type="{{ type | default('text') }}" name="{{ name }}" value="{{ value }}">
 {% endmacro %}
@@ -75,6 +90,7 @@ All filter names use **snake_case** regardless of language.
 ```
 
 ### Inline SQL Queries (Frond-unique)
+
 ```twig
 {% query "SELECT * FROM products WHERE active = ?" params=[true] as products %}
 {% for product in products.data %}
@@ -85,9 +101,9 @@ All filter names use **snake_case** regardless of language.
 
 ### Live Blocks (server-rendered, self-refreshing)
 
-A live block renders on the server for first paint, then re-fetches its own HTML and swaps it
-in place. Pick a transport: `poll N` (every N seconds), `sse`, or `ws "path"`. `frond.js`
-(already loaded) wires the marker and morphs the result, so a focused input survives the swap.
+A live block renders on the server for first paint, then re-fetches its own HTML and swaps it in
+place. Pick a transport: `poll N` (every N seconds), `sse`, or `ws "path"`. frond.js (already loaded)
+wires the marker and morphs the result, so a focused input survives the swap.
 
 ```twig
 {# Poll every 5 seconds #}
@@ -101,26 +117,22 @@ in place. Pick a transport: `poll N` (every N seconds), `sse`, or `ws "path"`. `
 {% endlive %}
 ```
 
-Supply the data with a provider registered by name. It runs on every refresh with the live
-request, so auth re-applies each time (an unauthenticated caller never sees another user's data):
+Supply the data with a provider registered by name. It runs on every refresh with the live request,
+so auth re-applies each time (an unauthenticated caller never sees another user's data):
 
-```python
-from tina4_python.frond import live_source, push_live
-
-@live_source("cart")
-def cart_data(request):
-    return {"count": cart_count(request), "items": cart_items(request)}
+```ruby
+Tina4::Frond.live_source("cart") do |request|
+  { count: cart_count(request), items: cart_items(request) }
+end
 ```
 
-The provider feeds the always-on `GET /__frond/live/{name}` endpoint - the block name is the
-route. For a `ws` block, push a fresh render the instant data changes with
-`push_live("cart", {...})`. Point at your own route with `src "/path"` (same-origin only);
-nested live blocks are rejected.
+For a `ws` block, push a fresh render the instant data changes with
+`Tina4::Frond.push_live("cart", { count: 3 })`.
 
 ### Cache Blocks
+
 ```twig
 {% cache "sidebar" 300 %}
-    {# This block is cached for 300 seconds #}
     {% query "SELECT * FROM popular_posts LIMIT 10" as posts %}
     {% for post in posts.data %}
         <a href="/posts/{{ post.id }}">{{ post.title }}</a>
@@ -130,7 +142,7 @@ nested live blocks are rejected.
 
 ## frond.js — Frontend Helper
 
-A lightweight (<10KB) JavaScript library that works with all Tina4 backends. Include it:
+A lightweight JavaScript library that works with any Tina4 backend. Include it:
 ```html
 <script src="/js/frond.js"></script>
 ```
@@ -145,7 +157,8 @@ await Frond.delete("/api/users/1");
 
 ### Forms
 ```javascript
-Frond.submitForm("#user-form", "/api/users");
+// saveForm collects inputs, attaches the CSRF form token + Bearer, handles file uploads
+saveForm("user-form", "/api/users", "message");
 Frond.fillForm("#user-form", { name: "Alice", email: "alice@example.com" });
 Frond.resetForm("#user-form");
 ```
@@ -172,8 +185,7 @@ Frond.modal({ title: "Edit User", body: "<form>...</form>" });
 ### Authentication
 ```javascript
 Frond.config({ auth: true });
-Frond.setToken(jwt);        // Stored in memory
-// All subsequent requests auto-attach Bearer token
+Frond.setToken(jwt);        // stored in memory; all subsequent requests auto-attach Bearer
 ```
 
 ### WebSocket
@@ -184,3 +196,10 @@ const ws = Frond.ws("/ws/chat", {
 });
 ws.send({ type: "message", text: "Hello" });
 ```
+
+## Tina4CSS
+
+Layout and components use **Tina4CSS**, a Bootstrap-compatible drop-in bundled in `src/public/css/`.
+Bootstrap muscle memory works (`container`, `row`, `col`, `card`, `btn`, `form-control`, `navbar`,
+the `mt-*`/`d-flex` utilities). No CDN, no npm, no Bootstrap/Tailwind. **No inline styles** — put
+custom rules in `src/public/css/` and reference them by class.
