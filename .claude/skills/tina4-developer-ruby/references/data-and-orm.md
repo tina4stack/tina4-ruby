@@ -173,6 +173,7 @@ class Article < Tina4::ORM
   self.soft_delete = true        # uses the is_deleted column (INTEGER 0/1)
   integer_field :id, primary_key: true, auto_increment: true
   string_field  :title
+  integer_field :is_deleted, default: 0    # REQUIRED — you must declare it yourself
 end
 
 article = Article.find_by_id(1)
@@ -184,12 +185,26 @@ Article.all                                   # excludes soft-deleted by default
 Article.with_trashed("1=1", [], limit: 100)   # includes soft-deleted
 ```
 
+> **You MUST declare `is_deleted` yourself.** `create_table` builds the table from your
+> declared fields only — it does **not** inject an `is_deleted` column when `soft_delete = true`
+> (`lib/tina4/orm.rb:380`). Omit the field and the column never exists, so `delete` (writes
+> `is_deleted = 1`) and `all` / `find` / `where` (append `is_deleted IS NULL OR is_deleted = 0`)
+> all fail with `no such column: is_deleted`. The soft-delete column name is `:is_deleted` by
+> default; override it with `self.soft_delete_field = :archived_at` (declare that field instead).
+
 ## Pagination
 
-`all`, `where`, and `select` accept `limit:` and `offset:`:
+`all` and `select` accept `limit:` and `offset:` (and `all` also takes `order_by:`). **`where`
+does NOT** — its only keyword is `include:` (the signature is
+`where(conditions, params = [], include: nil)`, `lib/tina4/orm.rb:305`). To page a *filtered*
+set, use `select` with a full SQL statement, or `all`:
 
 ```ruby
-users = User.all(limit: 20, offset: 40)   # page 3 at 20/page
+users = User.all(limit: 20, offset: 40, order_by: "id DESC")   # page 3 at 20/page
+
+# where has no limit:/offset:/order_by: — reach for select for a paged filtered query:
+active = User.select("SELECT * FROM users WHERE is_active = ? ORDER BY id DESC",
+                     [1], limit: 20, offset: 40)
 ```
 
 ## QueryBuilder — Fluent Queries with JOINs
@@ -331,7 +346,9 @@ tina4 migrate:status    # show migration status
 tina4 migrate:rollback  # roll back the last batch
 ```
 
-Migration files are versioned SQL in `migrations/`. Write standard SQL:
+Migration files are versioned SQL in **`src/migrations/`** — the runner prefers that folder and
+falls back to `migrations/` at the project root (`lib/tina4/migration.rb:159`; the boot
+auto-migrate resolver checks the same two, `lib/tina4.rb:470`). Write standard SQL:
 ```sql
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -373,3 +390,278 @@ class User < Tina4::ORM
   string_field  :email
 end
 ```
+
+## ORM Lifecycle & Footguns
+
+The write path has a deliberate but **asymmetric** failure contract: `save` fails *soft*
+(returns `false`), while `delete` / `restore` and raw `db.execute` fail *loud* (raise). Getting
+this wrong is the biggest source of wasted debugging. Each item is **what bites → the safe idiom
+→ what breaks**, verified against `lib/tina4/orm.rb` and `lib/tina4/database.rb`. Where Ruby
+behaves **differently from the Python master**, that is called out — do not port the Python idiom
+blind.
+
+### `save` fails *soft* — it returns `false`, never raises
+
+`save` returns `self` on success (fluent) and **`false`** on *any* failure — validation OR a
+driver error. It **never raises** and never returns `nil`. The cause is recorded on
+`model.last_error` / `model.get_error` (mirroring `db.get_error`) and `model.errors`, and logged,
+so a swallowed failure is always recoverable. `create` = `new` + `save`; when the save fails it
+returns `false` (never a half-saved instance).
+
+```ruby
+# SAFE — check the return, surface the cause
+user = User.new(name: "Alice", email: "a@x.com")
+unless user.save                       # false on failure — NOT an exception
+  next response.json({ error: user.get_error }, 422)   # e.g. "name cannot be null"
+end
+```
+
+* **Breaks:** `begin; user.save; rescue; ...` — the `rescue` never fires, so a failed write looks
+  like success. Testing `if user.save.nil?` is also wrong (it's `false`, not `nil`).
+  `orm.rb:697` (`save`), `orm.rb:362` (`create`).
+
+### No auto table-create — `save` into a missing table returns `false` (with a hint)
+
+Defining a model does **not** create its table. The first `save` into a table that doesn't exist
+hits `no such table` in the driver, which `save` catches → returns `false` with the cause on
+`last_error`. As of the parity pass the cause is augmented with an actionable hint
+(`… — table 'users' does not exist; call User.create_table or run a migration`), but nothing
+*aborts* — no row lands.
+
+```ruby
+# SAFE — create the table (dev) or run a migration (prod) before the first write
+User.create_table          # idempotent: CREATE TABLE IF NOT EXISTS from the declared fields
+User.new(name: "Alice").save
+```
+
+* **Breaks:** relying on `save` to bootstrap the schema — it returns `false` silently and no row
+  lands. `create_table` builds DDL from **declared fields only** (it injects nothing — see
+  soft-delete's `is_deleted`) and itself returns `false` (never raises) if the DDL fails.
+  `orm.rb:380`.
+
+### Ruby's constructor does NOT validate — build from `request.body` freely
+
+**This DIFFERS from Python.** The Python constructor validates on the read path and *raises* on a
+bad value, so `Model(request.body)` can 500. **Ruby's constructor does not validate at all** — the
+field setters are plain `attr_accessor` (`field_types.rb:191`) and `initialize` only assigns +
+applies defaults (`orm.rb:618`). So `User.new(request.body)` with a missing/bad field is **safe**;
+the failure surfaces later at `save` as `false`. The only things that raise out of `new` are a
+**non-Hash positional arg**: an **Array** (`ArgumentError` — a model is one record) and a
+**String that isn't valid JSON** (`JSON::ParserError`, because a String arg is parsed as a JSON
+object).
+
+```ruby
+# SAFE in Ruby — construct straight from the body, then check save()
+user = User.new(request.body)          # a Hash with String keys — never raises on bad field values
+next response.json({ error: user.get_error }, 422) unless user.save
+```
+
+* **Breaks:** `User.new(request.body["items"])` when `items` is an Array → `ArgumentError`; feeding
+  a non-JSON String to `.new`. (Do NOT copy Python's "build empty, assign, then save" defensive
+  dance — it's unnecessary in Ruby.)
+
+### No read-path validation — N/A in Ruby (unlike Python)
+
+**DROP this Python footgun.** In Python, `field.validate` runs when hydrating rows, so tightening a
+constraint can make *reads* of existing rows raise. **Ruby's `from_hash` only assigns via setters,
+with no validation** (`orm.rb:506`) — `validate` runs *only* inside `save` (`orm.rb:703`). Reading
+a row that violates a current constraint never raises in Ruby; validation is a save-time concern
+only.
+
+### `delete` / `restore` / `force_delete` DO raise — the asymmetry
+
+Unlike `save`, the delete family fails **loud**: `delete` and `force_delete` **raise** when there's
+no primary-key value (`"Cannot delete: no primary key value"`); `restore` raises
+`"Model does not support soft delete"` on a model without `soft_delete` (and on a nil PK). Same
+framework, opposite contract.
+
+```ruby
+# SAFE — guard the preconditions; wrap in begin/rescue if the row may be gone
+user = User.find_by_id(uid)
+user.delete if user            # raises if user's PK is nil or the DB write fails
+```
+
+* **Breaks:** `User.new(...).delete` on an unsaved instance (PK is `nil`) → raises, not `false`.
+  `orm.rb:791` (`delete`), `:811` (`force_delete`), `:823` (`restore`).
+
+### `db.execute` raises — it does not return `false`
+
+Raw writes via `db.execute` fail **loud**: a driver error **raises** (and sets `db.get_error`); it
+does **not** return `false`. A successful non-`SELECT`/`RETURNING` write returns `true`. (The ORM's
+`save` wraps this and converts the raise to `false` — but a *direct* `db.execute` propagates.)
+
+```ruby
+# SAFE — rescue writes you expect might fail; don't test the return value for falsiness
+begin
+  db.execute("INSERT INTO audit (msg) VALUES (?)", ["ok"])
+rescue => e
+  next response.json({ error: db.get_error || e.message }, 500)
+end
+```
+
+* **Breaks:** `if !db.execute(sql); ...` — a successful simple write returns `true`, and a *failed*
+  one raises rather than returning a falsy value, so the branch never runs. `database.rb:625`.
+
+### A database must be bound before any ORM / QueryBuilder call
+
+Every ORM query resolves a connection via `db` (`orm.rb:63`): a per-model `self.db =` →
+`Tina4.database` (set by `Tina4.bind_database`) → env auto-discovery (`TINA4_DATABASE_URL`). A
+**named** connection that was never registered (`self.db = :analytics`) raises a **clear** error
+(`"named database connection 'analytics' is not registered…"`). An entirely **unbound** model with
+no global and no `TINA4_DATABASE_URL` resolves `db` to `nil`, so the first query raises a
+**`NoMethodError` on `nil`** — a less obvious message, so bind up front.
+
+```ruby
+# SAFE — bind at boot (app.rb), or set TINA4_DATABASE_URL in .env for auto-discovery
+Tina4.bind_database(Tina4::Database.new(ENV["TINA4_DATABASE_URL"]))   # sqlite:data/app.db
+```
+
+* **Breaks:** an ORM query in a script/worker that never bound a DB or set the env var →
+  `NoMethodError` (nil has no `fetch`). `orm.rb:579` (`auto_discover_db`).
+
+### Auto-migrate is fail-soft and boot-time; the CLI is fail-fast
+
+`Tina4.initialize!` runs `auto_migrate_on_startup!` (`lib/tina4.rb:219`): when a `src/migrations/`
+(or `migrations/`) folder holds at least one `.sql` file, pending migrations are applied at boot so
+the schema is current. It is **fail-soft** — a bad migration is logged loud and **the service still
+starts** (`lib/tina4.rb:470`). The explicit **`tina4 migrate` CLI stays fail-fast** (non-zero exit
+for CI). Disable boot migration with `TINA4_AUTO_MIGRATE=false` (also `0`/`no`/`off`) —
+recommended for multi-instance prod where concurrent first-apply can race.
+
+* **Breaks:** assuming a green server boot means migrations applied — check the logs, or gate
+  deploys on `tina4 migrate` (which exits non-zero).
+
+### No default ordering — paginate with a unique tiebreaker
+
+`all` / `select` apply **no `ORDER BY` unless you pass one**; without it row order is engine-defined
+(SQLite rowid, unspecified on Postgres), and `limit`/`offset` pages can repeat or skip rows.
+Ordering by a non-unique column (e.g. `created_at`) has the same problem on ties.
+
+```ruby
+# SAFE — always order by a UNIQUE tiebreaker for stable pagination
+page = User.all(limit: 20, offset: 40, order_by: "created_at DESC, id DESC")
+# (remember `where` takes no order_by/limit/offset — use `select` with a full ORDER BY for a
+#  paged filtered query)
+```
+
+* **Breaks:** `User.all(limit: 20, offset: 20)` with no `order_by`, or `order_by: "created_at DESC"`
+  alone — two rows with the same timestamp can land on two different pages (or neither).
+  `orm.rb:318`.
+
+### Framework gotchas (auth, routing, templates, background work)
+
+These bite outside the ORM but hit the same build loop. Verified against source.
+
+* **Auth / unexpected 401 (security).** An unexpected 401 on a write means **the caller needs a
+  token**, not that the route should be opened. `.no_auth` / `auth: false` are a **last resort** for
+  genuinely public endpoints only. See **`auth-and-services.md` → "Auth footguns"** for the full
+  treatment (both write gates, and the `swagger_meta` docs-only trap).
+
+* **Routes are blocks, not decorators — there is no decorator stack.** Ruby registers routes with
+  `Tina4.get`/`Tina4.post` (`… do |request, response| … end`); public writes chain `.no_auth`
+  and/or pass `auth: false`. Python's "route decorator innermost, meta on top" ordering rule does
+  **not** apply here. (`router.rb:39`.)
+
+* **Postgres / manual transactions need a commit.** A **standalone** `db.execute` write
+  auto-commits when `TINA4_AUTOCOMMIT=true` (the default). But a write made **inside
+  `db.transaction`** is committed by the block, and a write with `TINA4_AUTOCOMMIT=false` — or
+  inside a manual `db.start_transaction` — needs an explicit `db.commit` or it rolls back and the
+  row never lands. (The ORM's `save` already wraps transaction + commit.) `database.rb:262`,
+  `:1205`.
+
+* **Frond templates (`src/templates/`, engine is Frond, not real Jinja2/Twig).** Unescape with
+  `{{ x|raw }}` **or** `{{ x|safe }}` (both work). Concatenate with `~`, **not `+`**:
+  `{{ "hi " ~ name }}` — `+` is arithmetic and coerces both sides to numbers, so `{{ "hi " + name }}`
+  renders **`0`**, not the string (`frond.rb:1186`, `:1423`). `{{ x|e }}` / `{{ x|escape }}`
+  HTML-escape and **ignore** any extra args (they do not raise), and Frond accepts **both**
+  `{% elif %}` and `{% elseif %}` — so pure-Jinja2 advice does not apply. Live regions raise at
+  render if malformed: `{% live "x" poll 5 %}` (poll needs seconds), `{% live "x" ws "/ws/x" %}`
+  (ws needs a path), an unknown transport raises, and a `src "…"` must be a **same-origin path** (an
+  absolute `http(s)://` or `//` URL raises). `frond.rb:1841`. (Full syntax in
+  `templates-and-frontend.md`.)
+
+* **`db.fetch` returns a `DatabaseResult`, not an Array.** Rows live on **`.records`**; `.first`
+  is a single row Hash accessed by key (`result.first["name"]`). It is `Enumerable`
+  (iterable/indexable/`size`), and carries `.to_array` / `.to_json` / `.to_csv`. But an ORM query
+  (`User.all` / `User.where` / `User.select`) returns a **plain Array of model instances** — an
+  Array has **no** `.to_array` / `.to_json` / `.to_csv`; serialise with `User.all.map(&:to_h)` (or
+  hand the Array to `response.json`, which converts each model). `database_result.rb`.
+
+* **Periodic work uses `Tina4::Background`, not a raw `Thread`.** Register recurring work with
+  `Tina4::Background.register(callback, interval: 60)` (or a block) — it owns the thread lifecycle,
+  clean shutdown (`stop_all`), and logs callback errors so one failure never kills the loop. Don't
+  hand-roll `Thread.new`. `background.rb:22`.
+
+  ```ruby
+  Tina4::Background.register(interval: 60) { sync_inbox }   # every 60s
+  ```
+
+* **Route param types are a fixed set.** A typed brace param (`/users/{id:int}`) must use a known
+  type, or route registration **raises `ArgumentError`** — it never silently falls through to a
+  match-anything matcher (a `{id:inetger}` typo would be a security footgun). Valid types:
+  **`string`, `int`, `integer`, `float`, `number`, `alpha`, `alnum`, `slug`, `uuid`, `path`**
+  (`int`/`integer` cast to Integer, `float`/`number` to Float; the rest stay String). Note the
+  syntax is `{id:int}` — **not** `:id`. `router.rb:160`.
+
+## When to reach for `tina4_context`
+
+`tina4_context(instruction, language: "ruby")` (server `tina4-coder`) retrieves the authoritative,
+version-current Tina4 API + real examples from the live corpus. It is a **grounding** tool, not a
+code generator — write the Ruby yourself from what it returns. Use it as a ladder, not a reflex:
+
+1. **Skill covers it → write from the skill.** These reference files are the source of truth for the
+   common surface (models, routes, CRUD, templates, auth, queues). Don't spend a call on something
+   documented here.
+2. **Uncovered / current-tree API / a surprise → then call `tina4_context`.** Reach for it when the
+   skill doesn't cover the case, you need an API the installed version added recently, or the
+   framework did something the doc didn't predict. Pass `language: "ruby"` explicitly —
+   auto-detection mis-fires on ambiguous text.
+3. **Write it yourself, then verify against the live API.** Confirm any method / field / route shape
+   against the running project's MCP index — `api_method("Tina4::ORM", "find_by_id")`,
+   `api_class("Tina4::ORM")`, `api_search("…")` (needs `tina4 serve` + `TINA4_DEBUG=true`). **The
+   framework code is the final authority.** Do **not** use `tina4_code` / `tina4_review` (the
+   self-hosted generator) — the value is the retrieval, not a small model.
+
+## Batteries included — near-zero dependencies
+
+Tina4 Ruby is **batteries-included**: 54 built-in features, and the handful of runtime gems it
+*does* pull are Rack-stack + deployment essentials, not framework bloat. Its `tina4ruby.gemspec`
+runtime dependencies are **`rack`, `rackup`, `puma`** (the HTTP server stack), **`jwt`** (auth),
+**`net-smtp` / `net-imap`** (the Messenger), **`json`, `rexml`, `webrick`**, and **`sqlite3`** (so
+`tina4 init && tina4 serve` runs with a working DB out of the box). Everything else — Postgres/MySQL/
+MSSQL drivers, Mongo, Redis/Valkey, Kafka, RabbitMQ — is **optional** and required lazily; the
+backend degrades gracefully when the gem is absent. This is a genuine difference from Python (which
+hand-rolls JWT and ships a truly empty `dependencies = []`) — state it honestly: *near-zero-dep,
+batteries-included*, not *zero-dependency*.
+
+Before you add a gem, check whether it's already in the box. **Need → Tina4 built-in (verified
+against `lib/tina4/`) — don't add the dep:**
+
+| Need | Tina4 built-in — don't add the gem |
+|------|------------------------------------|
+| Auth / JWT / password hashing | `Tina4::Auth` — `hash_password`/`check_password`/`get_token`/`valid_token`/`authenticate_request` *(`auth.rb`)* |
+| ORM / models | `Tina4::ORM` + the `*_field` declarations, `Tina4.bind_database` *(don't add ActiveRecord/Sequel — `orm.rb`)* |
+| Fluent queries / JOINs | `Tina4::QueryBuilder.from_table(t, db: db)` *(`query_builder.rb`)* |
+| DB drivers (multi-engine) | `Tina4::Database` — sqlite built in; postgres/mysql/mssql/firebird/mongo lazy-loaded *(`database.rb`, `drivers/`)* |
+| Migrations | `tina4 migrate` CLI / `Tina4::Migration` *(`migration.rb`)* |
+| Templating | `Tina4::Frond` + `response.render("page.twig", {...})`; templates in `src/templates/` *(`frond.rb`)* |
+| SCSS → CSS | drop `.scss` in `src/scss/` — compiled on `tina4 serve` *(`scss_compiler.rb`)* |
+| Input validation | `Tina4::Validator` *(`validator.rb`)* |
+| Response / JSON | return a Hash/Array → JSON; `response.json(model_or_array)` serialises ORM objects *(`response.rb`)* |
+| Background queue | `Tina4::Queue.new(topic:).push(...)` / `.consume` *(don't add Sidekiq/Resque — `queue.rb`)* |
+| Email | `Tina4::Messenger.new.send(to:, subject:, body:, html:)` *(`messenger.rb`)* |
+| Sessions | `request.session` (backends file/redis/valkey/mongodb/database via `TINA4_SESSION_BACKEND`) *(`session.rb`)* |
+| Caching | `Tina4::Cache` + `{% cache %}` blocks *(`cache.rb`, `cache_backends/`)* |
+| OpenAPI / Swagger | `Tina4::Swagger` — served at `/swagger` *(`swagger.rb`)* |
+| WebSockets | `Tina4.websocket "/ws/…"`; live regions via Frond `{% live %}` *(`websocket.rb`)* |
+| Real-time (WebRTC signalling, presence) | `Tina4::Realtime.mount` *(`realtime.rb`, `realtime/`)* |
+| GraphQL from models | `Tina4::GraphQL.new.auto_register(...)` → `/graphql` *(don't add graphql-ruby — `graphql.rb`)* |
+| SOAP / WSDL | `Tina4::WSDL` *(`wsdl.rb`)* |
+| i18n / localization | `Tina4.t(key, **kwargs)`; JSON in `src/locales/` *(`localization.rb`)* |
+| Document store (Mongo-style on SQLite) | `Tina4::DocStore` *(`docstore.rb`)* |
+| Dependency injection | `Tina4::Container` *(`container.rb`)* |
+| Fake data / seeding | `Tina4::FakeData`, `Tina4.seed_orm(Model, count:)` *(don't add faker — `seeder.rb`)* |
+| In-process HTTP test client | `Tina4::TestClient` — drives routes without a live server *(`test_client.rb`)* |
+| Events | `Tina4::Events.on/emit` *(`events.rb`)* |
+| **Outbound HTTP calls** | `Tina4::API.new(base_url).get/.post` *(don't add HTTParty/Faraday — `api.rb`)* |
+| Periodic background work | `Tina4::Background.register(cb, interval:)` *(don't hand-roll `Thread.new` — `background.rb`)* |

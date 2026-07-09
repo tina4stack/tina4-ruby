@@ -766,6 +766,29 @@ module Tina4
         # back to the exception text) on @last_error + @errors so it survives,
         # and log it with model/table context. ──
         cause = (self.class.db.get_error rescue nil) || e.message
+        # ── DX hint (parity with the Python master's save(), v3.13.60): turn a
+        # bare driver error into an actionable fix for the two commonest ORM
+        # write footguns. Match case-insensitively (SQLite: "no such table" /
+        # "no such column: is_deleted" / "has no column named is_deleted";
+        # Postgres/MySQL: "does not exist" / "doesn't exist" / "unknown
+        # column"). Any OTHER error keeps its raw cause untouched so an
+        # unrelated failure (NOT NULL, duplicate PK) is never masked. ──
+        low = cause.to_s.downcase
+        sd_field = self.class.soft_delete_field.to_s
+        if self.class.soft_delete && low.include?(sd_field) && (
+             low.include?("no such column") || low.include?("has no column") ||
+             low.include?("does not exist") || low.include?("doesn't exist") ||
+             low.include?("unknown column")
+           )
+          cause += " — soft_delete is on but the '#{sd_field}' column is missing; " \
+                   "declare it (integer_field :#{sd_field}, default: 0) or add a migration"
+        elsif low.include?("no such table") || (
+                (low.include?("does not exist") || low.include?("doesn't exist")) &&
+                !low.include?("column")
+              )
+          cause += " — table '#{self.class.table_name}' does not exist; " \
+                   "call #{self.class.name}.create_table or run a migration"
+        end
         @last_error = cause
         @errors = [cause]
         Tina4::Log.error(
