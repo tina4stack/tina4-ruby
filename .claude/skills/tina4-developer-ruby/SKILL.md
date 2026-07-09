@@ -168,7 +168,14 @@ running (`tina4 serve` with `TINA4_DEBUG=true`):
 - **`api_class("Tina4::ORM")`** — every method on a class, with signatures.
 - **`api_method("Tina4::ORM", "find_by_id")`** — exact signature, params, return type, file and line
   for one method.
+- **`code_search("where is the auth token issued?")`** — fuzzy/semantic full-text search over **THIS
+  project's own source + docs** (the native `Tina4::Context` FTS5 index — zero-dep, kept live on every
+  file save). Ranks the file that *defines* a symbol above specs that merely mention it; the in-repo,
+  semantic counterpart to `api_*` (`code_search("send an email")` → the routes/services in YOUR app).
 
+- **The grounding ladder — pick the tool by the question.** `api_*` = *exact structure* ("what's the
+  signature of X?"); `code_search` = *semantic, in your own repo* ("where/how is X done in THIS app?");
+  `docs_search` = the prose docs; `tina4_context` = the current framework API + idioms (external corpus).
 - **Unsure of a name or signature? Look it up — don't recall it.** A 5-second `api_method` call beats
   a hallucinated method that costs 20 minutes of debugging.
 - Ruby method names are **snake_case** (`find_by_id`, `get_token`, `check_password`, `from_table`).

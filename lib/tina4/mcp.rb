@@ -1339,6 +1339,28 @@ module Tina4
         Tina4::Docs.cached(project_root).method_spec(class_name.to_s, name.to_s)
       }, "Single method spec (signature, summary, file, line) from the live API index")
 
+      # ── Code/doc grounding (semantic FTS over this repo's source) ──
+      # code_search is the fuzzy DUAL of the structural api_* tools:
+      # api_* = exact signature lookup; code_search = "where/how is X done in
+      # THIS codebase?" over source + docs (zero-dep SQLite FTS5). Backed by a
+      # PROCESS-WIDE shared Context at .tina4/context.db so the dev-reload hook
+      # keeps the SAME index fresh on every save. First call (or rebuild:true)
+      # indexes src/ (falls back to the project root).
+      code_root = -> { File.directory?(File.join(project_root, "src")) ? File.join(project_root, "src") : project_root }
+      server.register_tool("code_search", lambda { |query:, k: 5, rebuild: false|
+        ctx = Tina4::Context.default_context(
+          root: code_root.call, db: File.join(project_root, ".tina4", "context.db")
+        )
+        unless ctx.available
+          next { "error" => "SQLite FTS5 is not available in this Ruby's sqlite3 build; code_search is disabled." }
+        end
+        if rebuild == true || rebuild.to_s == "true"
+          ctx.reset
+          ctx.index_root(code_root.call)
+        end
+        ctx.search(query.to_s, k: k.to_i)
+      }, "Fuzzy/semantic search over THIS project's source + docs (FTS5). Use for 'where/how is X done here?'; api_* for exact signatures.")
+
       # ── System Tools ──────────────────────────────────
       server.register_tool("system_info", lambda {
         {
