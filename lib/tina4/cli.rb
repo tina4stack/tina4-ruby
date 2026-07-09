@@ -83,10 +83,72 @@ module Tina4
       end.compact
     end
 
+    # Canonical AI-FILL placeholder block for a LOGIC-shaped stub.
+    #
+    # A tight, grounded *fill-spec* — not a vague ``# TODO`` — so a coding agent
+    # (or dev) completes it correctly and idiomatically. `raise
+    # NotImplementedError` makes an unfilled scaffold fail LOUD, and the
+    # greppable AI-FILL banner lets a human/agent jump to every gap in a file.
+    # <= 6 comment lines; `Use:` names only REAL tina4-ruby symbols (verified in
+    # the framework source, file:line).
+    #
+    #   <indent># ─── AI-FILL: <fn> ───────────────────────────
+    #   <indent># Intent:  <what this must do>
+    #   <indent># Given:   <inputs + shape>
+    #   <indent># Use:     <named REAL Tina4 API — the idiomatic path>
+    #   <indent># Return:  <exact return value + status>
+    #   <indent># Ground:  tina4_context("<intent>", "ruby") · skill tina4-developer-ruby
+    #   <indent>raise NotImplementedError, "<feature>: <what>"   # remove when done
+    #   <indent># ─────────────────────────────────────────────
+    def ai_fill(fn, intent, use, raise_msg, given: nil, ret: nil, ground: nil, indent: "  ")
+      bar = "─" * 60
+      head = "#{indent}# ─── AI-FILL: #{fn} "
+      head += "─" * [4, 66 - head.length].max
+      lines = [head, "#{indent}# Intent:  #{intent}"]
+      lines << "#{indent}# Given:   #{given}" if given
+      lines << "#{indent}# Use:     #{use}"
+      lines << "#{indent}# Return:  #{ret}" if ret
+      lines << "#{indent}# Ground:  #{ground}" if ground
+      lines << "#{indent}raise NotImplementedError, #{raise_msg.inspect}   # remove when done"
+      lines << "#{indent}# #{bar}"
+      lines.join("\n") + "\n"
+    end
+
+    # Lighter EXTEND marker for CRUD-shaped WORKING code. Marks the natural
+    # extension point in generated code that already runs — NO
+    # NotImplementedError (the boilerplate IS the feature); just a greppable hint
+    # at where custom validation / business rules go.
+    def extend_marker(note, hint = "", indent: "  ")
+      head = "#{indent}# ─── EXTEND: #{note} "
+      head += "─" * [4, 66 - head.length].max
+      out = head + "\n"
+      out += "#{indent}# #{hint}\n" unless hint.to_s.empty?
+      out
+    end
+
+    # Parse a --every duration ('5m', '30s', '2h', '1d', or bare seconds) ->
+    # seconds. Falls back to 60s on an empty/unparseable value so a scaffold
+    # always has a valid interval for Tina4.service(interval: ...).
+    def parse_every(every)
+      return 60 if every.nil? || every == true
+      every = every.to_s.strip.downcase
+      return 60 if every.empty?
+      units = { "s" => 1, "m" => 60, "h" => 3600, "d" => 86400 }
+      unit = every[-1]
+      if units.key?(unit)
+        [1, (every[0..-2].to_f * units[unit]).to_i].max
+      else
+        n = every.to_f
+        n.positive? ? [1, n.to_i].max : 60
+      end
+    rescue StandardError
+      60
+    end
+
     # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
     def parse_flags(args)
       # Boolean-only flags that never take a value argument
-      boolean_flags = %w[no-browser no-reload production managed all clear dev json]
+      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration]
 
       flags = {}
       positional = []
@@ -593,13 +655,18 @@ module Tina4
 
     # ── generate ────────────────────────────────────────────────────────
 
+    ALL_GENERATORS = "model, route, crud, migration, middleware, test, form, view, auth, " \
+                     "service, queue, validator, seeder, websocket, listener"
+
     def cmd_generate(argv)
       what = argv.shift
 
       unless what
         puts "Usage: tina4ruby generate <what> <name> [options]"
-        puts "  Generators: model, route, crud, migration, middleware, test, form, view, auth"
+        puts "  Generators: #{ALL_GENERATORS}"
         puts '  Options:    --fields "name:string,price:float"  --model ModelName'
+        puts '              --public                  open a route'"'"'s writes (default: secure)'
+        puts '              --every 5m | --cron "..."  service schedule'
         exit 1
       end
 
@@ -625,9 +692,15 @@ module Tina4
       when "form"       then generate_form(name, flags)
       when "view"       then generate_view(name, flags)
       when "auth"       then generate_auth(name, flags)
+      when "service"    then generate_service(name, flags)
+      when "queue"      then generate_queue(name, flags)
+      when "validator"  then generate_validator(name, flags)
+      when "seeder"     then generate_seeder(name, flags)
+      when "websocket"  then generate_websocket(name, flags)
+      when "listener"   then generate_listener(name, flags)
       else
         puts "Unknown generator: #{what}"
-        puts "  Available: model, route, crud, migration, middleware, test, form, view, auth"
+        puts "  Available: #{ALL_GENERATORS}"
         exit 1
       end
     end
@@ -679,10 +752,27 @@ module Tina4
 
     # ── Generator: route ─────────────────────────────────────────────────
 
+    # Generate a CRUD route file — SECURE BY DEFAULT.
+    #
+    #   tina4ruby generate route products
+    #   tina4ruby generate route products --model Product
+    #   tina4ruby generate route products --model Product --public   # open writes
+    #
+    # Writes (POST/PUT/DELETE) are Bearer-token-gated by default: the router sets
+    # auth_required on POST/PUT/PATCH/DELETE (lib/tina4/router.rb:24) and
+    # enforce_route_auth 401s a tokenless write (lib/tina4/rack_app.rb:1129).
+    # Reads (GET) are public by default, so no opt-out is emitted for them.
+    # `--public` chains `.no_auth` on the write handlers as the explicit opt-out
+    # — mirroring AutoCrud's `post_route.no_auth if is_public`
+    # (lib/tina4/auto_crud.rb:169). The generated routes register through
+    # `Tina4::Router.get/post/...` (no bearer auth_handler attached), so `.no_auth`
+    # genuinely opens the write on BOTH the live server and the TestClient — the
+    # same registration path AutoCrud uses.
     def generate_route(name, flags)
       route_path = name.sub(%r{^/}, "")
       singular = route_path.end_with?("s") ? route_path[0..-2] : route_path
       model = flags["model"]
+      public_writes = flags["public"] ? true : false
 
       dir = "src/routes"
       FileUtils.mkdir_p(dir)
@@ -692,89 +782,148 @@ module Tina4
         return
       end
 
+      # `.no_auth` is chained on the WRITE handlers only when writes go public.
+      no_auth = public_writes ? ".no_auth" : ""
+      write_doc =
+        if public_writes
+          "Public (--public): no token required."
+        else
+          "Secure by default: requires a Bearer token (use --public to open)."
+        end
+
       if model
         model_snake = to_snake_case(model)
+        # WORKING code (the boilerplate IS the feature) + EXTEND markers at the
+        # natural extension points (no NotImplementedError).
+        ext_create = extend_marker(
+          "validate / business rules before persist",
+          'e.g. reject invalid input; ground: tina4_context("validate before create", "ruby")'
+        )
+        ext_update = extend_marker(
+          "guard which fields / who may update",
+          'e.g. enforce ownership; ground: tina4_context("authorize update", "ruby")'
+        )
         content = <<~RUBY
           require_relative "../orm/#{model_snake}"
 
-          Tina4.get "/api/#{route_path}" do |request, response|
-            # List all #{route_path} with pagination
+          # List all #{route_path} with pagination — public read (GET is ungated).
+          Tina4::Router.get "/api/#{route_path}" do |request, response|
             page = (request.params["page"] || 1).to_i
             per_page = (request.params["per_page"] || 20).to_i
             offset = (page - 1) * per_page
-            results = #{model}.all(limit: per_page, offset: offset)
-            response.json({ data: results.map(&:to_h), page: page, per_page: per_page })
+            records = #{model}.all(limit: per_page, offset: offset)
+            response.json({ data: records.map(&:to_h), count: #{model}.count, page: page, per_page: per_page })
           end
 
-          Tina4.get "/api/#{route_path}/{id:int}" do |request, response|
-            # Get a single #{singular} by ID
+          # Get a single #{singular} by ID — public read.
+          Tina4::Router.get "/api/#{route_path}/{id:int}" do |request, response|
             item = #{model}.find(request.params["id"])
-            if item.nil?
-              response.json({ error: "Not found" }, 404)
-            else
-              response.json(item.to_h)
-            end
+            next response.json({ error: "Not found" }, 404) if item.nil?
+            response.json(item.to_h)
           end
 
-          Tina4.post "/api/#{route_path}" do |request, response|
-            # Create a new #{singular}
+          # Create a new #{singular}. #{write_doc}
+          Tina4::Router.post "/api/#{route_path}" do |request, response|
+          #{ext_create.chomp}
             item = #{model}.create(request.body)
             response.json(item.to_h, 201)
-          end
+          end#{no_auth}
 
-          Tina4.put "/api/#{route_path}/{id:int}" do |request, response|
-            # Update a #{singular} by ID
+          # Update a #{singular} by ID. #{write_doc}
+          Tina4::Router.put "/api/#{route_path}/{id:int}" do |request, response|
             item = #{model}.find(request.params["id"])
-            if item.nil?
-              response.json({ error: "Not found" }, 404)
-            else
-              request.body.each do |key, value|
-                next if key.to_s == "id"
-                setter = "#{'#'}{key}="
-                item.send(setter, value) if item.respond_to?(setter)
-              end
-              item.save
-              response.json(item.to_h)
+            next response.json({ error: "Not found" }, 404) if item.nil?
+          #{ext_update.chomp}
+            request.body.each do |key, value|
+              next if key.to_s == "id"
+              setter = "#{'#'}{key}="
+              item.send(setter, value) if item.respond_to?(setter)
             end
-          end
+            item.save
+            response.json(item.to_h)
+          end#{no_auth}
 
-          Tina4.delete "/api/#{route_path}/{id:int}" do |request, response|
-            # Delete a #{singular} by ID
+          # Delete a #{singular} by ID. #{write_doc}
+          Tina4::Router.delete "/api/#{route_path}/{id:int}" do |request, response|
             item = #{model}.find(request.params["id"])
-            if item.nil?
-              response.json({ error: "Not found" }, 404)
-            else
-              item.delete
-              response.json(nil, 204)
-            end
-          end
+            next response.json({ error: "Not found" }, 404) if item.nil?
+            item.delete
+            response.json(nil, 204)
+          end#{no_auth}
         RUBY
       else
+        # CUSTOM route — no model. Every handler body is a LOGIC-shaped stub:
+        # AI-FILL fill-spec + raise NotImplementedError (fails loud until filled).
+        m = singular.split("_").map(&:capitalize).join  # PascalCase hint
+        b_list = ai_fill(
+          "list_#{route_path}",
+          "return the #{route_path} collection (add pagination if it grows)",
+          "#{m}.all(limit:, offset:)  or  #{m}.where(sql, params)  (require_relative \"../orm/#{to_snake_case(m)}\")",
+          "list_#{route_path}: query and return the records",
+          ret: 'response.json({ data: rows.map(&:to_h) })',
+          ground: 'tina4_context("list ORM records with pagination", "ruby")'
+        )
+        b_get = ai_fill(
+          "get_#{singular}",
+          "fetch one #{singular} by id",
+          "#{m}.find(request.params[\"id\"])  (require_relative \"../orm/#{to_snake_case(m)}\")",
+          "get_#{singular}: fetch by id or 404",
+          given: 'request.params["id"] -> Integer',
+          ret: 'response.json(item.to_h)  or  response.json({ error: "Not found" }, 404)',
+          ground: 'tina4_context("find ORM record by id", "ruby")'
+        )
+        b_create = ai_fill(
+          "create_#{singular}",
+          "validate the body and persist a new #{singular}",
+          "#{m}.create(request.body)  (require_relative \"../orm/#{to_snake_case(m)}\")",
+          "create_#{singular}: persist and return the new record",
+          given: "request.body -> Hash of fields",
+          ret: "response.json(item.to_h, 201)",
+          ground: 'tina4_context("create ORM record and return 201", "ruby")'
+        )
+        b_update = ai_fill(
+          "update_#{singular}",
+          "load, mutate and save an existing #{singular}",
+          "#{m}.find(request.params[\"id\"])  then set fields and item.save",
+          "update_#{singular}: apply changes and return the record",
+          given: 'request.params["id"] -> Integer; request.body -> changed fields',
+          ret: "response.json(item.to_h)  or  404",
+          ground: 'tina4_context("update ORM record", "ruby")'
+        )
+        b_delete = ai_fill(
+          "delete_#{singular}",
+          "delete a #{singular} by id",
+          "#{m}.find(request.params[\"id\"])  then item.delete",
+          "delete_#{singular}: delete and return 204",
+          given: 'request.params["id"] -> Integer',
+          ret: "response.json(nil, 204)  or  404",
+          ground: 'tina4_context("delete ORM record", "ruby")'
+        )
         content = <<~RUBY
-          Tina4.get "/api/#{route_path}" do |request, response|
-            # List all #{route_path}
-            response.json({ data: [] })
+          # List all #{route_path} — public read (GET is ungated).
+          Tina4::Router.get "/api/#{route_path}" do |request, response|
+          #{b_list.chomp}
           end
 
-          Tina4.get "/api/#{route_path}/{id:int}" do |request, response|
-            # Get a single #{singular}
-            response.json({ data: {} })
+          # Get a single #{singular} — public read.
+          Tina4::Router.get "/api/#{route_path}/{id:int}" do |request, response|
+          #{b_get.chomp}
           end
 
-          Tina4.post "/api/#{route_path}" do |request, response|
-            # Create a new #{singular}
-            response.json({ data: request.body }, 201)
-          end
+          # Create a new #{singular}. #{write_doc}
+          Tina4::Router.post "/api/#{route_path}" do |request, response|
+          #{b_create.chomp}
+          end#{no_auth}
 
-          Tina4.put "/api/#{route_path}/{id:int}" do |request, response|
-            # Update a #{singular}
-            response.json({ data: request.body })
-          end
+          # Update a #{singular}. #{write_doc}
+          Tina4::Router.put "/api/#{route_path}/{id:int}" do |request, response|
+          #{b_update.chomp}
+          end#{no_auth}
 
-          Tina4.delete "/api/#{route_path}/{id:int}" do |request, response|
-            # Delete a #{singular}
-            response.json(nil, 204)
-          end
+          # Delete a #{singular}. #{write_doc}
+          Tina4::Router.delete "/api/#{route_path}/{id:int}" do |request, response|
+          #{b_delete.chomp}
+          end#{no_auth}
         RUBY
       end
 
@@ -787,14 +936,16 @@ module Tina4
     def generate_crud(name, flags)
       table = to_table_name(name)
       route_name = "#{table}s"
+      is_public = flags["public"] ? true : false
 
       puts "\n  Generating CRUD for #{name}...\n"
 
       # 1. Model + migration
       generate_model(name, flags)
 
-      # 2. Routes with model
-      generate_route(route_name, { "model" => name })
+      # 2. Routes with model — secure-by-default; thread --public through so
+      #    `generate crud X --public` opens the writes (mirrors AutoCrud public:).
+      generate_route(route_name, { "model" => name, "public" => is_public })
 
       # 3. Form
       generate_form(name, flags)
@@ -802,8 +953,8 @@ module Tina4
       # 4. View (list + detail)
       generate_view(name, flags)
 
-      # 5. Test
-      generate_test(route_name, { "model" => name })
+      # 5. Test — secure-by-default gate test (behavioural, real TestClient).
+      generate_test(route_name, { "model" => name, "secure_writes" => true, "public" => is_public })
 
       puts "\n  CRUD generation complete for #{name}."
       puts "  Run: tina4ruby migrate"
@@ -929,6 +1080,85 @@ module Tina4
       path = File.join(dir, "#{snake}_spec.rb")
       if File.exist?(path)
         puts "  File already exists: #{path}"
+        return
+      end
+
+      # Secure-by-default CRUD spec (emitted by `generate crud`): proves the gate
+      # by BEHAVIOR through the real Tina4::TestClient — reads public, writes
+      # gated — instead of assuming an anonymous create returns 201. Grounded on
+      # spec/test_client_auth_spec.rb (real Router, real enforce_route_auth, real
+      # JWT via Tina4::Auth.get_token / valid_token signed with real RSA keys).
+      if model && flags["secure_writes"]
+        model_snake = to_snake_case(model)
+        posture = flags["public"] ? "open (--public)" : "gated"
+        write_examples =
+          if flags["public"]
+            <<~RUBY.chomp
+              it "allows an anonymous POST (201) — --public opened the write" do
+                  res = client.post("/api/#{snake}", json: { name: "test" })
+                  expect(res.status).to eq(201)
+                end
+            RUBY
+          else
+            <<~RUBY.chomp
+              it "rejects a tokenless POST with 401 (secure by default)" do
+                  expect(client.post("/api/#{snake}", json: { name: "test" }).status).to eq(401)
+                end
+
+                it "creates with a valid Bearer token (201)" do
+                  token = Tina4::Auth.get_token({ "user_id" => 1 })
+                  res = client.post("/api/#{snake}", json: { name: "test" },
+                                    headers: { "Authorization" => "Bearer #{'#'}{token}" })
+                  expect(res.status).to eq(201)
+                end
+            RUBY
+          end
+
+        content = <<~RUBY
+          # frozen_string_literal: true
+          #
+          # #{model} CRUD gate — reads public, writes #{posture} (secure by default).
+          #
+          # Real end-to-end via Tina4::TestClient: NO mocks — real Router, real auth
+          # gate (Tina4::RackApp.enforce_route_auth), real JWT. A real SQLite DB +
+          # table is bound in before(:each), so the create path is exercised for real.
+          require "spec_helper"
+          require "tmpdir"
+          require_relative "../src/orm/#{model_snake}"
+
+          RSpec.describe "#{model} CRUD (reads public, writes #{posture})" do
+            let(:client) { Tina4::TestClient.new }
+
+            before(:each) do
+              @dir = Dir.mktmpdir("#{snake}_crud")
+              # Fresh RSA key material so get_token / valid_token agree.
+              Tina4::Auth.instance_variable_set(:@private_key, nil)
+              Tina4::Auth.instance_variable_set(:@public_key, nil)
+              Tina4::Auth.instance_variable_set(:@keys_dir, nil)
+              Tina4::Auth.setup(@dir)
+              # A stray API key would authorise every write regardless of the JWT.
+              @prior_api_key = ENV.delete("TINA4_API_KEY")
+              Tina4.bind_database(Tina4::Database.new("sqlite:///" + File.join(@dir, "test.db")))
+              #{model}.create_table
+              # `load` (not require) re-registers the routes after spec_helper's
+              # after(:each) Router.clear! wipes them between examples.
+              load File.expand_path("../src/routes/#{snake}.rb", __dir__)
+            end
+
+            after(:each) do
+              ENV["TINA4_API_KEY"] = @prior_api_key if @prior_api_key
+              FileUtils.rm_rf(@dir)
+            end
+
+            it "serves GET (read) publicly" do
+              expect(client.get("/api/#{snake}").status).to eq(200)
+            end
+
+            #{write_examples}
+          end
+        RUBY
+        File.write(path, content)
+        puts "  Created #{path}"
         return
       end
 
@@ -1175,7 +1405,10 @@ module Tina4
         content = <<~'RUBY'
           require_relative "../orm/user"
 
-          Tina4.post "/api/auth/register" do |request, response|
+          # PUBLIC: register mints accounts before any token exists — clear BOTH
+          # write gates (auth: false drops the bearer auth_handler; .no_auth
+          # clears the router's auth_required).
+          Tina4.post "/api/auth/register", auth: false do |request, response|
             # Register a new user
             email = request.body["email"].to_s
             password = request.body["password"].to_s
@@ -1197,9 +1430,10 @@ module Tina4
               role: "user",
             })
             response.json({ message: "Registered", id: user.id }, 201)
-          end
+          end.no_auth
 
-          Tina4.post "/api/auth/login" do |request, response|
+          # PUBLIC: login mints the token — clear BOTH write gates (see register).
+          Tina4.post "/api/auth/login", auth: false do |request, response|
             # Login with email and password
             email = request.body["email"].to_s
             password = request.body["password"].to_s
@@ -1216,7 +1450,7 @@ module Tina4
 
             token = Tina4::Auth.get_token({ user_id: user.id, email: user.email, role: user.role })
             response.json({ token: token })
-          end
+          end.no_auth
 
           Tina4.get "/api/auth/me" do |request, response|
             # Get current authenticated user
@@ -1306,6 +1540,333 @@ module Tina4
       puts "  GET  /api/auth/me        - get profile (requires token)"
     end
 
+    # ── Scaffolding-first logic generators (wiring + AI-FILL placeholder) ─────
+    #
+    # Each grounds on the REAL current tina4-ruby API (verified against the
+    # source, file:line) and drops the ai_fill() AI-FILL placeholder (raise
+    # NotImplementedError) where the custom logic goes:
+    #   service   -> lib/tina4/service_runner.rb  Tina4::ServiceRunner.register/.discover/.list
+    #                (via the Tina4.service DSL, lib/tina4.rb:431)
+    #   queue     -> lib/tina4/queue.rb           Tina4::Queue#push / #consume
+    #                lib/tina4/job.rb              Job#payload / #complete / #fail
+    #   validator -> lib/tina4/validator.rb        Tina4::Validator (#required/#email/#is_valid?)
+    #   seeder    -> lib/tina4/seeder.rb           Tina4::FakeData / Tina4.seed_orm
+    #   websocket -> lib/tina4/router.rb           Tina4.websocket (connection, event, data)
+    #   listener  -> lib/tina4/events.rb           Tina4::Events.on / .emit
+
+    # ── Generator: service ────────────────────────────────────────────────
+    #
+    #   tina4ruby generate service Cleanup --every 5m
+    #   tina4ruby generate service Report --cron "0 3 * * *"
+    def generate_service(name, flags = {})
+      snake = to_snake_case(name)
+      cron = flags["cron"]
+      if cron && cron != true
+        options_kw = "timing: #{cron.inspect}"   # ServiceRunner cron key is :timing
+        note = "cron '#{cron}'"
+      else
+        seconds = parse_every(flags["every"])
+        options_kw = "interval: #{seconds}"
+        note = "every #{seconds}s"
+      end
+
+      dir = "src/services"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{snake}.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      body = ai_fill(
+        "#{snake}_task",
+        "do the scheduled work for this service",
+        "context.name / context.running (Tina4::ServiceContext); call your ORM / app code",
+        "service:#{snake}: implement the scheduled task",
+        given: "context -> Tina4::ServiceContext (.name, .running, .last_run, .error_count)",
+        ground: 'tina4_context("background service scheduled task", "ruby")'
+      )
+      content = <<~RUBY
+        # #{name} background service — runs #{note} via Tina4::ServiceRunner.
+        #
+        # Registered on load by Tina4.service(...). `tina4ruby start` does NOT
+        # auto-start services (src/services is not on the boot auto-discover path,
+        # lib/tina4.rb:566). Wire a runner explicitly to run it:
+        #
+        #     Tina4::ServiceRunner.discover("src/services")  # loads this file
+        #     Tina4::ServiceRunner.start
+        #
+        # The block receives a Tina4::ServiceContext; a daemon-style task would
+        # loop while context.running.
+
+        def #{snake}_task(context)
+        #{body.chomp}
+        end
+
+        # Wiring: registers "#{snake}" on the class-level ServiceRunner registry;
+        # appears in Tina4::ServiceRunner.list.
+        Tina4.service("#{snake}", #{options_kw}) { |context| #{snake}_task(context) }
+      RUBY
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: queue ──────────────────────────────────────────────────
+    #
+    #   tina4ruby generate queue order-emails
+    def generate_queue(name, flags = {})
+      topic = name.sub(%r{^/}, "")
+      slug = to_snake_case(topic.gsub(/[^0-9a-zA-Z]+/, "_")).gsub(/\A_+|_+\z/, "")
+      slug = "topic" if slug.empty?
+
+      dir = "src/services"  # consumer runs as a daemon service (see below)
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{slug}_consumer.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      body = ai_fill(
+        "handle_#{slug}",
+        "process ONE #{topic} job payload",
+        "your ORM / Tina4::Messenger code; return to ack (job.complete), raise to nack (job.fail)",
+        "queue:#{topic}: process the job payload",
+        given: "payload -> the pushed Hash (job.payload)",
+        ground: 'tina4_context("process a queue job", "ruby")'
+      )
+      content = <<~RUBY
+        # #{topic} queue — producer + consumer worker.
+        #
+        # Produce from anywhere:   publish_#{slug}({ ... })
+        # The consumer is a long-running worker wired as a daemon service so
+        #     Tina4::ServiceRunner.discover("src/services"); Tina4::ServiceRunner.start
+        # runs it without blocking boot (consume polls forever).
+
+        # Enqueue a #{topic} job for the worker below to process. Returns the Tina4::Job.
+        def publish_#{slug}(payload)
+          Tina4::Queue.new(topic: "#{topic}").push(payload)
+        end
+
+        # Process ONE #{topic} job payload (`payload` is job.payload — the pushed data).
+        def handle_#{slug}(payload)
+        #{body.chomp}
+        end
+
+        # Long-running #{topic} worker. consume yields Jobs; ack with job.complete,
+        # nack with job.fail. `context` is the Tina4::ServiceContext under ServiceRunner.
+        def consume_#{slug}(context = nil)
+          Tina4::Queue.new(topic: "#{topic}").consume do |job|
+            handle_#{slug}(job.payload)
+            job.complete             # ack — job done, removed from the queue
+          rescue StandardError => e
+            job.fail(e.message)      # nack — retry / dead-letter
+          end
+        end
+
+        # Wiring: consumer runs as a daemon service (manages its own poll loop).
+        # Discovered by Tina4::ServiceRunner.discover("src/services").
+        Tina4.service("#{topic}-consumer", daemon: true) { |context| consume_#{slug}(context) }
+      RUBY
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: validator ──────────────────────────────────────────────
+    #
+    #   tina4ruby generate validator CreateUser
+    def generate_validator(name, flags = {})
+      snake = to_snake_case(name)
+      dir = "src/validators"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{snake}.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      body = ai_fill(
+        "validate_#{snake}",
+        "declare the validation rules for a #{name} payload",
+        'validator.required("name").email("email").min_length("name", 2).integer("age")',
+        "validator:#{snake}: add the rule set",
+        given: "validator -> Tina4::Validator.new(data) (chainable)",
+        ret: "the same validator (caller checks .is_valid? / .errors)",
+        ground: 'tina4_context("validate request body with Validator", "ruby")'
+      )
+      content = <<~RUBY
+        # #{name} request validator.
+        #
+        # Tina4::Validator is NOT part of the default `require "tina4"` surface
+        # (unlike Queue / Events / ServiceRunner), so require it explicitly here.
+        # NOT auto-loaded — require this file from the route that validates:
+        #     require_relative "../validators/#{snake}"
+        #     v = validate_#{snake}(request.body)
+        #     next response.json({ error: v.errors.first[:message] }, 400) unless v.is_valid?
+        require "tina4/validator"
+
+        def validate_#{snake}(data)
+          validator = Tina4::Validator.new(data)
+        #{body.chomp}
+          validator
+        end
+      RUBY
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: seeder ─────────────────────────────────────────────────
+    #
+    #   tina4ruby generate seeder Product
+    def generate_seeder(name, flags = {})
+      table = to_table_name(name)
+      model_snake = to_snake_case(name)
+      dir = "seeds"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{table}_seeder.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      body = ai_fill(
+        "#{table}_field_overrides",
+        "map #{name} fields to fake-data generators (only those needing a specific shape)",
+        "fake.name / fake.email / fake.integer(min: 1, max: 99) / fake.company  (Tina4::FakeData)",
+        "seeder:#{name}: return the field->value overrides Hash",
+        given: "fake -> Tina4::FakeData instance",
+        ret: '{ "email" => ->(f) { f.email }, "status" => "active" }  (Hash)',
+        ground: 'tina4_context("seed ORM model with FakeData", "ruby")'
+      )
+      content = <<~RUBY
+        # Seeder for #{name} — run with: tina4ruby seed
+        #
+        # Executed top-to-bottom by `tina4ruby seed` (Tina4.seed_dir loads each
+        # file in seeds/, lib/tina4/seeder.rb:890). Tina4.seed_orm auto-fills every
+        # field by type/name; override the ones that need a specific shape via
+        # #{table}_field_overrides.
+        require_relative "../src/orm/#{model_snake}"
+
+        # Map #{name} fields -> Tina4::FakeData generators (or static values).
+        # Each callable receives a FakeData instance:
+        #     { "email" => ->(fake) { fake.email }, "status" => "active" }
+        def #{table}_field_overrides(fake)
+        #{body.chomp}
+        end
+
+        # Wiring: seed rows via Tina4.seed_orm. Guarded on a bound database so
+        # merely LOADING this file (e.g. in a spec) does not run the unfilled
+        # placeholder — `tina4ruby seed` binds the DB first, at which point the
+        # override raises LOUD until filled.
+        if Tina4.database
+          fake = Tina4::FakeData.new
+          summary = Tina4.seed_orm(#{name}, count: 20, overrides: #{table}_field_overrides(fake))
+          puts "Seeded #{'#'}{summary.seeded} #{name} row(s), #{'#'}{summary.failed} failed"
+        end
+      RUBY
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: websocket ──────────────────────────────────────────────
+    #
+    #   tina4ruby generate websocket chat
+    #   tina4ruby generate websocket /ws/rooms/{id}
+    def generate_websocket(name, flags = {})
+      raw = name.strip
+      ws_path = raw.start_with?("/") ? raw : "/ws/#{raw.sub(%r{^/}, '')}"
+      slug = to_snake_case(raw.gsub(%r{\A/+|/+\z}, "").gsub(/[^0-9a-zA-Z]+/, "_")).gsub(/\A_+|_+\z/, "")
+      slug = "ws" if slug.empty?
+      base = slug.start_with?("ws_") ? slug[3..] : slug
+      base = "ws" if base.nil? || base.empty?
+      handler = "#{base}_ws"
+
+      dir = "src/routes"  # Tina4.websocket auto-registers on load (src/routes is discovered)
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "ws_#{base}.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      body = ai_fill(
+        handler,
+        %(handle an inbound "message" frame on #{ws_path}),
+        "connection.broadcast(data)  or  connection.send(payload)  (Tina4 WebSocketConnection)",
+        "websocket:#{ws_path}: handle the inbound message",
+        given: "connection -> WebSocketConnection; event -> :open/:message/:close; data -> String on :message",
+        ground: 'tina4_context("websocket broadcast message", "ruby")',
+        indent: "    "
+      )
+      content = <<~RUBY
+        # #{ws_path} WebSocket route.
+        #
+        # Registered on load by Tina4.websocket (src/routes is auto-discovered at
+        # boot, lib/tina4.rb:566). The server invokes the block as
+        # (connection, event, data) for each event: :open (connect), :message
+        # (inbound frame), :close (disconnect). Use Tina4.secure_websocket instead
+        # to require a JWT on the upgrade; connection.broadcast / connection.send
+        # reach the other clients.
+        Tina4.websocket "#{ws_path}" do |connection, event, data|
+          case event
+          when :open
+            connection.send('{"type":"welcome"}')
+          when :close
+            # client disconnected — nothing to clean up yet
+          else # :message
+        #{body.chomp}
+          end
+        end
+      RUBY
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # ── Generator: listener ───────────────────────────────────────────────
+    #
+    #   tina4ruby generate listener user.created
+    def generate_listener(name, flags = {})
+      event = name.strip
+      slug = to_snake_case(event.gsub(/[^0-9a-zA-Z]+/, "_")).gsub(/\A_+|_+\z/, "")
+      slug = "event" if slug.empty?
+
+      dir = "src/listeners"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{slug}.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      body = ai_fill(
+        "on_#{slug}",
+        "react to the '#{event}' event",
+        "your app code — Tina4::Messenger, an ORM write, or Tina4::Events.emit(...) a follow-up",
+        "listener:#{event}: react to the event payload",
+        given: %(data -> whatever Tina4::Events.emit("#{event}", data) passed),
+        ground: 'tina4_context("event listener reaction", "ruby")'
+      )
+      content = <<~RUBY
+        # Listener for the '#{event}' event.
+        #
+        # NOT auto-loaded at boot — src/listeners is not on the auto-discover path
+        # (lib/tina4.rb:566 scans routes/api/orm only). Require this file from
+        # app.rb (or an initializer) so Tina4::Events.on binds it:
+        #     require_relative "src/listeners/#{slug}"
+        # Fires when something calls Tina4::Events.emit("#{event}", data). Listeners
+        # are isolated — a raise is logged and the other listeners still run (pass
+        # strict: true to emit to re-raise instead).
+        def on_#{slug}(data = nil)
+        #{body.chomp}
+        end
+
+        # Wiring: bind the reaction on the real event bus.
+        Tina4::Events.on("#{event}") { |data| on_#{slug}(data) }
+      RUBY
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
     # ── help ──────────────────────────────────────────────────────────────
 
     def cmd_help
@@ -1333,14 +1894,26 @@ module Tina4
 
         Generators:
           generate model <Name> [--fields "name:string,price:float"]
-          generate route <name> [--model Name]
-          generate crud <Name> [--fields "..."]   Model + migration + routes + form + view + test
+          generate route <name> [--model Name] [--public]   Writes secure by default; --public opens them
+          generate crud <Name> [--fields "..."] [--public]  Model + migration + routes + form + view + test
           generate migration <description>
           generate middleware <Name>
           generate test <name>
           generate form <Name> [--fields "..."]   Form template with inputs matching model fields
           generate view <Name> [--fields "..."]   List + detail templates for viewing records
           generate auth                           Login/register/logout routes + User model + templates
+          generate service <Name> [--every 5m | --cron "..."]   Scheduled ServiceRunner task (src/services/)
+          generate queue <topic>                  Producer + consumer worker (src/services/)
+          generate validator <Name>               Request-body Validator (src/validators/)
+          generate seeder <Model>                 FakeData + seed_orm seeder (seeds/)
+          generate websocket <path>               Tina4.websocket handler (src/routes/)
+          generate listener <event>               Tina4::Events.on listener (src/listeners/)
+
+        Scaffolding-first: logic-shaped generators (route without --model, service,
+        queue, validator, seeder, websocket, listener) emit wiring + an AI-FILL
+        placeholder (raise NotImplementedError) where the custom logic goes; CRUD-
+        shaped ones emit working code. Writes are secure by default — use --public
+        to open them.
 
         Metrics:
           metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]
