@@ -78,6 +78,59 @@ matches = Tina4::Auth.check_password("mypassword", hashed)    # => true / false
 
 `check_password(password, hash)` — plaintext first, stored hash second — timing-safe.
 
+## Auth footguns
+
+Tina4 Ruby is **secure by default**: `GET`/`HEAD`/`OPTIONS` are public, and
+`POST`/`PUT`/`PATCH`/`DELETE` already require a `Bearer` token — the framework returns **401
+automatically** when it's missing. Verified against `lib/tina4/router.rb` and `lib/tina4/auth.rb`.
+Get these wrong and you either ship an unauthenticated write or fight phantom 401s.
+
+### An unexpected 401 means "authenticate the request", not "open the route"
+
+**`.no_auth` / `auth: false` are a LAST RESORT.** When a write route returns 401 in dev or from a
+client, the fix is almost always to **send the Bearer token** the route legitimately requires — not
+to strip its auth. A 401 on `POST /orders` means the request arrived without a valid token;
+authenticate it (`Authorization: Bearer <token>`), don't bypass the guard.
+
+Reserve opening a write route for endpoints that are *genuinely* public — login, register,
+health-check, inbound webhooks — and clear **both** write gates (a write registered with
+`Tina4.post` is protected by (1) a bearer `auth_handler` and (2) the router's `auth_required`
+flag):
+
+```ruby
+# login is public — clear BOTH gates: auth: false (drop the handler) + .no_auth (clear the flag)
+Tina4.post("/api/login", auth: false) do |request, response|
+  # ...validate credentials, mint a token...
+end.no_auth
+```
+
+* **Never blanket `.no_auth` to silence 401s.** Slapping it on every write route that returns 401
+  doesn't "fix auth" — it **ships unauthenticated writes**. If you do open a route, the handler MUST
+  still authenticate another way (a webhook validated by signature, a SOAP/WS-Security endpoint
+  validating credentials inside the handler, or an explicitly anonymous read API).
+* **Never make public** something that writes data, costs money, returns another user's data,
+  uploads a file, or is an admin action *without* its own check.
+
+### `swagger_meta` security documents a route — it does NOT enforce
+
+The real gate is the **method default + the route's `auth_handler`** (and `.no_auth` / `auth: false`
+to opt out). A route's `swagger_meta: { security: … }` only annotates the **OpenAPI spec** — it
+**never changes enforcement** (`swagger.rb:243` reads `route.auth_handler` for the *actual* security
+requirement; `swagger_meta[:security]` just overrides what Swagger *displays*). So documenting
+`security` on a public-by-default `GET` leaves the route open while Swagger *claims* it's secured —
+the worst kind of drift.
+
+```ruby
+# To actually protect a GET (public by default), register it as a secured route —
+# NOT by adding swagger_meta security:
+Tina4.secure_get("/reports") do |request, response|   # real gate: requires a valid token
+  # ...
+end
+```
+
+* **Breaks:** relying on `swagger_meta: { security: "bearerAuth" }` alone to protect a `GET` — the
+  route stays open, only the docs change.
+
 ## Sessions
 
 Configure the backend in `.env`:
