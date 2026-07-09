@@ -9,15 +9,32 @@ module Tina4
         @models ||= []
       end
 
-      # Register a model for auto-CRUD
-      def register(model_class)
+      # Per-model public-writes flag (model_class => Boolean).
+      # Default secure; only set true when a model is registered `public: true`.
+      # Mirrors tina4-php's `$this->public` map. Write routes stay gated unless
+      # a model is explicitly opted out.
+      def public_flags
+        @public_flags ||= {}
+      end
+
+      # Register a model for auto-CRUD.
+      #
+      # @param model_class [Class] the ORM subclass to expose
+      # @param public [Boolean] when true, the generated write routes
+      #   (POST/PUT/DELETE) opt OUT of the framework's secure-by-default write
+      #   gate — they are marked `.no_auth`. Default false keeps writes gated
+      #   (a valid bearer token is required), matching the router's rule that
+      #   POST/PUT/PATCH/DELETE require auth unless explicitly opened. Parity
+      #   with tina4-python / tina4-php.
+      def register(model_class, public: false)
         models << model_class unless models.include?(model_class)
+        public_flags[model_class] = public
       end
 
       # Generate REST endpoints for all registered models
       def generate_routes(prefix: "/api")
         models.each do |model_class|
-          generate_routes_for(model_class, prefix: prefix)
+          generate_routes_for(model_class, prefix: prefix, public: public_flags[model_class])
         end
       end
 
@@ -45,12 +62,24 @@ module Tina4
         example
       end
 
-      # Generate REST endpoints for a single model class
-      def generate_routes_for(model_class, prefix: "/api")
+      # Generate REST endpoints for a single model class.
+      #
+      # @param model_class [Class] the ORM subclass to expose
+      # @param prefix [String] URL prefix for the generated routes
+      # @param public [Boolean, nil] when true, the write routes
+      #   (POST/PUT/DELETE) opt out of the secure-by-default gate via
+      #   `.no_auth`. When nil (the default), the flag stored at register()
+      #   time is used, falling back to false (secure). The read routes (GET)
+      #   are never gated regardless.
+      def generate_routes_for(model_class, prefix: "/api", public: nil)
         table = model_class.table_name
         pk = model_class.primary_key_field || :id
         pretty_name = table.to_s.split("_").map(&:capitalize).join(" ")
         example_body = build_example(model_class)
+
+        # Explicit arg wins; otherwise fall back to the flag recorded by
+        # register(), otherwise secure-by-default.
+        is_public = public.nil? ? (public_flags[model_class] || false) : public
 
         # GET /api/{table} -- list all with pagination, filtering, sorting
         Tina4::Router.add("GET", "#{prefix}/#{table}", proc { |req, res|
@@ -109,7 +138,7 @@ module Tina4
         }, swagger_meta: { summary: "Get #{pretty_name} by ID", tags: [table.to_s] })
 
         # POST /api/{table} -- create record
-        Tina4::Router.add("POST", "#{prefix}/#{table}", proc { |req, res|
+        post_route = Tina4::Router.add("POST", "#{prefix}/#{table}", proc { |req, res|
           begin
             attributes = req.body_parsed
             record = model_class.create(attributes)
@@ -136,8 +165,11 @@ module Tina4
           }
         })
 
+        # Secure-by-default: only opt out of the write gate when public: true.
+        post_route.no_auth if is_public
+
         # PUT /api/{table}/{id} -- update record
-        Tina4::Router.add("PUT", "#{prefix}/#{table}/{id}", proc { |req, res|
+        put_route = Tina4::Router.add("PUT", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             record = model_class.find_by_id(id.to_i)
@@ -174,8 +206,11 @@ module Tina4
           }
         })
 
+        # Secure-by-default: only opt out of the write gate when public: true.
+        put_route.no_auth if is_public
+
         # DELETE /api/{table}/{id} -- delete record
-        Tina4::Router.add("DELETE", "#{prefix}/#{table}/{id}", proc { |req, res|
+        delete_route = Tina4::Router.add("DELETE", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
             record = model_class.find_by_id(id.to_i)
@@ -192,14 +227,20 @@ module Tina4
             res.json({ error: e.message }, status: 500)
           end
         }, swagger_meta: { summary: "Delete #{pretty_name}", tags: [table.to_s] })
+
+        # Secure-by-default: only opt out of the write gate when public: true.
+        delete_route.no_auth if is_public
       end
 
       # Discover ORM model classes from a directory and register them.
       #
       # @param models_dir [String] directory to scan (default "src/orm")
       # @param prefix [String] URL prefix for generated routes (default "/api")
+      # @param public [Boolean] when true, opt discovered models' write routes
+      #   out of the secure-by-default gate (see .register). Default false keeps
+      #   writes gated. Parity with tina4-python / tina4-php.
       # @return [Array<String>] list of discovered model class names
-      def discover(models_dir = "src/orm", prefix: "/api")
+      def discover(models_dir = "src/orm", prefix: "/api", public: false)
         discovered = []
         return discovered unless Dir.exist?(models_dir)
 
@@ -210,7 +251,7 @@ module Tina4
         # Find all ORM subclasses that have a table_name
         ObjectSpace.each_object(Class).select { |c| c < Tina4::ORM rescue false }.each do |klass|
           next unless klass.respond_to?(:table_name) && klass.table_name
-          register(klass)
+          register(klass, public: public)
           discovered << klass.name
         end
 
@@ -220,6 +261,7 @@ module Tina4
 
       def clear!
         @models = []
+        @public_flags = {}
       end
 
       # Alias for parity with other frameworks
