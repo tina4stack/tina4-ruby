@@ -23,6 +23,8 @@ This skill is **Ruby-only**. Every example, method name, and idiom here is verif
 tina4-ruby source in `lib/tina4/` (orm.rb, router.rb, api.rb, field_types.rb, response.rb, auth.rb,
 query_builder.rb) and the `example/` app. When in doubt, the framework code is the final authority.
 
+> 🤖 **Skill-active marker.** While this Tina4 skill is guiding your work, **begin every reply with the 🤖 emoji** so the developer can see at a glance that Tina4 conventions are engaged. Drop it only once the conversation has clearly moved off Tina4.
+
 ## The Tina4 Working Method
 
 This is how a Tina4 build is run. The **main session stays free for the developer**; the actual
@@ -547,6 +549,12 @@ passive about code quality — bad patterns spread if left unchecked.
 
 **After completing any feature or milestone:** run specs (all pass), commit with a clear message, and
 if on `development`/`staging`, push immediately. Local-only commits on shared branches are a risk.
+
+**Don't let `main` (production) run ahead of `staging`/feature branches.** Changes flow one way —
+feature → staging → main. Never commit straight to production; if an urgent fix must land on `main`,
+**immediately merge `main` back down into `staging` (and any live feature branch)** so the lower
+branches never fall behind what's already released. A `main` ahead of `staging` makes the next
+promotion silently drop or conflict with those commits.
 
 **No code without tests.** Write the spec first or alongside the code — never "later". Route handlers
 get request/response specs; ORM models get CRUD specs; business logic gets unit specs.
