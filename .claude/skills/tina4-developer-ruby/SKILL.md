@@ -527,6 +527,11 @@ breaks, uncheck it — the plan must reflect reality, not aspirations. Close it 
 
 ## Code Quality Enforcement
 
+> **CLI:** run **`tina4 metrics`** for a code-health report in the terminal — the top complexity
+> offenders — with `--top N`, `--json`, `--path DIR`, and `--fail-on warn|error` (use the last to
+> fail a commit or CI on a complexity regression). Keep the `tina4` binary itself current with
+> **`tina4 update`** (self-updates to the latest release).
+
 When reviewing Ruby code (including the developer's), evaluate it against Tina4 paradigms:
 - Routes are thin — business logic belongs in plain classes under `src/app/`
 - No inline styles — CSS classes only (Tina4CSS preferred)
