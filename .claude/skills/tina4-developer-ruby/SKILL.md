@@ -476,6 +476,13 @@ Tina4::WebServer.new(app, host: ENV.fetch("HOST", "0.0.0.0"), port: ENV.fetch("P
 
 ## Testing
 
+> **SQLite URL footgun — mind the slashes.** Bind a **relative** sqlite URL for test / temp
+> databases: `sqlite:///data/test.db` (three slashes = relative to cwd — identical on every
+> backend). Never build the URL from a raw absolute path (e.g. `"sqlite:#{abs_path}"`, which
+> yields a single leading slash) — Ruby reads that as *relative*, so the DB is silently created
+> somewhere else and a test's DB-reset misses it (stale rows → flaky assertions). For a genuine
+> absolute path use the four-slash form `sqlite:////abs/path.db`.
+
 Tina4 Ruby uses **RSpec**. Tests live in `spec/`.
 
 ```bash
