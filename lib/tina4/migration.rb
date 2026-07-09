@@ -158,14 +158,16 @@ module Tina4
 
     # Resolve migrations directory: prefer src/migrations, fall back to migrations/
     def resolve_migrations_dir
-      src_dir = File.join(Dir.pwd, "src", "migrations")
-      return src_dir if Dir.exist?(src_dir)
-
+      # Canonical location is migrations/ (project root) — matches the Python reference, the CLI,
+      # and auto-migrate. A legacy src/migrations/ is honoured only as a fallback.
       root_dir = File.join(Dir.pwd, "migrations")
       return root_dir if Dir.exist?(root_dir)
 
-      # Default to src/migrations (will be created when needed)
-      src_dir
+      src_dir = File.join(Dir.pwd, "src", "migrations")
+      return src_dir if Dir.exist?(src_dir)
+
+      # Neither exists yet -> default to the canonical migrations/ (created when needed)
+      root_dir
     end
 
     def ensure_tracking_table
