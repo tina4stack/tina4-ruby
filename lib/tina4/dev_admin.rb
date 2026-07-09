@@ -413,6 +413,19 @@ module Tina4
           rescue StandardError => e
             Tina4::Log.error("Re-discover on reload failed: #{e.message}")
           end
+          # Keep the code Context index LIVE on the same reload trigger: reindex
+          # just the changed file (UPSERT) so the dev-MCP code_search reflects
+          # the edit immediately. Only touches an already-built index
+          # (existing_context never creates one); guarded so a context failure
+          # never breaks the reload.
+          begin
+            unless @reload_file.to_s.empty?
+              ctx = Tina4::Context.existing_context
+              ctx&.reindex_file(@reload_file)
+            end
+          rescue StandardError => e
+            Tina4::Log.error("Context reindex on reload failed: #{e.message}")
+          end
           # WebSocket-primary reload: push an instant message to every browser
           # connected on /__dev_reload. The toolbar client (and the dev-admin
           # dashboard) act on this immediately — the mtime poll above is only a
