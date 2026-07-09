@@ -56,6 +56,66 @@ RSpec.describe "AI installer (v3.13.9)" do
       expect(block).not_to include("**")
       expect(block).to include("tina4-developer")
     end
+
+    # 3.13.59: the developer skill is split per language. The pointer block
+    # must reference the ruby-specific skill (tina4-developer-ruby), NOT the
+    # pre-split path .claude/skills/tina4-developer/ which no longer exists.
+    it "references the split tina4-developer-ruby skill, not the old name" do
+      %w[CLAUDE.md .cursorules].each do |context_file|
+        block = Tina4::AI.skill_block(context_file)
+        expect(block).to include("tina4-developer-ruby"), "#{context_file}: missing split dev-skill name"
+        expect(block).not_to include("skills/tina4-developer/SKILL.md"),
+          "#{context_file}: still points at the pre-split tina4-developer path"
+      end
+    end
+  end
+
+  # `tina4 ai` must install the ACTUAL skill files -- not just a CLAUDE.md
+  # pointer to them -- into BOTH the project and the user's global
+  # ~/.claude/skills. Real network fetch from the release tag, no mocks.
+  # (Mirrors tina4-python's tests/test_ai_skill_install.py.)
+  describe ".install_skills (real network)" do
+    around(:each) do |example|
+      prev = ENV["TINA4_SKILLS_REF"]
+      # Pin to a tag known to carry the split skills so the test is deterministic.
+      ENV["TINA4_SKILLS_REF"] = "3.13.59"
+      example.run
+    ensure
+      if prev.nil?
+        ENV.delete("TINA4_SKILLS_REF")
+      else
+        ENV["TINA4_SKILLS_REF"] = prev
+      end
+    end
+
+    it "lands SKILL.md + a reference file for all three skills in project AND global dirs" do
+      proj_skills = File.join(tmp_dir, "proj", ".claude", "skills")
+      global_skills = File.join(tmp_dir, "home", ".claude", "skills")
+
+      installed = Tina4::AI.install_skills(File.join(tmp_dir, "proj"), [proj_skills, global_skills])
+
+      expect(installed).to contain_exactly("tina4-developer-ruby", "tina4-js", "tina4-maintainer")
+
+      ref_by_skill = {
+        "tina4-developer-ruby" => "data-and-orm.md",
+        "tina4-js" => "persistence.md",
+        "tina4-maintainer" => "subsystems.md"
+      }
+
+      [proj_skills, global_skills].each do |dest|
+        ref_by_skill.each do |skill, ref_file|
+          skill_md = File.join(dest, skill, "SKILL.md")
+          ref_md = File.join(dest, skill, "references", ref_file)
+          expect(File.exist?(skill_md)).to be(true), "#{skill}/SKILL.md missing in #{dest}"
+          expect(File.size(skill_md)).to be > 0
+          expect(File.exist?(ref_md)).to be(true), "#{skill}/references/#{ref_file} missing in #{dest}"
+        end
+      end
+
+      # A spot-check on real 3.13.59 content, not just file presence.
+      body = File.read(File.join(proj_skills, "tina4-developer-ruby", "SKILL.md"))
+      expect(body).to include("Tina4")
+    end
   end
 
   describe ".has_markers?" do

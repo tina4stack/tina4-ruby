@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "net/http"
+require "uri"
 
 module Tina4
   # Tina4 AI -- Install AI coding assistant context files.
@@ -23,7 +25,120 @@ module Tina4
       { name: "codex", description: "OpenAI Codex", context_file: "AGENTS.md", config_dir: nil }
     ].freeze
 
+    # ── Skill files (the SKILL.md system) ─────────────────────────────────
+    # `tina4 ai` installs the actual skills -- not just a CLAUDE.md pointer to
+    # them -- into BOTH the project (.claude/skills, so they travel with the
+    # repo) AND the user's global ~/.claude/skills (so they're available in
+    # every project). A Ruby project needs the ruby developer skill plus the
+    # two shared skills. As of 3.13.59 the developer skill is split per
+    # language: the ruby dev skill ships from the tina4-ruby release tag, while
+    # tina4-js + tina4-maintainer are the canonical shared copies served from
+    # tina4-python. Mirrors the canonical install-skills.sh.
+    DEV_SKILL = "tina4-developer-ruby"
+    DEV_REFS = %w[
+      auth-and-services.md data-and-orm.md deployment.md
+      routes-and-api.md templates-and-frontend.md realtime.md
+    ].freeze
+
+    # skill name => { repo:, refs: [reference files] }
+    SKILLS = {
+      DEV_SKILL => { repo: "tina4-ruby", refs: DEV_REFS },
+      "tina4-js" => {
+        repo: "tina4-python",
+        refs: %w[html-and-components.md signals-and-reactivity.md persistence.md rtc.md]
+      },
+      "tina4-maintainer" => {
+        repo: "tina4-python",
+        refs: %w[cli-and-deployment.md frond-and-frontend.md routing-and-orm.md subsystems.md]
+      }
+    }.freeze
+
     class << self
+      # Release tag to pull skills from -- the installed framework version,
+      # overridable with TINA4_SKILLS_REF (e.g. to test a branch / tag).
+      #
+      # @return [String]
+      def skills_ref
+        ref = ENV["TINA4_SKILLS_REF"]
+        return ref if ref && !ref.strip.empty?
+        return Tina4::VERSION if defined?(Tina4::VERSION) && Tina4::VERSION
+        "main"
+      rescue StandardError
+        "main"
+      end
+
+      # Fetch the bytes at `url`, following up to `limit` redirects. Returns
+      # nil on any network/HTTP failure so the caller can skip gracefully.
+      #
+      # @param url [String]
+      # @param limit [Integer] max redirects to follow
+      # @return [String, nil]
+      def fetch_bytes(url, limit = 5)
+        return nil if limit <= 0
+
+        uri = URI.parse(url)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == "https")
+        http.open_timeout = 15
+        http.read_timeout = 15
+
+        response = http.get(uri.request_uri)
+        case response
+        when Net::HTTPSuccess
+          response.body
+        when Net::HTTPRedirection
+          location = response["location"]
+          location ? fetch_bytes(location, limit - 1) : nil
+        end
+      rescue StandardError
+        nil
+      end
+
+      # Install the Tina4 SKILL.md skills into the project AND the user's
+      # global ~/.claude/skills, network-fetched from the release tag matching
+      # this framework version. Returns the skills fully installed.
+      # Network-dependent -- a fetch failure skips that skill gracefully.
+      #
+      # @param root [String] project root directory
+      # @param targets [Array<String>, nil] .claude/skills dirs to write to;
+      #   defaults to the project's + the user's global skills dir
+      # @return [Array<String>] skill names that installed cleanly
+      def install_skills(root = ".", targets = nil)
+        ref = skills_ref
+        if targets.nil?
+          targets = [
+            File.join(File.expand_path(root), ".claude", "skills"),
+            File.join(Dir.home, ".claude", "skills")
+          ]
+        end
+
+        installed = []
+        SKILLS.each do |skill, meta|
+          base = "https://raw.githubusercontent.com/tina4stack/#{meta[:repo]}/#{ref}/.claude/skills"
+          skill_ok = true
+
+          targets.each do |dest|
+            skill_dir = File.join(dest, skill)
+            FileUtils.mkdir_p(File.join(skill_dir, "references"))
+
+            data = fetch_bytes("#{base}/#{skill}/SKILL.md")
+            if data.nil?
+              skill_ok = false
+              next
+            end
+            File.binwrite(File.join(skill_dir, "SKILL.md"), data)
+
+            meta[:refs].each do |r|
+              rd = fetch_bytes("#{base}/#{skill}/references/#{r}")
+              File.binwrite(File.join(skill_dir, "references", r), rd) unless rd.nil?
+            end
+          end
+
+          installed << skill if skill_ok
+        end
+        installed
+      end
+
       # Check if a tool's context file already exists.
       #
       # @param root [String] project root directory
@@ -158,7 +273,7 @@ module Tina4
         body = if context_file.downcase.end_with?(".md")
           "## Tina4 Skills\n\n" \
           "When working on this Tina4 project, these skills give the assistant project-aware behaviour:\n\n" \
-          "- **tina4-developer** -- Read `.claude/skills/tina4-developer/SKILL.md` before building features.\n" \
+          "- **#{DEV_SKILL}** -- Read `.claude/skills/#{DEV_SKILL}/SKILL.md` before building features.\n" \
           "- **tina4-js** -- Read `.claude/skills/tina4-js/SKILL.md` for frontend work.\n" \
           "- **tina4-maintainer** -- Read `.claude/skills/tina4-maintainer/SKILL.md` for framework-level changes.\n\n" \
           "If Tina4 behaves differently from what these skills describe, that is a bug in the skill. " \
@@ -167,7 +282,7 @@ module Tina4
           "See https://tina4.com for full docs."
         else
           "Tina4 Skills -- read these files before working on this project:\n" \
-          "  .claude/skills/tina4-developer/SKILL.md   (feature development)\n" \
+          "  .claude/skills/#{DEV_SKILL}/SKILL.md   (feature development)\n" \
           "  .claude/skills/tina4-js/SKILL.md          (frontend / tina4-js)\n" \
           "  .claude/skills/tina4-maintainer/SKILL.md  (framework-level changes)\n" \
           "Found a skill that disagrees with how Tina4 actually behaves? Tell the developer,\n" \
@@ -277,35 +392,16 @@ module Tina4
         created
       end
 
-      # Copy Claude Code skill files from the framework's templates.
+      # Install Claude Code skills + commands for a project.
       #
       # @param root [String] absolute project root path
       # @return [Array<String>] list of created/updated relative file paths
       def install_claude_skills(root)
         created = []
 
-        # Determine the framework root (where lib/tina4/ lives)
+        # Copy claude-commands if they exist (a local template shipped in the
+        # gem, not a network fetch).
         framework_root = File.expand_path("../../..", __FILE__)
-
-        # Copy skill directories from .claude/skills/ in the framework to the project
-        framework_skills_dir = File.join(framework_root, ".claude", "skills")
-        if Dir.exist?(framework_skills_dir)
-          target_skills_dir = File.join(root, ".claude", "skills")
-          FileUtils.mkdir_p(target_skills_dir)
-          Dir.children(framework_skills_dir).each do |entry|
-            skill_dir = File.join(framework_skills_dir, entry)
-            next unless File.directory?(skill_dir)
-
-            target_dir = File.join(target_skills_dir, entry)
-            FileUtils.rm_rf(target_dir) if Dir.exist?(target_dir)
-            FileUtils.cp_r(skill_dir, target_dir)
-            rel = target_dir.sub("#{root}/", "")
-            created << rel
-            puts "  \e[32m✓\e[0m Updated #{rel}"
-          end
-        end
-
-        # Copy claude-commands if they exist
         commands_source = File.join(framework_root, "templates", "ai", "claude-commands")
         if Dir.exist?(commands_source)
           commands_dir = File.join(root, ".claude", "commands")
@@ -316,6 +412,18 @@ module Tina4
             rel = target.sub("#{root}/", "")
             created << rel
           end
+        end
+
+        # Install the SKILL.md skills into the project AND the user's global
+        # ~/.claude/skills, network-fetched from the release tag matching this
+        # framework version. (The previous code copied from
+        # framework_root/.claude/skills, which exists only in a dev/editable
+        # checkout -- NOT in an installed gem, where .claude/skills sits outside
+        # lib/ and is never packaged. So installed users got zero skill files,
+        # only a CLAUDE.md pointer to skills that were never on disk.)
+        install_skills(root).each do |skill|
+          created << ".claude/skills/#{skill}/"
+          puts "  \e[32m✓\e[0m Installed .claude/skills/#{skill}  (project + global)"
         end
 
         created
