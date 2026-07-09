@@ -160,6 +160,51 @@ RSpec.describe "Tina4::Migration footguns" do
       expect(stmts[0]).to include("'O''Brien; Jr'")
     end
 
+    it "applies a batch of pending migrations in numeric order" do
+      # Regression for a real prod incident: several migrations pending in ONE run,
+      # all rewriting the SAME table (later supersedes earlier). If migrate() applies
+      # them in filesystem/hash order instead of numeric order, the table is left at
+      # a non-final migration's shape. End-to-end against a REAL SQLite DB (no mocks).
+      # The sort-key unit test above locks the KEY; this locks the sort actually
+      # driving apply order through migrate() (e.g. a pending filter regressed to an
+      # unordered set diff).
+      Dir.mktmpdir("tina4_migorder") do |dir|
+        db = Tina4::Database.new("sqlite:///" + File.join(dir, "order.db"))
+        mig_dir = File.join(dir, "migrations")
+        FileUtils.mkdir_p(mig_dir)
+        # UNPADDED prefixes on purpose: 1..10 so a LEXICAL sort ("10" < "2")
+        # differs from numeric order. Fails under BOTH no-sort AND a lexical-only
+        # sort (a numeric-sort regression), not just total disorder.
+        File.write(File.join(mig_dir, "0_init.sql"), <<~SQL)
+          CREATE TABLE probe_final (n INTEGER);
+          INSERT INTO probe_final (n) VALUES (0);
+          CREATE TABLE probe_log (id INTEGER PRIMARY KEY AUTOINCREMENT, n INTEGER);
+        SQL
+        # Write 1..10 in SCRAMBLED order so creation order != numeric order.
+        [7, 3, 10, 1, 5, 9, 2, 8, 4, 6].each do |n|
+          File.write(File.join(mig_dir, "#{n}_step.sql"), <<~SQL)
+            UPDATE probe_final SET n = #{n};
+            INSERT INTO probe_log (n) VALUES (#{n});
+          SQL
+        end
+
+        ran = Tina4::Migration.new(db, migrations_dir: mig_dir).migrate
+        expect(ran.map { |r| r[:status] }.uniq).to eq(["success"])
+        expected = ["0_init.sql"] + (1..10).map { |n| "#{n}_step.sql" }
+        expect(ran.map { |r| r[:name] }).to eq(expected), "batch applied out of numeric order"
+
+        # The real apply sequence recorded in the DB is strictly numeric (a lexical
+        # sort would put 10 before 2).
+        log = db.fetch("SELECT n FROM probe_log ORDER BY id").records.map { |r| r.values.first.to_i }
+        expect(log).to eq((1..10).to_a), "migrations ran out of order"
+
+        # The last-applied migration wins — the exact contract that broke in prod.
+        final = db.fetch("SELECT n FROM probe_final").records[0].values.first.to_i
+        expect(final).to eq(10)
+        db.close
+      end
+    end
+
     it "applies a real migration whose CREATE TABLE has a ';' in a -- comment" do
       Dir.mktmpdir("tina4_mig54") do |dir|
         db = Tina4::Database.new("sqlite:///" + File.join(dir, "mig54.db"))
