@@ -346,8 +346,9 @@ tina4 migrate:status    # show migration status
 tina4 migrate:rollback  # roll back the last batch
 ```
 
-Migration files are versioned SQL in **`src/migrations/`** — the runner prefers that folder and
-falls back to `migrations/` at the project root (`lib/tina4/migration.rb:159`; the boot
+Migration files are versioned SQL in **`migrations/`** at the project root — the canonical location
+(matches the CLI + auto-migrate + the Python reference); a legacy `src/migrations/` is honoured only
+as a fallback (`lib/tina4/migration.rb:160`; the boot
 auto-migrate resolver checks the same two, `lib/tina4.rb:470`). Write standard SQL:
 ```sql
 CREATE TABLE users (
@@ -521,8 +522,8 @@ Tina4.bind_database(Tina4::Database.new(ENV["TINA4_DATABASE_URL"]))   # sqlite:d
 
 ### Auto-migrate is fail-soft and boot-time; the CLI is fail-fast
 
-`Tina4.initialize!` runs `auto_migrate_on_startup!` (`lib/tina4.rb:219`): when a `src/migrations/`
-(or `migrations/`) folder holds at least one `.sql` file, pending migrations are applied at boot so
+`Tina4.initialize!` runs `auto_migrate_on_startup!` (`lib/tina4.rb:219`): when a `migrations/`
+(or legacy `src/migrations/`) folder holds at least one `.sql` file, pending migrations are applied at boot so
 the schema is current. It is **fail-soft** — a bad migration is logged loud and **the service still
 starts** (`lib/tina4.rb:470`). The explicit **`tina4 migrate` CLI stays fail-fast** (non-zero exit
 for CI). Disable boot migration with `TINA4_AUTO_MIGRATE=false` (also `0`/`no`/`off`) —
