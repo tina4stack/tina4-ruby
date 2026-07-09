@@ -1099,7 +1099,7 @@ mode and protected for remote callers. Environment variables (read by
 ## Skills
 
 - **tina4-maintainer** — Always read and follow `.claude/skills/tina4-maintainer/SKILL.md` when working on this codebase. Read its referenced files in `.claude/skills/tina4-maintainer/references/` as needed for specific subsystems.
-- **tina4-developer** — Always read and follow `.claude/skills/tina4-developer/SKILL.md` when building applications with this framework. Read its referenced files in `.claude/skills/tina4-developer/references/` as needed.
+- **tina4-developer-ruby** — Always read and follow `.claude/skills/tina4-developer-ruby/SKILL.md` when building applications with this framework. Read its referenced files in `.claude/skills/tina4-developer-ruby/references/` as needed.
 - **tina4-js** — Always read and follow `.claude/skills/tina4-js/SKILL.md` when working with tina4-js frontend code. Read its referenced files in `.claude/skills/tina4-js/references/` as needed.
 
 ## First Principle: Documentation Matches Code Reality
