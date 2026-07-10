@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.68 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.69 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -587,29 +587,60 @@ eq(5)`) still holds while `summary.seeded` / `summary.failed` / `summary.errors`
 
 ### Api — External HTTP client
 
-`Tina4::API.new(..., verify_ssl: false)` now actually disables TLS verification (it was a stored-but-unused kwarg before — `verify_ssl: false` silently did nothing). Opt-in retry/backoff: `max_retries:` (default `0` = off) + `retry_backoff:` (default `0.5`s base, exponential) — retries a transport error (`status == 0`) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in). Ruby's `Net::HTTP` doesn't auto-follow redirects, so there's no cross-host Authorization-leak surface (the redirect auth-strip is Python-only).
+`verify_ssl: false` disables TLS verification (before 3.13.1 it was a stored-but-unused kwarg that silently did nothing). Opt-in retry/backoff: `max_retries:` (default `0` = off) plus `retry_backoff:` (default `0.5`s base, exponential) retries a transport error (`status == 0`) or a retryable status (429/500/502/503/504); 4xx is never retried (a retried non-idempotent request may be re-sent, so retries are opt-in). Net::HTTP does NOT auto-follow redirects, so the client follows them itself in a bounded loop (up to 10 hops) and strips the `Authorization` AND `Cookie` headers on a cross-origin hop (a different scheme/host/port), matching the Python master; same-origin redirects keep them. (This corrects a prior note that claimed the redirect auth-strip was Python-only.)
 
 ```ruby
-api = Tina4::Api.new("https://api.example.com", headers: {}, timeout: 30)
+api = Tina4::API.new("https://api.example.com", headers: {}, timeout: 30,
+                     bearer_token: nil, username: nil, password: nil,
+                     verify_ssl: nil, max_retries: 0, retry_backoff: 0.5,
+                     transport: nil, cookies: false)
 api.get(path, params: {}) -> ApiResponse
 api.post(path, body: nil, content_type: "application/json") -> ApiResponse
 api.put(path, body: nil, content_type: "application/json") -> ApiResponse
 api.patch(path, body: nil, content_type: "application/json") -> ApiResponse
 api.delete(path, body: nil) -> ApiResponse
-api.upload(path, file_path, field_name: "file", extra_fields: {}, headers: {}) -> ApiResponse
+api.upload(path, file_path: nil, field_name: "file", extra_fields: {},
+           headers: {}, file_bytes: nil, filename: nil) -> ApiResponse
+api.download(path, dest_path: nil, params: {}) -> ApiResponse
 api.send_request(method, path, body: nil, content_type: "application/json") -> ApiResponse
 api.set_basic_auth(username, password)
 api.set_bearer_token(token)
 api.add_headers(headers)
 
 # ApiResponse
-resp.status          # -> Integer (HTTP status code)
+resp.status          # -> Integer (HTTP status code; 0 on a transport failure)
 resp.body            # -> String
 resp.headers         # -> Hash
 resp.error           # -> String | nil
 resp.success?        # -> Boolean (2xx)
 resp.json            # -> Hash | Array (parsed body)
+resp.path            # -> String | nil (download destination; nil on every other verb)
 ```
+
+- **Multipart upload** (`upload`): POSTs a `multipart/form-data` body from a file on
+  disk (`file_path:`) OR from in-memory bytes (`file_bytes:` + `filename:`), so no
+  temp file is needed. `field_name:` is the file's form field (default `file`),
+  `extra_fields:` become extra text parts, `headers:` are extra per-call headers. The
+  part Content-Type is guessed from the filename (fallback `application/octet-stream`),
+  and the client's default headers (including any Authorization) are sent too. A
+  missing file or no source given returns a clean error response (`status` 0, `error`
+  set); it never raises and nothing is sent over the wire.
+  BREAKING (3.13.69): `file_path` was a REQUIRED positional argument; it is now the
+  keyword `file_path:`, reconciled to the canonical cross-framework signature.
+- **Streaming download** (`download`): streams the GET body to `dest_path:` in 64KB
+  chunks, so a multi-megabyte response never lands in memory whole. The returned
+  `ApiResponse` carries `path` (and no body); `path` is nil and no file is written on
+  any error (missing `dest_path`, an HTTP error status, or a transport failure).
+- **Transport seam** (`transport:`): an injectable object responding to
+  `#call(method, url, headers, body, timeout)` and returning a Hash shaped like
+  `{http_code:/status:, body:, headers:, error:}`, that fully REPLACES the network
+  call so APPLICATION developers can unit-test code that calls an `Api`. Default nil
+  means the real Net::HTTP path. Tina4's own suite NEVER injects a fake transport (the
+  no-mock rule stands); framework tests always hit a real local server.
+- **Cookie jar** (`cookies: true`): opt-in, off by default. Keeps a per-client,
+  in-memory jar: parses `Set-Cookie` (leading `name=value` only, last write wins) and
+  replays the accumulated `Cookie` header on later requests. Not persisted; scoped to
+  the instance.
 
 ### Queue — Pluggable job queue
 
@@ -1088,8 +1119,8 @@ mode and protected for remote callers. Environment variables (read by
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive. Hardened: a streaming source that raises mid-stream (generator/block error) or a client disconnect (IOError/EPIPE/ECONNRESET on the socket) is caught — chunks emitted before the failure are still delivered, the error is logged, and the stream ends cleanly so the worker never crashes
 - WSDL/SOAP security (`lib/tina4/wsdl.rb`): a SOAP message containing a `<!DOCTYPE>` (DTD) is rejected with a `Client` fault ("DOCTYPE declarations are not allowed in SOAP messages") **before** parsing — SOAP 1.1 §3 forbids DTDs, and rejecting up front closes the REXML internal-entity-expansion (billion-laughs) and XXE attack surface (enforced on both `process_soap` and the legacy `Service#handle_soap_request`). An operation that raises returns a `Server` fault whose `<faultstring>` is the real cause **only** in debug mode (`TINA4_DEBUG`); in production it is a generic "Internal server error" and the real cause is logged via `Tina4::Log.error` — a resolver exception never leaks internal state to a SOAP client
 - GraphQL security (`lib/tina4/graphql.rb`): **depth guard** — selection-set nesting is bounded by `TINA4_GRAPHQL_MAX_DEPTH` (default `50`; set `<= 0` to disable). An over-deep query or a circular fragment fails with a `"Query exceeds maximum depth of N"` error instead of overflowing the stack (depth counts sub-selections AND fragment spreads AND inline fragments; top-level starts at 1). **Resolver errors** are masked: the message is the real cause only in debug mode (`TINA4_DEBUG`), else a generic "Internal server error" (the real cause is logged via `Tina4::Log.error`, path preserved). **Directives are honored** — `parse_field` parses leading `@directive(args)` tokens into `:directives`, so `@skip`/`@include`/`@auth`/`@role`/`@guest` actually fire (previously the parser never populated directives, so they were silently ignored)
-- Tests: 3,278 passing
-- Version: 3.13.68
+- Tests: 3,725 passing
+- Version: 3.13.69
 
 ## Links
 
