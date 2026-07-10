@@ -1062,7 +1062,7 @@ module Tina4
 
     # ── Generator: model ─────────────────────────────────────────────────
 
-    def generate_model(name, flags)
+    def generate_model(name, flags, emit_test: true)
       fields = parse_fields(flags["fields"])
       table = to_table_name(name)
       snake = to_snake_case(name)
@@ -1099,10 +1099,16 @@ module Tina4
       File.write(path, content)
       puts "  Created #{path}"
 
-      # Generate matching migration (unless --no-migration)
+      # Generate matching migration (unless --no-migration). The model's own
+      # co-emitted spec proves the schema through the real ORM, so the migration
+      # sub-call does NOT also co-emit a migration spec (emit_test: false).
       unless flags["no-migration"]
-        generate_migration("create_#{table}", flags, fields_override: fields, table_override: table)
+        generate_migration("create_#{table}", flags, fields_override: fields,
+                                                      table_override: table, emit_test: false)
       end
+
+      # Co-emit a real SQLite roundtrip spec next to the model.
+      emit_model_test(name, table, fields) if emit_test
     end
 
     # ── Generator: route ─────────────────────────────────────────────────
@@ -1123,7 +1129,7 @@ module Tina4
     # `Tina4::Router.get/post/...` (no bearer auth_handler attached), so `.no_auth`
     # genuinely opens the write on BOTH the live server and the TestClient — the
     # same registration path AutoCrud uses.
-    def generate_route(name, flags)
+    def generate_route(name, flags, emit_test: true)
       route_path = name.sub(%r{^/}, "")
       singular = route_path.end_with?("s") ? route_path[0..-2] : route_path
       model = flags["model"]
@@ -1284,6 +1290,18 @@ module Tina4
 
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real spec. A --model route is working code → reuse the
+      # secure-gate behavioural spec (reads public, writes gated) via
+      # generate_test; a no-model route's handlers are loud stubs → the
+      # Router-registration + live-stub spec.
+      if emit_test
+        if model
+          generate_test(route_path, { "model" => model, "secure_writes" => true, "public" => public_writes })
+        else
+          emit_route_stub_test(route_path)
+        end
+      end
     end
 
     # ── Generator: crud ──────────────────────────────────────────────────
@@ -1295,12 +1313,14 @@ module Tina4
 
       puts "\n  Generating CRUD for #{name}...\n"
 
-      # 1. Model + migration
-      generate_model(name, flags)
+      # 1. Model + migration (emit_test: false — crud emits its own broader gate
+      #    spec at step 5, so the sub-generators stay quiet to avoid double-emit).
+      generate_model(name, flags, emit_test: false)
 
       # 2. Routes with model — secure-by-default; thread --public through so
       #    `generate crud X --public` opens the writes (mirrors AutoCrud public:).
-      generate_route(route_name, { "model" => name, "public" => is_public })
+      #    emit_test: false — the crud gate spec at step 5 targets the same file.
+      generate_route(route_name, { "model" => name, "public" => is_public }, emit_test: false)
 
       # 3. Form
       generate_form(name, flags)
@@ -1318,7 +1338,7 @@ module Tina4
 
     # ── Generator: migration ─────────────────────────────────────────────
 
-    def generate_migration(name, flags = {}, fields_override: nil, table_override: nil)
+    def generate_migration(name, flags = {}, fields_override: nil, table_override: nil, emit_test: true)
       now = Time.now
       timestamp = now.strftime("%Y%m%d%H%M%S")
       dir = "migrations"
@@ -1355,22 +1375,24 @@ module Tina4
         down_sql = "-- Write your DOWN rollback SQL here\n-- Example: ALTER TABLE #{table} DROP COLUMN new_col;"
       end
 
+      # The main .sql holds ONLY the UP migration. The runner executes the WHOLE
+      # file (comments stripped), so embedding the DOWN here would CREATE then
+      # immediately DROP the table — the migration would silently no-op. The
+      # rollback SQL lives solely in the sibling .down.sql. Matches the Python
+      # master (tina4_python/cli/__init__.py).
       content = <<~SQL
         -- Migration: #{name}
         -- Created: #{now.strftime("%Y-%m-%d %H:%M:%S")}
 
-        -- UP
         #{up_sql}
-
-        -- DOWN
-        #{down_sql}
       SQL
 
       File.write(path, content)
       puts "  Created #{path}"
 
       # Also create .down.sql for the migration runner
-      down_path = File.join(dir, "#{timestamp}_#{name}.down.sql")
+      down_filename = "#{timestamp}_#{name}.down.sql"
+      down_path = File.join(dir, down_filename)
       down_content = <<~SQL
         -- Rollback: #{name}
         -- Created: #{now.strftime("%Y-%m-%d %H:%M:%S")}
@@ -1380,6 +1402,10 @@ module Tina4
 
       File.write(down_path, down_content)
       puts "  Created #{down_path}"
+
+      # Co-emit a real apply-UP/DOWN spec — only for CREATE migrations, whose UP
+      # SQL is real DDL to assert against (a placeholder ALTER has nothing yet).
+      emit_migration_test(name, table, filename, down_filename) if emit_test && is_create
     end
 
     # ── Generator: middleware ────────────────────────────────────────────
@@ -1408,7 +1434,7 @@ module Tina4
             # Runs before the route handler.
             # Return [request, response] to continue, or
             # return [request, response.json({ error: "Unauthorized" }, 401)] to block.
-            Tina4::Log.info("#{name}: \#{request.request_method} \#{request.path}")
+            Tina4::Log.info("#{name}: \#{request.method} \#{request.path}")
             [request, response]
           end
 
@@ -1421,6 +1447,10 @@ module Tina4
 
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real dispatch spec (drives the scaffold through the real
+      # server middleware dispatch — Tina4::Middleware.run_before/run_after).
+      emit_middleware_test(name, snake)
     end
 
     # ── Generator: test ──────────────────────────────────────────────────
@@ -1429,14 +1459,6 @@ module Tina4
       model = flags["model"]
       snake = to_snake_case(name)
       singular = snake.end_with?("s") ? snake[0..-2] : snake
-
-      dir = "spec"
-      FileUtils.mkdir_p(dir)
-      path = File.join(dir, "#{snake}_spec.rb")
-      if File.exist?(path)
-        puts "  File already exists: #{path}"
-        return
-      end
 
       # Secure-by-default CRUD spec (emitted by `generate crud`): proves the gate
       # by BEHAVIOR through the real Tina4::TestClient — reads public, writes
@@ -1512,8 +1534,7 @@ module Tina4
             #{write_examples}
           end
         RUBY
-        File.write(path, content)
-        puts "  Created #{path}"
+        write_test(snake, content)
         return
       end
 
@@ -1576,8 +1597,7 @@ module Tina4
         RUBY
       end
 
-      File.write(path, content)
-      puts "  Created #{path}"
+      write_test(snake, content)
     end
 
     # ── Generator: form ──────────────────────────────────────────────────
@@ -1749,8 +1769,9 @@ module Tina4
     def generate_auth(_name = nil, flags = {})
       puts "\n  Generating authentication scaffolding...\n"
 
-      # 1. User model + migration
-      generate_model("User", { "fields" => "email:string,password:string,role:string" })
+      # 1. User model + migration (emit_test: false — auth emits its own broader
+      #    register/login/me spec at step 5).
+      generate_model("User", { "fields" => "email:string,password:string,role:string" }, emit_test: false)
 
       # 2. Auth routes
       dir = "src/routes"
@@ -1885,8 +1906,9 @@ module Tina4
         puts "  Created #{register_path}"
       end
 
-      # 5. Auth test
-      generate_test("auth", { "model" => "User" })
+      # 5. Auth test — real register/login/me end-to-end (real Router, real Auth
+      #    JWT + PBKDF2, real SQLite). Replaces the old placeholder stub spec.
+      emit_auth_test
 
       puts "\n  Authentication scaffolding complete."
       puts "  Run: tina4ruby migrate"
@@ -1964,6 +1986,9 @@ module Tina4
       RUBY
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real ServiceRunner registration/discovery spec.
+      emit_service_test(name, snake)
     end
 
     # ── Generator: queue ──────────────────────────────────────────────────
@@ -2028,6 +2053,9 @@ module Tina4
       RUBY
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real file-backed Queue spec (push a real job + daemon wiring).
+      emit_queue_test(topic, slug)
     end
 
     # ── Generator: validator ──────────────────────────────────────────────
@@ -2043,15 +2071,15 @@ module Tina4
         return
       end
 
-      body = ai_fill(
-        "validate_#{snake}",
-        "declare the validation rules for a #{name} payload",
-        'validator.required("name").email("email").min_length("name", 2).integer("age")',
-        "validator:#{snake}: add the rule set",
-        given: "validator -> Tina4::Validator.new(data) (chainable)",
-        ret: "the same validator (caller checks .is_valid? / .errors)",
-        ground: 'tina4_context("validate request body with Validator", "ruby")'
-      )
+      # Ships a working starter rule (not a loud stub): a rules-less validator
+      # validates nothing, so there would be no negative case for the co-emitted
+      # valid/invalid spec to assert against. `required("name")` mirrors the model
+      # generator's default `name` field — edit it for your real payload.
+      body = extend_marker(
+        "add / adjust the rules for your #{name} payload",
+        'e.g. validator.email("email").min_length("name", 2).integer("age") · ' \
+        'ground: tina4_context("validate request body with Validator", "ruby")'
+      ) + %(  validator.required("name")\n)
       content = <<~RUBY
         # #{name} request validator.
         #
@@ -2071,6 +2099,9 @@ module Tina4
       RUBY
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real valid + invalid spec against the starter rule.
+      emit_validator_test(name, snake)
     end
 
     # ── Generator: seeder ─────────────────────────────────────────────────
@@ -2087,15 +2118,14 @@ module Tina4
         return
       end
 
-      body = ai_fill(
-        "#{table}_field_overrides",
-        "map #{name} fields to fake-data generators (only those needing a specific shape)",
-        "fake.name / fake.email / fake.integer(min: 1, max: 99) / fake.company  (Tina4::FakeData)",
-        "seeder:#{name}: return the field->value overrides Hash",
-        given: "fake -> Tina4::FakeData instance",
-        ret: '{ "email" => ->(f) { f.email }, "status" => "active" }  (Hash)',
-        ground: 'tina4_context("seed ORM model with FakeData", "ruby")'
-      )
+      # Ships working out of the box (not a loud stub): seed_orm auto-fills every
+      # field by type/name, so a zero-override seeder already seeds real rows.
+      # Return overrides only for fields that need a specific shape.
+      body = extend_marker(
+        "override #{name} fields that need a specific shape (optional)",
+        'e.g. { "email" => ->(fake) { fake.email }, "status" => "active" } · ' \
+        'ground: tina4_context("seed ORM model with FakeData", "ruby")'
+      ) + %(  {}\n)
       content = <<~RUBY
         # Seeder for #{name} — run with: tina4ruby seed
         #
@@ -2113,9 +2143,9 @@ module Tina4
         end
 
         # Wiring: seed rows via Tina4.seed_orm. Guarded on a bound database so
-        # merely LOADING this file (e.g. in a spec) does not run the unfilled
-        # placeholder — `tina4ruby seed` binds the DB first, at which point the
-        # override raises LOUD until filled.
+        # merely LOADING this file (e.g. from another script) is a no-op — only
+        # `tina4ruby seed` (which binds the DB first) actually seeds. seed_orm
+        # auto-fills every field, so this works out of the box.
         if Tina4.database
           fake = Tina4::FakeData.new
           summary = Tina4.seed_orm(#{name}, count: 20, overrides: #{table}_field_overrides(fake))
@@ -2124,6 +2154,9 @@ module Tina4
       RUBY
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real seeding spec (runs the seeder against real SQLite).
+      emit_seeder_test(name, table)
     end
 
     # ── Generator: websocket ──────────────────────────────────────────────
@@ -2178,6 +2211,9 @@ module Tina4
       RUBY
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real handler spec (Router registration + drives the handler).
+      emit_websocket_test(ws_path, base, handler)
     end
 
     # ── Generator: listener ───────────────────────────────────────────────
@@ -2223,6 +2259,497 @@ module Tina4
       RUBY
       File.write(path, content)
       puts "  Created #{path}"
+
+      # Co-emit a real event-bus spec (emit the real event, assert it ran).
+      emit_listener_test(event, slug)
+    end
+
+    # ── co-emitted tests: every code-producing generator ships a real spec ──
+    #
+    # One shared writer (#write_test) + one focused builder per generator. The
+    # builders are NOT copy-paste boilerplate — each drives a different real
+    # subsystem (real SQLite / TestClient / Router / ServiceRunner / Queue /
+    # event bus), grounded on the same real-collaborator patterns the
+    # scaffolding-first acceptance matrix already proves. CRUD-shaped scaffolds
+    # (working code) get behavioural specs; logic-shaped scaffolds (loud
+    # NotImplementedError stubs) get wiring specs + a lock-in that the
+    # placeholder fails loud. `test` itself (it IS the test generator) and
+    # form/view (template-only, no Ruby logic to run) are the only exemptions.
+    # Ruby mirror of the Python master's _write_test + _emit_* builders
+    # (tina4_python/cli/__init__.py, owner req 2026-07-10, Phase 4).
+
+    # Write a co-emitted spec to spec/<name>_spec.rb — the SINGLE place a
+    # generated spec is written (path + overwrite refusal + the "Created" line
+    # every generator prints). Generalized from #generate_test so the generators
+    # share one rule instead of a dozen copy-pasted write blocks.
+    def write_test(test_name, content)
+      dir = "spec"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{test_name}_spec.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # snake/kebab/dotted -> PascalCase: user_created -> UserCreated.
+    def pascalize(name)
+      name.to_s.split(/[^0-9a-zA-Z]+/).reject(&:empty?).map { |part| part[0].upcase + part[1..].to_s }.join
+    end
+
+    # A source-text Ruby literal that is a valid value for a scaffolded field
+    # type (used to build a real create() payload in the model spec).
+    def sample_literal(field_type)
+      {
+        "int" => "1", "integer" => "1",
+        "float" => "1.5", "numeric" => "1.5", "decimal" => "1.5",
+        "bool" => "true", "boolean" => "true",
+        "datetime" => '"2020-01-01 00:00:00"',
+        "blob" => '"x"',
+      }.fetch((field_type || "string").to_s.downcase, '"sample"')
+    end
+
+    # model -> real SQLite roundtrip (create / read back / missing -> nil).
+    def emit_model_test(model, table, fields)
+      fields = fields.empty? ? [["name", "string"]] : fields
+      payload = fields.map { |fname, ftype| %("#{fname}" => #{sample_literal(ftype)}) }.join(", ")
+      # Assert a STRING field round-trips (type-safe); else just the id round-trips
+      # (avoids datetime/bool/float equality pitfalls on the read-back).
+      string_field = fields.find { |_f, t| %w[string str text].include?((t || "string").to_s.downcase) }
+      value_assert = string_field ? %(\n      expect(fetched.#{string_field[0]}).to eq("sample")) : ""
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real ORM roundtrip spec for #{model} — no mocks, real SQLite.
+        #
+        # Generated with src/orm/#{table}.rb by `tina4ruby generate model #{model}`.
+        # The model scaffold is working code, so this passes on generation: it
+        # binds a real on-disk SQLite database, creates the table, saves a row and
+        # reads it back.
+        require "spec_helper"
+        require "tmpdir"
+        require_relative "../src/orm/#{table}"
+
+        RSpec.describe "#{model} model (real SQLite)" do
+          before(:each) do
+            @dir = Dir.mktmpdir("#{table}_model")
+            Tina4.bind_database(Tina4::Database.new("sqlite:///" + File.join(@dir, "test.db")))
+            #{model}.create_table
+          end
+
+          after(:each) { FileUtils.rm_rf(@dir) }
+
+          it "creates a row and reads it back" do
+            row = #{model}.create({ #{payload} })
+            expect(row).not_to be_nil
+            expect(row.id).not_to be_nil
+            fetched = #{model}.find(row.id)
+            expect(fetched).not_to be_nil
+            expect(fetched.id).to eq(row.id)#{value_assert}
+          end
+
+          it "returns nil for a missing id" do
+            expect(#{model}.find(999999)).to be_nil
+          end
+        end
+      RUBY
+      write_test("#{table}_model", content)
+    end
+
+    # route (no --model) -> real Router registration + the handler is a live loud
+    # stub. (route --model reuses the secure-gate #generate_test spec instead.)
+    def emit_route_stub_test(route)
+      klass = pascalize(route)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Routing spec for #{route} — no mocks, real Router.
+        #
+        # Generated with src/routes/#{route}.rb by `tina4ruby generate route
+        # #{route}` (no --model). The handlers are AI-FILL stubs that raise until
+        # you implement them, so this tests what IS live on generation: all five
+        # routes register on the REAL Router, and the list handler fails loud until
+        # filled. Fill a handler, then assert its real response here.
+        require "spec_helper"
+
+        RSpec.describe "#{klass} routing (real Router)" do
+          before(:each) { load File.expand_path("../src/routes/#{route}.rb", __dir__) }
+
+          it "registers all five CRUD routes" do
+            paths = Tina4::Router.routes.map { |r| [r.method, r.path] }
+            expect(paths).to include(["GET", "/api/#{route}"])
+            expect(paths).to include(["GET", "/api/#{route}/{id:int}"])
+            expect(paths).to include(["POST", "/api/#{route}"])
+            expect(paths).to include(["PUT", "/api/#{route}/{id:int}"])
+            expect(paths).to include(["DELETE", "/api/#{route}/{id:int}"])
+          end
+
+          it "the list handler is a live stub (raises until filled)" do
+            route, = Tina4::Router.match("GET", "/api/#{route}")
+            expect { route.handler.call(nil, nil) }.to raise_error(NotImplementedError)
+          end
+        end
+      RUBY
+      write_test(route, content)
+    end
+
+    # middleware -> a request routed THROUGH the real server dispatch.
+    def emit_middleware_test(name, snake)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real dispatch spec for the #{name} middleware — no mocks.
+        #
+        # Generated with src/middleware/#{snake}.rb by `tina4ruby generate
+        # middleware #{name}`. Drives the middleware through the REAL server
+        # dispatch (Tina4::Middleware.run_before / run_after) with a real Request +
+        # Response — the same code path the live server runs.
+        require "spec_helper"
+        require "stringio"
+        require_relative "../src/middleware/#{snake}"
+
+        RSpec.describe "#{name} middleware (real dispatch)" do
+          before(:each) { Tina4::Middleware.clear! if Tina4::Middleware.respond_to?(:clear!) }
+
+          def build_request
+            env = {
+              "REQUEST_METHOD" => "GET", "PATH_INFO" => "/", "QUERY_STRING" => "",
+              "HTTP_HOST" => "localhost", "rack.input" => StringIO.new("")
+            }
+            Tina4::Request.new(env)
+          end
+
+          it "before_* passes the request through (does not block the handler)" do
+            response = Tina4::Response.new
+            ok = Tina4::Middleware.run_before([#{name}], build_request, response)
+            expect(ok).to be true                 # the scaffold does not halt the chain
+            expect(response.status_code).to be < 400
+          end
+
+          it "after_* runs and leaves the response intact" do
+            response = Tina4::Response.new
+            Tina4::Middleware.run_after([#{name}], build_request, response)
+            expect(response.status_code).to be < 400
+          end
+        end
+      RUBY
+      write_test(snake, content)
+    end
+
+    # service -> registrable / discoverable on the REAL ServiceRunner + loud stub.
+    def emit_service_test(name, snake)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real ServiceRunner spec for the #{name} service — no mocks.
+        #
+        # Generated with src/services/#{snake}.rb by `tina4ruby generate service
+        # #{name}`. Loading the file registers the scaffold on the REAL
+        # class-level ServiceRunner registry; the task body is an AI-FILL stub that
+        # raises until filled.
+        require "spec_helper"
+        require_relative "../src/services/#{snake}"
+
+        RSpec.describe "#{pascalize(snake)} service (real ServiceRunner)" do
+          it "registers on the ServiceRunner registry" do
+            expect(Tina4::ServiceRunner.list.any? { |s| s[:name] == "#{snake}" }).to be true
+          end
+
+          it "the task is a live stub (raises until filled)" do
+            expect { #{snake}_task(nil) }.to raise_error(NotImplementedError)
+          end
+        end
+      RUBY
+      write_test(snake, content)
+    end
+
+    # queue -> push a REAL job onto the real file-backed Queue + daemon wiring.
+    def emit_queue_test(topic, slug)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real file-backed Queue spec for the #{topic} worker — no mocks.
+        #
+        # Generated with src/services/#{slug}_consumer.rb by `tina4ruby generate
+        # queue #{topic}`. Pushes a REAL job onto the real file-backed Queue and
+        # asserts it is enqueued, and that the consumer is wired as a daemon
+        # service. handle_#{slug} is an AI-FILL stub that raises until you fill it
+        # — then assert the processed side effect here.
+        require "spec_helper"
+        require_relative "../src/services/#{slug}_consumer"
+
+        RSpec.describe "#{pascalize(slug)} queue (real file-backed Queue)" do
+          it "publish enqueues a real job" do
+            before_size = Tina4::Queue.new(topic: "#{topic}").size
+            job = publish_#{slug}({ "hello" => "world" })
+            expect(job).not_to be_nil
+            expect(job.id).not_to be_nil
+            expect(Tina4::Queue.new(topic: "#{topic}").size).to be >= before_size + 1
+          end
+
+          it "the consumer is wired as a daemon service" do
+            svc = Tina4::ServiceRunner.list.find { |s| s[:name] == "#{topic}-consumer" }
+            expect(svc).not_to be_nil
+            expect(svc[:options][:daemon]).to be true
+          end
+
+          it "handle_#{slug} is a live stub (raises until filled)" do
+            expect { handle_#{slug}({}) }.to raise_error(NotImplementedError)
+          end
+        end
+      RUBY
+      write_test(slug, content)
+    end
+
+    # validator -> run the scaffold against valid + invalid real input.
+    def emit_validator_test(name, snake)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real validation spec for validate_#{snake} — no mocks.
+        #
+        # Generated with src/validators/#{snake}.rb by `tina4ruby generate
+        # validator #{name}`. The scaffold ships a starter rule (required "name"),
+        # so this passes on generation — adjust the rules for your payload and
+        # update these cases with them.
+        require "spec_helper"
+        require_relative "../src/validators/#{snake}"
+
+        RSpec.describe "#{pascalize(snake)} validator" do
+          it "valid input passes" do
+            expect(validate_#{snake}({ "name" => "Ada" }).is_valid?).to be true
+          end
+
+          it "invalid input fails with errors" do
+            result = validate_#{snake}({})
+            expect(result.is_valid?).to be false
+            expect(result.errors).not_to be_empty
+          end
+        end
+      RUBY
+      write_test(snake, content)
+    end
+
+    # seeder -> run the scaffold against real SQLite, assert rows created.
+    def emit_seeder_test(model, table)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real seeding spec for the #{model} seeder — no mocks, real SQLite.
+        #
+        # Generated with seeds/#{table}_seeder.rb by `tina4ruby generate seeder
+        # #{model}`. Binds a real SQLite DB, creates the table, then loads the
+        # scaffolded seeder (its guarded block auto-fills every field via FakeData
+        # and seeds rows) and asserts rows were created.
+        require "spec_helper"
+        require "tmpdir"
+        require_relative "../src/orm/#{table}"
+
+        RSpec.describe "#{model} seeder (real SQLite)" do
+          before(:each) do
+            @dir = Dir.mktmpdir("#{table}_seeder")
+            Tina4.bind_database(Tina4::Database.new("sqlite:///" + File.join(@dir, "seed.db")))
+            #{model}.create_table
+          end
+
+          after(:each) { FileUtils.rm_rf(@dir) }
+
+          it "field_overrides returns a Hash" do
+            load File.expand_path("../seeds/#{table}_seeder.rb", __dir__)
+            expect(#{table}_field_overrides(Tina4::FakeData.new)).to be_a(Hash)
+          end
+
+          it "running the seeder creates rows" do
+            load File.expand_path("../seeds/#{table}_seeder.rb", __dir__)
+            expect(#{model}.count).to be >= 1
+          end
+        end
+      RUBY
+      write_test("#{table}_seeder", content)
+    end
+
+    # websocket -> real Router registration + drive the real handler (the
+    # socket-free "close" event) directly (no mock socket).
+    def emit_websocket_test(ws_path, base, _handler)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real handler spec for the #{ws_path} WebSocket route — no mocks.
+        #
+        # Generated with src/routes/ws_#{base}.rb by `tina4ruby generate websocket
+        # ...`. Confirms the handler registers on the REAL Router and drives the
+        # real handler for the :close event (no socket needed). The :message branch
+        # is an AI-FILL stub that raises until you fill it; a full RFC6455 loopback
+        # is out of scope for a unit spec, so assert its broadcast/response against
+        # a live server once implemented.
+        require "spec_helper"
+
+        RSpec.describe "#{pascalize(base)} WebSocket (real Router)" do
+          # `load` (not require) re-registers the handler after spec_helper's
+          # after(:each) Router.clear! wipes the ws routes between examples.
+          before(:each) { load File.expand_path("../src/routes/ws_#{base}.rb", __dir__) }
+
+          def ws_route
+            Tina4::Router.get_web_socket_routes.find { |r| r.path == "#{ws_path}" }
+          end
+
+          it "registers the handler on the Router ws routes" do
+            expect(ws_route).not_to be_nil
+          end
+
+          it "handles the :close event cleanly (no connection needed)" do
+            expect(ws_route.handler.call(nil, :close, nil)).to be_nil
+          end
+
+          it "the :message branch is a live stub (raises until filled)" do
+            expect { ws_route.handler.call(nil, :message, "hi") }.to raise_error(NotImplementedError)
+          end
+        end
+      RUBY
+      write_test("ws_#{base}", content)
+    end
+
+    # listener -> emit the REAL event on the real bus, assert the listener ran.
+    def emit_listener_test(event, slug)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real event-bus spec for the '#{event}' listener — no mocks.
+        #
+        # Generated with src/listeners/#{slug}.rb by `tina4ruby generate listener
+        # #{event}`. Confirms the listener binds on the REAL event bus and that
+        # emitting the event reaches it. The reaction body is an AI-FILL stub that
+        # raises until filled, so a strict emit re-raises here (proving it ran).
+        require "spec_helper"
+
+        RSpec.describe "#{pascalize(slug)} listener (real event bus)" do
+          before(:each) do
+            Tina4::Events.clear
+            load File.expand_path("../src/listeners/#{slug}.rb", __dir__)
+          end
+
+          it "binds on the event bus" do
+            expect(Tina4::Events.events).to include("#{event}")
+            expect(Tina4::Events.listeners("#{event}").length).to be >= 1
+          end
+
+          it "emitting reaches the listener (strict re-raises the stub)" do
+            expect { Tina4::Events.emit("#{event}", { "id" => 1 }, strict: true) }.to raise_error(NotImplementedError)
+          end
+        end
+      RUBY
+      write_test(slug, content)
+    end
+
+    # auth -> real register / login / me end-to-end via the real TestClient.
+    # No dynamic names (always User + /api/auth/*), so a fully-literal
+    # single-quoted heredoc keeps the emitted `#{token}` interpolation intact.
+    def emit_auth_test
+      content = <<~'RUBY'
+        # frozen_string_literal: true
+        #
+        # Real auth spec — register / login / me via the real TestClient.
+        #
+        # Generated with the auth scaffold by `tina4ruby generate auth`. No mocks:
+        # real Router, real Auth (PBKDF2 + JWT), real SQLite. register + login are
+        # public (.no_auth); the token from login authenticates /api/auth/me.
+        require "spec_helper"
+        require "tmpdir"
+        require_relative "../src/orm/user"
+
+        RSpec.describe "Auth (register / login / me via real TestClient)" do
+          let(:client) { Tina4::TestClient.new }
+
+          before(:each) do
+            @dir = Dir.mktmpdir("auth_spec")
+            # Fresh RSA key material so get_token / valid_token agree.
+            Tina4::Auth.instance_variable_set(:@private_key, nil)
+            Tina4::Auth.instance_variable_set(:@public_key, nil)
+            Tina4::Auth.instance_variable_set(:@keys_dir, nil)
+            Tina4::Auth.setup(@dir)
+            # A stray API key would authorise every request regardless of the JWT.
+            @prior_api_key = ENV.delete("TINA4_API_KEY")
+            Tina4.bind_database(Tina4::Database.new("sqlite:///" + File.join(@dir, "auth.db")))
+            User.create_table
+            # `load` (not require) re-registers the routes after spec_helper's
+            # after(:each) Router.clear! wipes them between examples.
+            load File.expand_path("../src/routes/auth.rb", __dir__)
+          end
+
+          after(:each) do
+            ENV["TINA4_API_KEY"] = @prior_api_key if @prior_api_key
+            FileUtils.rm_rf(@dir)
+          end
+
+          it "register, then duplicate 409, then login, then me with the token" do
+            reg = client.post("/api/auth/register", json: { email: "a@b.c", password: "secret12" })
+            expect(reg.status).to eq(201)
+
+            dup = client.post("/api/auth/register", json: { email: "a@b.c", password: "secret12" })
+            expect(dup.status).to eq(409)
+
+            login = client.post("/api/auth/login", json: { email: "a@b.c", password: "secret12" })
+            expect(login.status).to eq(200)
+            token = login.json["token"]
+            expect(token).not_to be_nil
+
+            me = client.get("/api/auth/me", headers: { "Authorization" => "Bearer #{token}" })
+            expect(me.status).to eq(200)
+            expect(me.json["email"]).to eq("a@b.c")
+          end
+
+          it "login with the wrong password is 401" do
+            client.post("/api/auth/register", json: { email: "x@y.z", password: "secret12" })
+            bad = client.post("/api/auth/login", json: { email: "x@y.z", password: "WRONG" })
+            expect(bad.status).to eq(401)
+          end
+
+          it "me without a token is 401" do
+            expect(client.get("/api/auth/me").status).to eq(401)
+          end
+        end
+      RUBY
+      write_test("auth", content)
+    end
+
+    # migration (create_*) -> apply UP then DOWN against real SQLite via the real
+    # Migration runner, asserting the table appears then disappears. Only for
+    # CREATE migrations — a placeholder ALTER migration has no real SQL yet.
+    def emit_migration_test(migration_name, table, _up_file, _down_file)
+      content = <<~RUBY
+        # frozen_string_literal: true
+        #
+        # Real migration spec for #{migration_name} — no mocks, real SQLite.
+        #
+        # Generated with the migration by `tina4ruby generate migration
+        # #{migration_name}`. Runs the migration through the REAL Tina4::Migration
+        # runner against a fresh real SQLite database, asserts the table exists,
+        # then rolls back and asserts it is gone — the raw UP/DOWN SQL the runner
+        # executes.
+        require "spec_helper"
+        require "tmpdir"
+
+        RSpec.describe "#{pascalize(table)} migration (real SQLite up/down)" do
+          it "UP creates the table and DOWN drops it" do
+            dir = Dir.mktmpdir("#{table}_migration")
+            db = Tina4::Database.new("sqlite:///" + File.join(dir, "mig.db"))
+            migrations_dir = File.expand_path("../migrations", __dir__)
+            migration = Tina4::Migration.new(db, migrations_dir: migrations_dir)
+
+            migration.run
+            expect(db.table_exists?("#{table}")).to be true
+
+            migration.rollback(1)
+            expect(db.table_exists?("#{table}")).to be false
+
+            db.close
+            FileUtils.rm_rf(dir)
+          end
+        end
+      RUBY
+      write_test("#{table}_migration", content)
     end
 
     # ── help ──────────────────────────────────────────────────────────────

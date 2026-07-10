@@ -668,34 +668,50 @@ RSpec.describe "CLI scaffolding-first generators" do
   end
 
   describe "generate validator" do
-    it "loads, wires Tina4::Validator, raises when called, idempotent" do
+    # Phase 4: validator reclassified from loud-stub to WORKING-DEFAULT. It now
+    # ships a starter `required("name")` rule (mirrors the model default field)
+    # so the co-emitted valid/invalid spec is green on generation — an EXTEND
+    # marker (not an AI-FILL raise) points at where to add rules.
+    it "loads, wires Tina4::Validator, ships a working rule, idempotent" do
       gen("validator", "CreateUser")
       path = File.join(@tmp_dir, "src", "validators", "create_user.rb")
       expect(File.exist?(path)).to be true
       expect(compiles?(path)).to be true
       load path
       src = slurp(path)
-      expect(src).to include("AI-FILL").and include("# Ground:")
-      expect(src).to include("Tina4::Validator")                       # real wiring
-      expect { validate_create_user({}) }.to raise_error(NotImplementedError)
+      expect(src).to include("EXTEND").and include("ground:")
+      expect(src).not_to include("NotImplementedError")                 # no loud stub
+      expect(src).to include("Tina4::Validator")                        # real wiring
+      expect(src).to include('validator.required("name")')              # working starter rule
+      # Working default: valid input passes, invalid input fails with errors.
+      expect(validate_create_user({ "name" => "Ada" }).is_valid?).to be true
+      result = validate_create_user({})
+      expect(result.is_valid?).to be false
+      expect(result.errors).not_to be_empty
       expect(gen("validator", "CreateUser")).to include("already exists")
     end
   end
 
   describe "generate seeder" do
-    it "loads clean w/o DB, override raises, seed_orm seeds the model for real" do
+    # Phase 4: seeder reclassified from loud-stub to WORKING-DEFAULT. field
+    # overrides now return {} (seed_orm auto-fills every field), so a zero-config
+    # seeder already seeds real rows and the co-emitted spec is green on
+    # generation — an EXTEND marker (not an AI-FILL raise) points at where to add
+    # per-field overrides.
+    it "loads clean w/o DB, override returns {}, seed_orm seeds the model for real" do
       gen("model", "Sprocket", "--fields", "name:string", "--no-migration")
       gen("seeder", "Sprocket")
       path = File.join(@tmp_dir, "seeds", "sprocket_seeder.rb")
       expect(File.exist?(path)).to be true
       expect(compiles?(path)).to be true
-      # B3 — loads cleanly with NO DB bound (the guard skips the placeholder)
+      # B3 — loads cleanly with NO DB bound (the guarded block is a no-op)
       Tina4.instance_variable_set(:@database, nil)
       expect { load path }.not_to raise_error
       src = slurp(path)
-      expect(src).to include("AI-FILL").and include("Tina4.seed_orm")
-      # S1 — the override raises until filled
-      expect { sprocket_field_overrides(Tina4::FakeData.new) }.to raise_error(NotImplementedError)
+      expect(src).to include("EXTEND").and include("Tina4.seed_orm")
+      expect(src).not_to include("NotImplementedError")                # no loud stub
+      # S1 — the working default returns an (empty) Hash, not a raise
+      expect(sprocket_field_overrides(Tina4::FakeData.new)).to eq({})
       # S3 — the wiring target is real: seed_orm actually seeds the generated model
       bind_db!
       model = Object.const_get(:Sprocket)
