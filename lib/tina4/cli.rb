@@ -5,7 +5,61 @@ require "fileutils"
 
 module Tina4
   class CLI
-    COMMANDS = %w[init start migrate migrate:status migrate:rollback seed seed:create test version routes console generate ai metrics help].freeze
+    # ── Command registries — the single source of truth ─────────────────
+    #
+    # ONE entry per command/generator drives dispatch (#run / #cmd_generate),
+    # the human help (#cmd_help), AND the machine-readable manifest
+    # (`commands --json`). Add a command in ONE place and it appears in
+    # dispatch, help, and discovery — there is no second list to sync. Ruby
+    # mirror of the Python master's COMMANDS / GENERATORS registries
+    # (tina4_python/cli/__init__.py).
+    #
+    #   GENERATORS[name] = { handler: :method_symbol, usage: str, summary: str }
+    #   COMMANDS[name]   = { handler: :method_symbol, summary: str,
+    #                        usage?: str,          # arg/flag hint for #cmd_help (human only)
+    #                        args?: [str],         # positional args for the manifest ("x?" = optional)
+    #                        subcommands?: [str] } # sub-names for the manifest (generate)
+    #
+    # Handlers are instance-method symbols dispatched via #send: GENERATORS
+    # handlers take (name, flags); COMMANDS handlers take (argv).
+
+    GENERATORS = {
+      "model"      => { handler: :generate_model,      usage: '<Name> [--fields "name:string,price:float"]', summary: "ORM model + matching migration" },
+      "route"      => { handler: :generate_route,      usage: "<name> [--model Name] [--public]",             summary: "CRUD route file, secure by default (--public opens writes)" },
+      "crud"       => { handler: :generate_crud,       usage: '<Name> [--fields "..."] [--public]',           summary: "Model + migration + routes + form + view + test" },
+      "migration"  => { handler: :generate_migration,  usage: "<description>",                                 summary: "Timestamped migration file (UP/DOWN)" },
+      "middleware" => { handler: :generate_middleware, usage: "<Name>",                                        summary: "Middleware with before/after hooks" },
+      "test"       => { handler: :generate_test,       usage: "<name> [--model Name]",                         summary: "RSpec test file" },
+      "form"       => { handler: :generate_form,       usage: '<Name> [--fields "..."]',                       summary: "Form template with inputs matching model fields" },
+      "view"       => { handler: :generate_view,       usage: '<Name> [--fields "..."]',                       summary: "List + detail view templates" },
+      "auth"       => { handler: :generate_auth,       usage: "",                                              summary: "Login/register routes + User model + templates" },
+      "service"    => { handler: :generate_service,    usage: '<Name> [--every 5m | --cron "..."]',            summary: "Scheduled ServiceRunner task (src/services/)" },
+      "queue"      => { handler: :generate_queue,      usage: "<topic>",                                       summary: "Producer + consumer worker (src/services/)" },
+      "validator"  => { handler: :generate_validator,  usage: "<Name>",                                        summary: "Request-body Validator (src/validators/)" },
+      "seeder"     => { handler: :generate_seeder,     usage: "<Model>",                                       summary: "FakeData + seed_orm seeder (seeds/)" },
+      "websocket"  => { handler: :generate_websocket,  usage: "<path>",                                        summary: "Tina4.websocket handler (src/routes/)" },
+      "listener"   => { handler: :generate_listener,   usage: "<event>",                                       summary: "Tina4::Events.on listener (src/listeners/)" },
+    }.freeze
+
+    COMMANDS = {
+      "init"             => { handler: :cmd_init,             usage: "[NAME]", args: ["name?"],           summary: "Initialize a new Tina4 project" },
+      "start"            => { handler: :cmd_start,            usage: "[options]",                          summary: "Start the Tina4 web server" },
+      "serve"            => { handler: :cmd_start,                                                         summary: "Alias for start" },
+      "migrate"          => { handler: :cmd_migrate,          usage: "[--create NAME] [--rollback N]",     summary: "Run database migrations" },
+      "migrate:status"   => { handler: :cmd_migrate_status,                                                summary: "Show migration status (completed and pending)" },
+      "migrate:rollback" => { handler: :cmd_migrate_rollback, usage: "[-n N]",                             summary: "Rollback the last batch of migrations" },
+      "seed"             => { handler: :cmd_seed,             usage: "[--clear]",                          summary: "Run all seed files in seeds/" },
+      "seed:create"      => { handler: :cmd_seed_create,      usage: "NAME", args: ["name"],               summary: "Create a new seed file" },
+      "test"             => { handler: :cmd_test,                                                          summary: "Run inline tests" },
+      "version"          => { handler: :cmd_version,                                                       summary: "Show Tina4 version" },
+      "routes"           => { handler: :cmd_routes,                                                        summary: "List all registered routes" },
+      "console"          => { handler: :cmd_console,                                                       summary: "Start an interactive console" },
+      "generate"         => { handler: :cmd_generate,         usage: "<what> <name> [options]", subcommands: GENERATORS.keys, summary: "Generate scaffolding (see Generators below)" },
+      "ai"               => { handler: :cmd_ai,               usage: "[--all]",                            summary: "Detect AI tools and install context files" },
+      "metrics"          => { handler: :cmd_metrics,          usage: "[--top N] [--json] [--fail-on warn|error] [--path DIR]", summary: "Rank top code-quality offenders" },
+      "commands"         => { handler: :cmd_commands,         usage: "[--json]",                           summary: "List available commands (add --json for machine form)" },
+      "help"             => { handler: :cmd_help,                                                          summary: "Show this help message" },
+    }.freeze
 
     # ── Field type mapping ──────────────────────────────────────────────
     FIELD_TYPE_MAP = {
@@ -29,22 +83,14 @@ module Tina4
 
     def run(argv)
       command = argv.shift || "help"
-      case command
-      when "init"       then cmd_init(argv)
-      when "start", "serve" then cmd_start(argv)
-      when "migrate"    then cmd_migrate(argv)
-      when "migrate:status" then cmd_migrate_status(argv)
-      when "migrate:rollback" then cmd_migrate_rollback(argv)
-      when "seed"       then cmd_seed(argv)
-      when "seed:create" then cmd_seed_create(argv)
-      when "test"       then cmd_test(argv)
-      when "version"    then cmd_version
-      when "routes"     then cmd_routes
-      when "console"    then cmd_console
-      when "generate"   then cmd_generate(argv)
-      when "ai"         then cmd_ai(argv)
-      when "metrics"    then cmd_metrics(argv)
-      when "help", "-h", "--help" then cmd_help
+      command = "help" if %w[-h --help].include?(command)
+
+      # Dispatch from the single-source-of-truth COMMANDS registry. The same
+      # registry drives #cmd_help and the `commands --json` manifest, so
+      # dispatch, help, and discovery never drift.
+      spec = COMMANDS[command]
+      if spec
+        send(spec[:handler], argv)
       else
         puts "Unknown command: #{command}"
         cmd_help
@@ -504,14 +550,14 @@ module Tina4
 
     # ── version ───────────────────────────────────────────────────────────
 
-    def cmd_version
+    def cmd_version(_argv = nil)
       require_relative "version"
       puts "Tina4 Ruby v#{Tina4::VERSION}"
     end
 
     # ── routes ────────────────────────────────────────────────────────────
 
-    def cmd_routes
+    def cmd_routes(_argv = nil)
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
       load_routes(Dir.pwd)
@@ -528,7 +574,7 @@ module Tina4
 
     # ── console ───────────────────────────────────────────────────────────
 
-    def cmd_console
+    def cmd_console(_argv = nil)
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
       load_routes(Dir.pwd)
@@ -655,15 +701,13 @@ module Tina4
 
     # ── generate ────────────────────────────────────────────────────────
 
-    ALL_GENERATORS = "model, route, crud, migration, middleware, test, form, view, auth, " \
-                     "service, queue, validator, seeder, websocket, listener"
-
     def cmd_generate(argv)
       what = argv.shift
+      all = GENERATORS.keys.join(", ")  # single source: the GENERATORS registry
 
       unless what
         puts "Usage: tina4ruby generate <what> <name> [options]"
-        puts "  Generators: #{ALL_GENERATORS}"
+        puts "  Generators: #{all}"
         puts '  Options:    --fields "name:string,price:float"  --model ModelName'
         puts '              --public                  open a route'"'"'s writes (default: secure)'
         puts '              --every 5m | --cron "..."  service schedule'
@@ -682,25 +726,14 @@ module Tina4
       name = no_name_generators.include?(what) ? "" : argv.shift
       flags, _positional = parse_flags(argv)
 
-      case what
-      when "model"      then generate_model(name, flags)
-      when "route"      then generate_route(name, flags)
-      when "crud"       then generate_crud(name, flags)
-      when "migration"  then generate_migration(name, flags)
-      when "middleware"  then generate_middleware(name, flags)
-      when "test"       then generate_test(name, flags)
-      when "form"       then generate_form(name, flags)
-      when "view"       then generate_view(name, flags)
-      when "auth"       then generate_auth(name, flags)
-      when "service"    then generate_service(name, flags)
-      when "queue"      then generate_queue(name, flags)
-      when "validator"  then generate_validator(name, flags)
-      when "seeder"     then generate_seeder(name, flags)
-      when "websocket"  then generate_websocket(name, flags)
-      when "listener"   then generate_listener(name, flags)
+      # Dispatch from the GENERATORS registry (single source of truth for the
+      # generate subcommands; also feeds #cmd_help and the manifest).
+      gen_spec = GENERATORS[what]
+      if gen_spec
+        send(gen_spec[:handler], name, flags)
       else
         puts "Unknown generator: #{what}"
-        puts "  Available: #{ALL_GENERATORS}"
+        puts "  Available: #{all}"
         exit 1
       end
     end
@@ -1869,66 +1902,109 @@ module Tina4
 
     # ── help ──────────────────────────────────────────────────────────────
 
-    def cmd_help
-      puts <<~HELP
-        Tina4 Ruby CLI
+    # Print the human-readable command reference.
+    #
+    # Generated from the COMMANDS and GENERATORS registries — the SAME single
+    # source of truth that drives dispatch (#run / #cmd_generate) and the
+    # `commands --json` manifest — so the help text can never drift from what
+    # the CLI actually does.
+    def cmd_help(_argv = nil)
+      command_rows = COMMANDS.map do |name, spec|
+        ["#{name} #{spec[:usage]}".rstrip, spec[:summary]]
+      end
+      generator_rows = GENERATORS.map do |name, spec|
+        ["generate #{name} #{spec[:usage]}".rstrip, spec[:summary]]
+      end
+      # Align summaries in a column; a left cell longer than the cap overflows
+      # cleanly (2-space gap) rather than pushing every other summary out.
+      pad = [46, (command_rows + generator_rows).map { |left, _| left.length }.max].min
 
-        Usage: tina4ruby COMMAND [options]
+      row = lambda do |left, summary|
+        gap = left.length <= pad ? pad : left.length
+        "  #{left.ljust(gap)}  #{summary}"
+      end
 
-        Commands:
-          init [NAME]        Initialize a new Tina4 project
-          start              Start the Tina4 web server
-          serve              Alias for start
-          migrate            Run database migrations
-          migrate:status     Show migration status (completed and pending)
-          migrate:rollback   Rollback the last batch of migrations
-          seed               Run all seed files in seeds/
-          seed:create NAME   Create a new seed file
-          test               Run inline tests
-          version            Show Tina4 version
-          routes             List all registered routes
-          console            Start an interactive console
-          ai                 Detect AI tools and install context files
-          metrics            Rank top code-quality offenders
-          help               Show this help message
+      lines = ["Tina4 Ruby CLI", "", "Usage: tina4ruby COMMAND [options]", "", "Commands:"]
+      lines += command_rows.map { |left, summary| row.call(left, summary) }
+      lines += ["", "Generators:"]
+      lines += generator_rows.map { |left, summary| row.call(left, summary) }
+      lines += [
+        "",
+        "Scaffolding-first: logic-shaped generators (route without --model, service,",
+        "queue, validator, seeder, websocket, listener) emit wiring + an AI-FILL",
+        "placeholder (raise NotImplementedError) where the custom logic goes; CRUD-",
+        "shaped ones emit working code. Writes are secure by default; use --public",
+        "to open them.",
+        "",
+        "Metrics:",
+        "  metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]",
+        "    --top N        Show only the worst N offenders (default: 20)",
+        "    --json         Print machine-readable JSON ({summary, offenders}) for CI",
+        "    --fail-on      Exit 1 if any offender at/above this severity (warn|error)",
+        "    --path DIR     Scan DIR (default: src/, auto-resolves to the framework)",
+        "",
+        "Field types: string, int, float, bool, text, datetime, blob",
+        "Table names: singular by default (Product -> product)",
+        "",
+        "https://tina4.com",
+        "",
+        "Run 'tina4ruby COMMAND --help' for more information on a command.",
+      ]
+      puts lines.join("\n")
+    end
 
-        Generators:
-          generate model <Name> [--fields "name:string,price:float"]
-          generate route <name> [--model Name] [--public]   Writes secure by default; --public opens them
-          generate crud <Name> [--fields "..."] [--public]  Model + migration + routes + form + view + test
-          generate migration <description>
-          generate middleware <Name>
-          generate test <name>
-          generate form <Name> [--fields "..."]   Form template with inputs matching model fields
-          generate view <Name> [--fields "..."]   List + detail templates for viewing records
-          generate auth                           Login/register/logout routes + User model + templates
-          generate service <Name> [--every 5m | --cron "..."]   Scheduled ServiceRunner task (src/services/)
-          generate queue <topic>                  Producer + consumer worker (src/services/)
-          generate validator <Name>               Request-body Validator (src/validators/)
-          generate seeder <Model>                 FakeData + seed_orm seeder (seeds/)
-          generate websocket <path>               Tina4.websocket handler (src/routes/)
-          generate listener <event>               Tina4::Events.on listener (src/listeners/)
+    # ── commands (self-describing manifest) ─────────────────────────────────
 
-        Scaffolding-first: logic-shaped generators (route without --model, service,
-        queue, validator, seeder, websocket, listener) emit wiring + an AI-FILL
-        placeholder (raise NotImplementedError) where the custom logic goes; CRUD-
-        shaped ones emit working code. Writes are secure by default — use --public
-        to open them.
+    # Build the machine-readable manifest of the CLI's command surface.
+    #
+    # Pure data: reads the COMMANDS registry and the framework version — no
+    # bootstrap, no database, no migrations, no app imports. This is exactly
+    # what `commands --json` serializes and what the tina4 client consumes to
+    # discover which commands this framework supports.
+    #
+    # Shape:
+    #   { "framework" => "ruby", "version" => "<x.y.z>",
+    #     "commands" => [ { "name", "summary", "args"?, "subcommands"? }, ... ] }
+    def commands_manifest
+      require_relative "version"
+      commands = COMMANDS.map do |name, spec|
+        entry = { "name" => name, "summary" => spec[:summary] }
+        entry["args"] = spec[:args].dup if spec[:args]
+        entry["subcommands"] = spec[:subcommands].dup if spec[:subcommands]
+        entry
+      end
+      { "framework" => "ruby", "version" => Tina4::VERSION, "commands" => commands }
+    end
 
-        Metrics:
-          metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]
-            --top N        Show only the worst N offenders (default: 20)
-            --json         Print machine-readable JSON ({summary, offenders}) for CI
-            --fail-on      Exit 1 if any offender at/above this severity (warn|error)
-            --path DIR     Scan DIR (default: src/, auto-resolves to the framework)
+    # Emit the CLI's own command surface — the self-describing manifest.
+    #
+    #   tina4ruby commands           human-readable list
+    #   tina4ruby commands --json    machine-readable manifest (for the tina4 client)
+    #
+    # CHEAP + side-effect-free by contract: it only prints the static COMMANDS
+    # registry plus the framework version. It MUST NOT bootstrap the framework,
+    # open a database, run migrations, or load app modules — the tina4 client
+    # calls this on `tina4 --help`, in any directory, so it must be instant and
+    # safe to run anywhere.
+    def cmd_commands(argv = nil)
+      require "json"
+      argv = argv || []
+      manifest = commands_manifest
 
-        Field types: string, int, float, bool, text, datetime, blob
-        Table names: singular by default (Product -> product)
+      if argv.include?("--json")
+        puts JSON.pretty_generate(manifest)
+        return
+      end
 
-        https://tina4.com
-
-        Run 'tina4ruby COMMAND --help' for more information on a command.
-      HELP
+      puts "\nTina4 #{manifest['framework']} - #{manifest['version']}\n\n"
+      width = manifest["commands"].map { |command| command["name"].length }.max
+      manifest["commands"].each do |command|
+        puts "  #{command['name'].ljust(width)}  #{command['summary']}"
+        if command["subcommands"]
+          puts "  #{''.ljust(width)}    #{command['subcommands'].join(', ')}"
+        end
+      end
+      puts
     end
 
     # ── config resolution ──────────────────────────────────────────────────
