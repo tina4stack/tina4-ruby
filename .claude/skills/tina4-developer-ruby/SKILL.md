@@ -438,6 +438,22 @@ endpoint validating credentials inside the handler, or an explicitly anonymous r
 Always target the latest supported Ruby: **Ruby 3.3+** (the Docker image is `ruby:3.3-alpine`). Use
 modern Ruby features — keyword arguments, pattern matching, `Comparable`, safe navigation (`&.`).
 
+## Staying current: check for Tina4 updates
+
+Tina4 ships fixes and features often, and a bug the user reports may already be fixed
+upstream. When you start substantial work — or whenever a user hits a bug a newer release
+might resolve — check whether the project's Tina4 is behind the latest, then surface it.
+**Never upgrade silently:** report the delta and let the user decide (a version bump can
+change behaviour).
+
+- **Installed vs latest:** `bundle outdated tina4ruby` (the gem is `tina4ruby`, not
+  `tina4-ruby`), or `gem outdated | grep tina4`. The `tina4` CLI's own version:
+  `tina4 --version`.
+- **If behind:** tell the user what changed — point them at the release notes on
+  https://tina4.com — and offer the upgrade: `bundle update tina4ruby` (or
+  `gem update tina4ruby`).
+- The `tina4` CLI self-updates with `tina4 update`; `tina4 doctor` checks your toolchain.
+
 ## Reference Files
 
 Read these when you need detailed Ruby patterns for a specific area:
