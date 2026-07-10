@@ -287,7 +287,7 @@ MyModel.belongs_to(name, class_name: nil, foreign_key: nil) # Declare many:1 rel
 MyModel.find(id) -> MyModel | nil
 MyModel.find_or_fail(id) -> MyModel   # Find or raise error
 MyModel.create(attributes = {}) -> MyModel
-MyModel.where(conditions, params = [], include: nil) -> Array
+MyModel.where(conditions, params = [], limit: nil, offset: nil, order_by: nil, include: nil) -> Array
 MyModel.all(limit: nil, offset: nil, order_by: nil, include: nil) -> Array
 MyModel.count(conditions = nil, params = []) -> Integer
 MyModel.select(sql, params = [], limit: nil, offset: nil, include: nil) -> Array
