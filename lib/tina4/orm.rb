@@ -302,14 +302,15 @@ module Tina4
         end
       end
 
-      def where(conditions, params = [], include: nil)
+      def where(conditions, params = [], limit: nil, offset: nil, order_by: nil, include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
           sql += " WHERE (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0) AND (#{conditions})"
         else
           sql += " WHERE #{conditions}"
         end
-        results = db.fetch(sql, params)
+        sql += " ORDER BY #{order_by}" if order_by
+        results = db.fetch(sql, params, limit: limit, offset: offset)
         instances = results.map { |row| from_hash(row) }
         eager_load(instances, include) if include
         instances
