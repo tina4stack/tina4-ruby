@@ -229,6 +229,12 @@ module Tina4
         else
           0
         end
+      when "completed"
+        # Terminal-completed jobs. The lite/file backend deletes on complete
+        # (no completed store) so this is 0; backends that track completion
+        # expose #completed_count. Parity with the Python master's
+        # size("completed") ("0 on the file backend") — never the pending count.
+        @backend.respond_to?(:completed_count) ? @backend.completed_count(@topic) : 0
       else
         @backend.size(@topic)
       end
