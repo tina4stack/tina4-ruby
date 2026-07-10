@@ -41,16 +41,30 @@ module Tina4
       "listener"   => { handler: :generate_listener,   usage: "<event>",                                       summary: "Tina4::Events.on listener (src/listeners/)" },
     }.freeze
 
+    # Sub-dispatch table for the top-level `queue` command — the SINGLE source
+    # for its subcommands (drives #cmd_queue dispatch AND the manifest's
+    # queue.subcommands). Ruby mirror of the Python master's _QUEUE_SUBCOMMANDS.
+    # Distinct from the `queue` GENERATOR, which SCAFFOLDS a consumer file.
+    QUEUE_SUBCOMMANDS = {
+      "work"  => :queue_work,
+      "stats" => :queue_stats,
+      "retry" => :queue_retry,
+      "clear" => :queue_clear,
+    }.freeze
+
     COMMANDS = {
       "init"             => { handler: :cmd_init,             usage: "[NAME]", args: ["name?"],           summary: "Initialize a new Tina4 project" },
       "start"            => { handler: :cmd_start,            usage: "[options]",                          summary: "Start the Tina4 web server" },
       "serve"            => { handler: :cmd_start,                                                         summary: "Alias for start" },
       "migrate"          => { handler: :cmd_migrate,          usage: "[--create NAME] [--rollback N]",     summary: "Run database migrations" },
+      "migrate:create"   => { handler: :cmd_migrate_create,   usage: "<desc>", args: ["description"],      summary: "Create a new migration file" },
       "migrate:status"   => { handler: :cmd_migrate_status,                                                summary: "Show migration status (completed and pending)" },
       "migrate:rollback" => { handler: :cmd_migrate_rollback, usage: "[-n N]",                             summary: "Rollback the last batch of migrations" },
       "seed"             => { handler: :cmd_seed,             usage: "[--clear]",                          summary: "Run all seed files in seeds/" },
       "seed:create"      => { handler: :cmd_seed_create,      usage: "NAME", args: ["name"],               summary: "Create a new seed file" },
       "test"             => { handler: :cmd_test,                                                          summary: "Run inline tests" },
+      "queue"            => { handler: :cmd_queue,            usage: "<work|stats|retry|clear> [topic]", subcommands: QUEUE_SUBCOMMANDS.keys, summary: "Run queue workers and manage jobs" },
+      "build"            => { handler: :cmd_build,            usage: "[--tag NAME] [--file PATH]",         summary: "Build the deployable Docker image" },
       "version"          => { handler: :cmd_version,                                                       summary: "Show Tina4 version" },
       "routes"           => { handler: :cmd_routes,                                                        summary: "List all registered routes" },
       "console"          => { handler: :cmd_console,                                                       summary: "Start an interactive console" },
@@ -194,7 +208,7 @@ module Tina4
     # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
     def parse_flags(args)
       # Boolean-only flags that never take a value argument
-      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration]
+      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration once]
 
       flags = {}
       positional = []
@@ -407,6 +421,26 @@ module Tina4
       end
     end
 
+    # ── migrate:create ───────────────────────────────────────────────────
+
+    # Create a new timestamped migration file (UP .sql + .down.sql), matching
+    # the Python master `migrate:create`. CHEAP + database-free: it only writes
+    # files via the static Tina4::Migration.create_migration helper — no app
+    # boot, no DB connection, no tracking table. `description` is every arg
+    # joined with a space (parity with Python's `" ".join(args)`).
+    def cmd_migrate_create(argv)
+      description = (argv || []).join(" ").strip
+      if description.empty?
+        puts "Usage: tina4ruby migrate:create <description>"
+        exit 1
+      end
+
+      require_relative "log"
+      require_relative "migration"
+      path = Tina4::Migration.create_migration(description, migrations_dir: "migrations")
+      puts "Created: #{path}"
+    end
+
     # ── migrate:status ─────────────────────────────────────────────────────
 
     def cmd_migrate_status(_argv)
@@ -546,6 +580,294 @@ module Tina4
 
       results = Tina4::Testing.run_all
       exit(1) if results[:failed] > 0 || results[:errors] > 0
+    end
+
+    # ── queue ─────────────────────────────────────────────────────────────
+    #
+    # Top-level `queue` command — wires straight to the real Tina4::Queue (lite
+    # /file backend by default; RabbitMQ/Kafka/MongoDB via TINA4_QUEUE_BACKEND).
+    # `stats`, `retry` and `clear` operate on the queue without starting a
+    # server; `work` runs the app's consumer for a topic. Distinct from
+    # `generate queue`, which SCAFFOLDS a consumer file. Mirrors the Python
+    # master's `queue` command.
+    #
+    #   tina4ruby queue work  [topic] [--once] [--poll N] [--services DIR]
+    #   tina4ruby queue stats [topic] [--json]
+    #   tina4ruby queue retry [topic]
+    #   tina4ruby queue clear [status] [topic]
+    def cmd_queue(argv)
+      argv ||= []
+      if argv.empty?
+        puts "Usage: tina4ruby queue <work|stats|retry|clear> [options]"
+        puts "  Subcommands: #{QUEUE_SUBCOMMANDS.keys.join(', ')}"
+        exit 1
+      end
+
+      sub = argv[0].downcase
+      handler = QUEUE_SUBCOMMANDS[sub]
+      if handler.nil?
+        puts "Unknown queue subcommand: #{sub}"
+        puts "  Available: #{QUEUE_SUBCOMMANDS.keys.join(', ')}"
+        exit 1
+      end
+      send(handler, argv[1..])
+    end
+
+    # Load the framework classes (Queue, backends, ServiceRunner) WITHOUT
+    # booting the app (no route discovery, no server, no auto-migrate), then
+    # load .env — mirrors the Python master's _load_env() before queue ops.
+    def load_queue_runtime
+      require_relative "../tina4"
+      Tina4::Env.load_env(Dir.pwd)
+    end
+
+    # Resolve the per-job handler a consumer declares for `topic`.
+    #
+    # A consumer scaffolded by `generate queue <topic>` registers a daemon
+    # service via Tina4.service(..., topic:, handle:). When its `topic` matches,
+    # `queue work` drives that per-job `handle` callable so THIS command owns the
+    # poll loop (honouring --poll / the bounded --once drain) instead of the
+    # consumer's own endless loop. Returns the callable, or nil when no consumer
+    # in `services_dir` targets this topic. Ruby parity for the Python master's
+    # _resolve_queue_handler (which reads a module-level `service` dict).
+    def resolve_queue_handler(services_dir, topic)
+      dir = File.expand_path(services_dir, Dir.pwd)
+      return nil unless Dir.exist?(dir)
+
+      Dir.glob(File.join(dir, "*.rb")).sort.each do |file|
+        next if File.basename(file).start_with?("_")
+        begin
+          load file
+        rescue StandardError, ScriptError
+          next # a broken sibling must not sink the worker
+        end
+      end
+
+      Tina4::ServiceRunner.list.each do |svc|
+        options = svc[:options] || {}
+        handle = options[:handle]
+        return handle if options[:topic].to_s == topic.to_s && handle.respond_to?(:call)
+      end
+      nil
+    end
+
+    # Run a consumer loop that pops and processes jobs on a topic.
+    #
+    #   tina4ruby queue work [topic] [--once] [--poll N] [--services DIR]
+    #
+    # Long-running by default (polls every --poll seconds, 1.0 default; Ctrl-C to
+    # stop). --once does a single-pass drain — it processes every currently
+    # available job then exits (poll interval 0). The per-job handler is resolved
+    # from the app's consumer for this topic (see #resolve_queue_handler); with no
+    # handler it drains and acks with a warning rather than inventing behaviour.
+    def queue_work(argv)
+      load_queue_runtime
+      flags, positional = parse_flags(argv)
+      topic = positional[0] || "default"
+      once = flags["once"] ? true : false
+
+      poll =
+        if once
+          0.0 # single-pass: consume() returns as soon as the topic is empty
+        else
+          poll_raw = flags["poll"].to_s.strip
+          if poll_raw.empty? || poll_raw == "true"
+            1.0
+          else
+            begin
+              Float(poll_raw)
+            rescue ArgumentError
+              1.0
+            end
+          end
+        end
+
+      services_dir = flags["services"]
+      services_dir = ENV["TINA4_SERVICE_DIR"] || "src/services" unless services_dir.is_a?(String)
+
+      handler = resolve_queue_handler(services_dir, topic)
+      queue = Tina4::Queue.new(topic: topic)
+
+      if handler.nil?
+        puts "  ⚠ No consumer handler found for topic '#{topic}' in #{services_dir}."
+        puts "    Scaffold one with: tina4ruby generate queue #{topic}"
+        puts "    Draining (consume + ack) without processing."
+      end
+
+      mode = once ? "single-pass drain" : format("polling every %gs (Ctrl-C to stop)", poll)
+      puts "  Queue worker on '#{topic}' — #{mode}..."
+
+      processed = 0
+      failed = 0
+      begin
+        queue.consume(topic, poll_interval: poll) do |job|
+          begin
+            handler.call(job.payload) unless handler.nil?
+            job.complete
+            processed += 1
+          rescue StandardError, NotImplementedError => e
+            # A bad job nacks (retry / dead-letter), the worker lives on —
+            # parity with the Python master's `except Exception`. NotImplemented-
+            # Error is a ScriptError (not a StandardError) in Ruby, so name it
+            # explicitly: an UNFILLED `generate queue` scaffold stub raises it and
+            # must nack the job, not crash the worker. Interrupt (Ctrl-C) is
+            # neither, so it still propagates to the outer stop handler.
+            job.fail(e.message)
+            failed += 1
+          end
+        end
+      rescue Interrupt
+        puts "\n  Interrupted — stopping worker."
+      end
+
+      puts "  Processed #{processed} job(s), #{failed} failed on '#{topic}'."
+    end
+
+    # Print pending / in-flight / failed / dead-letter / completed counts.
+    #
+    #   tina4ruby queue stats [topic] [--json]
+    def queue_stats(argv)
+      require "json"
+      load_queue_runtime
+      flags, positional = parse_flags(argv)
+      topic = positional[0] || "default"
+
+      queue = Tina4::Queue.new(topic: topic)
+      stats = {
+        "topic"     => topic,
+        "pending"   => queue.size(status: "pending"),      # waiting to run
+        "reserved"  => queue.size(status: "reserved"),     # popped, not yet acked
+        "failed"    => queue.failed.length,                # failed once, still retrying
+        "dead"      => queue.size(status: "dead"),         # exhausted retries (dead-letter)
+        "completed" => queue.size(status: "completed"),    # terminal-completed (0 on file backend)
+      }
+
+      if flags.key?("json")
+        puts JSON.pretty_generate(stats)
+        return
+      end
+
+      puts
+      puts "  Queue '#{topic}'"
+      puts "    pending    #{stats['pending']}"
+      puts "    reserved   #{stats['reserved']}    (in-flight)"
+      puts "    failed     #{stats['failed']}    (retrying)"
+      puts "    dead       #{stats['dead']}    (dead-letter)"
+      puts "    completed  #{stats['completed']}"
+      puts
+    end
+
+    # Re-queue failed and dead-letter jobs so they run again.
+    #
+    #   tina4ruby queue retry [topic]
+    #
+    # Revives every dead-letter job (manual override, regardless of attempt
+    # count) and re-queues any failed-but-still-eligible jobs.
+    def queue_retry(argv)
+      load_queue_runtime
+      _flags, positional = parse_flags(argv)
+      topic = positional[0] || "default"
+
+      queue = Tina4::Queue.new(topic: topic)
+
+      # max_retries: 0 => every job in the dead-letter store, whatever its
+      # attempt count (matches what stats/size("dead") reports).
+      dead = queue.dead_letters(max_retries: 0)
+      revived = dead.count { |job| queue.retry(queue_job_id(job)) }
+      # Any failed-but-retryable jobs still under the limit.
+      requeued = queue.retry_failed
+
+      total = revived + requeued
+      puts "  Re-queued #{total} job(s) on '#{topic}' (#{revived} dead-letter, #{requeued} failed)."
+    end
+
+    # Purge jobs of a given status (default: completed).
+    #
+    #   tina4ruby queue clear [status] [topic]
+    #
+    # status is one of pending / reserved / completed / failed / dead. The
+    # default 'completed' clears finished jobs; pass e.g. `queue clear pending`
+    # or `queue clear dead orders` to purge another status / topic.
+    def queue_clear(argv)
+      load_queue_runtime
+      _flags, positional = parse_flags(argv)
+      status = positional[0] || "completed"
+      topic = positional[1] || "default"
+
+      queue = Tina4::Queue.new(topic: topic)
+      removed = queue.purge(status)
+      puts "  Cleared #{removed} '#{status}' job(s) from '#{topic}'."
+    end
+
+    # Extract a job id from either a raw backend Hash or a Job object, so
+    # `queue retry` works regardless of what a backend's dead_letters returns.
+    def queue_job_id(job)
+      return job.id if job.respond_to?(:id)
+      job["id"] || job[:id]
+    end
+
+    # ── build ─────────────────────────────────────────────────────────────
+    #
+    # Build the deployable Docker image for this Tina4 app. A Tina4 app deploys
+    # as a container (`tina4ruby init` scaffolds a Dockerfile), so `build`
+    # produces THAT artifact — it shells out to the `docker` CLI (no new gem)
+    # and fails loud with guidance when there is no Dockerfile or docker is not
+    # on PATH. Mirrors the Python master's `build`.
+    #
+    #   tina4ruby build                    # docker build -t <dir>:latest .
+    #   tina4ruby build --tag myapp:1.2     # explicit image tag
+    #   tina4ruby build --file docker/Dockerfile
+    def cmd_build(argv)
+      flags, _positional = parse_flags(argv)
+
+      tag = flags["tag"]
+      unless tag.is_a?(String) && !tag.empty?
+        # Default tag: <project-folder>:latest, lower-cased (docker repo names
+        # must be lowercase). Fall back to a sane name for an unnamed cwd.
+        base = File.basename(Dir.pwd).downcase
+        base = "tina4app" if base.empty?
+        tag = "#{base}:latest"
+      end
+
+      dockerfile = flags["file"].is_a?(String) ? flags["file"] : "Dockerfile"
+      unless File.file?(dockerfile)
+        puts "  ✗ No #{dockerfile} found."
+        puts "  A Tina4 app deploys as a container. Scaffold a Dockerfile first:"
+        puts "      tina4 deploy docker        (or: tina4ruby init)"
+        exit 1
+      end
+
+      docker = which_executable("docker")
+      if docker.nil?
+        puts "  ✗ docker was not found on PATH."
+        puts "  Install Docker to build the deployable image, or build manually:"
+        puts "      docker build -t #{tag} -f #{dockerfile} ."
+        exit 1
+      end
+
+      puts "  Building image #{tag} from #{dockerfile} ..."
+      ok = system(docker, "build", "-t", tag, "-f", dockerfile, ".")
+      unless ok
+        code = ($?&.exitstatus) || 1
+        puts "  ✗ docker build failed (exit #{code})"
+        exit code
+      end
+      puts "  ✓ Built image #{tag}"
+      puts "  Run: docker run -p 7147:7147 #{tag}"
+    end
+
+    # Locate an executable on PATH — the stdlib-only equivalent of Python's
+    # shutil.which (no new gem). Honours PATHEXT on Windows.
+    def which_executable(cmd)
+      exts = ENV["PATHEXT"] ? ENV["PATHEXT"].split(File::PATH_SEPARATOR) : [""]
+      ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |dir|
+        next if dir.empty?
+        exts.each do |ext|
+          candidate = File.join(dir, "#{cmd}#{ext}")
+          return candidate if File.executable?(candidate) && !File.directory?(candidate)
+        end
+      end
+      nil
     end
 
     # ── version ───────────────────────────────────────────────────────────
@@ -1698,8 +2020,11 @@ module Tina4
         end
 
         # Wiring: consumer runs as a daemon service (manages its own poll loop).
-        # Discovered by Tina4::ServiceRunner.discover("src/services").
-        Tina4.service("#{topic}-consumer", daemon: true) { |context| consume_#{slug}(context) }
+        # Discovered by Tina4::ServiceRunner.discover("src/services"). The `topic`
+        # + per-job `handle` options let `tina4ruby queue work #{topic}` drive this
+        # consumer directly (own the poll loop / bounded --once drain) without
+        # wiring a ServiceRunner.
+        Tina4.service("#{topic}-consumer", daemon: true, topic: "#{topic}", handle: method(:handle_#{slug})) { |context| consume_#{slug}(context) }
       RUBY
       File.write(path, content)
       puts "  Created #{path}"

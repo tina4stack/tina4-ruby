@@ -646,6 +646,25 @@ RSpec.describe "CLI scaffolding-first generators" do
       gen("queue", "invoices")
       expect(gen("queue", "invoices")).to include("already exists")
     end
+
+    it "wires topic + per-job handle so `queue work` can drive it directly" do
+      # Phase 3: the scaffold registers `topic:` and a callable `handle:` on the
+      # ServiceRunner so `tina4ruby queue work <topic>` resolves and invokes the
+      # per-job handler (owning the poll loop / --once drain) — additive to the
+      # existing daemon wiring.
+      gen("queue", "shipments")
+      path = File.join(@tmp_dir, "src", "services", "shipments_consumer.rb")
+      src = slurp(path)
+      expect(src).to include('topic: "shipments"')
+      expect(src).to include("handle: method(:handle_shipments)")
+
+      load path
+      svc = Tina4::ServiceRunner.list.find { |s| s[:name] == "shipments-consumer" }
+      expect(svc).not_to be_nil
+      expect(svc[:options][:topic]).to eq("shipments")
+      expect(svc[:options][:handle]).to respond_to(:call)
+      expect(svc[:options][:daemon]).to be true # still a daemon service
+    end
   end
 
   describe "generate validator" do

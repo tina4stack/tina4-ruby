@@ -113,10 +113,25 @@ RSpec.describe "tina4ruby commands manifest" do
       expect(entry["args"]).to eq(["name"])
     end
 
-    it "does NOT invent a top-level queue command (queue is a generator only)" do
-      names = manifest_from_handler["commands"].map { |c| c["name"] }
-      expect(names).not_to include("queue")
+    it "exposes queue BOTH as a top-level command (with subcommands) and a generator" do
+      # Phase 3 (self-describing CLI epic): `queue` is now a top-level command
+      # that runs workers / manages jobs, mirroring the Python master. It is
+      # ALSO still a generator (scaffolds a consumer file) — the two are
+      # distinct, so both registries carry it.
+      queue = manifest_from_handler["commands"].find { |c| c["name"] == "queue" }
+      expect(queue).not_to be_nil, "manifest missing the top-level queue command"
+      expect(queue["subcommands"]).to eq(%w[work stats retry clear])
+      # Derived from the single-source QUEUE_SUBCOMMANDS registry — never a
+      # hand-kept list.
+      expect(queue["subcommands"]).to eq(Tina4::CLI::QUEUE_SUBCOMMANDS.keys)
       expect(Tina4::CLI::GENERATORS.keys).to include("queue")
+    end
+
+    it "declares migrate:create's positional arg and lists build in the manifest" do
+      create = manifest_from_handler["commands"].find { |c| c["name"] == "migrate:create" }
+      expect(create).not_to be_nil
+      expect(create["args"]).to eq(["description"])
+      expect(manifest_from_handler["commands"].map { |c| c["name"] }).to include("build")
     end
   end
 
