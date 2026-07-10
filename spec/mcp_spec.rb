@@ -3,6 +3,7 @@
 require "json"
 require "tmpdir"
 require "fileutils"
+require "tina4"
 require_relative "../lib/tina4/mcp"
 
 RSpec.describe "Tina4 MCP" do
@@ -741,6 +742,38 @@ RSpec.describe "Tina4 MCP" do
           Dir.chdir(old_cwd)
         end
       end
+    end
+  end
+
+  # Regression (#164): the database_tables dev-tool must LIST tables. Ruby
+  # (db.tables) is already correct; this locks the contract so a future drift
+  # (like the PHP getDatabase() fatal that broke the tool for 3.13.14 ->
+  # 3.13.66) is caught. Invokes the real registered handler against a REAL
+  # in-memory SQLite database (no mock).
+  describe "database_tables tool" do
+    let(:server) { Tina4._default_mcp_server }
+
+    around(:each) do |example|
+      saved = ENV["TINA4_DATABASE_URL"]
+      ENV["TINA4_DATABASE_URL"] = "sqlite://:memory:"
+      Tina4.bind_database(Tina4::Database.new("sqlite://:memory:"))
+      example.run
+      saved.nil? ? ENV.delete("TINA4_DATABASE_URL") : (ENV["TINA4_DATABASE_URL"] = saved)
+    end
+
+    it "lists real tables" do
+      Tina4.database.execute("CREATE TABLE mcp_probe_widget (id INTEGER PRIMARY KEY, name TEXT)")
+      raw = server.handle_message({
+        "jsonrpc" => "2.0", "id" => 1, "method" => "tools/call",
+        "params" => { "name" => "database_tables", "arguments" => {} }
+      })
+      payload = JSON.parse(raw)
+      expect(payload).not_to have_key("error")
+      text = payload.dig("result", "content", 0, "text")
+      expect(text).not_to include("getDatabase")
+      tables = JSON.parse(text)
+      expect(tables).to be_an(Array)
+      expect(tables).to include("mcp_probe_widget")
     end
   end
 end
