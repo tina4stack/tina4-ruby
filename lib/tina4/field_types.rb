@@ -187,8 +187,24 @@ module Tina4
         field_definitions[name] = { type: type }.merge(options)
         @primary_key_field = name if options[:primary_key]
 
-        # Define getter/setter
-        attr_accessor name
+        # Getter (plain reader) + an assignment-tracking setter.
+        #
+        # #165: save() must tell a column the caller EXPLICITLY set to nil
+        # (write it — an explicit nil becomes SQL NULL) from one left UNSET
+        # (omit it from the INSERT so a NOT NULL DEFAULT column gets its DB
+        # default instead of an explicit NULL). The setter records the field
+        # name in @assigned_fields on every caller assignment — via the
+        # constructor's attribute application, a from_hash/load populate, or a
+        # direct `model.field = x`. Field DEFAULTS are seeded in #initialize
+        # with instance_variable_set (bypassing this setter), so a default is
+        # never counted as a caller assignment. Mirrors the Python master's
+        # __setattr__ + object.__setattr__ default-seeding.
+        attr_reader name
+        define_method("#{name}=") do |value|
+          fields = (@assigned_fields ||= [])
+          fields << name unless fields.include?(name)
+          instance_variable_set("@#{name}", value)
+        end
       end
     end
   end

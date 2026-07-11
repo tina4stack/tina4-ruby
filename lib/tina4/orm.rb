@@ -625,6 +625,13 @@ module Tina4
       # cause via #get_error / #last_error — the failure never vanishes silently.
       @last_error = nil
       @relationship_cache = {}
+      # #165: field names the caller EXPLICITLY assigned (via the attribute loop
+      # below, a from_hash/load populate, or a later `model.field = x`). save()
+      # reads this to OMIT an unset column from an INSERT (so a NOT NULL DEFAULT
+      # column gets its DB default) while still writing NULL for a field the
+      # caller set to nil. The defaults seeded below use instance_variable_set,
+      # bypassing the tracking setter so they are NOT counted as assignments.
+      @assigned_fields = []
       # Accept a JSON object string (parity with Python/PHP/Node):
       #   Widget.new('{"id":1,"name":"alpha"}')
       attributes = JSON.parse(attributes) if attributes.is_a?(String)
@@ -654,7 +661,10 @@ module Tina4
           # a.meta must not leak into b.meta). Parity with the Python master,
           # which deepcopies a JSONField's dict/list default per instance.
           d = Marshal.load(Marshal.dump(d)) if d.is_a?(Hash) || d.is_a?(Array)
-          __send__("#{name}=", d)
+          # #165: seed the default straight into the ivar, BYPASSING the
+          # tracking setter, so a default is not recorded as a caller
+          # assignment (mirrors the Python master's object.__setattr__).
+          instance_variable_set("@#{name}", d)
         end
       end
     end
@@ -737,12 +747,15 @@ module Tina4
         end
 
       begin
-        # Built here (inside the rescue's reach) so a JSON column that can't be
-        # serialised (to_db_hash raises JSON::GeneratorError) fails loud through
-        # the same path as a driver error — rolled back, false, cause recorded.
-        data = to_db_hash(exclude_nil: true)
+        # The column hashes are built INSIDE this begin (via the transaction
+        # block below) so a JSON column that can't be serialised (to_db_hash /
+        # insert_db_hash raises JSON::GeneratorError) fails loud through the
+        # same path as a driver error — rolled back, false, cause recorded.
         self.class.db.transaction do |db|
           if is_update
+            # UPDATE is unchanged (#165 targets INSERT only): keep excluding nil
+            # so a save never nulls a column the caller didn't touch.
+            data = to_db_hash(exclude_nil: true)
             filter = { pk => pk_value }
             data.delete(pk)
             # Remove mapped primary key too
@@ -750,13 +763,32 @@ module Tina4
             data.delete(mapped_pk.to_sym) if mapped_pk
             db.update(self.class.table_name, data, filter)
           else
-            result = db.insert(self.class.table_name, data)
-            # Only adopt the engine-assigned id for an auto-increment PK. A
-            # natural-key PK was set by the caller; don't overwrite it with the
-            # driver's last_insert_id (which may be a sequence value that
-            # doesn't apply here).
-            if auto_increment && result[:last_id] && respond_to?("#{pk}=")
-              __send__("#{pk}=", result[:last_id])
+            # #165: OMIT a column the caller left unset (value nil, never
+            # assigned) so a NOT NULL DEFAULT column gets its DB default rather
+            # than an explicit NULL; a column the caller set to nil is KEPT and
+            # written as NULL (see #insert_db_hash).
+            insert_data = insert_db_hash
+            if insert_data.empty?
+              # Every insertable column is unset — let the engine apply ALL its
+              # column defaults instead of emitting explicit NULLs. DEFAULT
+              # VALUES is valid on SQLite / PostgreSQL / MSSQL / Firebird; MySQL
+              # spells the all-defaults insert () VALUES ().
+              table = self.class.table_name
+              engine = (self.class.db.respond_to?(:get_database_type) ? self.class.db.get_database_type : "").to_s.downcase
+              db.execute(engine == "mysql" ? "INSERT INTO #{table} () VALUES ()" : "INSERT INTO #{table} DEFAULT VALUES")
+              if auto_increment && respond_to?("#{pk}=")
+                last = db.get_last_id
+                __send__("#{pk}=", last) if last
+              end
+            else
+              result = db.insert(self.class.table_name, insert_data)
+              # Only adopt the engine-assigned id for an auto-increment PK. A
+              # natural-key PK was set by the caller; don't overwrite it with the
+              # driver's last_insert_id (which may be a sequence value that
+              # doesn't apply here).
+              if auto_increment && result[:last_id] && respond_to?("#{pk}=")
+                __send__("#{pk}=", result[:last_id])
+              end
             end
           end
         end
@@ -1006,6 +1038,41 @@ module Tina4
     end
 
     private
+
+    # Build the column=>value hash for an INSERT (#165).
+    #
+    # Distinguishes a column the caller left UNSET from one the caller
+    # explicitly set to nil (tracked in @assigned_fields, populated by the field
+    # setters):
+    #
+    #   * value nil AND field NOT assigned  -> OMITTED (a DB DEFAULT applies, so
+    #       a NOT NULL DEFAULT column succeeds instead of taking an explicit NULL)
+    #   * value nil AND field assigned       -> KEPT as nil (written as SQL NULL;
+    #       a NOT NULL column rightly rejects it, so an explicit nil fails loud)
+    #   * any non-nil value (incl. a resolved ORM default) -> KEPT
+    #
+    # An unset auto-increment PK is skipped so the engine assigns the id. JSON
+    # columns serialise their Hash/Array exactly as #to_db_hash does. An empty
+    # result signals save() to emit the engine's all-defaults INSERT. Mirrors
+    # the Python master's INSERT omission (tina4_python.orm.model.save).
+    def insert_db_hash
+      hash = {}
+      mapping = self.class.field_mapping
+      assigned = @assigned_fields || []
+      self.class.field_definitions.each do |name, opts|
+        value = __send__(name)
+        # Skip an unset auto-increment PK — let the engine assign it.
+        next if opts[:auto_increment] && value.nil?
+        # Omit an unset-nil column so the DB DEFAULT applies.
+        next if value.nil? && !assigned.include?(name)
+        if opts[:type] == :json && !value.nil? && !value.is_a?(String)
+          value = JSON.generate(value)
+        end
+        db_col = mapping[name.to_s] || name
+        hash[db_col.to_sym] = value
+      end
+      hash
+    end
 
     # Convert to hash using DB column names (with field_mapping applied)
     def to_db_hash(exclude_nil: false)
