@@ -76,7 +76,42 @@ module Tina4
         decoded.start_with?("/") ? decoded : "/#{decoded}"
       end
 
-      def connect(connection_string, username: nil, password: nil)
+      # Resolve the Firebird connection charset (#160, mirrors php #160 /
+      # the Python master's _resolve_firebird_charset).
+      #
+      # The driver used to pass NO charset to the `fb` gem, leaving it to the
+      # gem's own (non-UTF8) default — which double-encodes UTF-8 bytes stored
+      # under a legacy NONE database and diverges from the other frameworks.
+      # The charset is now resolved from, in precedence order:
+      #
+      #   1. the connection URL query — firebird://host:port/path?charset=NONE
+      #   2. an explicit charset: kwarg passed to #connect
+      #   3. the TINA4_DATABASE_CHARSET environment variable
+      #   4. the UTF8 default (canonical across all four frameworks)
+      #
+      # Pure config resolution over its inputs (URL string, kwarg, env) — it
+      # opens NO connection, so it is unit-testable without a live server. A
+      # blank value at any level is treated as absent (matching the Python
+      # master's falsy-string semantics) so `?charset=` / an empty env var falls
+      # through rather than connecting with an empty charset.
+      def self.resolve_charset(connection_string, kwarg_charset = nil)
+        require "uri"
+        url_charset = nil
+        query = begin
+          URI.parse(connection_string.to_s).query
+        rescue URI::InvalidURIError
+          nil
+        end
+        if query && !query.empty?
+          pair = URI.decode_www_form(query).find { |k, _| k == "charset" }
+          url_charset = pair[1] if pair && !pair[1].to_s.empty?
+        end
+        kwarg = kwarg_charset.to_s.empty? ? nil : kwarg_charset
+        env = ENV["TINA4_DATABASE_CHARSET"].to_s.empty? ? nil : ENV["TINA4_DATABASE_CHARSET"]
+        url_charset || kwarg || env || "UTF8"
+      end
+
+      def connect(connection_string, username: nil, password: nil, charset: nil)
         require "fb"
         require "uri"
         uri = URI.parse(connection_string)
@@ -115,6 +150,10 @@ module Tina4
         @connect_opts = { database: database }
         @connect_opts[:username] = db_user if db_user
         @connect_opts[:password] = db_pass if db_pass
+        # #160: honour ?charset= in the URL, an explicit charset: kwarg, and
+        # TINA4_DATABASE_CHARSET so a legacy NONE database isn't force-connected
+        # with the gem's default charset (double-encoding). Defaults to UTF8.
+        @connect_opts[:charset] = self.class.resolve_charset(connection_string, charset)
 
         open_connection
       rescue LoadError
