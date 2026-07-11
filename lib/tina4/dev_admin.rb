@@ -969,6 +969,11 @@ module Tina4
         return { error: "No database configured" } unless db
 
         begin
+          # Force-load the seeder: Tina4.seed_table is defined in
+          # lib/tina4/seeder.rb, reachable only via the Tina4::FakeData autoload,
+          # which a bare Tina4.seed_table call never trips (mirrors Python's
+          # explicit `from tina4_python.seeder import seed_table`).
+          require_relative "seeder"
           # Delegate to the shared resilient seed_table helper so the endpoint
           # gets the exact same per-row wrap (P1) — no unhandled row failure can
           # crash the endpoint — plus clear/seed/strict (P2/P3). _normalize_columns

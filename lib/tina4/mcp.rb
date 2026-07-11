@@ -906,7 +906,9 @@ module Tina4
       # ── Template Tools ────────────────────────────────
       server.register_tool("template_render", lambda { |template:, data: "{}"|
         ctx = data.is_a?(String) ? JSON.parse(data) : data
-        Tina4::Template.render_string(template, ctx)
+        # render_string is an INSTANCE method of Frond (Tina4::Template has none).
+        # Mirrors Python tools.py: Frond("src/templates").render_string(...).
+        Tina4::Frond.new(template_dir: "src/templates").render_string(template, ctx)
       }, "Render a template string with data")
 
       # ── File Tools ────────────────────────────────────
@@ -1023,9 +1025,9 @@ module Tina4
           q = Tina4::Queue.new(topic: topic)
           {
             "topic"     => topic,
-            "pending"   => q.size("pending"),
-            "completed" => q.size("completed"),
-            "failed"    => q.size("failed")
+            "pending"   => q.size(status: "pending"),
+            "completed" => q.size(status: "completed"),
+            "failed"    => q.size(status: "failed")
           }
         rescue => e
           { "error" => e.message }
@@ -1107,6 +1109,11 @@ module Tina4
       # ── Data Tools ────────────────────────────────────
       server.register_tool("seed_table", lambda { |table:, count: 10|
         begin
+          # Tina4.seed_table lives in lib/tina4/seeder.rb, reachable only via the
+          # autoload of Tina4::FakeData — a bare Tina4.seed_table call never trips
+          # it. Force-load the seeder first (mirrors Python's explicit
+          # `from tina4_python.seeder import seed_table`).
+          require_relative "seeder"
           db = Tina4.database
           return { "error" => "No database connection" } if db.nil?
           inserted = Tina4.seed_table(table, db.columns(table), count: count.to_i)

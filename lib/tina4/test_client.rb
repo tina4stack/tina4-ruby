@@ -13,6 +13,8 @@
 #
 #   response = client.get("/api/users/1", headers: { "Authorization" => "Bearer token123" })
 #
+require "stringio" # rack.input is a StringIO; require it here so a clean `require "tina4"` boot never NameErrors
+
 module Tina4
   class TestResponse
     attr_reader :status, :body, :headers, :content_type
