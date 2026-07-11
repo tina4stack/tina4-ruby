@@ -621,7 +621,7 @@ code generator — write the Ruby yourself from what it returns. Use it as a lad
    against the running project's MCP index — `api_method("Tina4::ORM", "find_by_id")`,
    `api_class("Tina4::ORM")`, `api_search("…")` (needs `tina4 serve` + `TINA4_DEBUG=true`). **The
    framework code is the final authority.** Do **not** use `tina4_code` / `tina4_review` (the
-   self-hosted generator) — the value is the retrieval, not a small model.
+   self-hosted generator) — the value is the retrieval, not a small model. It failed a boot-and-verify gate that Claude grounded with `tina4_context` passed.
 
 ## Batteries included — near-zero dependencies
 

@@ -160,7 +160,7 @@ tina4-ruby patterns before you write — then write the code yourself:
   It returns grounding context (relevant idioms, field types, route shapes, method signatures) for
   tina4-ruby. Read it, then hand-write the Ruby code.
 
-**Do NOT use `tina4_code` / `tina4_review` to generate this code.** For tina4-ruby you write the code
+**Do NOT use `tina4_code` / `tina4_review` to generate this code.** It is deprecated on the tools' own evidence: in a boot-and-verify gate `tina4_code` FAILED where Claude grounded with `tina4_context` PASSED, so the tools point to grounding + a strong model, not the self-hosted coder. For tina4-ruby you write the code
 yourself, grounded by `tina4_context` and verified against the live API (below) and the framework
 source. Ruby idioms differ enough from the other Tina4 languages that a generic generator drifts —
 you are the one who gets the field declarations, the `Tina4.get`/`Tina4.post` route shape, and the
