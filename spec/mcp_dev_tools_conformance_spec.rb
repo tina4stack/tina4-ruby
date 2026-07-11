@@ -207,12 +207,13 @@ RSpec.describe "Dev-MCP tools conformance (invoke every tool)" do
       expect(qs["completed"]).to be_a(Integer)
       expect(qs["failed"]).to be_a(Integer)
 
-      # seed_table — rows actually inserted, reported by the real SeedSummary.
+      # seed_table — canonical cross-framework shape {table, inserted:<int>, failed:<int>}
+      # (inserted is the real SeedSummary#seeded count, NOT the summary object).
       st = JSON.parse(tools["seed_table"]["text"])
       expect(st["table"]).to eq("widget")
-      inserted = st["inserted"]
-      seeded = inserted.is_a?(Hash) ? inserted["seeded"] : inserted
-      expect(seeded).to eq(2)
+      expect(st["inserted"]).to be_a(Integer)
+      expect(st["inserted"]).to eq(2)
+      expect(st["failed"]).to be_a(Integer)
     end
   end
 

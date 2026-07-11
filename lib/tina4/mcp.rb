@@ -1117,7 +1117,7 @@ module Tina4
           db = Tina4.database
           return { "error" => "No database connection" } if db.nil?
           inserted = Tina4.seed_table(table, db.columns(table), count: count.to_i)
-          { "table" => table, "inserted" => inserted }
+          { "table" => table, "inserted" => inserted.seeded, "failed" => inserted.failed }
         rescue => e
           { "error" => e.message }
         end
