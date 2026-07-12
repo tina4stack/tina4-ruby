@@ -686,6 +686,12 @@ module Tina4
       filters.each do |fname, args|
         next if fname == "raw" || fname == "safe"
 
+        # Sandbox: a blocked filter is silently skipped (value passes through
+        # unchanged) — same gate as eval_var_inner. Without this, a filter pipe
+        # reached via eval_filter_pipe (`x|f ~ y`, #171) or a ternary condition
+        # (`x|f ? a : b`) would run a non-allow-listed filter in sandbox mode.
+        next if @sandbox && @allowed_filters && !@allowed_filters.include?(fname)
+
         # Filter + property-access chain: `first.groupSummary` — apply
         # the filter, then traverse the path on the result using a
         # synthetic context so eval_expr's dotted resolution does the

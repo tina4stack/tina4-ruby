@@ -815,6 +815,51 @@ RSpec.describe Tina4::Frond do
       engine.unsandbox
     end
 
+    # The sandbox filter allow-list must gate filters reached via the #171
+    # concat-pipe path (`x|f ~ y`) and via a ternary condition (`x|f ? a : b`),
+    # not only the top-level output chain. A blocked filter's code must never
+    # run. `spy` records each invocation so the assertion is the security
+    # property (did the code run?), true across all four frameworks regardless
+    # of the blocked-filter output convention.
+    it "does not run a blocked filter reached via the concat-pipe path (#171)" do
+      calls = []
+      engine.add_filter("spy") { |v| calls << v; "#{v.to_s.upcase}!" }
+      engine.sandbox(filters: ["upper"]) # 'spy' NOT allowed
+      out = engine.render_string("{{ x|spy ~ ' end' }}", { "x" => "hi" })
+      engine.unsandbox
+      expect(calls).to be_empty
+      expect(out).not_to include("HI!")
+    end
+
+    it "does not run a blocked filter in a ternary condition" do
+      calls = []
+      engine.add_filter("spy") { |v| calls << v; "#{v.to_s.upcase}!" }
+      engine.sandbox(filters: ["upper"]) # 'spy' NOT allowed
+      engine.render_string("{{ x|spy ? 'yes' : 'no' }}", { "x" => "hi" })
+      engine.unsandbox
+      expect(calls).to be_empty
+    end
+
+    it "runs an allowed filter reached via the concat-pipe path" do
+      calls = []
+      engine.add_filter("spy") { |v| calls << v; "#{v.to_s.upcase}!" }
+      engine.sandbox(filters: ["spy"]) # 'spy' IS allowed
+      out = engine.render_string("{{ x|spy ~ ' end' }}", { "x" => "hi" })
+      engine.unsandbox
+      expect(calls).to eq(["hi"])
+      expect(out).to eq("HI! end")
+    end
+
+    it "runs an allowed filter in a ternary condition" do
+      calls = []
+      engine.add_filter("spy") { |v| calls << v; "#{v.to_s.upcase}!" }
+      engine.sandbox(filters: ["spy"]) # 'spy' IS allowed
+      out = engine.render_string("{{ x|spy ? 'yes' : 'no' }}", { "x" => "hi" })
+      engine.unsandbox
+      expect(calls).to eq(["hi"])
+      expect(out).to eq("yes")
+    end
+
     it "unsandbox restores full access" do
       engine.sandbox(vars: ["x"])
       engine.unsandbox
