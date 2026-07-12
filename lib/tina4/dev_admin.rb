@@ -1590,14 +1590,29 @@ module Tina4
       def deps_install(body)
         name = body["name"].to_s.strip
         return { ok: false, error: "name required" } if name.empty?
-        # Append to Gemfile if not present — do NOT actually bundle install.
+        version = body["version"].to_s.strip
+        dev = [true, "true", 1, "1"].include?(body["dev"])
         gemfile = File.join(Dir.pwd, "Gemfile")
         return { ok: false, error: "No Gemfile at project root" } unless File.exist?(gemfile)
+
+        # Prefer `bundle add` — it updates the Gemfile AND installs the gem, so a
+        # dev dep is deployed (not just recorded). Fall back to appending to the
+        # Gemfile when bundler isn't available.
+        if system("command -v bundle > /dev/null 2>&1")
+          cmd = ["bundle", "add", name]
+          cmd += ["--version", version] unless version.empty?
+          cmd += ["--group", "development"] if dev
+          out = `#{cmd.map { |c| Shellwords.escape(c) }.join(' ')} 2>&1`
+          return { ok: true, gem: name, output: out.strip } if $?.success?
+          return { ok: false, error: out.strip }
+        end
+
         content = File.read(gemfile)
         if content.include?("gem \"#{name}\"") || content.include?("gem '#{name}'")
           return { ok: true, gem: name, note: "already in Gemfile" }
         end
-        File.open(gemfile, "a") { |f| f.write("\ngem \"#{name}\"\n") }
+        entry = dev ? "\ngroup :development do\n  gem \"#{name}\"\nend\n" : "\ngem \"#{name}\"\n"
+        File.open(gemfile, "a") { |f| f.write(entry) }
         { ok: true, gem: name, note: "added to Gemfile; run `bundle install`" }
       end
 
