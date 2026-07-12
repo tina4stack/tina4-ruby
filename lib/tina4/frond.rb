@@ -93,6 +93,19 @@ module Tina4
     HASH_PAIR_RE    = /\A\s*(?:["']([^"']+)["']|(\w+))\s*:\s*(.+)\z/
     RANGE_LIT_RE    = /\A(\d+)\.\.(\d+)\z/
     ARITHMETIC_OPS  = [" + ", " - ", " * ", " // ", " / ", " % ", " ** "].freeze
+    # Operators Twig binds LOOSER than the filter pipe `|`. When one of these
+    # sits at the top level alongside a pipe (e.g. `amount|number_format(2) ~
+    # ' EUR'`), the whole expression must go through eval_expr (which resolves
+    # the pipe at its correct, tighter precedence) instead of being split on
+    # the pipe as a plain filter chain. Detection is quote/paren-aware
+    # (find_outside_quotes) so operator-like text inside a string or filter
+    # args never false-triggers.
+    LOOSER_THAN_PIPE_OPS = [
+      "~", "??", " if ",
+      " not in ", " in ", " is not ", " is ", "!=", "==", ">=", "<=", ">", "<",
+      " and ", " or ", " not ",
+      " + ", " - ", " * ", " // ", " / ", " % ", " ** "
+    ].freeze
     FUNC_CALL_RE    = /\A(\w+)\s*\((.*)\)\z/m
     FILTER_WITH_ARGS_RE = /\A(\w+)\s*\((.*)\)\z/m
     FILTER_CMP_RE   = /\A(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)\z/
@@ -723,6 +736,20 @@ module Tina4
     end
 
     def eval_var_inner(expr, context)
+      # Twig binds the filter pipe `|` TIGHTER than ~, comparison, and
+      # arithmetic. When a looser operator sits at the top level alongside a
+      # pipe (e.g. `amount|number_format(2) ~ ' EUR'`), splitting on the pipe
+      # here would swallow the tail (`~ ' EUR'`) into the filter args and drop
+      # it. Hand the whole expression to eval_expr — which resolves the pipe at
+      # the correct precedence (eval_filter_pipe) — then apply output escaping.
+      if find_outside_quotes(expr, "|") >= 0 && has_looser_than_pipe_operator?(expr)
+        value = eval_expr(expr, context)
+        if @auto_escape && value.is_a?(String) && !value.is_a?(SafeString)
+          value = Frond.escape_html(value)
+        end
+        return value
+      end
+
       var_name, filters = parse_filter_chain(expr)
 
       # Sandbox: check variable access
@@ -1068,10 +1095,35 @@ module Tina4
       result = eval_arithmetic(expr, context)
       return result unless result == :not_arithmetic
 
+      result = eval_filter_pipe(expr, context)
+      return result unless result == :not_filter_pipe
+
       result = eval_function_call(expr, context)
       return result unless result == :not_function
 
       resolve(expr, context)
+    end
+
+    # ── Filter pipe: value|filter(args) ──
+    # Reached only after every looser-binding operator (concat ~, comparison,
+    # arithmetic, ternary, ...) has been ruled out at this level, so the pipe
+    # binds tighter than all of them — matching Twig. This is what makes
+    # `amount|number_format(2) ~ ' EUR'` resolve as `(amount|number_format(2))
+    # ~ ' EUR'`, and it lets a pipe inside parens / a sub-expression resolve
+    # (previously such a pipe fell through to `resolve` and returned empty).
+    # Delegates to eval_var_raw, which applies the filter chain WITHOUT output
+    # escaping (escaping happens once, at the output layer, on the final value).
+    def eval_filter_pipe(expr, context)
+      return :not_filter_pipe unless find_outside_quotes(expr, "|") >= 0
+
+      eval_var_raw(expr, context)
+    end
+
+    # True when the expression carries a top-level operator that Twig binds
+    # looser than the filter pipe. Quote/paren-aware via find_outside_quotes so
+    # operator-like text inside a string literal or filter args never matches.
+    def has_looser_than_pipe_operator?(expr)
+      LOOSER_THAN_PIPE_OPS.any? { |op| find_outside_quotes(expr, op) >= 0 }
     end
 
     # ── Literal values: strings, numbers, booleans, null ──
@@ -2172,12 +2224,17 @@ module Tina4
         "int"           => ->(v, *_a) { v.to_i },
         "float"         => ->(v, *_a) { v.to_f },
         "number_format" => ->(v, *a) {
-          decimals = a[0] ? a[0].to_i : 0
+          # Twig signature: number_format(decimals, decimalPoint, thousandsSep).
+          # The defaults reproduce the historical output ("1,234.50") so a
+          # 1-arg call is unchanged; args 2 and 3 apply the localized
+          # separators (e.g. number_format(2, ',', '.') -> "1.234,50").
+          decimals      = a[0] ? a[0].to_i : 0
+          decimal_point = a[1].nil? ? "." : a[1].to_s
+          thousands_sep = a[2].nil? ? "," : a[2].to_s
           formatted = format("%.#{decimals}f", v.to_f)
-          # Add comma thousands separator
-          parts = formatted.split(".")
-          parts[0] = parts[0].gsub(THOUSANDS_RE, '\\1,')
-          parts.join(".")
+          int_part, frac_part = formatted.split(".")
+          int_part = int_part.gsub(THOUSANDS_RE) { |digit| "#{digit}#{thousands_sep}" }
+          frac_part ? "#{int_part}#{decimal_point}#{frac_part}" : int_part
         },
 
         # -- Date --

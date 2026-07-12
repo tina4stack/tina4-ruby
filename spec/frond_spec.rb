@@ -1816,4 +1816,83 @@ RSpec.describe Tina4::Frond do
     end
   end
 
+  # ===========================================================================
+  # number_format decimalPoint + thousandsSep (#170)
+  #
+  # The Twig signature is number_format(decimals, decimalPoint, thousandsSep).
+  # The Ruby filter previously read only decimals and hardcoded "." / ",", so a
+  # localized format like "1.234,50" was impossible. Both separators now apply;
+  # a 1-arg call keeps the historical output (back-compat).
+  # ===========================================================================
+  describe "number_format separators (#170)" do
+    it "applies decimalPoint + thousandsSep (positive)" do
+      # decimalPoint=',', thousandsSep='.' -> European format
+      expect(engine.render_string("{{ 1234.5 | number_format(2, ',', '.') }}", {}))
+        .to eq("1.234,50")
+    end
+
+    it "keeps the default '.'/',' when only decimals is given (back-compat)" do
+      expect(engine.render_string("{{ 1234.5 | number_format(2) }}", {}))
+        .to eq("1,234.50")
+    end
+
+    it "applies a custom thousands separator only (space)" do
+      # decimalPoint default '.', thousandsSep=' '
+      expect(engine.render_string("{{ 1234567.891 | number_format(2, '.', ' ') }}", {}))
+        .to eq("1 234 567.89")
+    end
+  end
+
+  # ===========================================================================
+  # Filter pipe binds tighter than concat ~ (#171)
+  #
+  # Twig binds `|` tighter than `~`, so `amount|number_format(2) ~ ' EUR'` is
+  # `(amount|number_format(2)) ~ ' EUR'`. Previously the output layer split on
+  # the pipe first and dropped the `~ ' EUR'` tail, rendering the raw value; a
+  # pipe inside parens/a sub-expression rendered empty. The pipe is now folded
+  # into eval_expr at the correct precedence.
+  # ===========================================================================
+  describe "filter pipe precedence vs concat (#171)" do
+    it "pipe binds tighter than ~ (positive)" do
+      expect(engine.render_string("{{ amount|number_format(2) ~ ' EUR' }}", { "amount" => 1234.5 }))
+        .to eq("1,234.50 EUR")
+    end
+
+    it "works inside a ternary true-branch" do
+      expect(engine.render_string(
+               "{{ charged ? amount|number_format(2) ~ ' EUR' : 'free' }}",
+               { "charged" => true, "amount" => 1234.5 }
+             )).to eq("1,234.50 EUR")
+    end
+
+    it "takes the ternary false-branch unaffected" do
+      expect(engine.render_string(
+               "{{ charged ? amount|number_format(2) ~ ' EUR' : 'free' }}",
+               { "charged" => false, "amount" => 1234.5 }
+             )).to eq("free")
+    end
+
+    it "resolves a pipe inside parens (previously rendered empty)" do
+      expect(engine.render_string("{{ (amount|number_format(2)) ~ ' EUR' }}", { "amount" => 1234.5 }))
+        .to eq("1,234.50 EUR")
+    end
+
+    it "negative: a filter-only expression is unchanged" do
+      expect(engine.render_string("{{ amount|number_format(2) }}", { "amount" => 1234.5 }))
+        .to eq("1,234.50")
+    end
+
+    it "negative: a concat-only expression is unchanged" do
+      expect(engine.render_string("{{ first ~ ' ' ~ last }}", { "first" => "Hello", "last" => "World" }))
+        .to eq("Hello World")
+    end
+
+    it "negative: an operator-like substring inside a filter arg is not treated as concat" do
+      # The ' or ' lives inside the quoted default() arg — it must NOT trip the
+      # looser-operator detection and re-route through the comparison path.
+      expect(engine.render_string("{{ missing|default('a or b') }}", {}))
+        .to eq("a or b")
+    end
+  end
+
 end

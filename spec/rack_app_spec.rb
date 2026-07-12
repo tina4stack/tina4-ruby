@@ -118,6 +118,29 @@ RSpec.describe Tina4::RackApp do
     end
   end
 
+  # nodejs#33 was a Node-only prod crash: `new URL(req.url)` threw
+  # ERR_INVALID_URL on `//`, `///`, `/\` before any try/catch, taking down the
+  # worker (unauthenticated DoS). Ruby is structurally safe — Rack hands the
+  # path as an opaque PATH_INFO string and the whole `#call` is wrapped in a
+  # rescue — so a malformed path is just an unmatched route. This lock-in spec
+  # pins that: each malformed path returns a clean 4xx (never a raise/500), and
+  # the app keeps serving a normal request afterwards.
+  describe "#call malformed path is safe (nodejs#33 parity lock-in)" do
+    %w[// /// /\\ /%2e%2e //../.. /..;/].each do |bad_path|
+      it "returns a 4xx for #{bad_path.inspect} and does not crash" do
+        Tina4.get("/ok") { |_req, res| res.json({ ok: true }) }
+
+        status, = app.call(mock_env("GET", bad_path))
+        expect(status).to be_between(400, 499).inclusive
+
+        # The worker survives — a following normal request still routes 200.
+        after_status, _headers, after_body = app.call(mock_env("GET", "/ok"))
+        expect(after_status).to eq(200)
+        expect(JSON.parse(after_body.join)["ok"]).to be(true)
+      end
+    end
+  end
+
   # v3.13.14 — per-request log line. The dev inspector fed only the /__dev
   # UI; nothing reached stdout, so `tina4ruby serve` went silent after the
   # banner. Now every request logs through Tina4::Log (→ stdout), on by
