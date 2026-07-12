@@ -488,11 +488,14 @@ module Tina4
           begin
             if defined?(Tina4::Queue)
               queue = Tina4::Queue.new(backend: :file, topic: topic)
+              # Queue#size is keyword-only (def size(status:)). Calling it
+              # positionally raises ArgumentError, which the rescue below
+              # swallows — silently zeroing every stat. Use keyword form.
               stats = {
-                pending: queue.respond_to?(:size) ? queue.size("pending") : 0,
-                completed: queue.respond_to?(:size) ? queue.size("completed") : 0,
-                failed: queue.respond_to?(:size) ? queue.size("failed") : 0,
-                reserved: queue.respond_to?(:size) ? queue.size("reserved") : 0,
+                pending: queue.respond_to?(:size) ? queue.size(status: "pending") : 0,
+                completed: queue.respond_to?(:size) ? queue.size(status: "completed") : 0,
+                failed: queue.respond_to?(:size) ? queue.size(status: "failed") : 0,
+                reserved: queue.respond_to?(:size) ? queue.size(status: "reserved") : 0,
               }
               jobs.concat(queue.failed.map { |j| j.merge(status: "failed") }) if queue.respond_to?(:failed)
               jobs.concat(queue.dead_letters.map { |j| j.merge(status: "dead_letter") }) if queue.respond_to?(:dead_letters)
@@ -519,11 +522,10 @@ module Tina4
           error_tracker.clear_all
           json_response({ cleared: true })
         when ["GET", "/__dev/api/websockets"]
-          json_response({ connections: [], count: 0 })
+          json_response(websockets_payload)
         when ["POST", "/__dev/api/websockets/disconnect"]
-          body = read_json_body(env)
-          # TODO: disconnect WS connection by id from body["id"]
-          json_response({ disconnected: true })
+          body = read_json_body(env) || {}
+          json_response(websockets_disconnect(body))
         when ["GET", "/__dev/api/mailbox/read"]
           message_id = query_param(env, "id")
           message = mailbox.read(message_id)
@@ -547,16 +549,14 @@ module Tina4
           filtered = keyword.empty? ? all_messages : all_messages.select { |m| m[:message].to_s.downcase.include?(keyword.downcase) }
           json_response({ messages: filtered, count: filtered.size, keyword: keyword })
         when ["POST", "/__dev/api/queue/retry"]
-          body = read_json_body(env)
-          # TODO: retry failed jobs by id from body["id"]
-          json_response({ retried: true })
+          body = read_json_body(env) || {}
+          json_response(queue_retry(body))
         when ["POST", "/__dev/api/queue/purge"]
-          # TODO: purge completed jobs
-          json_response({ purged: true })
+          body = read_json_body(env) || {}
+          json_response(queue_purge(body))
         when ["POST", "/__dev/api/queue/replay"]
-          body = read_json_body(env)
-          # TODO: replay a specific job by id from body["id"]
-          json_response({ replayed: true })
+          body = read_json_body(env) || {}
+          json_response(queue_replay(body))
         when ["GET", "/__dev/api/table"]
           table_name = query_param(env, "name")
           json_response(table_detail_payload(table_name))
@@ -573,6 +573,23 @@ module Tina4
           body = read_json_body(env)
           tool = (body && body["tool"]) || ""
           json_response(run_tool(tool))
+        # Dedicated run-chip routes (parity with the SPA's migrate/test/seed
+        # chips + Python's dev-admin tools). Not MCP-gated — same as the
+        # sibling /tool, /seed and /query operational routes, which are only
+        # reachable at all under TINA4_DEBUG (DevAdmin.enabled?).
+        when ["POST", "/__dev/api/migrate"]
+          json_response(run_migrations_payload)
+        when ["POST", "/__dev/api/test"]
+          json_response(run_tests_payload)
+        when ["POST", "/__dev/api/seed/run"]
+          json_response(run_seeds_payload)
+        # Grounding panel — configure the tina4-coder MCP token used for
+        # live-docs grounding. Self-contained (.env read/write); no proxy.
+        when ["GET", "/__dev/api/grounding/status"]
+          json_response(grounding_status_payload)
+        when ["POST", "/__dev/api/grounding/token"]
+          body = read_json_body(env) || {}
+          json_response(grounding_token_save(body))
         when ["POST", "/__dev/api/chat"]
           # Proxy dev-admin chat to the Rust agent's /chat endpoint.
           # The SPA POSTs {message, thread_id?, active_file?, settings?}
@@ -878,21 +895,281 @@ module Tina4
         }
       end
 
+      # Run a named developer tool. `test`/`migrate`/`seed` reuse the same
+      # real code paths as the dedicated run-chip routes above (no stubs), so
+      # the legacy POST /tool surface and the new chips stay in lockstep.
       def run_tool(tool)
-        output = case tool
-                 when "routes"
-                   routes = Tina4::Router.routes.map { |r| { method: r.method, path: r.path } }
-                   JSON.pretty_generate(routes)
-                 when "test"
-                   "Test runner not yet configured. Run: bundle exec rspec"
-                 when "migrate"
-                   "Migration runner not yet configured. Run: tina4ruby migrate"
-                 when "seed"
-                   "Seeder not yet configured. Run: tina4ruby seed"
+        case tool
+        when "routes"
+          routes = Tina4::Router.routes.map { |r| { method: r.method, path: r.path } }
+          { tool: tool, output: JSON.pretty_generate(routes) }
+        when "test"
+          r = run_tests_payload
+          { tool: tool, output: r[:output].to_s, exit_code: r[:code], ok: r[:ok] }
+        when "migrate"
+          r = run_migrations_payload
+          lines = []
+          lines << "Applied: #{Array(r[:applied]).join(', ')}" unless Array(r[:applied]).empty?
+          lines << "Skipped: #{Array(r[:skipped]).join(', ')}" unless Array(r[:skipped]).empty?
+          failed_names = Array(r[:failed]).map { |f| f.is_a?(Hash) ? f[:name] : f }
+          lines << "Failed: #{failed_names.join(', ')}" unless failed_names.empty?
+          lines << "No pending migrations" if lines.empty? && r[:error].nil?
+          lines << "Error: #{r[:error]}" if r[:error]
+          { tool: tool, output: lines.join("\n"), result: r }
+        when "seed"
+          r = run_seeds_payload
+          { tool: tool, output: "Seeded #{r[:seeded]} file(s), #{r[:failed]} failed", result: r }
+        else
+          { tool: tool, output: "Unknown tool: #{tool}" }
+        end
+      end
+
+      # ── Run-chip implementations (Tier 1) ──────────────────────────
+
+      # POST /__dev/api/migrate — run pending migrations via the REAL
+      # Tina4::Migration runner (the same path `tina4ruby migrate` uses).
+      # `skipped` are pending files that never ran because an earlier
+      # migration in the batch failed (the runner stops on first failure).
+      def run_migrations_payload
+        db = Tina4.database
+        return { applied: [], skipped: [], failed: [], error: "No database configured" } unless db
+
+        require_relative "migration"
+        migration = Tina4::Migration.new(db)
+        pending_before = (migration.status[:pending] rescue [])
+        results = Array(migration.migrate)
+
+        applied = results.select { |r| r[:status] == "success" }.map { |r| r[:name] }
+        failed  = results.select { |r| r[:status] == "failed" }
+                         .map { |r| { name: r[:name], error: r[:error] } }
+        handled = results.map { |r| r[:name] }
+        skipped = pending_before - handled
+        { applied: applied, skipped: skipped, failed: failed }
+      rescue => e
+        { applied: [], skipped: [], failed: [], error: e.message }
+      end
+
+      # POST /__dev/api/test — run the project RSpec suite. Prefers
+      # `bundle exec rspec` when a Gemfile + bundler are present.
+      def run_tests_payload
+        root = Dir.pwd
+        runner = if File.exist?(File.join(root, "Gemfile")) &&
+                    system("command -v bundle > /dev/null 2>&1")
+                   "bundle exec rspec --no-color"
                  else
-                   "Unknown tool: #{tool}"
+                   "rspec --no-color"
                  end
-        { tool: tool, output: output }
+        output = `cd #{Shellwords.escape(root)} && #{runner} 2>&1`
+        code = $?.exitstatus.to_i
+        { ok: code.zero?, code: code, output: output.strip }
+      rescue => e
+        { ok: false, code: -1, output: e.message }
+      end
+
+      # POST /__dev/api/seed/run — run every seed file in seeds/ for real
+      # (each file `load`ed in the project context, exactly like `tina4ruby
+      # seed`). Counts files that ran vs. files that raised.
+      def run_seeds_payload
+        seed_folder = File.join(Dir.pwd, "seeds")
+        return { seeded: 0, failed: 0, error: "No seeds folder" } unless Dir.exist?(seed_folder)
+
+        files = Dir.glob(File.join(seed_folder, "*.rb")).sort
+                   .reject { |f| File.basename(f).start_with?("_") }
+        seeded = 0
+        failed = 0
+        files.each do |filepath|
+          begin
+            load filepath
+            seeded += 1
+          rescue StandardError => e
+            failed += 1
+            Tina4::Log.error("Seed failed: #{File.basename(filepath)} - #{e.message}") if defined?(Tina4::Log)
+          end
+        end
+        { seeded: seeded, failed: failed }
+      rescue => e
+        { seeded: 0, failed: 0, error: e.message }
+      end
+
+      # ── Grounding panel (Tier 2) ───────────────────────────────────
+
+      # Resolve an env value: live process ENV first (a just-saved token is
+      # reflected there), then the project .env. Returns nil when unset.
+      def grounding_env_value(key)
+        live = ENV[key]
+        return live unless live.nil? || live.empty?
+
+        env_path = File.join(Dir.pwd, ".env")
+        return nil unless File.file?(env_path)
+
+        File.readlines(env_path).each do |line|
+          line = line.strip
+          next if line.empty? || line.start_with?("#") || !line.include?("=")
+          k, v = line.split("=", 2)
+          next unless k.strip == key
+          return (v || "").strip.gsub(/\A["']|["']\z/, "")
+        end
+        nil
+      end
+
+      # GET /__dev/api/grounding/status
+      def grounding_status_payload
+        token = grounding_env_value("TINA4_MCP_TOKEN").to_s
+        url = grounding_env_value("TINA4_MCP_URL").to_s
+        url = "https://mcp.tina4.com" if url.empty?
+        configured = !token.empty?
+        { configured: configured, last4: configured ? token[-4..].to_s : "", url: url }
+      end
+
+      # POST /__dev/api/grounding/token — upsert TINA4_MCP_TOKEN into the
+      # project .env (empty token clears it). Reflects into the live process
+      # ENV so a subsequent status read returns the new state immediately.
+      def grounding_token_save(body)
+        token = (body && body["token"]).to_s.strip
+        env_path = File.join(Dir.pwd, ".env")
+        lines = File.file?(env_path) ? File.readlines(env_path, chomp: true) : []
+        found = false
+        new_lines = lines.map do |line|
+          stripped = line.strip
+          if !stripped.empty? && !stripped.start_with?("#") && stripped.include?("=") &&
+             stripped.split("=", 2).first.strip == "TINA4_MCP_TOKEN"
+            found = true
+            "TINA4_MCP_TOKEN=#{token}"
+          else
+            line
+          end
+        end
+        new_lines << "TINA4_MCP_TOKEN=#{token}" unless found
+        File.write(env_path, new_lines.join("\n") + "\n")
+
+        if token.empty?
+          ENV.delete("TINA4_MCP_TOKEN")
+        else
+          ENV["TINA4_MCP_TOKEN"] = token
+        end
+        configured = !token.empty?
+        { ok: true, configured: configured, last4: configured ? token[-4..].to_s : "" }
+      rescue => e
+        { ok: false, error: e.message }
+      end
+
+      # ── Queue run-chips (Tier 3) ───────────────────────────────────
+
+      # A file-backed dev Queue for +topic+ (matches the GET /queue handler).
+      def dev_queue(topic)
+        require_relative "queue" unless defined?(Tina4::Queue)
+        Tina4::Queue.new(backend: :file, topic: topic)
+      end
+
+      # POST /__dev/api/queue/retry — revive failed/dead-letter jobs back to
+      # pending (real mutation via Queue#retry_failed).
+      def queue_retry(body)
+        topic = (body["topic"] || "default").to_s
+        queue = dev_queue(topic)
+        retried = queue.respond_to?(:retry_failed) ? queue.retry_failed : 0
+        { retried: retried, topic: topic }
+      rescue => e
+        { retried: 0, error: e.message }
+      end
+
+      # POST /__dev/api/queue/purge — delete jobs by status (default
+      # "completed"). Pass {"status": "pending"} to drop queued jobs.
+      # Real mutation via Queue#purge; returns the number removed.
+      def queue_purge(body)
+        topic = (body["topic"] || "default").to_s
+        status = (body["status"] || "completed").to_s
+        queue = dev_queue(topic)
+        removed = queue.respond_to?(:purge) ? queue.purge(status) : 0
+        { purged: true, removed: removed, status: status, topic: topic }
+      rescue => e
+        { purged: false, error: e.message }
+      end
+
+      # POST /__dev/api/queue/replay — re-queue a specific job by id from the
+      # dead-letter/failed store (real mutation via Queue#retry(job_id)).
+      def queue_replay(body)
+        topic = (body["topic"] || "default").to_s
+        job_id = body["id"]
+        return { replayed: false, error: "Missing job id" } if job_id.nil? || job_id.to_s.empty?
+
+        delay = (body["delay"] || 0).to_i
+        queue = dev_queue(topic)
+        result = queue.respond_to?(:retry) ? queue.retry(job_id, delay_seconds: delay) : false
+        { replayed: result, id: job_id, topic: topic }
+      rescue => e
+        { replayed: false, error: e.message }
+      end
+
+      # ── WebSocket introspection (Tier 3) ───────────────────────────
+
+      # The live WebSocket managers to introspect. In tina4-ruby app routes
+      # share the process-wide engine (Tina4::WebSocket.current) while the
+      # dev-reload channel keeps its own manager (Tina4::DevReload) — both
+      # hold real, live connections, so the panel enumerates both.
+      def ws_managers
+        managers = []
+        if defined?(Tina4::WebSocket) && Tina4::WebSocket.current
+          managers << Tina4::WebSocket.current
+        end
+        managers << Tina4::DevReload.manager if defined?(Tina4::DevReload)
+        managers.compact
+      end
+
+      # GET /__dev/api/websockets — enumerate real live connections.
+      def websockets_payload
+        seen = {}
+        ws_managers.each do |mgr|
+          conns = mgr.respond_to?(:connections) ? mgr.connections : {}
+          conns.each do |id, conn|
+            next if seen.key?(id)
+            seen[id] = {
+              id: id.to_s,
+              path: (conn.respond_to?(:path) ? conn.path : "/").to_s,
+              ip: ws_conn_ip(conn),
+              rooms: (conn.respond_to?(:rooms) ? conn.rooms.to_a : []),
+              last_activity: (conn.respond_to?(:last_activity) ? conn.last_activity : nil),
+              closed: (conn.respond_to?(:closed?) ? conn.closed? : false),
+            }
+          end
+        end
+        list = seen.values
+        { connections: list, count: list.size }
+      rescue => e
+        { connections: [], count: 0, error: e.message }
+      end
+
+      # Best-effort peer IP off the connection params (nil-safe).
+      def ws_conn_ip(conn)
+        return "" unless conn.respond_to?(:params) && conn.params
+        (conn.params["ip"] || conn.params[:ip] || "").to_s
+      end
+
+      # POST /__dev/api/websockets/disconnect — actually close + unregister
+      # the given connection id across the live managers.
+      def websockets_disconnect(body)
+        id = body["id"]
+        return { disconnected: false, error: "id required" } if id.nil? || id.to_s.empty?
+
+        disconnected = false
+        ws_managers.each do |mgr|
+          conns = mgr.respond_to?(:connections) ? mgr.connections : {}
+          next unless conns.key?(id)
+
+          begin
+            mgr.close(id) if mgr.respond_to?(:close)
+          rescue StandardError
+            # closing a half-dead socket must not abort the unregister below
+          end
+          if mgr.respond_to?(:unregister_connection)
+            mgr.unregister_connection(id)
+          else
+            conns.delete(id)
+          end
+          disconnected = true
+        end
+        { disconnected: disconnected, id: id }
+      rescue => e
+        { disconnected: false, error: e.message }
       end
 
       def run_query(sql)
