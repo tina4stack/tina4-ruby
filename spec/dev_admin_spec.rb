@@ -834,4 +834,49 @@ RSpec.describe Tina4::DevAdmin do
     end
   end
 
+  # ── Connection tester (POST /__dev/api/connections/test) ───────
+  # Lock-in for the dev-dashboard "Test connection" button. This same
+  # endpoint regressed to a constant "0 tables" in the PHP and Node
+  # backends (now fixed); Ruby was already correct. Per the parity
+  # mandate every framework gets a real behavioural guard so this class
+  # of regression can't silently ship — mirrors the MCP #164 approach.
+  #
+  # NO mocks: a real temp SQLite file is created via the real
+  # Tina4::Database, two real tables are added with db.execute, then the
+  # real handler path (handle_connections_test) is driven and its JSON
+  # response is asserted to report the real table count + a real version.
+  describe "connection tester" do
+    let(:db_path) { File.join(Dir.tmpdir, "tina4_conntest_#{Process.pid}_#{rand(1_000_000)}.db") }
+    # Absolute temp path -> "sqlite:///" + "/abs/path" = "sqlite:////abs/path"
+    # which the driver resolves as an absolute file (NOT relative to cwd).
+    let(:db_url) { "sqlite:///#{db_path}" }
+
+    after do
+      # The sqlite driver opens with journal_mode=WAL, so clean the sidecars too.
+      [db_path, "#{db_path}-wal", "#{db_path}-shm"].each do |file|
+        File.delete(file) if File.exist?(file)
+      end
+    end
+
+    it "reports the real table count from a live SQLite connection" do
+      # Real SQLite database, two real tables via real DDL.
+      db = Tina4::Database.new(db_url)
+      db.execute("CREATE TABLE alpha (id INTEGER PRIMARY KEY, name TEXT)")
+      db.execute("CREATE TABLE beta (id INTEGER PRIMARY KEY, label TEXT)")
+      # The exact behaviour the endpoint relies on: db.tables sees them.
+      expect(db.tables).to include("alpha", "beta")
+      db.close
+
+      # Drive the real connection-tester handler (private singleton method,
+      # reached via .send like the other dev-admin handler specs).
+      status, _headers, body = Tina4::DevAdmin.send(:handle_connections_test, { "url" => db_url })
+
+      expect(status).to eq(200)
+      data = JSON.parse(body.first)
+      expect(data["success"]).to be true
+      expect(data["tables"]).to be >= 2
+      expect(data["version"]).to include("SQLite")
+    end
+  end
+
 end
