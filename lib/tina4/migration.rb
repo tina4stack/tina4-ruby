@@ -314,10 +314,13 @@ module Tina4
         else
           execute_sql_file(file)
         end
-        # ROW-EXISTENCE tracking: only a SUCCESS row is ever written. A
-        # migration is "applied" iff a success row exists — failures are never
-        # recorded, nothing is deleted, the file rolls back and we surface the
-        # error. Fix the bad file and re-run.
+        # A migration is "applied" iff a passed=1 row exists. On success,
+        # _record_migration deletes any existing row for this migration_name
+        # (superseding a leftover passed=0) and writes the fresh passed=1 row, so
+        # a previously-failed migration re-applies cleanly instead of colliding
+        # on the UNIQUE migration_name. On a FAILURE the file rolls back and NO
+        # row is written (failures are never recorded) - fix the bad file and
+        # re-run.
         _record_migration(name, batch, passed: 1)
         @db.commit
         { name: name, status: "success" }
@@ -633,6 +636,18 @@ module Tina4
       # executed_at is a written VARCHAR(50) string (canonical shape has no
       # CURRENT_TIMESTAMP default), ISO-8601 UTC. strftime avoids a require "time".
       executed_at = Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+      # Delete-before-insert: supersede any existing row for this migration_name
+      # first, so a leftover passed=0 row (a public record_migration(passed: 0)
+      # call, or a state carried in from elsewhere) does NOT collide on the
+      # UNIQUE migration_name when the fresh row is inserted - the migration
+      # re-applies cleanly instead of wedging on the constraint. DELETE+INSERT is
+      # portable across every engine (no UPSERT dialect variance). Invariant: the
+      # bookkeeping table holds AT MOST ONE row per migration_name, latest state
+      # wins. Within run_migration's transaction the delete is part of the same
+      # unit (autocommit is a no-op while a transaction is pinned); on the public
+      # record_migration path it is a standalone write, mirroring the Python
+      # master's two-statement delete-then-insert.
+      _remove_migration_record(name)
       if firebird?
         # Firebird: generate ID from sequence
         row = @db.fetch_one(
