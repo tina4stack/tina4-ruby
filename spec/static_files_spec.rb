@@ -193,4 +193,74 @@ RSpec.describe "Static file serving" do
       expect(parsed["source"]).to eq("route")
     end
   end
+
+  # ── Cache revalidation (no-cache + validators + 304) ───────────
+  #
+  # Policy (identical across all four Tina4 frameworks): a served static asset
+  # carries `cache-control: no-cache, must-revalidate` + an ETag + Last-Modified,
+  # and a conditional request whose validator still matches gets a bare 304 (no
+  # body). Real temp files drive the real static-serve path — no mocks.
+
+  describe "cache revalidation" do
+    it "carries no-cache/must-revalidate + a non-empty ETag + Last-Modified" do
+      File.write(File.join(pub_dir, "app.js"), "console.log('v1');")
+      status, headers, body = app.call(mock_env("GET", "/app.js"))
+
+      expect(status).to eq(200)
+      expect(headers["cache-control"]).to eq("no-cache, must-revalidate")
+      expect(headers["etag"]).to be_a(String)
+      expect(headers["etag"]).not_to be_empty
+      expect(headers["last-modified"]).to be_a(String)
+      expect(headers["last-modified"]).not_to be_empty
+      # Sanity: Last-Modified is a valid HTTP-date.
+      expect { Time.httpdate(headers["last-modified"]) }.not_to raise_error
+      expect(body.join).to eq("console.log('v1');")
+    end
+
+    it "returns 304 with no body when If-None-Match matches the ETag" do
+      File.write(File.join(pub_dir, "style.css"), "body{color:red}")
+      _s, first_headers, _b = app.call(mock_env("GET", "/style.css"))
+      etag = first_headers["etag"]
+      expect(etag).not_to be_nil
+
+      status, headers, body = app.call(
+        mock_env("GET", "/style.css", headers: { "If-None-Match" => etag })
+      )
+      expect(status).to eq(304)
+      expect(body.join).to eq("")           # bare 304 — no body
+      expect(headers["etag"]).to eq(etag)   # validator still echoed
+      expect(headers["cache-control"]).to eq("no-cache, must-revalidate")
+    end
+
+    it "still serves 200 + body when If-None-Match does NOT match (negative)" do
+      File.write(File.join(pub_dir, "logo.svg"), "<svg>a</svg>")
+      status, _headers, body = app.call(
+        mock_env("GET", "/logo.svg", headers: { "If-None-Match" => 'W/"deadbeef-1"' })
+      )
+      expect(status).to eq(200)
+      expect(body.join).to eq("<svg>a</svg>")
+    end
+
+    it "returns 304 when If-Modified-Since is not older than the file" do
+      File.write(File.join(pub_dir, "data.json"), '{"v":1}')
+      _s, first_headers, _b = app.call(mock_env("GET", "/data.json"))
+      last_modified = first_headers["last-modified"]
+
+      status, _headers, body = app.call(
+        mock_env("GET", "/data.json", headers: { "If-Modified-Since" => last_modified })
+      )
+      expect(status).to eq(304)
+      expect(body.join).to eq("")
+    end
+
+    it "still serves 200 + body when If-Modified-Since is older than the file (negative)" do
+      File.write(File.join(pub_dir, "fresh.txt"), "fresh bytes")
+      status, _headers, body = app.call(
+        mock_env("GET", "/fresh.txt",
+                 headers: { "If-Modified-Since" => "Wed, 01 Jan 2020 00:00:00 GMT" })
+      )
+      expect(status).to eq(200)
+      expect(body.join).to eq("fresh bytes")
+    end
+  end
 end

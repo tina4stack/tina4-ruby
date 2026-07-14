@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require "json"
 require "securerandom"
+require "time"
 require "uri"
 
 module Tina4
@@ -128,7 +129,7 @@ module Tina4
         end
 
         # Static files (only for non-API paths)
-        static_response = try_static(path)
+        static_response = try_static(path, env)
         return static_response if static_response
       end
 
@@ -386,30 +387,94 @@ module Tina4
       final_response.to_rack
     end
 
-    def try_static(path)
+    def try_static(path, env = nil)
       return nil if path.include?("..")
 
       @static_roots.each do |root|
         full_path = File.join(root, path)
         if File.file?(full_path)
-          return serve_static_file(full_path)
+          return serve_static_file(full_path, env)
         end
 
         # Only try index.html for directory-like paths
         if path.end_with?("/") || !path.include?(".")
           index_path = File.join(full_path, "index.html")
           if File.file?(index_path)
-            return serve_static_file(index_path)
+            return serve_static_file(index_path, env)
           end
         end
       end
       nil
     end
 
-    def serve_static_file(full_path)
+    # Serve a static asset with cache-revalidation semantics (parity with the
+    # Python master). A static file may be cached by the browser but MUST be
+    # revalidated before use, so a redeployed asset reaches the browser on the
+    # next load without a manual hard refresh — and an unchanged asset costs a
+    # cheap 304 round-trip, not a re-download.
+    #
+    # Validators are derived from the file's mtime + size (a weak ETag) plus a
+    # Last-Modified date, so we never have to read/hash the bytes to build them.
+    # When the request already carries a matching validator (If-None-Match, or
+    # If-Modified-Since not older than the file) we answer a bare 304 with no
+    # body. Stdlib only — no new dependency.
+    def serve_static_file(full_path, env = nil)
       ext = File.extname(full_path).downcase
       content_type = Tina4::Response::MIME_TYPES[ext] || "application/octet-stream"
-      [200, { "content-type" => content_type }, [File.binread(full_path)]]
+
+      stat = File.stat(full_path)
+      etag = %(W/"#{stat.mtime.to_i.to_s(16)}-#{stat.size.to_s(16)}")
+      last_modified = stat.mtime.httpdate
+
+      headers = {
+        "content-type" => content_type,
+        "cache-control" => "no-cache, must-revalidate",
+        "etag" => etag,
+        "last-modified" => last_modified
+      }
+
+      if env && static_not_modified?(env, etag, stat.mtime)
+        # 304 carries the validators (RFC 9110 §15.4.5) but NO body.
+        return [304, {
+          "cache-control" => "no-cache, must-revalidate",
+          "etag" => etag,
+          "last-modified" => last_modified
+        }, []]
+      end
+
+      [200, headers, [File.binread(full_path)]]
+    end
+
+    # Decide whether a conditional GET for a static asset can be answered 304.
+    # If-None-Match takes precedence over If-Modified-Since (RFC 9110 §13.1.3);
+    # ETag comparison is weak (a leading `W/` is ignored on either side).
+    def static_not_modified?(env, etag, mtime)
+      if_none_match = env["HTTP_IF_NONE_MATCH"]
+      if if_none_match && !if_none_match.empty?
+        return true if if_none_match.strip == "*"
+
+        want = weak_etag_value(etag)
+        return if_none_match.split(",").any? { |candidate| weak_etag_value(candidate) == want }
+      end
+
+      if_modified_since = env["HTTP_IF_MODIFIED_SINCE"]
+      if if_modified_since && !if_modified_since.empty?
+        begin
+          # HTTP dates have 1-second resolution — compare at whole seconds so a
+          # sub-second mtime never spuriously looks "newer" than the client copy.
+          return mtime.to_i <= Time.httpdate(if_modified_since).to_i
+        rescue ArgumentError
+          return false # Unparseable date — treat as no validator, serve the body.
+        end
+      end
+
+      false
+    end
+
+    # Normalise an ETag for weak comparison: drop a leading `W/` and surrounding
+    # whitespace so `W/"abc"` and `"abc"` compare equal.
+    def weak_etag_value(tag)
+      tag.to_s.strip.sub(/\AW\//, "")
     end
 
     def serve_swagger_ui
