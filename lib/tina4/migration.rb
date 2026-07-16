@@ -648,22 +648,48 @@ module Tina4
       # record_migration path it is a standalone write, mirroring the Python
       # master's two-statement delete-then-insert.
       _remove_migration_record(name)
+
+      # Build the column list from the columns that ACTUALLY exist on the table,
+      # so a legacy column left behind by an in-place upgrade is populated rather
+      # than defaulted to NULL. Ruby never created a `migration_id` column, but a
+      # Ruby app can be pointed at a database whose tina4_migration table was
+      # created by tina4-python v3 <= 3.13.54 - there `migration_id` is NOT NULL,
+      # and an insert that omits it fails, wedging every migration on that
+      # database (tina4-python#93). Mirrors the PHP + Python masters.
+      cols = _tracking_columns
+      insert_cols = %w[migration_name description batch executed_at passed]
+      values = [name, desc, batch, executed_at, passed]
+
+      if cols.include?("migration_id")
+        insert_cols << "migration_id"
+        values << name
+      end
+
       if firebird?
         # Firebird: generate ID from sequence
         row = @db.fetch_one(
           "SELECT GEN_ID(GEN_TINA4_MIGRATION_ID, 1) AS NEXT_ID FROM RDB\$DATABASE"
         )
         next_id = row ? (row[:NEXT_ID] || row[:next_id] || 1).to_i : 1
-        @db.execute(
-          "INSERT INTO #{TRACKING_TABLE} (id, migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?, ?)",
-          [next_id, name, desc, batch, executed_at, passed]
-        )
-      else
-        @db.execute(
-          "INSERT INTO #{TRACKING_TABLE} (migration_name, description, batch, executed_at, passed) VALUES (?, ?, ?, ?, ?)",
-          [name, desc, batch, executed_at, passed]
-        )
+        insert_cols.unshift("id")
+        values.unshift(next_id)
       end
+
+      placeholders = Array.new(insert_cols.length, "?").join(", ")
+      @db.execute(
+        "INSERT INTO #{TRACKING_TABLE} (#{insert_cols.join(', ')}) VALUES (#{placeholders})",
+        values
+      )
+    end
+
+    # Lowercased column names on the tracking table; empty on any failure so a
+    # missing/unreadable table falls through to the canonical column list.
+    def _tracking_columns
+      (@db.columns(TRACKING_TABLE) || []).map do |c|
+        (c.is_a?(Hash) ? (c[:name] || c["name"]) : c).to_s.downcase
+      end
+    rescue StandardError
+      []
     end
 
     def _remove_migration_record(name)

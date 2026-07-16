@@ -340,3 +340,63 @@ RSpec.describe "Migration tracking table on real PostgreSQL" do
     expect(tracked[:passed].to_i).to eq(1)
   end
 end
+
+# tina4-python#93 parity: a tina4_migration table created by tina4-python v3
+# <= 3.13.54 carries `migration_id NOT NULL UNIQUE`. Ruby never created that
+# column, so this is only reachable when a Ruby app is pointed at a database
+# whose tracking table came from tina4-python. The bookkeeping insert must
+# populate any legacy column that is present, or every migration on that
+# database dies on a not-null violation and none can ever apply.
+#
+# Scope, stated honestly: only the BOTH-columns shape is exercised. A table with
+# `migration_id` and NO `migration_name` is unreachable from Ruby - Ruby has no
+# python-legacy rename path (its applied-read is `SELECT migration_name ...`, so
+# such a table fails on the READ, before bookkeeping). Adding that rename path is
+# a separate question, not this fix; pinning it here would test a shape Ruby
+# cannot produce.
+RSpec.describe "Migration bookkeeping on a legacy migration_id table (python#93 parity)" do
+  let(:tmp_dir) { Dir.mktmpdir("tina4_issue93") }
+  let(:db_path) { File.join(tmp_dir, "issue93.db") }
+  let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
+  let(:migrations_dir) { File.join(tmp_dir, "migrations") }
+
+  before(:each) do
+    FileUtils.mkdir_p(migrations_dir)
+    File.write(File.join(migrations_dir, "000001_smoke.sql"), "CREATE TABLE smoke_check (id INTEGER);")
+  end
+
+  after(:each) do
+    db.close
+    FileUtils.rm_rf(tmp_dir)
+  end
+
+  it "applies a pending migration and populates the legacy NOT NULL migration_id" do
+    db.execute(<<~SQL)
+      CREATE TABLE tina4_migration (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        migration_id VARCHAR(500) NOT NULL UNIQUE,
+        description VARCHAR(500),
+        batch INTEGER NOT NULL DEFAULT 1,
+        executed_at VARCHAR(50) NOT NULL,
+        passed INTEGER NOT NULL DEFAULT 1,
+        migration_name VARCHAR(500)
+      )
+    SQL
+
+    Tina4::Migration.new(db, migrations_dir: migrations_dir).run
+
+    expect(db.table_exists?("smoke_check")).to be(true), "the migration's own DDL must have run"
+    row = db.fetch_one("SELECT migration_name, migration_id, passed FROM tina4_migration")
+    expect(row[:migration_name] || row["migration_name"]).to eq("000001_smoke.sql")
+    expect(row[:migration_id] || row["migration_id"]).to eq("000001_smoke.sql"),
+                                                          "the legacy NOT NULL column must be populated"
+  end
+
+  it "does not add migration_id to a fresh canonical table" do
+    Tina4::Migration.new(db, migrations_dir: migrations_dir).run
+    names = db.columns("tina4_migration").map { |c| (c.is_a?(Hash) ? (c[:name] || c["name"]) : c).to_s.downcase }
+    expect(names).not_to include("migration_id")
+    row = db.fetch_one("SELECT migration_name FROM tina4_migration")
+    expect(row[:migration_name] || row["migration_name"]).to eq("000001_smoke.sql")
+  end
+end
