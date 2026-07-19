@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.78 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.79 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -1130,7 +1130,7 @@ mode and protected for remote callers. Environment variables (read by
 - WSDL/SOAP security (`lib/tina4/wsdl.rb`): a SOAP message containing a `<!DOCTYPE>` (DTD) is rejected with a `Client` fault ("DOCTYPE declarations are not allowed in SOAP messages") **before** parsing — SOAP 1.1 §3 forbids DTDs, and rejecting up front closes the REXML internal-entity-expansion (billion-laughs) and XXE attack surface (enforced on both `process_soap` and the legacy `Service#handle_soap_request`). An operation that raises returns a `Server` fault whose `<faultstring>` is the real cause **only** in debug mode (`TINA4_DEBUG`); in production it is a generic "Internal server error" and the real cause is logged via `Tina4::Log.error` — a resolver exception never leaks internal state to a SOAP client
 - GraphQL security (`lib/tina4/graphql.rb`): **depth guard** — selection-set nesting is bounded by `TINA4_GRAPHQL_MAX_DEPTH` (default `50`; set `<= 0` to disable). An over-deep query or a circular fragment fails with a `"Query exceeds maximum depth of N"` error instead of overflowing the stack (depth counts sub-selections AND fragment spreads AND inline fragments; top-level starts at 1). **Resolver errors** are masked: the message is the real cause only in debug mode (`TINA4_DEBUG`), else a generic "Internal server error" (the real cause is logged via `Tina4::Log.error`, path preserved). **Directives are honored** — `parse_field` parses leading `@directive(args)` tokens into `:directives`, so `@skip`/`@include`/`@auth`/`@role`/`@guest` actually fire (previously the parser never populated directives, so they were silently ignored)
 - Tests: 3,882 examples, 0 failures, 84 pending (PostgreSQL/MSSQL service-gated)
-- Version: 3.13.78
+- Version: 3.13.79
 
 ## Links
 
