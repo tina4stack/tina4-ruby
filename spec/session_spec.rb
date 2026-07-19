@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "socket"
 
 RSpec.describe Tina4::Session do
   let(:tmp_dir) { Dir.mktmpdir("tina4_sess_test") }
@@ -8,6 +9,166 @@ RSpec.describe Tina4::Session do
   let(:options) { { handler: :file, handler_options: { dir: tmp_dir } } }
 
   after(:each) { FileUtils.rm_rf(tmp_dir) }
+
+  # Set REAL environment variables for one example and always restore the prior
+  # state (present-or-absent + value). NO mocks — the code under test reads the
+  # real process env exactly as it would in production. A nil value deletes.
+  def with_env(pairs)
+    saved = pairs.keys.to_h { |key| [key, [ENV.key?(key), ENV[key]]] }
+    pairs.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    yield
+  ensure
+    saved.each { |key, (had, previous)| had ? ENV[key] = previous : ENV.delete(key) }
+  end
+
+  # ── TINA4_SESSION_BACKEND handler selection ──────────────────────────────
+  #
+  # Lock-in for the env-var wiring: Ruby SHIPPED the redis/valkey/mongo/database
+  # handlers but nothing read TINA4_SESSION_BACKEND, so every non-file backend
+  # was unreachable by configuration while the docs documented it. These specs
+  # pin the resolution contract against the Python master
+  # (tina4_python/tina4_python/session/__init__.py::_resolve_handler):
+  #
+  #   file|filesystem → File, redis → Redis, valkey → Valkey,
+  #   mongodb|mongo → Mongo, database|db → Database,
+  #   UNKNOWN → File (silent fallback, never raises).
+  #
+  # NO MOCKS: each example sets the REAL env var and builds a REAL Tina4::Session
+  # whose REAL handler is constructed. The Redis/Valkey handlers connect lazily
+  # (one short-lived RESP connection per command), so SELECTION is observable
+  # without a live server; the round-trip example below is service-gated and
+  # hits a REAL Redis.
+  describe "TINA4_SESSION_BACKEND" do
+    def self.service_reachable?(host, port)
+      Socket.tcp(host, port, connect_timeout: 0.5) { true }
+    rescue StandardError
+      false
+    end
+
+    # Set the REAL env var for one example and always restore the prior value.
+    def with_backend(value)
+      had = ENV.key?("TINA4_SESSION_BACKEND")
+      previous = ENV["TINA4_SESSION_BACKEND"]
+      value.nil? ? ENV.delete("TINA4_SESSION_BACKEND") : ENV["TINA4_SESSION_BACKEND"] = value
+      yield
+    ensure
+      had ? ENV["TINA4_SESSION_BACKEND"] = previous : ENV.delete("TINA4_SESSION_BACKEND")
+    end
+
+    def handler_for(backend, opts = {})
+      with_backend(backend) do
+        session = Tina4::Session.new(env, { handler_options: { dir: tmp_dir } }.merge(opts))
+        session.instance_variable_get(:@handler)
+      end
+    end
+
+    it "selects the Redis handler when set to redis" do
+      expect(handler_for("redis")).to be_a(Tina4::SessionHandlers::RedisHandler)
+    end
+
+    it "selects the Valkey handler when set to valkey" do
+      expect(handler_for("valkey")).to be_a(Tina4::SessionHandlers::ValkeyHandler)
+    end
+
+    it "selects the file handler when set to file" do
+      expect(handler_for("file")).to be_a(Tina4::SessionHandlers::FileHandler)
+    end
+
+    it "accepts the filesystem alias for the file handler" do
+      expect(handler_for("filesystem")).to be_a(Tina4::SessionHandlers::FileHandler)
+    end
+
+    it "defaults to the file handler when the variable is unset" do
+      expect(handler_for(nil)).to be_a(Tina4::SessionHandlers::FileHandler)
+    end
+
+    it "is case-insensitive and ignores surrounding whitespace" do
+      expect(handler_for("  ReDiS  ")).to be_a(Tina4::SessionHandlers::RedisHandler)
+    end
+
+    # NEGATIVE: Python falls back to the file handler on an unknown value and
+    # never raises. An app with a typo'd backend must still serve.
+    it "falls back to the file handler on an unknown value without raising" do
+      handler = nil
+      expect { handler = handler_for("not-a-real-backend") }.not_to raise_error
+      expect(handler).to be_a(Tina4::SessionHandlers::FileHandler)
+    end
+
+    # NEGATIVE: an explicitly passed :handler outranks the environment.
+    it "lets an explicit :handler option win over the env var" do
+      expect(handler_for("redis", handler: :file)).to be_a(Tina4::SessionHandlers::FileHandler)
+    end
+
+    describe "the database backend" do
+      let(:db_path) { File.join(tmp_dir, "sessions.db") }
+      let(:database) { Tina4::Database.new("sqlite://#{db_path}") }
+
+      it "selects the Database handler when set to database" do
+        Tina4.bind_database(database)
+        expect(handler_for("database")).to be_a(Tina4::SessionHandlers::DatabaseHandler)
+      end
+
+      it "accepts the db alias" do
+        Tina4.bind_database(database)
+        expect(handler_for("db")).to be_a(Tina4::SessionHandlers::DatabaseHandler)
+      end
+
+      # Parity with Python (_resolve_handler → DatabaseSessionHandler(ORM._get_db())):
+      # the backend must reuse the SAME connection the ORM resolves, not open a
+      # second one of its own. Uses a REAL SQLite database on disk.
+      it "reuses the connection the ORM is bound to" do
+        Tina4.bind_database(database)
+        handler = handler_for("database")
+        expect(handler.instance_variable_get(:@db)).to equal(database)
+      end
+
+      # End-to-end through the REAL SQLite database selected purely by env var.
+      # The row assertion is what makes this discriminating: a round-trip alone
+      # would still pass on the file handler (the pre-fix fallback), so the data
+      # is read back out of the REAL tina4_session table to prove the env var
+      # selected a backend that stores where it says it does.
+      it "round-trips session data through the env-selected database" do
+        Tina4.bind_database(database)
+        with_backend("database") do
+          writer = Tina4::Session.new(env, handler_options: {})
+          writer["user"] = "Alice"
+          expect(writer.save).to be true
+
+          row = database.fetch_one(
+            "SELECT data FROM tina4_session WHERE session_id = ?", [writer.id]
+          )
+          expect(row).not_to be_nil, "the session must be persisted in the real database table"
+          expect(JSON.parse(row[:data] || row["data"])).to eq({ "user" => "Alice" })
+
+          reader = Tina4::Session.new({ "HTTP_COOKIE" => "tina4_session=#{writer.id}" },
+                                      handler_options: {})
+          expect(reader["user"]).to eq("Alice")
+        end
+      end
+    end
+
+    # A live-service round-trip proving the env var selects a handler that really
+    # stores where it says. Skipped when Redis is not running; CI provisions it
+    # and TINA4_REQUIRE_SERVICES turns this skip into a hard failure.
+    describe "against a live Redis" do
+      before do
+        skip "redis not running" unless self.class.service_reachable?("localhost", 6379)
+      end
+
+      it "round-trips session data through the env-selected Redis" do
+        with_backend("redis") do
+          writer = Tina4::Session.new(env, handler_options: {})
+          writer["user"] = "Alice"
+          expect(writer.save).to be true
+
+          reader = Tina4::Session.new({ "HTTP_COOKIE" => "tina4_session=#{writer.id}" },
+                                      handler_options: {})
+          expect(reader["user"]).to eq("Alice")
+          reader.destroy
+        end
+      end
+    end
+  end
 
   describe "#initialize" do
     it "creates a session with a unique id" do
@@ -289,6 +450,182 @@ RSpec.describe Tina4::Session do
       custom_opts = options.merge(cookie_name: "my_session")
       session = Tina4::Session.new(env, custom_opts)
       expect(session.cookie_header).to include("my_session=")
+    end
+
+    # ── issue #31: Secure / SameSite were silent no-ops ────────────────────
+    #
+    # These pin the unified Secure contract (parity with tina4-php#175/#179) and
+    # prove TINA4_SESSION_SAMESITE is honoured rather than hardcoded to Lax.
+    # `env` here is a plain-HTTP request (no x-forwarded-proto, no rack https),
+    # so the request-scheme signal is off unless a test opts it in.
+
+    it "honours TINA4_SESSION_SAMESITE instead of hardcoding Lax" do
+      with_env("TINA4_SESSION_SAMESITE" => "Strict", "TINA4_SESSION_SECURE" => nil) do
+        header = Tina4::Session.new(env, options).cookie_header
+        expect(header).to include("SameSite=Strict")
+        expect(header).not_to include("SameSite=Lax")
+      end
+    end
+
+    it "emits Secure when TINA4_SESSION_SECURE is truthy (on plain HTTP)" do
+      with_env("TINA4_SESSION_SECURE" => "true", "TINA4_SESSION_SAMESITE" => nil) do
+        expect(Tina4::Session.new(env, options).cookie_header).to include("Secure")
+      end
+    end
+
+    it "does NOT emit Secure by default on a plain-HTTP request" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        expect(Tina4::Session.new(env, options).cookie_header).not_to include("Secure")
+      end
+    end
+
+    it "emits Secure on an https request via x-forwarded-proto (proxy-aware)" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        https_env = env.merge("HTTP_X_FORWARDED_PROTO" => "https")
+        expect(Tina4::Session.new(https_env, options).cookie_header).to include("Secure")
+      end
+    end
+
+    it "reads only the first hop of an x-forwarded-proto chain" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        # client-facing hop is https -> Secure
+        secure = env.merge("HTTP_X_FORWARDED_PROTO" => "https, http")
+        expect(Tina4::Session.new(secure, options).cookie_header).to include("Secure")
+        # client-facing hop is http -> not Secure (an inner https hop is irrelevant)
+        insecure = env.merge("HTTP_X_FORWARDED_PROTO" => "http, https")
+        expect(Tina4::Session.new(insecure, options).cookie_header).not_to include("Secure")
+      end
+    end
+
+    it "emits Secure on a native https request (rack.url_scheme)" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        https_env = env.merge("rack.url_scheme" => "https")
+        expect(Tina4::Session.new(https_env, options).cookie_header).to include("Secure")
+      end
+    end
+
+    it "forces Secure when SameSite=None even on plain HTTP (RFC 6265bis)" do
+      with_env("TINA4_SESSION_SAMESITE" => "None", "TINA4_SESSION_SECURE" => nil) do
+        header = Tina4::Session.new(env, options).cookie_header
+        expect(header).to include("SameSite=None")
+        expect(header).to include("Secure")
+      end
+    end
+
+    it "honours TINA4_SESSION_HTTPONLY=false" do
+      with_env("TINA4_SESSION_HTTPONLY" => "false") do
+        expect(Tina4::Session.new(env, options).cookie_header).not_to include("HttpOnly")
+      end
+    end
+
+    it "honours TINA4_SESSION_TTL for the cookie Max-Age" do
+      with_env("TINA4_SESSION_TTL" => "7200") do
+        expect(Tina4::Session.new(env, options).cookie_header).to include("Max-Age=7200")
+      end
+    end
+  end
+
+  # ── Task B: Redis / Mongo handlers read their connection from env ─────────
+  #
+  # Ruby SHIPPED redis/valkey/mongo handlers, but the Redis handler read NO env
+  # (hardcoded localhost:6379) and the Mongo handler read NO env (hardcoded
+  # mongodb://localhost:27017, db "tina4_sessions"), so TINA4_SESSION_BACKEND
+  # could select them but nothing could point them at a server. These pin the
+  # env-var contract mirrored from Python's handlers. NO mocks: each example
+  # constructs the REAL handler which resolves its config from the REAL env.
+  # Explicit constructor options must still win over the environment.
+  describe "backend handler env configuration" do
+    describe "RedisHandler" do
+      # RedisHandler connects lazily (the redis gem / RESP client only dials on
+      # the first command), so SELECTION + config resolution are observable with
+      # no live Redis — no service gate needed for these.
+      it "reads host/port/db/password from TINA4_SESSION_REDIS_* env vars" do
+        with_env(
+          "TINA4_SESSION_REDIS_HOST" => "redis.internal.example",
+          "TINA4_SESSION_REDIS_PORT" => "6380",
+          "TINA4_SESSION_REDIS_DB" => "3",
+          "TINA4_SESSION_REDIS_PASSWORD" => "s3cr3t"
+        ) do
+          handler = Tina4::SessionHandlers::RedisHandler.new
+          expect(handler.instance_variable_get(:@host)).to eq("redis.internal.example")
+          expect(handler.instance_variable_get(:@port)).to eq(6380)
+          expect(handler.instance_variable_get(:@db)).to eq(3)
+          expect(handler.instance_variable_get(:@password)).to eq("s3cr3t")
+        end
+      end
+
+      it "defaults to localhost:6379 / db 0 when no env is set" do
+        with_env(
+          "TINA4_SESSION_REDIS_HOST" => nil, "TINA4_SESSION_REDIS_PORT" => nil,
+          "TINA4_SESSION_REDIS_DB" => nil, "TINA4_SESSION_REDIS_PASSWORD" => nil
+        ) do
+          handler = Tina4::SessionHandlers::RedisHandler.new
+          expect(handler.instance_variable_get(:@host)).to eq("localhost")
+          expect(handler.instance_variable_get(:@port)).to eq(6379)
+          expect(handler.instance_variable_get(:@db)).to eq(0)
+        end
+      end
+
+      it "lets an explicit constructor option win over the env var" do
+        with_env("TINA4_SESSION_REDIS_HOST" => "env-host") do
+          handler = Tina4::SessionHandlers::RedisHandler.new(host: "opt-host")
+          expect(handler.instance_variable_get(:@host)).to eq("opt-host")
+        end
+      end
+    end
+
+    describe "MongoHandler" do
+      # The mongo gem is required at construction; the connection is lazy but
+      # ensure_ttl_index does dial the server, so the test URIs carry a short
+      # serverSelectionTimeoutMS — with no live Mongo, construction fails fast
+      # (~200ms), the error is caught + logged, and the resolved config ivars
+      # are still populated (they are set BEFORE the connect). No mock: a REAL
+      # Mongo::Client parses the REAL env-derived URI.
+      before do
+        require "mongo"
+      rescue LoadError
+        skip "mongo gem not installed"
+      end
+
+      let(:fast_uri) { "mongodb://127.0.0.1:27017/?serverSelectionTimeoutMS=200" }
+
+      it "reads uri/db/collection from TINA4_SESSION_MONGO_* env vars" do
+        with_env(
+          "TINA4_SESSION_MONGO_URI" => fast_uri,
+          "TINA4_SESSION_MONGO_DB" => "app_sessions",
+          "TINA4_SESSION_MONGO_COLLECTION" => "sess",
+          "TINA4_SESSION_MONGO_URL" => nil
+        ) do
+          handler = Tina4::SessionHandlers::MongoHandler.new
+          expect(handler.instance_variable_get(:@uri)).to eq(fast_uri)
+          expect(handler.instance_variable_get(:@database)).to eq("app_sessions")
+          expect(handler.instance_variable_get(:@collection_name)).to eq("sess")
+        end
+      end
+
+      it "accepts TINA4_SESSION_MONGO_URL as a legacy alias for the URI" do
+        with_env("TINA4_SESSION_MONGO_URI" => nil, "TINA4_SESSION_MONGO_URL" => fast_uri) do
+          handler = Tina4::SessionHandlers::MongoHandler.new
+          expect(handler.instance_variable_get(:@uri)).to eq(fast_uri)
+        end
+      end
+
+      it "defaults the database to Python's 'tina4' (not the old 'tina4_sessions')" do
+        with_env(
+          "TINA4_SESSION_MONGO_URI" => fast_uri, "TINA4_SESSION_MONGO_URL" => nil,
+          "TINA4_SESSION_MONGO_DB" => nil, "TINA4_SESSION_MONGO_COLLECTION" => nil
+        ) do
+          handler = Tina4::SessionHandlers::MongoHandler.new
+          expect(handler.instance_variable_get(:@database)).to eq("tina4")
+        end
+      end
+
+      it "lets an explicit :database option win over the env var" do
+        with_env("TINA4_SESSION_MONGO_URI" => fast_uri, "TINA4_SESSION_MONGO_DB" => "env-db") do
+          handler = Tina4::SessionHandlers::MongoHandler.new(database: "opt-db")
+          expect(handler.instance_variable_get(:@database)).to eq("opt-db")
+        end
+      end
     end
   end
 

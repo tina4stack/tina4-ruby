@@ -27,10 +27,32 @@ module Tina4
       # (Auth.ensure_dev_secret never uses a guessable default); Python/Node
       # sessions carry no secret field at all.
       @options[:secret] ||= ENV["TINA4_SECRET"]
+      # TINA4_SESSION_TTL — cookie Max-Age (parity with Python's Session._ttl,
+      # which reads the same var). Only consulted when the caller did NOT pass
+      # an explicit :max_age (an explicit option always wins). Keeps the cookie
+      # honouring TINA4_SESSION_TTL now that rack_app routes the Set-Cookie
+      # through #cookie_header instead of hand-writing it (issue #31).
+      unless options.key?(:max_age)
+        ttl_env = ENV["TINA4_SESSION_TTL"]
+        @options[:max_age] = Integer(ttl_env) if ttl_env && !ttl_env.strip.empty?
+      end
+      # TINA4_SESSION_BACKEND — selects the storage handler unless the caller
+      # explicitly passed :handler (same precedence as :cookie_name above; an
+      # explicit option always wins over the environment). Without this the
+      # shipped redis/valkey/mongo/database handlers are unreachable by config.
+      # Parity with Python's Session._resolve_handler.
+      @options[:handler] = env_session_backend || @options[:handler] unless options.key?(:handler)
       # Backend-failure policy strict flag (parity with Python's
       # TINA4_SESSION_STRICT). When truthy, read/write/destroy/gc failures
       # RE-RAISE instead of logging + degrading.
       @strict = Tina4::Env.is_truthy(ENV["TINA4_SESSION_STRICT"])
+      # Whether THIS request reached us over https, decided PROXY-AWARE from the
+      # Rack env at construction (x-forwarded-proto first hop, else rack scheme /
+      # HTTPS). #cookie_header ORs this into the Secure flag so a cookie set on an
+      # https request is Secure even when TINA4_SESSION_SECURE is unset — a
+      # session cookie for an encrypted request must never be sent in the clear.
+      # Uses the SAME detector as Request#url so the two never disagree (issue #31).
+      @request_secure = Tina4::Request.secure_scheme?(env || {})
       @handler = create_handler
       @id = extract_session_id(env) || SecureRandom.hex(32)
       @data = load_session
@@ -184,8 +206,14 @@ module Tina4
       samesite = ENV["TINA4_SESSION_SAMESITE"] || "Lax"
       # HttpOnly defaults to true (existing behaviour); flip off only when explicitly false.
       httponly = !%w[false 0 no off].include?((ENV["TINA4_SESSION_HTTPONLY"] || "true").to_s.strip.downcase)
-      # Secure defaults to false; flip on with truthy env var.
-      secure = %w[true 1 yes on].include?((ENV["TINA4_SESSION_SECURE"] || "false").to_s.strip.downcase)
+      # Secure is set when ANY of the unified-contract conditions hold (parity
+      # with tina4-php#175/#179): TINA4_SESSION_SECURE is truthy, OR SameSite is
+      # None (browsers reject a None cookie without Secure per RFC 6265bis), OR
+      # the request itself is https (proxy-aware, from @request_secure). A plain
+      # HTTP request with the flag unset and SameSite != None stays non-Secure.
+      secure = %w[true 1 yes on].include?((ENV["TINA4_SESSION_SECURE"] || "false").to_s.strip.downcase) ||
+               samesite.to_s.strip.casecmp("none").zero? ||
+               @request_secure == true
 
       parts = ["#{name}=#{@id}", "Path=/"]
       parts << "HttpOnly" if httponly
@@ -262,9 +290,24 @@ module Tina4
       warn("Session #{operation} failed: #{error.message}")
     end
 
+    # The configured TINA4_SESSION_BACKEND name, or nil when unset/blank (so the
+    # caller keeps the DEFAULT_OPTIONS handler). The value is normalised at
+    # dispatch in #create_handler, not here.
+    def env_session_backend
+      value = ENV["TINA4_SESSION_BACKEND"]
+      value && !value.strip.empty? ? value : nil
+    end
+
+    # Build the storage handler for the resolved backend name.
+    #
+    # The accepted names — and the aliases — mirror Python's
+    # Session._resolve_handler exactly: file|filesystem, redis, valkey,
+    # mongodb|mongo, database|db. The name is normalised (downcase + strip) so
+    # "Redis" / " mongodb " from a .env line resolve, and an UNKNOWN value falls
+    # back to the file handler SILENTLY (never raises) — same as Python.
     def create_handler
-      case @options[:handler].to_sym
-      when :file
+      case @options[:handler].to_s.downcase.strip.to_sym
+      when :file, :filesystem
         Tina4::SessionHandlers::FileHandler.new(@options[:handler_options])
       when :redis
         Tina4::SessionHandlers::RedisHandler.new(@options[:handler_options])
@@ -273,7 +316,15 @@ module Tina4
       when :valkey
         Tina4::SessionHandlers::ValkeyHandler.new(@options[:handler_options])
       when :database, :db
-        Tina4::SessionHandlers::DatabaseHandler.new(@options[:handler_options])
+        # Parity with Python: the database backend "uses whatever DB is
+        # connected", so reuse the single ORM resolver (named binding → global
+        # Tina4.bind_database → TINA4_DATABASE_URL auto-discovery) rather than
+        # opening a second, divergent connection. An explicit
+        # handler_options[:db] still wins; a nil here leaves the handler's own
+        # env-derived default untouched.
+        Tina4::SessionHandlers::DatabaseHandler.new(
+          { db: Tina4::ORM.db }.merge(@options[:handler_options] || {})
+        )
       else
         Tina4::SessionHandlers::FileHandler.new(@options[:handler_options])
       end

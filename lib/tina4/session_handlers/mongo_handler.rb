@@ -4,14 +4,20 @@ require "json"
 module Tina4
   module SessionHandlers
     class MongoHandler
+      # Connection is configured from TINA4_SESSION_MONGO_* env vars (parity with
+      # Python's MongoDBSessionHandler) so TINA4_SESSION_BACKEND=mongodb can be
+      # pointed at a server by env. TINA4_SESSION_MONGO_URI is canonical;
+      # TINA4_SESSION_MONGO_URL is a legacy alias. The database default is
+      # "tina4" (Python's default — Ruby previously drifted to "tina4_sessions").
+      # An explicit constructor option always wins over the environment.
       def initialize(options = {})
         require "mongo"
         @ttl = options[:ttl] || 86400
-        client = Mongo::Client.new(
-          options[:uri] || "mongodb://localhost:27017",
-          database: options[:database] || "tina4_sessions"
-        )
-        @collection = client[options[:collection] || "sessions"]
+        @uri = options[:uri] || ENV["TINA4_SESSION_MONGO_URI"] || ENV["TINA4_SESSION_MONGO_URL"] || "mongodb://localhost:27017"
+        @database = options[:database] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
+        @collection_name = options[:collection] || ENV["TINA4_SESSION_MONGO_COLLECTION"] || "sessions"
+        client = Mongo::Client.new(@uri, database: @database)
+        @collection = client[@collection_name]
         ensure_ttl_index
       rescue LoadError
         raise "MongoDB session handler requires the 'mongo' gem. Install with: gem install mongo"

@@ -270,8 +270,13 @@ module Tina4
           sid = sess.id
           cookie_val = (env["HTTP_COOKIE"] || "")[/tina4_session=([^;]+)/, 1]
           if sid && sid != cookie_val
-            ttl = Integer(ENV.fetch("TINA4_SESSION_TTL", 3600))
-            headers["set-cookie"] = "tina4_session=#{sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=#{ttl}"
+            # Route through Session#cookie_header rather than hand-writing the
+            # header, so TINA4_SESSION_SECURE / _SAMESITE / _HTTPONLY / _NAME /
+            # _TTL are all honoured and Secure reflects the request scheme. The
+            # old hand-written literal ignored every attribute except TTL and
+            # hardcoded SameSite=Lax + HttpOnly, making the security env vars
+            # silent no-ops (issue #31).
+            headers["set-cookie"] = sess.cookie_header
           end
           rack_response = [status, headers, body_parts]
         end

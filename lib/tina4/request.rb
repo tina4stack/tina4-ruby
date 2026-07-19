@@ -152,11 +152,40 @@ module Tina4
       @body_parsed = nil
     end
 
+    # Is this request HTTPS from the CLIENT's point of view?
+    #
+    # TLS is normally terminated at a proxy (nginx, HAProxy, ALB, Cloudflare,
+    # most container deploys) that then forwards plain HTTP to the app, so
+    # rack.url_scheme is "http" on exactly the deployments that ARE encrypted.
+    # x-forwarded-proto carries the scheme the client actually used, and a
+    # chain of proxies appends each hop ("https, http") — the FIRST is the
+    # client-facing one. Falls back to the native rack scheme, then the CGI
+    # HTTPS var.
+    #
+    # This is the single source of truth for BOTH the URL scheme (#url) and the
+    # session-cookie Secure flag (Session#cookie_header). They used to decide it
+    # independently and could disagree — url() said https while the cookie
+    # concluded plain HTTP and dropped Secure (ruby#31, parity with PHP
+    # Request::isSecureScheme / tina4-php#175).
+    #
+    # @param env [Hash] the Rack environment.
+    # @return [Boolean] true when the client's scheme is https.
+    def self.secure_scheme?(env)
+      forwarded = (env["HTTP_X_FORWARDED_PROTO"] || "").to_s
+      unless forwarded.strip.empty?
+        return forwarded.split(",").first.to_s.strip.casecmp("https").zero?
+      end
+      scheme = (env["rack.url_scheme"] || "").to_s
+      return true if scheme.casecmp("https").zero?
+      https = (env["HTTPS"] || "").to_s
+      !https.empty? && https.casecmp("off") != 0
+    end
+
     # Full absolute URL — scheme://host[:port]/path[?query].
     # Honours X-Forwarded-Proto / X-Forwarded-Host so apps behind a proxy
     # still see the URL the client used. Matches Python/PHP/Node parity.
     def url
-      scheme = env["HTTP_X_FORWARDED_PROTO"] || env["rack.url_scheme"] || "http"
+      scheme = self.class.secure_scheme?(env) ? "https" : "http"
       host = env["HTTP_X_FORWARDED_HOST"] || env["HTTP_HOST"] || env["SERVER_NAME"] || "localhost"
       port = env["SERVER_PORT"]
       url_str = "#{scheme}://#{host}"

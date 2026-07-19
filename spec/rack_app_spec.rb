@@ -193,4 +193,75 @@ RSpec.describe Tina4::RackApp do
       expect(log).to include("ms)")
     end
   end
+
+  # ── issue #31: the auto-session Set-Cookie must route through
+  #    Session#cookie_header so TINA4_SESSION_SECURE / _SAMESITE are honoured ──
+  #
+  # Wire-level, per the no-mock rule: a REAL app.call() whose route touches the
+  # session, asserting the ACTUAL Set-Cookie header the RackApp emits. This is
+  # the path that ships — a test against Session#cookie_header alone would pass
+  # even WITH the bug, because the bug was the hand-written header in
+  # rack_app.rb bypassing the builder and hardcoding HttpOnly/SameSite=Lax and
+  # never a Secure flag. Only reading the real emitted header catches it.
+  describe "session cookie attributes on the wire (issue #31)" do
+    def with_env(pairs)
+      saved = pairs.keys.to_h { |key| [key, [ENV.key?(key), ENV[key]]] }
+      pairs.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      saved.each { |key, (had, previous)| had ? ENV[key] = previous : ENV.delete(key) }
+    end
+
+    # Drive a REAL request through a route that starts a session; return the
+    # actual Set-Cookie header the RackApp emitted (nil if none).
+    def emitted_set_cookie(request_headers = {})
+      Tina4.get("/needs-session") do |request, response|
+        request.session["user"] = "alice"
+        response.json({ ok: true })
+      end
+      _status, headers, _body = app.call(mock_env("GET", "/needs-session", headers: request_headers))
+      headers["set-cookie"] || headers["Set-Cookie"]
+    end
+
+    it "sets a tina4_session cookie when a route uses the session" do
+      cookie = emitted_set_cookie
+      expect(cookie).not_to be_nil
+      expect(cookie).to include("tina4_session=")
+      expect(cookie).to include("Path=/")
+    end
+
+    it "emits Secure when the request is https via x-forwarded-proto" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        expect(emitted_set_cookie("X-Forwarded-Proto" => "https")).to include("Secure")
+      end
+    end
+
+    it "does NOT emit Secure on plain http with no proxy header" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        cookie = emitted_set_cookie
+        expect(cookie).not_to be_nil
+        expect(cookie).not_to include("Secure")
+      end
+    end
+
+    it "does NOT emit Secure when x-forwarded-proto is http" do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+        expect(emitted_set_cookie("X-Forwarded-Proto" => "http")).not_to include("Secure")
+      end
+    end
+
+    it "emits Secure when TINA4_SESSION_SECURE=true on plain http" do
+      with_env("TINA4_SESSION_SECURE" => "true", "TINA4_SESSION_SAMESITE" => nil) do
+        expect(emitted_set_cookie).to include("Secure")
+      end
+    end
+
+    it "honours TINA4_SESSION_SAMESITE=Strict (proves it is not hardcoded Lax)" do
+      with_env("TINA4_SESSION_SAMESITE" => "Strict", "TINA4_SESSION_SECURE" => nil) do
+        cookie = emitted_set_cookie
+        expect(cookie).to include("SameSite=Strict")
+        expect(cookie).not_to include("SameSite=Lax")
+      end
+    end
+  end
 end

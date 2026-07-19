@@ -9,13 +9,17 @@ module Tina4
     # speaks raw RESP over a TCP socket via RespClient — zero dependencies, so a
     # Tina4 app stores sessions in Redis with no extra gem.
     class RedisHandler
+      # Connection is configured from TINA4_SESSION_REDIS_* env vars (parity with
+      # Python's RedisSessionHandler and the Ruby ValkeyHandler shape) so
+      # TINA4_SESSION_BACKEND=redis can actually be pointed at a server by env.
+      # An explicit constructor option always wins over the environment.
       def initialize(options = {})
         @prefix = options[:prefix] || "tina4:session:"
         @ttl = options[:ttl] || 86400
-        @host = options[:host] || "localhost"
-        @port = options[:port] || 6379
-        @db = options[:db] || 0
-        @password = options[:password]
+        @host = options[:host] || ENV["TINA4_SESSION_REDIS_HOST"] || "localhost"
+        @port = options[:port] || (ENV["TINA4_SESSION_REDIS_PORT"] ? ENV["TINA4_SESSION_REDIS_PORT"].to_i : 6379)
+        @db = options[:db] || (ENV["TINA4_SESSION_REDIS_DB"] ? ENV["TINA4_SESSION_REDIS_DB"].to_i : 0)
+        @password = options[:password] || ENV["TINA4_SESSION_REDIS_PASSWORD"]
         @redis = build_gem_client
         @resp = @redis ? nil : RespClient.new(host: @host, port: @port, password: @password, db: @db)
       end
