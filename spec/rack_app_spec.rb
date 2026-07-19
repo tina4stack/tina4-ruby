@@ -264,4 +264,71 @@ RSpec.describe Tina4::RackApp do
       end
     end
   end
+
+  # ── 3.13.79 parity: the session cookie READ side must honour TINA4_SESSION_NAME,
+  #    matching the WRITE side, via the one shared resolver (Session.cookie_name) ──
+  #
+  # Wire-level per the no-mock rule: TWO REAL app.call()s against a counter route.
+  # The WRITE side (Session#cookie_header) and the SERVER read (extract_session_id)
+  # already honoured the name; the leftover hardcoded "tina4_session=" read in
+  # rack_app.rb re-issued the auto-Set-Cookie on EVERY request that already carried
+  # a renamed cookie. The load-bearing assertion is the resume request emitting NO
+  # redundant Set-Cookie — it fails against the pre-fix hardcoded read, and passes
+  # only when the read is resolved through Session.cookie_name.
+  describe "session cookie name on the wire — read honours TINA4_SESSION_NAME (3.13.79)" do
+    def with_env(pairs)
+      saved = pairs.keys.to_h { |key| [key, [ENV.key?(key), ENV[key]]] }
+      pairs.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      saved.each { |key, (had, previous)| had ? ENV[key] = previous : ENV.delete(key) }
+    end
+
+    # Drive a REAL request through a session-counter route; return
+    # [status, set_cookie_header_or_nil, count].
+    def bump(cookie: nil)
+      Tina4.get("/counter") do |request, response|
+        n = (request.session.get("count") || 0) + 1
+        request.session.set("count", n)
+        response.json({ count: n })
+      end
+      headers_in = cookie ? { "Cookie" => cookie } : {}
+      status, headers, body = app.call(mock_env("GET", "/counter", headers: headers_in))
+      [status, headers["set-cookie"] || headers["Set-Cookie"], JSON.parse(body.join)["count"]]
+    end
+
+    it "writes AND reads a renamed cookie, resuming without a redundant re-set" do
+      with_env("TINA4_SESSION_NAME" => "my_app_session") do
+        # First request: no cookie in, a custom-named cookie out.
+        status1, set_cookie1, count1 = bump
+        expect(status1).to eq(200)
+        expect(count1).to eq(1)
+        expect(set_cookie1).to start_with("my_app_session=")
+        expect(set_cookie1).not_to include("tina4_session=")
+
+        # Replay that cookie: the READ side must recognise it by the configured
+        # name, so the session resumes AND the server does not needlessly
+        # re-issue the cookie it already received.
+        replay = set_cookie1.split(";", 2).first          # "my_app_session=<sid>"
+        status2, set_cookie2, count2 = bump(cookie: replay)
+        expect(status2).to eq(200)
+        expect(count2).to eq(2)                            # resumed
+        expect(set_cookie2).to be_nil                      # read side recognised the incoming cookie
+      end
+    end
+
+    it "is byte-identical to today under the default name when TINA4_SESSION_NAME is unset" do
+      with_env("TINA4_SESSION_NAME" => nil) do
+        status1, set_cookie1, count1 = bump
+        expect(status1).to eq(200)
+        expect(count1).to eq(1)
+        expect(set_cookie1).to start_with("tina4_session=")
+
+        replay = set_cookie1.split(";", 2).first
+        _status2, set_cookie2, count2 = bump(cookie: replay)
+        expect(count2).to eq(2)
+        expect(set_cookie2).to be_nil
+      end
+    end
+  end
 end

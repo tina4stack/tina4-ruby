@@ -5,7 +5,6 @@ require "json"
 module Tina4
   class Session
     DEFAULT_OPTIONS = {
-      cookie_name: "tina4_session",
       secret: nil,
       max_age: 3600,
       handler: :file,
@@ -14,13 +13,27 @@ module Tina4
 
     attr_reader :id, :data
 
+    # The session cookie name — the SINGLE source of truth shared by the WRITE
+    # side (#cookie_header) and the READ side (#extract_session_id AND RackApp's
+    # incoming-cookie parse), so a cookie written under a renamed name is read
+    # back on the next request. Keeping the default literal in ONE place means it
+    # can never drift between the emit and parse paths. Parity with Python's
+    # module-level session_cookie_name() (tina4_python/session/__init__.py).
+    #
+    #   TINA4_SESSION_NAME   Cookie name (default: tina4_session)
+    def self.cookie_name
+      name = ENV["TINA4_SESSION_NAME"]
+      name.nil? || name.empty? ? "tina4_session" : name
+    end
+
     def initialize(env, options = {})
       @options = DEFAULT_OPTIONS.merge(options)
-      # TINA4_SESSION_NAME — overrides cookie_name unless caller explicitly passed one.
-      env_name = ENV["TINA4_SESSION_NAME"]
-      if !options.key?(:cookie_name) && env_name && !env_name.empty?
-        @options[:cookie_name] = env_name
-      end
+      # TINA4_SESSION_NAME — resolved by the ONE shared resolver (Session.cookie_name)
+      # that BOTH the write path (#cookie_header) and the read paths
+      # (#extract_session_id + RackApp incoming-cookie parse) go through, so a
+      # renamed cookie is emitted and read back under the same name. An explicit
+      # :cookie_name option still wins (same precedence as :handler below).
+      @options[:cookie_name] = self.class.cookie_name unless options.key?(:cookie_name)
       # No guessable built-in secret. The session never signs with this value
       # (IDs are SecureRandom.hex(32)), so we resolve it from TINA4_SECRET only
       # — nil when unset. This honours the framework's blank-secret discipline

@@ -21,6 +21,49 @@ RSpec.describe Tina4::Session do
     saved.each { |key, (had, previous)| had ? ENV[key] = previous : ENV.delete(key) }
   end
 
+  # ── Session.cookie_name — the ONE shared cookie-name resolver (3.13.79) ───
+  #
+  # Single source of truth for TINA4_SESSION_NAME, used by BOTH the write path
+  # (#cookie_header) and the read paths (#extract_session_id + RackApp's
+  # incoming-cookie parse). Parity with Python's session_cookie_name(). Pure
+  # ENV read — no dependency, no double.
+  describe ".cookie_name" do
+    it "defaults to tina4_session when TINA4_SESSION_NAME is unset" do
+      with_env("TINA4_SESSION_NAME" => nil) do
+        expect(Tina4::Session.cookie_name).to eq("tina4_session")
+      end
+    end
+
+    it "returns the configured name when TINA4_SESSION_NAME is set" do
+      with_env("TINA4_SESSION_NAME" => "my_app_session") do
+        expect(Tina4::Session.cookie_name).to eq("my_app_session")
+      end
+    end
+
+    it "falls back to the default when TINA4_SESSION_NAME is blank (never emits `=`)" do
+      with_env("TINA4_SESSION_NAME" => "") do
+        expect(Tina4::Session.cookie_name).to eq("tina4_session")
+      end
+    end
+
+    it "drives BOTH the write name and the read (extract) name off the one resolver" do
+      with_env("TINA4_SESSION_NAME" => "renamed_sess") do
+        writer = Tina4::Session.new({ "HTTP_COOKIE" => "" },
+                                    handler: :file, handler_options: { dir: tmp_dir })
+        expect(writer.cookie_header).to start_with("renamed_sess=")
+        # The read side resolves the SAME name: a cookie under the configured
+        # name is extracted back into the resumed session id.
+        reader = Tina4::Session.new({ "HTTP_COOKIE" => "renamed_sess=#{writer.id}" },
+                                    handler: :file, handler_options: { dir: tmp_dir })
+        expect(reader.id).to eq(writer.id)
+        # A cookie under the OLD default name is NOT matched once renamed.
+        stale = Tina4::Session.new({ "HTTP_COOKIE" => "tina4_session=#{writer.id}" },
+                                   handler: :file, handler_options: { dir: tmp_dir })
+        expect(stale.id).not_to eq(writer.id)
+      end
+    end
+  end
+
   # ── TINA4_SESSION_BACKEND handler selection ──────────────────────────────
   #
   # Lock-in for the env-var wiring: Ruby SHIPPED the redis/valkey/mongo/database

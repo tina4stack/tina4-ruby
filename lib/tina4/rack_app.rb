@@ -268,7 +268,17 @@ module Tina4
           end
 
           sid = sess.id
-          cookie_val = (env["HTTP_COOKIE"] || "")[/tina4_session=([^;]+)/, 1]
+          # Read the INCOMING session cookie by the SAME configured name the
+          # write side emits — via the one shared resolver (Session.cookie_name),
+          # exact `name=` prefix. A hardcoded "tina4_session=" here never matches
+          # a cookie renamed through TINA4_SESSION_NAME, so the auto-Set-Cookie
+          # would be needlessly re-emitted on every request that already carries
+          # the renamed session cookie. Parity with Python's
+          # core/server._init_session cookie_prefix.
+          cookie_prefix = "#{Tina4::Session.cookie_name}="
+          cookie_val = (env["HTTP_COOKIE"] || "").split(";").map(&:strip)
+                                                 .find { |part| part.start_with?(cookie_prefix) }
+                                                 &.slice(cookie_prefix.length..)
           if sid && sid != cookie_val
             # Route through Session#cookie_header rather than hand-writing the
             # header, so TINA4_SESSION_SECURE / _SAMESITE / _HTTPONLY / _NAME /
