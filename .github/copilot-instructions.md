@@ -1,6 +1,6 @@
 # tina4-ruby Copilot Instructions
 
-Tina4 Ruby v3. 54 features, zero external dependencies.
+Tina4 Ruby v3. 97 features, zero external dependencies.
 
 ## Route Pattern
 

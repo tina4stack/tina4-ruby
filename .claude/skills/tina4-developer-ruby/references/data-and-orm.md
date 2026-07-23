@@ -625,7 +625,7 @@ code generator — write the Ruby yourself from what it returns. Use it as a lad
 
 ## Batteries included — near-zero dependencies
 
-Tina4 Ruby is **batteries-included**: 54 built-in features, and the handful of runtime gems it
+Tina4 Ruby is **batteries-included**: 97 built-in features, and the handful of runtime gems it
 *does* pull are Rack-stack + deployment essentials, not framework bloat. Its `tina4ruby.gemspec`
 runtime dependencies are **`rack`, `rackup`, `puma`** (the HTTP server stack), **`jwt`** (auth),
 **`net-smtp` / `net-imap`** (the Messenger), **`json`, `rexml`, `webrick`**, and **`sqlite3`** (so
