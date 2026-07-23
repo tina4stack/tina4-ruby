@@ -53,10 +53,15 @@ module Tina4
 
     PROTOCOL_LEVEL = 0x04 # 4 == MQTT 3.1.1
     DEFAULT_PORT = 1883
+    DEFAULT_TLS_PORT = 8883
     DEFAULT_URL = "mqtt://127.0.0.1:1883"
     DEFAULT_KEEPALIVE = 60
     SUBSCRIPTION_REFUSED = 0x80
     MAX_REMAINING_LENGTH = 268_435_455 # 4 varint bytes
+    # Read granularity. Always reading a full chunk keeps BOTH hidden buffers
+    # (Ruby's OpenSSL::Buffering @rbuf and OpenSSL's own SSL_pending) drained, so
+    # IO.select never blocks while decrypted plaintext is already waiting.
+    READ_CHUNK = 16_384
 
     # QoS 2 is refused, never silently downgraded. A caller who asked for
     # exactly-once and quietly got at-least-once would double-process every
@@ -77,12 +82,23 @@ module Tina4
       5 => "not authorised"
     }.freeze
 
-    attr_reader :host, :port, :client_id, :keepalive, :clean_session
+    attr_reader :host, :port, :client_id, :keepalive, :clean_session, :username
 
-    # url:           mqtt://host:port (falls back to TINA4_MQTT_URL, then localhost)
+    # url:           mqtt://host:port, or mqtts://host:port for TLS. Credentials
+    #                may be carried in the userinfo (mqtt://user:pass@host), and
+    #                are percent-decoded, so a password may contain @ : or /.
+    #                Falls back to TINA4_MQTT_URL, then localhost.
     # client_id:     broker-visible session id (TINA4_MQTT_CLIENT_ID, else generated).
     #                A durable session (clean_session: false) needs a STABLE id —
     #                the generated one changes every process.
+    # username:      broker username; overrides the url's userinfo when given
+    # password:      broker password; MQTT 3.1.1 forbids one without a username
+    # ca_file:       PEM CA bundle used to verify the broker's certificate
+    #                (TINA4_MQTT_CA_FILE). Needed for a private or self-signed CA.
+    # tls_verify:    false disables certificate verification (TINA4_MQTT_TLS_VERIFY).
+    #                NEVER the default, and it logs a warning naming the risk —
+    #                an unverified TLS session is encrypted but not authenticated,
+    #                so a man in the middle can read and rewrite it.
     # keepalive:     seconds (TINA4_MQTT_KEEPALIVE, default 60)
     # clean_session: false keeps the subscription + queues QoS 1 messages for us
     #                while we are offline, and replays them on reconnect
@@ -92,10 +108,24 @@ module Tina4
     # timeout:       seconds to wait for a control-packet answer (CONNACK / PUBACK / SUBACK)
     # read_timeout:  seconds to wait for an application message; nil blocks
     # connect:       false builds the client without opening a socket
-    def initialize(url: nil, client_id: nil, keepalive: nil, clean_session: true,
+    def initialize(url: nil, client_id: nil, username: nil, password: nil,
+                   ca_file: nil, tls_verify: nil, keepalive: nil, clean_session: true,
                    will_topic: nil, will_payload: nil, will_qos: 0, will_retain: false,
                    timeout: 5, read_timeout: nil, connect: true)
-      @host, @port = self.class.parse_url(url || ENV["TINA4_MQTT_URL"] || DEFAULT_URL)
+      parsed = self.class.parse_url(url || ENV["TINA4_MQTT_URL"] || DEFAULT_URL)
+      @host = parsed[:host]
+      @port = parsed[:port]
+      @tls = parsed[:tls]
+      # Explicit arguments win over the url's userinfo: the more specific source.
+      @username = username || parsed[:username]
+      @password = password || parsed[:password]
+      if @password && (@username.nil? || @username.empty?)
+        raise ArgumentError,
+              "MQTT password without a username is not allowed by MQTT 3.1.1 — " \
+              "supply both (mqtt://user:pass@host, or username:/password:) or neither"
+      end
+      @ca_file = ca_file || presence(ENV["TINA4_MQTT_CA_FILE"])
+      @tls_verify = tls_verify.nil? ? Tina4::Env.is_truthy(ENV.fetch("TINA4_MQTT_TLS_VERIFY", "true")) : tls_verify
       @client_id = client_id || ENV["TINA4_MQTT_CLIENT_ID"]
       @client_id = "tina4-#{SecureRandom.hex(8)}" if @client_id.nil? || @client_id.empty?
       @keepalive = (keepalive || ENV["TINA4_MQTT_KEEPALIVE"] || DEFAULT_KEEPALIVE).to_i
@@ -115,38 +145,65 @@ module Tina4
       @last_write_at = 0.0
       @socket = nil
       @keepalive_task = nil
+      @read_buffer = String.new(capacity: READ_CHUNK, encoding: Encoding::BINARY)
+      @read_cursor = 0
 
       self.connect if connect
     end
 
-    # Split "mqtt://host:port" into [host, port]. A bare "host" or "host:port"
-    # works too; an IPv6 literal is bracketed ("mqtt://[::1]:1883").
+    # Split an MQTT url into its parts:
+    #   { host:, port:, tls:, username:, password: }
+    #
+    # "mqtt://host:port" and "tcp://host:port" are plain TCP (default port 1883),
+    # "mqtts://host:port" is TLS (default port 8883). A bare "host" or
+    # "host:port" works too, and an IPv6 literal is bracketed ("mqtt://[::1]:1883").
+    # Credentials ride in the userinfo and are percent-decoded, so a password
+    # containing @ : or / survives.
     def self.parse_url(url)
       raw = url.to_s.strip
       raise ArgumentError, "MQTT url is empty — set TINA4_MQTT_URL (e.g. #{DEFAULT_URL})" if raw.empty?
 
-      scheme = raw[%r{\A([A-Za-z][A-Za-z0-9+.-]*)://}, 1]
-      unless scheme.nil? || %w[mqtt tcp].include?(scheme.downcase)
+      scheme = raw[%r{\A([A-Za-z][A-Za-z0-9+.-]*)://}, 1]&.downcase
+      unless scheme.nil? || %w[mqtt tcp mqtts].include?(scheme)
         raise ArgumentError,
               "unsupported MQTT url scheme #{scheme.inspect} in #{raw.inspect} — " \
-              "this client speaks plain TCP MQTT only (mqtt:// or tcp://). " \
-              "TLS (mqtts://) and WebSocket transports are not implemented."
+              "this client speaks mqtt://, tcp:// or mqtts:// (TLS). " \
+              "WebSocket transports are not implemented."
       end
 
+      tls = scheme == "mqtts"
       rest = scheme ? raw.sub(%r{\A[A-Za-z][A-Za-z0-9+.-]*://}, "") : raw
+
+      # Split on the LAST "@" so a password containing an un-encoded "@" still
+      # leaves the host intact.
+      username = password = nil
       if rest.include?("@")
-        raise ArgumentError,
-              "broker credentials in the MQTT url (#{raw.inspect}) are not supported — " \
-              "this client sends no username/password in CONNECT, so the credentials " \
-              "would be silently dropped. Point it at an anonymous or " \
-              "network-restricted listener instead."
+        userinfo, _, rest = rest.rpartition("@")
+        raw_username, has_password, raw_password = userinfo.partition(":")
+        username = percent_decode(raw_username)
+        password = percent_decode(raw_password) unless has_password.empty?
       end
 
       match = rest.match(%r{\A(?<host>\[[^\]]+\]|[^:/]+)(?::(?<port>\d+))?(?:/.*)?\z})
       raise ArgumentError, "malformed MQTT url #{raw.inspect} — expected mqtt://host:port" unless match
 
-      host = match[:host].delete_prefix("[").delete_suffix("]")
-      [host, (match[:port] || DEFAULT_PORT).to_i]
+      {
+        host: match[:host].delete_prefix("[").delete_suffix("]"),
+        port: (match[:port] || (tls ? DEFAULT_TLS_PORT : DEFAULT_PORT)).to_i,
+        tls: tls,
+        username: presence(username),
+        password: password
+      }
+    end
+
+    # %XX in url userinfo. Not CGI.unescape / URI.decode_www_form_component:
+    # those also turn "+" into a space, which silently corrupts a password.
+    def self.percent_decode(value)
+      value.to_s.gsub(/%([0-9A-Fa-f]{2})/) { ::Regexp.last_match(1).hex.chr }
+    end
+
+    def self.presence(value)
+      value.nil? || value.empty? ? nil : value
     end
 
     # Remaining Length: 7 bits per byte, high bit means "another byte follows".
@@ -173,23 +230,28 @@ module Tina4
     # (clean_session: false) resumes with the same client_id.
     def connect
       close_socket
-      @socket = Socket.tcp(@host, @port, connect_timeout: @timeout)
+      raw_socket = Socket.tcp(@host, @port, connect_timeout: @timeout)
       # Telemetry frames are tiny; Nagle would add latency for no gain.
-      @socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+      raw_socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+      @socket = @tls ? wrap_in_tls(raw_socket) : raw_socket
       @inbox.clear
+      @read_buffer.clear
+      @read_cursor = 0
 
       body = String.new(capacity: 64, encoding: Encoding::BINARY)
       body << mqtt_string("MQTT")
       body << [PROTOCOL_LEVEL, connect_flags].pack("C2")
       body << [@keepalive].pack("n")
-      # Payload order is fixed: client id, will topic, will message,
-      # username, password. (No username/password — see parse_url.)
+      # Payload order is FIXED: client id, will topic, will message, username,
+      # password. Emitting them in any other order shifts every field after it.
       body << mqtt_string(@client_id)
       if @will_topic
         body << mqtt_string(@will_topic)
         will_bytes = payload_bytes(@will_payload)
         body << [will_bytes.bytesize].pack("n") << will_bytes
       end
+      body << mqtt_string(@username) if @username
+      body << mqtt_string(@password) if @password
       write_packet(CONNECT, body)
 
       header, payload = read_packet(deadline_in(@timeout))
@@ -210,6 +272,34 @@ module Tina4
 
     def connected?
       !@socket.nil? && !@socket.closed?
+    end
+
+    # True when this connection runs over TLS (mqtts://).
+    def tls?
+      @tls
+    end
+
+    # The negotiated cipher suite name, or nil on a plain connection. A real
+    # name here is proof the TLS handshake actually completed.
+    def cipher
+      return nil unless @tls && connected?
+
+      @socket.cipher&.first
+    end
+
+    # The negotiated TLS protocol version ("TLSv1.3"), or nil when plain.
+    def tls_version
+      return nil unless @tls && connected?
+
+      @socket.ssl_version
+    end
+
+    # Never dump @password: a client can end up in a log line, an exception
+    # report or the debug overlay, and Ruby's default inspect prints every ivar.
+    def inspect
+      format("#<%s %s://%s:%d client_id=%s%s connected=%s>",
+             self.class.name, @tls ? "mqtts" : "mqtt", @host, @port,
+             @client_id.inspect, @username ? " username=#{@username.inspect}" : "", connected?)
     end
 
     # Publish an application message. Returns the packet identifier for QoS 1
@@ -401,7 +491,68 @@ module Tina4
         flags |= 0x04 | (@will_qos << 3)
         flags |= 0x20 if @will_retain
       end
+      flags |= 0x80 if @username
+      flags |= 0x40 if @password
       flags
+    end
+
+    # Wrap the TCP socket in TLS. `openssl` is Ruby stdlib, so mqtts:// costs no
+    # dependency — and it is required HERE rather than at the top of the file so a
+    # plain mqtt:// app never loads it.
+    def wrap_in_tls(raw_socket)
+      require "openssl"
+      context = OpenSSL::SSL::SSLContext.new
+
+      if @tls_verify
+        # Build our OWN trust store. Deliberately NOT context.ca_file= and NOT
+        # SSLContext#set_params: set_params installs the process-wide
+        # DEFAULT_CERT_STORE, and a later ca_file= writes our CA INTO that shared
+        # store, so every subsequent client in the process would trust it too.
+        # Verified 2026-07-23: with that ordering a second client accepted a
+        # self-signed broker certificate with no CA configured at all.
+        store = OpenSSL::X509::Store.new
+        store.set_default_paths # the system CAs, for a publicly-signed broker
+        if @ca_file
+          unless File.file?(@ca_file)
+            raise MqttError,
+                  "MQTT CA file not found: #{@ca_file} — TINA4_MQTT_CA_FILE (or ca_file:) " \
+                  "must point at the broker's CA certificate in PEM form"
+          end
+          store.add_file(@ca_file)
+        end
+        context.cert_store = store
+        context.verify_mode = OpenSSL::SSL::VERIFY_PEER
+      else
+        context.verify_mode = OpenSSL::SSL::VERIFY_NONE
+        Tina4::Log.warning(
+          "MQTT TLS certificate verification is DISABLED for mqtts://#{@host}:#{@port} — " \
+          "the connection is encrypted but the broker's identity is NOT verified, so a " \
+          "man in the middle can read and rewrite this traffic. Set TINA4_MQTT_CA_FILE " \
+          "(or ca_file:) to the broker's CA and drop TINA4_MQTT_TLS_VERIFY=false."
+        )
+      end
+
+      ssl_socket = OpenSSL::SSL::SSLSocket.new(raw_socket, context)
+      # SNI, but only for a real hostname: an IP literal is not a valid SNI name.
+      ssl_socket.hostname = @host unless ip_literal?(@host)
+      ssl_socket.sync_close = true
+      ssl_socket.sync = true
+      ssl_socket.connect
+      # Chain verification does not check WHO the certificate is for. Ruby's
+      # post_connection_check handles both DNS and IP SANs.
+      ssl_socket.post_connection_check(@host) if @tls_verify
+      ssl_socket
+    rescue OpenSSL::SSL::SSLError, OpenSSL::X509::StoreError => e
+      raw_socket.close
+      raise MqttError, "MQTT TLS handshake with #{@host}:#{@port} failed: #{e.message}"
+    end
+
+    def ip_literal?(host)
+      host.match?(/\A\d{1,3}(\.\d{1,3}){3}\z/) || host.include?(":")
+    end
+
+    def presence(value)
+      self.class.presence(value)
     end
 
     def refuse_unsupported_qos(qos)
@@ -451,6 +602,17 @@ module Tina4
       true
     rescue SystemCallError, IOError => e
       raise MqttError, "MQTT write failed: #{e.message}"
+    rescue StandardError => e
+      raise MqttError, "MQTT TLS write failed: #{e.message}" if tls_error?(e)
+
+      raise
+    end
+
+    # An OpenSSL error must not leak out of the client as a raw OpenSSL
+    # exception. Guarded with defined? because `openssl` is only required when a
+    # mqtts:// connection is actually made.
+    def tls_error?(error)
+      defined?(OpenSSL::SSL::SSLError) && error.is_a?(OpenSSL::SSL::SSLError)
     end
 
     # Returns [control_byte, body]. The fixed header is read in exactly 1 + N
@@ -472,31 +634,70 @@ module Tina4
     end
 
     # TCP is a stream: a single read returns SHORT. Loop, or the parse corrupts
-    # under load. Reads into one buffer; no per-byte loop.
+    # under load.
+    #
+    # Reads go through ONE buffer, filled a whole READ_CHUNK at a time. That is
+    # both fewer syscalls (a small packet costs one read rather than one per
+    # fixed-header byte) and what makes TLS correct: asking for a full chunk
+    # drains Ruby's OpenSSL::Buffering @rbuf and OpenSSL's SSL_pending, so a
+    # later IO.select can never block on an empty TCP socket while decrypted
+    # plaintext is already sitting in a buffer.
     def read_exact(count, deadline)
       raise MqttError, "not connected to an MQTT broker" unless connected?
 
-      buffer = String.new(capacity: count, encoding: Encoding::BINARY)
-      while buffer.bytesize < count
-        wait_readable(deadline)
+      fill_read_buffer(deadline) while buffered_bytes < count
+      take_buffered(count)
+    end
+
+    def buffered_bytes
+      @read_buffer.bytesize - @read_cursor
+    end
+
+    def take_buffered(count)
+      chunk = @read_buffer.byteslice(@read_cursor, count)
+      @read_cursor += count
+      # Fully consumed (the common case, once per packet): reset rather than grow.
+      if @read_cursor >= @read_buffer.bytesize
+        @read_buffer.clear
+        @read_cursor = 0
+      end
+      chunk
+    end
+
+    def fill_read_buffer(deadline)
+      wait_readable(deadline)
+      data =
         begin
-          buffer << @socket.readpartial(count - buffer.bytesize)
+          @socket.readpartial(READ_CHUNK)
         rescue EOFError
           raise MqttError, "broker closed the connection"
         rescue SystemCallError, IOError => e
           raise MqttError, "MQTT read failed: #{e.message}"
+        rescue StandardError => e
+          raise MqttError, "MQTT TLS read failed: #{e.message}" if tls_error?(e)
+
+          raise
         end
+      if @read_buffer.empty?
+        @read_buffer.replace(data)
+      else
+        @read_buffer << data
       end
-      buffer
     end
 
     def wait_readable(deadline)
+      # Bytes already decrypted inside OpenSSL are readable NOW; the underlying
+      # socket may have nothing, so selecting on it first would hang.
+      return if @socket.respond_to?(:pending) && @socket.pending.to_i.positive?
+
       remaining = nil
       if deadline
         remaining = deadline - monotonic
         raise MqttTimeoutError, "timed out waiting for the MQTT broker" if remaining <= 0
       end
-      return if IO.select([@socket], nil, nil, remaining)
+      # An SSLSocket is not an IO; select on the socket underneath it.
+      io = @socket.respond_to?(:to_io) ? @socket.to_io : @socket
+      return if IO.select([io], nil, nil, remaining)
 
       raise MqttTimeoutError, "timed out waiting for the MQTT broker"
     end

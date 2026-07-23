@@ -16,6 +16,7 @@
 # Broker: TINA4_TEST_MQTT_URL, default mqtt://127.0.0.1:1883
 
 require "spec_helper"
+require_relative "support/mqtt_helpers"
 require "securerandom"
 
 RSpec.describe "Tina4::Mqtt sessions and resilience" do
@@ -80,6 +81,37 @@ RSpec.describe "Tina4::Mqtt sessions and resilience" do
       resumed = durable_client(durable_id)
       replayed = 3.times.map { resumed.receive(timeout: 5).payload }
       expect(replayed).to eq(['{"n":0}', '{"n":1}', '{"n":2}'])
+    end
+
+    it "keeps replayed PUBLISHes out of the SUBACK it is waiting for" do
+      # The awkward ordering, and the reason the ack-wait inbox has to cover
+      # SUBSCRIBE and not just PUBLISH: on a clean_session: false resume the
+      # broker starts replaying queued QoS 1 messages the moment it sends
+      # CONNACK — BEFORE our SUBSCRIBE goes out. So the first packets read while
+      # waiting for the SUBACK are PUBLISHes. Mistaking one for the SUBACK loses
+      # the message AND desynchronises the stream; dropping them loses the
+      # replay the durable session exists to provide.
+      topic = "#{prefix}/replay-before-suback"
+      durable_id = "#{run_id}-replay-suback"
+
+      subscriber = durable_client(durable_id)
+      subscriber.subscribe(topic, qos: 1)
+      subscriber.disconnect
+
+      publisher = client(client_id: "#{run_id}-replay-suback-pub")
+      3.times { |index| publisher.publish(topic, "queued-#{index}", qos: 1) }
+
+      resumed = durable_client(durable_id)
+      # Let the replay land in our socket buffer first, so the SUBACK wait is
+      # guaranteed to read a PUBLISH before the SUBACK rather than by luck.
+      sleep 0.3
+
+      # The SUBACK must still be found, with its own packet identifier matched.
+      expect(resumed.subscribe(topic, qos: 1)).to eq(1)
+
+      # ...and not one replayed message may have been swallowed on the way.
+      replayed = 3.times.map { resumed.receive(timeout: 5).payload }
+      expect(replayed).to eq(%w[queued-0 queued-1 queued-2])
     end
 
     it "does NOT replay when clean_session is true (the flag is real, negative)" do
@@ -150,6 +182,8 @@ RSpec.describe "Tina4::Mqtt sessions and resilience" do
         connection.stop_keepalive
       end
 
+      # Asserted on the descriptor itself: what stop_keepalive guarantees is that
+      # the task is no longer running and its thread is gone.
       expect(task[:running]).to be false
       expect(task[:thread]).to be_nil
       expect(connection.stop_keepalive).to be false # idempotent

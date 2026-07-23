@@ -17,6 +17,7 @@
 #     -v $PWD/mosquitto.conf:/mosquitto/config/mosquitto.conf eclipse-mosquitto:2
 
 require "spec_helper"
+require_relative "support/mqtt_helpers"
 require "securerandom"
 require "socket"
 require "rbconfig"
@@ -114,32 +115,31 @@ RSpec.describe Tina4::Mqtt do
   # ── URL parsing ──────────────────────────────────────────────────────────
   describe ".parse_url" do
     it "parses mqtt://host:port" do
-      expect(described_class.parse_url("mqtt://broker.example:18883")).to eq(["broker.example", 18_883])
+      expect(described_class.parse_url("mqtt://broker.example:18883"))
+        .to include(host: "broker.example", port: 18_883, tls: false)
     end
 
     it "defaults the port to 1883" do
-      expect(described_class.parse_url("mqtt://broker.example")).to eq(["broker.example", 1883])
-      expect(described_class.parse_url("broker.example")).to eq(["broker.example", 1883])
+      expect(described_class.parse_url("mqtt://broker.example")).to include(host: "broker.example", port: 1883)
+      expect(described_class.parse_url("broker.example")).to include(host: "broker.example", port: 1883)
     end
 
     it "accepts tcp:// and a bracketed IPv6 literal" do
-      expect(described_class.parse_url("tcp://127.0.0.1:1883")).to eq(["127.0.0.1", 1883])
-      expect(described_class.parse_url("mqtt://[::1]:1883")).to eq(["::1", 1883])
+      expect(described_class.parse_url("tcp://127.0.0.1:1883")).to include(host: "127.0.0.1", port: 1883)
+      expect(described_class.parse_url("mqtt://[::1]:1883")).to include(host: "::1", port: 1883)
     end
 
-    it "refuses credentials in the url instead of dropping them silently (negative)" do
-      # This client sends no username/password in CONNECT. Accepting the url and
-      # ignoring the credentials would look like a working connection right up
-      # to the point the broker refused it.
-      expect { described_class.parse_url("mqtt://device:secret@broker.example:1883") }
-        .to raise_error(ArgumentError, /credentials .* are not supported/)
+    it "carries no credentials when the url has none" do
+      expect(described_class.parse_url("mqtt://broker.example"))
+        .to include(username: nil, password: nil)
     end
 
     it "refuses a transport it does not speak instead of guessing (negative)" do
-      expect { described_class.parse_url("mqtts://broker.example:8883") }
-        .to raise_error(ArgumentError, /plain TCP MQTT only/)
+      # mqtts:// IS spoken (see spec/mqtt_auth_tls_spec.rb); WebSocket is not.
       expect { described_class.parse_url("ws://broker.example:8083/mqtt") }
-        .to raise_error(ArgumentError, /plain TCP MQTT only/)
+        .to raise_error(ArgumentError, %r{mqtt://, tcp:// or mqtts://})
+      expect { described_class.parse_url("http://broker.example") }
+        .to raise_error(ArgumentError, %r{mqtt://, tcp:// or mqtts://})
     end
 
     it "refuses an empty url and names the env var (negative)" do
@@ -226,26 +226,21 @@ RSpec.describe Tina4::Mqtt do
       begin
         connection = Tina4::Mqtt.new(client_id: "#{run_id}-envurl", timeout: 5)
         clients << connection
-        host, port = described_class.parse_url(mqtt_test_url)
-        expect([connection.host, connection.port]).to eq([host, port])
+        parsed = described_class.parse_url(mqtt_test_url)
+        expect([connection.host, connection.port]).to eq([parsed[:host], parsed[:port]])
         expect(connection.connected?).to be true
       ensure
         original == :unset ? ENV.delete("TINA4_MQTT_URL") : ENV["TINA4_MQTT_URL"] = original
       end
     end
 
-    it "reports a REFUSED CONNACK with the broker's reason, not a generic failure (negative)" do
-      # A REAL second Mosquitto with allow_anonymous false, so the refusal comes
-      # from a broker rather than from an assumption about what a broker sends.
-      # This is the everyday production mistake — pointing at a broker that
-      # requires credentials — and "return code 5" alone would not explain it.
-      deny_url = mqtt_deny_test_url
-      unless mqtt_broker_reachable?(deny_url)
-        skip "Mosquitto MQTT broker with allow_anonymous false not reachable at #{deny_url}"
-      end
-
-      expect { Tina4::Mqtt.new(url: deny_url, client_id: "#{run_id}-denied", timeout: 5) }
-        .to raise_error(Tina4::MqttError, /broker refused the connection: not authorised \(CONNACK return code 5\)/)
+    it "does not expose the broker password through inspect (negative)" do
+      # A client can end up in a log line, an exception report or the debug
+      # overlay, and Ruby's default inspect prints every instance variable.
+      connection = Tina4::Mqtt.new(url: "mqtt://device:sup3rs3cret@broker.example:1883",
+                                   client_id: "#{run_id}-inspect", connect: false)
+      expect(connection.inspect).to include("broker.example", "device")
+      expect(connection.inspect).not_to include("sup3rs3cret")
     end
 
     it "raises a named error when no broker is listening (negative)" do
@@ -320,6 +315,57 @@ RSpec.describe Tina4::Mqtt do
       subscriber = client(client_id: "#{run_id}-badfilter")
       expect { subscriber.subscribe("#{prefix}/a/#/b", qos: 1) }
         .to raise_error(Tina4::MqttError)
+    end
+
+    # SUBACK 0x80 — trap 5, against a broker that actually sends it.
+    #
+    # Mosquitto CANNOT produce 0x80: it enforces its ACLs at DELIVERY time and
+    # answers the SUBSCRIBE with a granted QoS, then silently delivers nothing
+    # (verified 2026-07-23 against a Mosquitto 2.1.2 with `topic readwrite
+    # allowed/#`: subscribing to a denied topic returned granted QoS 1). EMQX
+    # refuses at subscribe time instead, and its DEFAULT authorization already
+    # denies "#" and "$SYS/#", so no custom ACL is needed. This is the real
+    # broker that turns the refusal branch from written into proven.
+    describe "a broker that REFUSES the subscription (EMQX)" do
+      before do
+        skip "EMQX MQTT broker not reachable at #{mqtt_emqx_test_url}" unless
+          mqtt_broker_reachable?(mqtt_emqx_test_url)
+      end
+
+      let(:emqx) do
+        client(url: mqtt_emqx_test_url, client_id: "#{run_id}-emqx")
+      end
+
+      it "raises on SUBACK 0x80 for '#', naming the filter and the code (negative)" do
+        # Treating any SUBACK as success here means sitting on a dead
+        # subscription receiving nothing, forever, with no error anywhere.
+        expect { emqx.subscribe("#", qos: 1) }
+          .to raise_error(Tina4::MqttError) { |error|
+            expect(error.message).to include("refused the subscription")
+            expect(error.message).to include('"#"')
+            expect(error.message).to include("0x80")
+          }
+      end
+
+      it "raises on SUBACK 0x80 for '$SYS/#' (negative)" do
+        expect { emqx.subscribe("$SYS/#", qos: 1) }
+          .to raise_error(Tina4::MqttError, /refused the subscription/)
+      end
+
+      it "still GRANTS a permitted filter on the same broker" do
+        # The positive half: the refusal check must not reject every subscription.
+        expect(emqx.subscribe("allowed/topic", qos: 1)).to eq(1)
+      end
+
+      it "keeps the connection usable after a refusal, and delivers on a granted filter" do
+        # A refusal is a per-subscription answer, not a broken stream: the packet
+        # identifier bookkeeping must survive it.
+        expect { emqx.subscribe("#", qos: 1) }.to raise_error(Tina4::MqttError)
+        topic = "#{prefix}/emqx/after-refusal"
+        expect(emqx.subscribe(topic, qos: 1)).to eq(1)
+        emqx.publish(topic, "still-working", qos: 1)
+        expect(emqx.receive(timeout: 5).payload).to eq("still-working")
+      end
     end
   end
 
