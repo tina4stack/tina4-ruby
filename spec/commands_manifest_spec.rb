@@ -91,10 +91,23 @@ RSpec.describe "tina4ruby commands manifest" do
     end
 
     it "lists exactly the dispatchable commands (anti-drift lock-in)" do
-      # The manifest is DERIVED from the dispatch registry, so it lists exactly
-      # what #run can dispatch — in the same order, with no separate list.
+      # The manifest is DERIVED from the dispatch registries, so it lists exactly
+      # what #run can dispatch — the native COMMANDS plus the DELEGATED commands
+      # handed to the tina4 client — in order, with no separate hand-kept list.
       names = manifest_from_handler["commands"].map { |c| c["name"] }
-      expect(names).to eq(Tina4::CLI::COMMANDS.keys)
+      expect(names).to eq(Tina4::CLI::COMMANDS.keys + Tina4::CLI::DELEGATED.keys)
+    end
+
+    it "flags only the delegated commands as delegated" do
+      # The flag says WHO implements a command; a native one must never claim to
+      # be delegated, and a delegated one must never look native.
+      entries = manifest_from_handler["commands"].to_h { |c| [c["name"], c] }
+      Tina4::CLI::DELEGATED.each_key do |name|
+        expect(entries[name]["delegated"]).to be(true), "#{name} not flagged delegated"
+      end
+      Tina4::CLI::COMMANDS.each_key do |name|
+        expect(entries[name]).not_to have_key("delegated"), "#{name} wrongly flagged delegated"
+      end
     end
 
     it "gives generate subcommands including model and crud, derived from GENERATORS" do

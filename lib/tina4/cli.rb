@@ -75,6 +75,58 @@ module Tina4
       "help"             => { handler: :cmd_help,                                                          summary: "Show this help message" },
     }.freeze
 
+    # ── Delegation to the `tina4` client ────────────────────────────────
+    #
+    # `doctor`, `setup` and `deploy` are owned by the Rust `tina4` client, not by
+    # any framework. `doctor` probes ALL FOUR runtimes plus package managers,
+    # ports and global AI-skills currency; `setup` installs language runtimes
+    # (Homebrew / Chocolatey, with UAC elevation on Windows) and scaffolds a
+    # project from nothing; `deploy` writes deployment boilerplate baked into the
+    # client binary. Cloning any of them into four languages would duplicate
+    # hundreds of lines per language for zero new capability — and four copies
+    # would immediately drift.
+    #
+    # So the framework CLI DELEGATES: it resolves `tina4` on PATH, runs it with
+    # the same argv, and exits with the client's exit code. All four frameworks
+    # reach the SAME implementation, which is a stronger parity guarantee than
+    # four ports.
+    #
+    # Delegation is ALLOW-LISTED, never blind. The client forwards ITS unknown
+    # commands to the framework CLI, so a framework that forwarded its unknowns
+    # back would ping-pong an unknown command between two processes forever. This
+    # closed set contains only commands the client dispatches natively, so no loop
+    # is possible by construction, and a real typo still gets "Unknown command".
+    #
+    # There are no handlers here: #run runs `tina4 <name> <args...>` and exits
+    # with its code. Keep this set closed and identical in all four frameworks.
+    # Summaries are the client's own wording, verbatim. Ruby mirror of the Python
+    # master's DELEGATED / _delegate_to_client.
+
+    DELEGATED = {
+      "doctor" => { summary: "Check installed languages and tools" },
+      "setup"  => { summary: "Guided, menu-driven setup: install everything + scaffold a ready-to-run project" },
+      "deploy" => { usage: "<docker|systemd|nginx|cpanel> [--force]", args: ["target"],
+                    summary: "Generate deployment scaffolding (Dockerfile, systemd unit, nginx block, cPanel)" },
+    }.freeze
+
+    CLIENT_BINARY = "tina4"
+
+    # Internal process marker (same class as the client's own
+    # TINA4_SETUP_ELEVATED): set on the child so a client that resolves back to a
+    # framework CLI is caught instead of spawning forever. NOT user configuration
+    # — deliberately absent from the CLI's known_vars().
+    DELEGATION_GUARD_ENV = "TINA4_CLI_DELEGATED"
+
+    # 127 is the conventional "command not found" and covers both ways the client
+    # can be unreachable (absent from PATH, or the loop guard tripping).
+    EXIT_CLIENT_UNAVAILABLE = 127
+    EXIT_UNKNOWN_COMMAND = 1
+
+    CLIENT_INSTALL_HINT = <<~HINT.freeze
+      Install it:  curl -fsSL https://tina4.com/install.sh | sh
+      Windows:     irm https://tina4.com/install.ps1 | iex
+    HINT
+
     # ── Field type mapping ──────────────────────────────────────────────
     FIELD_TYPE_MAP = {
       "string"   => { orm: "string_field",  sql: "VARCHAR(255)", default: "''" },
@@ -105,14 +157,67 @@ module Tina4
       spec = COMMANDS[command]
       if spec
         send(spec[:handler], argv)
+      elsif DELEGATED.key?(command)
+        exit delegate_to_client(command, argv)
       else
+        # A genuinely unknown command is an ERROR: exit non-zero so a typo in a
+        # script or CI step fails loudly instead of reporting success.
         puts "Unknown command: #{command}"
         cmd_help
-        exit 1
+        exit EXIT_UNKNOWN_COMMAND
       end
     end
 
     private
+
+    # Absolute path of the `tina4` client on PATH, or nil if it isn't there.
+    #
+    # Scans PATH directly rather than shelling out to which/where — one less
+    # process and it behaves the same on every platform.
+    def find_client
+      windows = RUBY_PLATFORM =~ /mswin|mingw|cygwin/
+      names = windows ? %W[#{CLIENT_BINARY}.exe #{CLIENT_BINARY}.cmd #{CLIENT_BINARY}.bat] : [CLIENT_BINARY]
+      ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |dir|
+        next if dir.empty?
+
+        names.each do |name|
+          candidate = File.join(dir, name)
+          return candidate if File.file?(candidate) && (windows || File.executable?(candidate))
+        end
+      end
+      nil
+    end
+
+    # Run `tina4 <command> <args...>`, returning the client's exit code.
+    #
+    # Returns EXIT_CLIENT_UNAVAILABLE (127) with an actionable message when the
+    # client is not on PATH, or when the re-entry guard shows the resolved `tina4`
+    # came back to a framework CLI (a delegation loop).
+    def delegate_to_client(command, args)
+      if ENV[DELEGATION_GUARD_ENV] == command
+        warn "  Refusing to delegate '#{command}' again — the 'tina4' on your PATH"
+        warn "  resolved back to a framework CLI instead of the tina4 client."
+        warn ""
+        warn "  Check which 'tina4' comes first on your PATH and put the client first."
+        return EXIT_CLIENT_UNAVAILABLE
+      end
+
+      client = find_client
+      if client.nil?
+        warn "  '#{command}' is provided by the tina4 client, which is not on your PATH."
+        warn ""
+        CLIENT_INSTALL_HINT.each_line { |line| warn "  #{line.chomp}" }
+        warn ""
+        warn "  Then run:    #{CLIENT_BINARY} #{command}"
+        return EXIT_CLIENT_UNAVAILABLE
+      end
+
+      # Array form => no shell, so no quoting/injection surface. stdio is
+      # inherited, so the client's interactive prompts (setup) and colour output
+      # work exactly as if it had been invoked directly.
+      system({ DELEGATION_GUARD_ENV => command }, client, command, *args)
+      $?&.exitstatus || EXIT_CLIENT_UNAVAILABLE
+    end
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -2755,12 +2860,15 @@ module Tina4
 
     # Print the human-readable command reference.
     #
-    # Generated from the COMMANDS and GENERATORS registries — the SAME single
-    # source of truth that drives dispatch (#run / #cmd_generate) and the
+    # Generated from the COMMANDS, DELEGATED and GENERATORS registries — the SAME
+    # single source of truth that drives dispatch (#run / #cmd_generate) and the
     # `commands --json` manifest — so the help text can never drift from what
     # the CLI actually does.
     def cmd_help(_argv = nil)
       command_rows = COMMANDS.map do |name, spec|
+        ["#{name} #{spec[:usage]}".rstrip, spec[:summary]]
+      end
+      delegated_rows = DELEGATED.map do |name, spec|
         ["#{name} #{spec[:usage]}".rstrip, spec[:summary]]
       end
       generator_rows = GENERATORS.map do |name, spec|
@@ -2768,7 +2876,7 @@ module Tina4
       end
       # Align summaries in a column; a left cell longer than the cap overflows
       # cleanly (2-space gap) rather than pushing every other summary out.
-      pad = [46, (command_rows + generator_rows).map { |left, _| left.length }.max].min
+      pad = [46, (command_rows + delegated_rows + generator_rows).map { |left, _| left.length }.max].min
 
       row = lambda do |left, summary|
         gap = left.length <= pad ? pad : left.length
@@ -2777,6 +2885,10 @@ module Tina4
 
       lines = ["Tina4 Ruby CLI", "", "Usage: tina4ruby COMMAND [options]", "", "Commands:"]
       lines += command_rows.map { |left, summary| row.call(left, summary) }
+      lines += ["", "Delegated to the #{CLIENT_BINARY} client (same behaviour in every framework):"]
+      lines += delegated_rows.map { |left, summary| row.call(left, summary) }
+      lines += ["  (these run the #{CLIENT_BINARY} client — install: " \
+                "curl -fsSL https://tina4.com/install.sh | sh)"]
       lines += ["", "Generators:"]
       lines += generator_rows.map { |left, summary| row.call(left, summary) }
       lines += [
@@ -2808,20 +2920,30 @@ module Tina4
 
     # Build the machine-readable manifest of the CLI's command surface.
     #
-    # Pure data: reads the COMMANDS registry and the framework version — no
-    # bootstrap, no database, no migrations, no app imports. This is exactly
-    # what `commands --json` serializes and what the tina4 client consumes to
-    # discover which commands this framework supports.
+    # Pure data: reads the COMMANDS and DELEGATED registries and the framework
+    # version — no bootstrap, no database, no migrations, no app imports. This is
+    # exactly what `commands --json` serializes and what the tina4 client consumes
+    # to discover which commands this framework supports.
+    #
+    # Commands handed to the `tina4` client carry "delegated" => true, so the
+    # manifest describes the WHOLE surface the CLI accepts while still saying who
+    # implements each one. The client needs no change: its help renderer already
+    # drops manifest names that clash with its own natives.
     #
     # Shape:
     #   { "framework" => "ruby", "version" => "<x.y.z>",
-    #     "commands" => [ { "name", "summary", "args"?, "subcommands"? }, ... ] }
+    #     "commands" => [ { "name", "summary", "args"?, "subcommands"?, "delegated"? }, ... ] }
     def commands_manifest
       require_relative "version"
       commands = COMMANDS.map do |name, spec|
         entry = { "name" => name, "summary" => spec[:summary] }
         entry["args"] = spec[:args].dup if spec[:args]
         entry["subcommands"] = spec[:subcommands].dup if spec[:subcommands]
+        entry
+      end
+      commands += DELEGATED.map do |name, spec|
+        entry = { "name" => name, "summary" => spec[:summary], "delegated" => true }
+        entry["args"] = spec[:args].dup if spec[:args]
         entry
       end
       { "framework" => "ruby", "version" => Tina4::VERSION, "commands" => commands }
@@ -2850,7 +2972,8 @@ module Tina4
       puts "\nTina4 #{manifest['framework']} - #{manifest['version']}\n\n"
       width = manifest["commands"].map { |command| command["name"].length }.max
       manifest["commands"].each do |command|
-        puts "  #{command['name'].ljust(width)}  #{command['summary']}"
+        marker = command["delegated"] ? " (#{CLIENT_BINARY} client)" : ""
+        puts "  #{command['name'].ljust(width)}  #{command['summary']}#{marker}"
         if command["subcommands"]
           puts "  #{''.ljust(width)}    #{command['subcommands'].join(', ')}"
         end
