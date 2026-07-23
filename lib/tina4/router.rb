@@ -615,8 +615,19 @@ module Tina4
         @last_routes_dir = nil
       end
 
-      # Write a .broken sentinel so /health and the dev dashboard surface
-      # auto-discover failures instead of swallowing them into a log line.
+      # Write a .broken sentinel to data/.broken/ so an auto-discover failure
+      # leaves a durable on-disk artifact instead of being swallowed into a log
+      # line.
+      #
+      # Ruby only WRITES these files today — nothing under lib/ reads them back.
+      # lib/tina4/health.rb contains no `broken` reference, and
+      # GET /__dev/api/broken serves the in-memory Tina4::DevAdmin::ErrorTracker
+      # (its own JSON store under Dir.tmpdir, dev_admin.rb:127-132), not this
+      # directory. Python's /health DOES glob data/.broken and answer 503 with
+      # `errors` + `latest_error` (tina4-python/tina4_python/core/server.py:296-320);
+      # mirroring that read side in Ruby is an OPEN parity gap. This comment used
+      # to claim "/health and the dev dashboard surface" it, which was false in
+      # both halves. (feature-recount D12)
       def record_broken_route_import(file, error)
         broken_dir = File.join(Dir.pwd, "data", ".broken")
         FileUtils.mkdir_p(broken_dir) unless Dir.exist?(broken_dir)

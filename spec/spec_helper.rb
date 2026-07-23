@@ -141,5 +141,11 @@ RSpec.configure do |config|
       Tina4.instance_variable_set(:@database, nil)
       Tina4.instance_variable_set(:@databases, {})
     end
+    # Tina4::RackApp.current is process-wide too (last constructed wins) — it is
+    # what Tina4::TestClient falls back to when no app is passed. Without this
+    # reset, a RackApp built by one spec (rooted at that spec's temp dir) would
+    # silently become the app a LATER spec's bare TestClient.new dispatches
+    # through, under the randomized order. Same isolation as the resets above.
+    Tina4::RackApp.current = nil if defined?(Tina4::RackApp) && Tina4::RackApp.respond_to?(:current=)
   end
 end

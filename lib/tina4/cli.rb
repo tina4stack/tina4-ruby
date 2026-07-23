@@ -2083,13 +2083,12 @@ module Tina4
       content = <<~RUBY
         # #{name} request validator.
         #
-        # Tina4::Validator is NOT part of the default `require "tina4"` surface
-        # (unlike Queue / Events / ServiceRunner), so require it explicitly here.
-        # NOT auto-loaded — require this file from the route that validates:
+        # Tina4::Validator comes with `require "tina4"` — no extra require needed.
+        # This FILE is not auto-discovered though (only src/routes/ and src/orm/
+        # are), so require it from the route that validates:
         #     require_relative "../validators/#{snake}"
         #     v = validate_#{snake}(request.body)
         #     next response.json({ error: v.errors.first[:message] }, 400) unless v.is_valid?
-        require "tina4/validator"
 
         def validate_#{snake}(data)
           validator = Tina4::Validator.new(data)
@@ -3052,6 +3051,11 @@ module Tina4
             {% block content %}{% endblock %}
             <script src="/js/tina4.min.js"></script>
             <script src="/js/frond.min.js"></script>
+            <!-- tina4-js reactive frontend (signals, components, router).
+                 Served from the framework's bundled public dir, same as
+                 tina4-python/example/src/templates/base.twig:47-48 and
+                 tina4-php/example/src/templates/base.twig:47-48. -->
+            <script src="/js/tina4js.min.js"></script>
             {% block scripts %}{% endblock %}
           </body>
           </html>

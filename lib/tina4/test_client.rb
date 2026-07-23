@@ -47,6 +47,23 @@ module Tina4
   end
 
   class TestClient
+    # +app+ — the Rack app every request is dispatched through. Defaults to the
+    # process-wide Tina4::RackApp (RackApp.current): inside a running server that
+    # IS the app serving traffic, so an in-process test request and a live request
+    # go through the same object. With no app yet (a bare spec process) one is
+    # built lazily, rooted at +root_dir+ / Tina4.root_dir / Dir.pwd.
+    #
+    # Mirrors Node's `new TestClient(router?)` optional-collaborator constructor.
+    def initialize(app = nil, root_dir: nil)
+      @app = app
+      @root_dir = root_dir
+    end
+
+    def app
+      @app ||= Tina4::RackApp.current ||
+               Tina4::RackApp.new(root_dir: @root_dir || Tina4.root_dir || Dir.pwd)
+    end
+
     # Send a GET request.
     def get(path, headers: nil)
       request("GET", path, headers: headers)
@@ -74,7 +91,19 @@ module Tina4
 
     private
 
-    # Build a mock Rack env, match the route, execute the handler.
+    # Build a Rack env and dispatch it through the REAL Tina4::RackApp — the same
+    # front controller a live HTTP request goes through.
+    #
+    # This used to call Tina4::Router.match directly and invoke the handler
+    # itself, which made everything RackApp does around route matching invisible
+    # to tests: global middleware never ran, and static files, /swagger,
+    # /swagger/openapi.json, the bundled framework assets, /__dev, /__feedback,
+    # CORS preflight, the RFC 9110 OPTIONS/405 Allow responses and HEAD
+    # body-stripping all came back as a hand-built 404 {"error":"Not found"} while
+    # the live server served them 200. Any spec asserting framework endpoint
+    # behaviour through TestClient was asserting nothing. (feature-recount D6 —
+    # the same shape as the #PY2 auth fix: the in-process test client must route
+    # through the real pipeline, not a re-implementation of it.)
     def request(method, path, json: nil, body: nil, headers: nil)
       # Build raw body
       raw_body = ""
@@ -99,7 +128,9 @@ module Tina4
         "SERVER_PORT" => "7145",
         "HTTP_HOST" => "localhost:7145",
         "REMOTE_ADDR" => "127.0.0.1",
+        "SERVER_PROTOCOL" => "HTTP/1.1",
         "rack.input" => StringIO.new(raw_body),
+        "rack.errors" => $stderr,
         "rack.url_scheme" => "http"
       }
 
@@ -115,57 +146,13 @@ module Tina4
         end
       end
 
-      # Match route
-      result = Tina4::Router.match(method.upcase, clean_path)
-
-      unless result
-        return TestResponse.new([404, { "content-type" => "application/json" }, ['{"error":"Not found"}']])
-      end
-
-      route, path_params = result
-
-      # Route through the REAL auth gate (parity with the live server). A write
-      # to an auth-required route (POST/PUT/PATCH/DELETE by default, or any
-      # secured route) with no valid token / API key / formToken 401s here
-      # exactly as it would in production. The TestClient used to skip this and
-      # run the handler directly, so a green test could hide a live 401 — the
-      # verification layer lied. A public route (GET, or a write marked
-      # .no_auth) has auth_required false, so this is a no-op. (#PY2 parity)
-      unauthorized = Tina4::RackApp.enforce_route_auth(env, route)
-      return TestResponse.new(unauthorized) if unauthorized
-
-      # Create request and response
-      req = Tina4::Request.new(env, path_params || {})
-      res = Tina4::Response.new
-
-      # Build handler args (same logic as RackApp.handle_route)
-      handler_params = route.handler.parameters.map(&:last)
-      route_params = path_params || {}
-      args = handler_params.map do |name|
-        if route_params.key?(name)
-          route_params[name]
-        elsif name == :request || name == :req
-          req
-        else
-          res
-        end
-      end
-
-      # Execute handler
-      handler_result = args.empty? ? route.handler.call : route.handler.call(*args)
-
-      # Auto-detect response type
-      if handler_result.is_a?(Tina4::Response)
-        final = handler_result
-      elsif route.respond_to?(:template) && route.template && handler_result.is_a?(Hash)
-        html = Tina4::Template.render(route.template, handler_result)
-        res.html(html)
-        final = res
-      else
-        final = Tina4::Response.auto_detect(handler_result, res)
-      end
-
-      TestResponse.new(final.to_rack)
+      # Dispatch through the real front controller. Everything the live server
+      # does — the secure-by-default auth gate (#PY2), global + per-route
+      # middleware, route matching and handler invocation, template rendering,
+      # response auto-detection, static files, /swagger, /__dev, /__feedback, the
+      # RFC 9110 OPTIONS/405 responses, HEAD body-stripping, session save and the
+      # 500 handler — is now exercised exactly once, in one place.
+      TestResponse.new(app.call(env))
     end
   end
 end

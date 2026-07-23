@@ -87,7 +87,10 @@ lib/
     service_runner.rb,  # Background service runner
     shutdown.rb,        # Graceful shutdown handler
     testing.rb,         # Inline test framework (describe/it)
-    sql_translator.rb   # Cross-engine SQL translator & query cache
+    test_client.rb,     # In-process HTTP test client (dispatches through RackApp)
+    validator.rb,       # Request body validator (Tina4::Validator)
+    cache.rb,           # QueryCache — in-memory TTL/tagged query result cache
+    sql_translator.rb   # Cross-engine SQL translator (dialects + cache KEY only)
     drivers/            # Database drivers (sqlite, postgres, mysql, mssql, firebird)
     queue_backends/     # Queue backends (lite, rabbitmq, kafka)
     session_handlers/   # Session storage (file, redis, mongo)
@@ -976,6 +979,8 @@ Tina4::Testing.reset!    # clear all suites and results
 
 ### SQLTranslator — Cross-engine SQL translation
 
+Defined in `lib/tina4/sql_translator.rb`.
+
 ```ruby
 # LIMIT/OFFSET -> Firebird ROWS...TO
 Tina4::SQLTranslator.limit_to_rows("SELECT * FROM t LIMIT 10 OFFSET 5")
@@ -994,8 +999,15 @@ Tina4::SQLTranslator.ilike_to_like("name ILIKE ?")            # -> LOWER() LIKE 
 Tina4::SQLTranslator.auto_increment_syntax(ddl, "postgresql") # AUTOINCREMENT -> SERIAL
 Tina4::SQLTranslator.placeholder_style("? AND ?", ":")        # -> :1 AND :2
 Tina4::SQLTranslator.query_key("SELECT 1", [42])              # SHA256 cache key
+```
 
-# QueryCache — in-memory TTL cache for query results
+### QueryCache — in-memory TTL cache for query results
+
+Defined in `lib/tina4/cache.rb:13` — NOT in `sql_translator.rb`. `SQLTranslator`
+only computes the cache KEY (`query_key`, above); the cache itself is a separate
+class in its own file.
+
+```ruby
 cache = Tina4::QueryCache.new(default_ttl: 300, max_size: 1000)
 cache.set("key", value, ttl: 60, tags: ["users"])
 cache.get("key")

@@ -114,9 +114,19 @@ RSpec.describe Tina4::TestClient do
     end
 
     it "returns nil json for non-JSON content" do
+      # An unmatched path now returns the framework's REAL 404 — the rendered
+      # HTML error page the live server sends — because TestClient dispatches
+      # through Tina4::RackApp instead of hand-building a response of its own
+      # (feature-recount D6). This assertion used to read
+      #   expect(r.json["error"]).to eq("Not found")
+      # which only ever passed because the old TestClient short-circuited on a
+      # Router.match miss and fabricated {"error":"Not found"} — a body the
+      # server never sends. It asserted the test client's own fiction.
       r = client.get("/api/test/nonexistent")
-      # 404 still returns JSON error
-      expect(r.json["error"]).to eq("Not found")
+      expect(r.status).to eq(404)
+      expect(r.content_type).to include("text/html")
+      expect(r.json).to be_nil
+      expect(r.text).to include("404")
     end
   end
 end

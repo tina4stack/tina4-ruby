@@ -110,6 +110,15 @@ module Tina4
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
   autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)
   autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
+  # Validator is a counted framework feature and belongs on the main
+  # `require "tina4"` surface like every other subsystem — PHP reaches
+  # Tina4\Validator through composer's autoloader, Node exports Validator from
+  # packages/core/src/index.ts, and Python resolves tina4_python.validator as a
+  # submodule with no extra wiring. Ruby was the odd one out: validator.rb was
+  # neither required nor autoloaded, so Tina4::Validator raised NameError after a
+  # clean boot. Autoloaded (not eagerly required) so it still costs nothing until
+  # a route actually validates. (feature-recount D5)
+  autoload :Validator,           File.expand_path("tina4/validator", __dir__)
   BANNER = <<~'BANNER'
 
   ______ _             __ __

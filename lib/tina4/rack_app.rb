@@ -19,6 +19,16 @@ module Tina4
   end
 
   class RackApp
+    class << self
+      # The process-wide RackApp — the app actually serving traffic. Set by
+      # #initialize (last one wins, the same convention as
+      # Tina4::WebSocket.current). Tina4::TestClient defaults to this so an
+      # in-process test request runs through the SAME app object a live request
+      # does, instead of building a second one with a different static root and
+      # clobbering the shared WebSocket engine. (feature-recount D6)
+      attr_accessor :current
+    end
+
     STATIC_DIRS = %w[public src/public src/assets assets].freeze
 
     # CORS is now handled by Tina4::CorsMiddleware
@@ -46,6 +56,9 @@ module Tina4
       # manager. Without this the handshake never matches a route and falls
       # through to 404, silently degrading the whole reloader to polling.
       RackApp.register_dev_reload_ws if dev_mode?
+
+      # Publish as the process-wide app (see RackApp.current).
+      RackApp.current = self
     end
 
     # WebSocket handler for the dev-reload channel (/__dev_reload).
