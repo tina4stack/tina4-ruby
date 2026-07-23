@@ -29,12 +29,26 @@ require "tina4/dev"
 # never match these keywords and stay green.
 #
 # RSpec marks `skip "msg"` as pending with that message in
-# example.execution_result.pending_message. An after(:each) (which still runs
-# for skipped examples) records any offending message; after(:suite) exits
-# non-zero if any were recorded. (Raising in after(:each) does NOT fail a
-# pending example — RSpec swallows it and the run stays green — so the failure
-# is forced at suite end, the clean equivalent of pytest's makereport
+# example.execution_result.pending_message. At suite end the gate WALKS EVERY
+# EXAMPLE RSpec knows about (RSpec.world, recursing into nested groups), records
+# any offending message, and exits non-zero. (Raising in after(:each) does NOT
+# fail a pending example — RSpec swallows it and the run stays green — so the
+# failure is forced at suite end, the clean equivalent of pytest's makereport
 # outcome-flip in the Python master.)
+#
+# The walk — rather than an after(:each) recorder — is what makes the gate
+# WHOLE. RSpec does NOT run after(:each) hooks for an example skipped by a
+# `before(:context)` / `before(:all)` hook: the group's run aborts with
+# Pending::SkipDeclaredInExample and each example is finished via
+# Example#skip_with_exception, which never enters the per-example hook chain. A
+# recorder living in after(:each) therefore never fires for those examples, so a
+# spec gating a provisioned service with `before(:all) { skip "... not
+# reachable" }` used to skip GREEN under TINA4_REQUIRE_SERVICES — exactly the
+# no-green-skips guarantee this gate exists to provide. skip_with_exception DOES
+# still write execution_result.pending_message on every affected example, so the
+# suite-end walk sees before(:context) skips and per-example skips alike. Locked
+# in by spec/require_services_gate_spec.rb, which runs a REAL rspec subprocess
+# over both shapes.
 TINA4_GATE_SERVICE_KEYWORDS = [
   "postgres", "postgresql", "psycopg2", # psycopg2 kept for cross-framework message parity
   "pg",                                  # Ruby's PostgreSQL client gem ("pg gem not installed")
@@ -64,18 +78,29 @@ def tina4_provisioned_service_skip?(reason)
     TINA4_GATE_UNAVAILABLE_HINTS.any? { |h| low.include?(h) }
 end
 
+# Yield every example in `groups` and, recursively, in their nested groups.
+# Deliberately built from #examples/#children rather than a per-example hook —
+# see the before(:context) hole documented above. Examples that never ran (e.g.
+# filtered out) simply carry a nil pending_message and are ignored by the caller.
+def tina4_gate_each_example(groups, &block)
+  groups.each do |group|
+    group.examples.each(&block)
+    tina4_gate_each_example(group.children, &block)
+  end
+end
+
 RSpec.configure do |config|
-  # Record any provisioned-service skip so the suite can fail on it (see above).
-  config.after(:each) do |example|
+  config.after(:suite) do
+    # Record any provisioned-service skip so the suite fails on it (see above).
     if tina4_require_services?
-      reason = example.execution_result.pending_message
-      if reason && tina4_provisioned_service_skip?(reason)
+      tina4_gate_each_example(RSpec.world.example_groups) do |example|
+        reason = example.execution_result.pending_message
+        next unless reason && tina4_provisioned_service_skip?(reason)
+
         TINA4_GATE_VIOLATIONS << "#{example.full_description} (#{example.location}): #{reason.strip}"
       end
     end
-  end
 
-  config.after(:suite) do
     unless TINA4_GATE_VIOLATIONS.empty?
       warn "\n#{'=' * 78}"
       warn "TINA4_REQUIRE_SERVICES is set, but #{TINA4_GATE_VIOLATIONS.length} real-service " \
