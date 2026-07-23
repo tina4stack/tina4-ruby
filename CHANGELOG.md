@@ -12,6 +12,13 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
+### Added
+
+- **MQTT 3.1.1 client** (`Tina4::Mqtt` / `Tina4::MqttMessage`), zero-dependency (stdlib `socket` +
+  lazily-required `openssl`), verified against a real broker with no mocks. publish/subscribe/consume,
+  QoS 0/1, retained, Last Will, per-client TLS, QoS 2 refused loudly. Ruby ships all 97 shared
+  features plus its native ERB engine, for **98 built-in features**.
+
 ### Changed
 
 - Internal: the SQL dialect-translation file is renamed

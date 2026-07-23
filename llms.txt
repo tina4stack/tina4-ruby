@@ -1,6 +1,6 @@
 # tina4-ruby — LLM Context
 
-Tina4 Ruby v3.10.70. 97 built-in features, zero external dependencies. Web framework for Ruby 3.0+.
+Tina4 Ruby v3.13.82. 98 built-in features, zero external dependencies. Web framework for Ruby 3.0+.
 Routes, ORM, templates, auth, queue, websocket, graphql — all built in.
 
 Install: gem install tina4-ruby
