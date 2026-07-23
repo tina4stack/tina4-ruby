@@ -500,4 +500,126 @@ RSpec.describe Tina4::ScssCompiler do
       expect(css).not_to include("\#{")
     end
   end
+
+  # ── !default flag ──────────────────────────────────────────────
+  # The `!default` flag means "assign only if this variable is not already set".
+  # It is a compiler directive and must never reach the CSS: `padding: 1.5rem
+  # !default` is invalid CSS and browsers drop the whole declaration. Reference
+  # behaviour for every case below was measured against Dart Sass 1.101.6.
+  describe "!default flag" do
+    # Module-level preset state is shared; reset it so these examples cannot
+    # leak a preset variable into any other spec (and vice versa).
+    before { Tina4::ScssCompiler.instance_variable_set(:@variables, {}) }
+    before { Tina4::ScssCompiler.instance_variable_set(:@import_paths, []) }
+
+    after { Tina4::ScssCompiler.instance_variable_set(:@variables, {}) }
+
+    it "never leaks the flag into the output" do
+      css = basic_compile("$g: 1.5rem !default;\n.x { padding: $g; }")
+      expect(css).to include("padding: 1.5rem")
+      expect(css).not_to include("!default")
+    end
+
+    it "does not overwrite an already-set variable" do
+      # The themeing contract: a user sets $primary BEFORE the partial that
+      # declares it !default, and must keep their value.
+      css = basic_compile("$primary: red;\n$primary: blue !default;\n.y { color: $primary; }")
+      expect(css).to include("color: red")
+      expect(css).not_to include("blue")
+      expect(css).not_to include("!default")
+    end
+
+    it "does assign an unset variable" do
+      css = basic_compile("$primary: blue !default;\n.y { color: $primary; }")
+      expect(css).to include("color: blue")
+      expect(css).not_to include("!default")
+    end
+
+    it "treats null as unset" do
+      css = basic_compile("$c: null;\n$c: teal !default;\n.w { color: $c; }")
+      expect(css).to include("color: teal")
+      expect(css).not_to include("null")
+    end
+
+    it "lets the first !default win over a second !default" do
+      css = basic_compile("$a: 1rem !default;\n$a: 2rem !default;\n.v { margin: $a; }")
+      expect(css).to include("margin: 1rem")
+      expect(css).not_to include("2rem")
+    end
+
+    it "lets a plain declaration after a !default overwrite it" do
+      css = basic_compile("$a: 1rem !default;\n$a: 2rem;\n.v { margin: $a; }")
+      expect(css).to include("margin: 2rem")
+    end
+
+    it "consumes the !global flag too" do
+      css = basic_compile("$a: 5px !default !global;\n.i { top: $a; }")
+      expect(css).to include("top: 5px")
+      expect(css).not_to include("!default")
+      expect(css).not_to include("!global")
+    end
+
+    it "consumes a multi-line !default declaration" do
+      # A map literal spanning lines with the flag on the closing line -- the
+      # exact shape tina4-css's _variables.scss uses. Before the /m fix this
+      # whole declaration was dumped verbatim into the CSS.
+      css = basic_compile("$m: (\n  \"a\": 1,\n  \"b\": 2\n) !default;\n.m { z-index: 1; }")
+      expect(css).not_to include("!default")
+      expect(css).not_to include("$m")
+    end
+
+    it "preserves a literal !default inside a quoted string" do
+      # NEGATIVE guard on the strip's scope: only a *variable declaration* value
+      # is stripped. Dart Sass keeps this string verbatim; so must we.
+      css = basic_compile('.s { content: "x !default y"; }')
+      expect(css).to include('"x !default y"')
+    end
+
+    it "leaves a !default inside a function argument verbatim" do
+      # NEGATIVE guard: `rgba(#000 !default, .1)` is a syntax error in Dart Sass
+      # and never appears in valid SCSS. We do not silently "fix" it into
+      # something Sass would never emit -- it is not a variable declaration, so
+      # it is left exactly as written and stays visibly wrong.
+      css = basic_compile(".z { color: rgba(#000 !default, 0.1); }")
+      expect(css).to include("!default")
+    end
+
+    it "makes a !default hex variable usable inside rgba()" do
+      # The real-world case behind the broken rgba() calls: the flag rode inside
+      # the stored value and corrupted every function call using it.
+      css = basic_compile("$black: #000 !default;\n.z { box-shadow: 0 1px 2px rgba($black, 0.075); }")
+      expect(css).to include("rgba(0, 0, 0, 0.075)")
+      expect(css).not_to include("!default")
+    end
+
+    it "keeps an override across an @import of a real partial" do
+      # End-to-end over REAL files: set the variable, then @import a partial that
+      # declares it !default. The override must win.
+      File.write(File.join(scss_dir, "_theme.scss"), "$primary: navy !default;\n$accent: gold !default;\n")
+      main = File.join(scss_dir, "main.scss")
+      File.write(main, "$primary: hotpink;\n@import \"theme\";\n.k { color: $primary; border-color: $accent; }\n")
+      css = basic_compile(File.read(main), scss_dir)
+      expect(css).to include("color: hotpink")
+      expect(css).to include("border-color: gold")
+      expect(css).not_to include("navy")
+      expect(css).not_to include("!default")
+    end
+
+    it "strips the flag through compile_file on a real file" do
+      File.write(File.join(scss_dir, "_vars.scss"), "$gap: 4px !default;\n")
+      app = File.join(scss_dir, "app.scss")
+      File.write(app, "@import \"vars\";\n.a { margin: $gap; }\n")
+      css = Tina4::ScssCompiler.compile_file(app, css_dir, scss_dir)
+      expect(css).to include("margin: 4px")
+      expect(css).not_to include("!default")
+      expect(File.read(File.join(css_dir, "app.css"))).not_to include("!default")
+    end
+
+    it "lets a preset variable beat a source !default" do
+      Tina4::ScssCompiler.set_variable("primary", "rebeccapurple")
+      css = Tina4::ScssCompiler.compile("$primary: navy !default;\n.p { color: $primary; }")
+      expect(css).to include("color: rebeccapurple")
+      expect(css).not_to include("navy")
+    end
+  end
 end

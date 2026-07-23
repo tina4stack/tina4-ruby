@@ -6,6 +6,15 @@ module Tina4
     SCSS_DIRS = %w[src/scss scss src/styles styles].freeze
     CSS_OUTPUT = "src/public/css"
 
+    # Flags that may trail a variable declaration's value. `!default` means
+    # "assign only if this variable is not already set" -- the flag that makes a
+    # variable themeable. `!global` is the scope flag. Both are compiler
+    # directives: they are consumed at the declaration and must never reach the
+    # CSS, because `padding: 1.5rem !default` is invalid CSS and browsers drop
+    # the whole declaration. Sass flag names are case-SENSITIVE (`!DEFAULT` is an
+    # error in Dart Sass), so the match is deliberately case-sensitive.
+    VARIABLE_FLAG = /\s*!(default|global)\s*\z/
+
     # Module-level state for import paths and variables
     @import_paths = []
     @variables = {}
@@ -92,14 +101,50 @@ module Tina4
 
       private
 
+      # Split trailing !default / !global flags off a variable declaration value.
+      # Returns [value_without_flags, declares_default].
+      #
+      # Only ever called on the value of a `$name: value;` declaration, so a
+      # literal !default anywhere else -- inside a quoted string
+      # (`content: "x !default y"`) or a function argument -- is left untouched,
+      # exactly as Dart Sass leaves it. A blanket strip would corrupt real string
+      # content, and would silently turn `rgba(#000 !default, 0.1)` (a syntax
+      # error in Dart Sass) into valid-looking CSS that Sass would never emit.
+      #
+      # NOTE: this runs a regex, so it clobbers the caller's match globals --
+      # callers must capture their own groups first.
+      def strip_variable_flags(value)
+        declares_default = false
+        loop do
+          match = VARIABLE_FLAG.match(value)
+          break unless match
+
+          declares_default = true if match[1] == "default"
+          value = value[0, match.begin(0)]
+        end
+        [value.strip, declares_default]
+      end
+
       def basic_compile(content, base_dir)
         # Handle @import
         content = process_imports(content, base_dir)
 
-        # Handle variables
+        # Handle variables. The /m flag makes the value span newlines, matching
+        # the Python master's `[^;]+`: without it a MULTI-LINE declaration (a map
+        # literal with its closing `) !default;` on its own line -- exactly what
+        # tina4-css's _variables.scss uses) was never extracted, and the raw SCSS
+        # was dumped verbatim into the CSS.
         variables = {}
-        content = content.gsub(/\$([a-zA-Z_][\w-]*)\s*:\s*(.+?);/) do
-          variables[Regexp.last_match(1)] = Regexp.last_match(2).strip
+        content = content.gsub(/\$([a-zA-Z_][\w-]*)\s*:\s*(.+?);/m) do
+          # Capture BOTH groups before calling strip_variable_flags -- it runs a
+          # regex, which clobbers the match globals this block relies on.
+          name = Regexp.last_match(1)
+          raw = Regexp.last_match(2).strip
+          value, declares_default = strip_variable_flags(raw)
+          # !default must not overwrite a value that is already set.
+          next "" if declares_default && variables.fetch(name, "null") != "null"
+
+          variables[name] = value
           ""
         end
 
