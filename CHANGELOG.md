@@ -1,5 +1,31 @@
 # Changelog
 
+Tina4 keeps ONE version across all four frameworks (Python, PHP, Ruby, Node.js), so a version
+number means the same thing everywhere.
+
+**The authoritative release notes for every shipped version live in the documentation:**
+https://tina4.com/ruby/36-releases
+
+This file is deliberately NOT a copy of those notes. Duplicating them is exactly how a
+changelog rots into claiming a version that was never cut, so this file records only
+UNRELEASED work. When a version ships, its notes go to the release notes above.
+
+## Unreleased
+
+### Changed
+
+- Internal: the SQL dialect-translation file is renamed
+  `lib/tina4/sql_translation.rb` -> `lib/tina4/sql_translator.rb`, so the filename matches the
+  `Tina4::SQLTranslator` class it defines (and the sibling frameworks). The class name, its
+  methods and its behaviour are unchanged, and `require "tina4"` is unaffected - this is a
+  filename alignment, not an API change. Only code that bypassed the gem's own entry point with
+  a direct `require "tina4/sql_translation"` needs to update the path.
+
+## Earlier history (pre-3.x)
+
+Kept for reference only. The versions below are from the 0.x line, long before the unified
+3.x versioning; everything from 3.x onward is in the release notes linked above.
+
 ## [0.4.0] - 2026-03-18
 
 ### Added
@@ -14,7 +40,7 @@
 - Recursive descent GraphQL parser (queries, mutations, fragments, variables, aliases)
 - Depth-first AST executor with resolver pattern
 - GraphQL schema with programmatic type registration
-- ORM auto-schema generation (`schema.from_orm(User)`) — auto-creates CRUD queries/mutations
+- ORM auto-schema generation (`schema.from_orm(User)`) - auto-creates CRUD queries/mutations
 - GraphiQL UI served at GET /graphql
 - Route integration via `gql.register_route("/graphql")`
 - Full GraphQL type system (scalars, objects, lists, non-null, input objects)
@@ -23,7 +49,7 @@
 
 ### Added
 - Default auth protection for POST/PUT/PATCH/DELETE routes (matching tina4_python behavior)
-- API_KEY bypass in bearer auth — if `ENV["API_KEY"]` matches the bearer token, access is granted
+- API_KEY bypass in bearer auth - if `ENV["API_KEY"]` matches the bearer token, access is granted
 - `auth: false` option to make write routes public (equivalent to tina4_python's `@noauth()`)
 - `default_secure_auth` cached auth handler for performance
 - `resolve_auth` helper for flexible auth resolution
