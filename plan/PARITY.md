@@ -46,7 +46,7 @@ This checklist tracks feature parity against the Python reference implementation
 | Firebird driver | [x] | [x] | `firebird_driver.rb` |
 | ODBC driver | [ ] | [ ] | Not implemented — Python has it |
 | DatabaseResult | [x] | [x] | `database_result.rb` |
-| SQL translation | [x] | [x] | `sql_translation.rb` |
+| SQL translation | [x] | [x] | `sql_translator.rb` |
 | Query caching | [x] | [ ] | Less mature than Python |
 | get_next_id | [x] | [x] | |
 | Transactions | [x] | [x] | |

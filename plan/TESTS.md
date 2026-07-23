@@ -67,7 +67,7 @@ Version: 3.10.37 | Last updated: 2026-03-31
 | 51 | session_spec.rb | 51 | Sessions | Done |
 | 52 | shutdown_spec.rb | 5 | Graceful shutdown | Done |
 | 53 | smoke_spec.rb | 46 | End-to-end smoke tests | Done |
-| 54 | sql_translation_spec.rb | 42 | SQL translation | Done |
+| 54 | sql_translator_spec.rb | 42 | SQL translation | Done |
 | 55 | sqlite3_adapter_spec.rb | 22 | SQLite3 adapter | Done |
 | 56 | swagger_spec.rb | 38 | Swagger docs | Done |
 | 57 | template_keyword_spec.rb | 9 | Template keywords | Done |

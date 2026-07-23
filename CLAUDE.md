@@ -87,7 +87,7 @@ lib/
     service_runner.rb,  # Background service runner
     shutdown.rb,        # Graceful shutdown handler
     testing.rb,         # Inline test framework (describe/it)
-    sql_translation.rb  # Cross-engine SQL translator & query cache
+    sql_translator.rb   # Cross-engine SQL translator & query cache
     drivers/            # Database drivers (sqlite, postgres, mysql, mssql, firebird)
     queue_backends/     # Queue backends (lite, rabbitmq, kafka)
     session_handlers/   # Session storage (file, redis, mongo)
