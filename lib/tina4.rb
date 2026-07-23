@@ -106,6 +106,12 @@ module Tina4
   autoload :WebSocketBackplane,  File.expand_path("tina4/websocket_backplane", __dir__)
   autoload :RedisBackplane,      File.expand_path("tina4/websocket_backplane", __dir__)
   autoload :NATSBackplane,       File.expand_path("tina4/websocket_backplane", __dir__)
+  # MQTT 3.1.1 — zero-dependency IoT client (socket + pack/unpack only).
+  # Autoloaded, not required: an app that never talks to a broker pays nothing.
+  autoload :Mqtt,                File.expand_path("tina4/mqtt", __dir__)
+  autoload :MqttError,           File.expand_path("tina4/mqtt", __dir__)
+  autoload :MqttTimeoutError,    File.expand_path("tina4/mqtt", __dir__)
+  autoload :MqttMessage,         File.expand_path("tina4/mqtt_message", __dir__)
   autoload :Testing,             File.expand_path("tina4/testing", __dir__)
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
   autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)

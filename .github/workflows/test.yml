@@ -142,6 +142,12 @@ jobs:
       TINA4_TEST_MSSQL_DB: tina4_test
       TINA4_TEST_KAFKA_URL: localhost:9092
       TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
+      # Eclipse Mosquitto — the real MQTT 3.1.1 broker for spec/mqtt_spec.rb and
+      # spec/mqtt_session_spec.rb (started as container steps below). The second
+      # broker refuses anonymous clients, which is how the CONNACK-refused path
+      # is proven by a real broker instead of an assumption.
+      TINA4_TEST_MQTT_URL: mqtt://127.0.0.1:1883
+      TINA4_TEST_MQTT_DENY_URL: mqtt://127.0.0.1:1884
       TINA4_MONGO_URI: mongodb://localhost:27017
       MONGO_TEST_URI: mongodb://localhost:27017
       # Compile + load the optional MySQL/MSSQL driver gems (mysql2 + tiny_tds)
@@ -183,6 +189,51 @@ jobs:
             fi
             sleep 1
           done
+
+      # Eclipse Mosquitto — the REAL MQTT 3.1.1 broker the MQTT specs drive. The
+      # client is hand-rolled on raw sockets (zero dependencies), so its wire
+      # format can only be proven against a real broker; there is no fake.
+      #
+      # Run as a plain container, not a service container, for the same reason as
+      # redis-auth and Kafka below: the broker needs a command argument
+      # (-c /mosquitto-no-auth.conf) and GitHub service definitions cannot pass
+      # one. The image's DEFAULT config binds 1883 to loopback only, which a
+      # service container would refuse connections on; /mosquitto-no-auth.conf
+      # ships in the image and opens an anonymous listener on all interfaces,
+      # matching plan/v3/spikes/mosquitto.conf that the spike ran against. FAIL
+      # the job if the broker never accepts a connection — a missing broker must
+      # not turn into green skips (TINA4_REQUIRE_SERVICES also fails on it).
+      - name: Start Mosquitto (MQTT 3.1.1)
+        run: |
+          docker run -d --name tina4-mosquitto -p 1883:1883 \
+            eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
+          for i in $(seq 1 30); do
+            if timeout 2 bash -c '</dev/tcp/127.0.0.1/1883' 2>/dev/null; then
+              echo "Mosquitto ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Mosquitto did not accept a connection on :1883 in 30s"
+          docker logs tina4-mosquitto | tail -40; exit 1
+
+      # A SECOND Mosquitto that REFUSES anonymous clients (CONNACK return code
+      # 5). It is what proves Tina4::Mqtt surfaces a refused connection with the
+      # broker's own reason — the everyday production mistake of pointing at a
+      # broker that requires credentials. The config is written inside the
+      # container, so no fixture file has to be mounted.
+      - name: Start Mosquitto with anonymous access DENIED (1884)
+        run: |
+          docker run -d --name tina4-mosquitto-deny -p 1884:1884 \
+            eclipse-mosquitto:2 sh -c \
+            'printf "listener 1884 0.0.0.0\nallow_anonymous false\n" > /tmp/deny.conf && exec mosquitto -c /tmp/deny.conf'
+          for i in $(seq 1 30); do
+            if timeout 2 bash -c '</dev/tcp/127.0.0.1/1884' 2>/dev/null; then
+              echo "Mosquitto (deny) ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Mosquitto (deny) did not accept a connection on :1884 in 30s"
+          docker logs tina4-mosquitto-deny | tail -40; exit 1
 
       # Kafka in KRaft mode (single node, no ZooKeeper). GitHub service
       # containers can't express the KRaft listener config cleanly, so run it as

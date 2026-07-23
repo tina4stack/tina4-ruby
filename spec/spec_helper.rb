@@ -43,7 +43,8 @@ TINA4_GATE_SERVICE_KEYWORDS = [
   "redis", "valkey", "memcached",
   "mongo",                               # also matches "mongodb"
   "rabbit", "amqp",
-  "kafka"                                # also matches "rdkafka"
+  "kafka",                               # also matches "rdkafka"
+  "mqtt", "mosquitto"                    # Eclipse Mosquitto for the MQTT specs
 ].freeze
 
 TINA4_GATE_UNAVAILABLE_HINTS = [
@@ -55,6 +56,43 @@ TINA4_GATE_VIOLATIONS = []
 
 def tina4_require_services?
   %w[1 true yes on].include?(ENV["TINA4_REQUIRE_SERVICES"].to_s.strip.downcase)
+end
+
+# ── MQTT broker (Eclipse Mosquitto) ───────────────────────────────────────────
+#
+# Shared by spec/mqtt_spec.rb and spec/mqtt_session_spec.rb, which drive the REAL
+# broker (no mocks — a hand-rolled binary protocol can only be proven on the
+# wire). The skip reason deliberately carries both "mqtt"/"mosquitto" and "not
+# reachable" so TINA4_REQUIRE_SERVICES turns a missing broker in CI into a hard
+# failure instead of a green skip. Those specs skip per EXAMPLE (in a
+# `before`, not a `before(:all)`) because RSpec does not run the after(:each)
+# hook for an example skipped by a before(:context) hook, and that hook is what
+# records the gate violation.
+def mqtt_test_url
+  url = ENV["TINA4_TEST_MQTT_URL"].to_s.strip
+  url.empty? ? "mqtt://127.0.0.1:1883" : url
+end
+
+# A SECOND real Mosquitto, configured with allow_anonymous false, so the
+# CONNACK-refused path is proven by a broker actually refusing us.
+def mqtt_deny_test_url
+  url = ENV["TINA4_TEST_MQTT_DENY_URL"].to_s.strip
+  url.empty? ? "mqtt://127.0.0.1:1884" : url
+end
+
+# Memoised per process: with a per-example gate this would otherwise re-probe on
+# every example (and pay the connect timeout each time when the broker is down).
+def mqtt_broker_reachable?(url = mqtt_test_url)
+  cache = ($tina4_mqtt_broker_reachable ||= {})
+  return cache[url] if cache.key?(url)
+
+  cache[url] = begin
+    require "socket"
+    host, port = Tina4::Mqtt.parse_url(url)
+    Socket.tcp(host, port, connect_timeout: 2) { true }
+  rescue StandardError
+    false
+  end
 end
 
 def tina4_provisioned_service_skip?(reason)
