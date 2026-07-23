@@ -182,8 +182,12 @@ RSpec.describe "Tina4::Mqtt sessions and resilience" do
         connection.stop_keepalive
       end
 
-      # Asserted on the descriptor itself: what stop_keepalive guarantees is that
-      # the task is no longer running and its thread is gone.
+      # stop_keepalive DEREGISTERS the task — the registry is back where it
+      # started, not holding a stopped descriptor (see spec/background_spec.rb
+      # ".stop_task"). This used to have to assert on the descriptor's own
+      # fields because the dead task stayed in `tasks` forever.
+      expect(Tina4::Background.tasks).not_to include(task)
+      expect(Tina4::Background.tasks.length).to eq(before_count)
       expect(task[:running]).to be false
       expect(task[:thread]).to be_nil
       expect(connection.stop_keepalive).to be false # idempotent
