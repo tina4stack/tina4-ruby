@@ -779,19 +779,34 @@ RSpec.describe Tina4::DevAdmin do
       expect(js).to include("db-query")
     end
 
+    # These read the shipped bundle off disk (rather than through the handler)
+    # so a truncated or wrong asset is caught even when routing is fine.
+    #
+    # The only copy in the gem is tina4-dev-admin.min.js. There is deliberately
+    # NO skip guard: the file is committed under lib/tina4/public/js and packaged
+    # by the gemspec's Dir.glob, so it is always present when specs run. These
+    # specs previously pointed at an unminified duplicate behind
+    # `skip(...) unless File.exist?`, which is how ~940K of byte-identical dead
+    # weight sat in the gem unnoticed -- a skip would have hidden its removal too.
+    let(:bundle_path) do
+      File.join(File.dirname(__FILE__), "..", "lib", "tina4", "public", "js", "tina4-dev-admin.min.js")
+    end
+
+    it "ships exactly one dev-admin bundle (no unminified duplicate)" do
+      js_dir = File.join(File.dirname(__FILE__), "..", "lib", "tina4", "public", "js")
+      expect(File.exist?(bundle_path)).to be(true)
+      expect(File.exist?(File.join(js_dir, "tina4-dev-admin.js"))).to be(false)
+    end
+
     it "JS bundle contains database tab elements" do
-      js_path = File.join(File.dirname(__FILE__), "..", "lib", "tina4", "public", "js", "tina4-dev-admin.js")
-      skip("tina4-dev-admin.js not found") unless File.exist?(js_path)
-      js = File.read(js_path, encoding: "UTF-8")
+      js = File.read(bundle_path, encoding: "UTF-8")
       expect(js).to include("db-table-list")
       expect(js).to include("db-result")
       expect(js).to include("db-query")
     end
 
     it "JS bundle contains seed controls" do
-      js_path = File.join(File.dirname(__FILE__), "..", "lib", "tina4", "public", "js", "tina4-dev-admin.js")
-      skip("tina4-dev-admin.js not found") unless File.exist?(js_path)
-      js = File.read(js_path, encoding: "UTF-8")
+      js = File.read(bundle_path, encoding: "UTF-8")
       expect(js).to include("db-seed-table")
       expect(js).to include("db-seed-count")
     end
