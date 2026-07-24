@@ -30,7 +30,6 @@ require_relative "tina4/shutdown"
 require_relative "tina4/background"
 require_relative "tina4/localization"
 require_relative "tina4/container"
-require_relative "tina4/queue"
 require_relative "tina4/service"
 require_relative "tina4/service_runner"
 require_relative "tina4/events"
@@ -38,7 +37,6 @@ require_relative "tina4/plan"
 require_relative "tina4/project_index"
 require_relative "tina4/dev_admin"
 require_relative "tina4/feedback"
-require_relative "tina4/messenger"
 require_relative "tina4/dev_mailbox"
 require_relative "tina4/ai"
 require_relative "tina4/cache"
@@ -50,7 +48,6 @@ require_relative "tina4/error_overlay"
 require_relative "tina4/test_client"
 require_relative "tina4/test"
 require_relative "tina4/docs"
-require_relative "tina4/docstore"
 require_relative "tina4/context"
 require_relative "tina4/mcp"
 require_relative "tina4/realtime"
@@ -113,6 +110,26 @@ module Tina4
   autoload :MqttTimeoutError,    File.expand_path("tina4/mqtt", __dir__)
   autoload :MqttMessage,         File.expand_path("tina4/mqtt_message", __dir__)
   autoload :Testing,             File.expand_path("tina4/testing", __dir__)
+  # Queue / Messenger / DocStore were the last three optional subsystems still
+  # loaded eagerly, so every `require "tina4"` paid for a queue backend, an
+  # SMTP/IMAP client and a JSON1 document store even in an app that talks to
+  # none of them. Every reference to them across the framework is inside a
+  # method body (CLI commands, dev-admin handlers, MCP tools), so autoload
+  # resolves them on first real use. `defined?(Tina4::Queue)` still answers
+  # "constant" against an autoload entry WITHOUT triggering the load, so the
+  # `if defined?(Tina4::Queue)` guards in dev_admin keep working and stay lazy.
+  # queue.rb defines Job as well as Queue -- BOTH need an entry. An autoload
+  # table is explicit where a `require` was implicit, so every constant a
+  # newly-lazy file defines has to be listed or it becomes a NameError. Missing
+  # Job here took the whole spec suite down to 0 examples.
+  autoload :Queue,               File.expand_path("tina4/queue", __dir__)
+  autoload :Job,                 File.expand_path("tina4/queue", __dir__)
+  autoload :Messenger,           File.expand_path("tina4/messenger", __dir__)
+  autoload :MessengerError,      File.expand_path("tina4/messenger", __dir__)
+  autoload :MessengerConnectionError, File.expand_path("tina4/messenger", __dir__)
+  autoload :DevMessengerProxy,   File.expand_path("tina4/messenger", __dir__)
+  autoload :IMAP_CONNECTION_ERRORS, File.expand_path("tina4/messenger", __dir__)
+  autoload :DocStore,            File.expand_path("tina4/docstore", __dir__)
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
   autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)
   autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
