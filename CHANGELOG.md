@@ -28,6 +28,29 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
   filename alignment, not an API change. Only code that bypassed the gem's own entry point with
   a direct `require "tina4/sql_translation"` needs to update the path.
 
+### Fixed
+
+- **Security: the bundled Swagger UI static assets now honour the swagger gate.** `/swagger`,
+  `/swagger/`, `/swagger/index.html` and `/swagger/oauth2-redirect.html` were served from the
+  framework's own public directory BEFORE route matching (with directory-index resolution turning
+  `/swagger` into `swagger/index.html`), so a production server with `TINA4_SWAGGER_ENABLED=false`
+  still served the whole UI while `/swagger/openapi.json` correctly 404'd. Static serving now checks
+  the gate before it resolves an index. Bite-verified lock-in test. (python#97)
+- **The startup banner advertises only a surface that answers.** The `Swagger:` and `Dashboard:`
+  rows printed unconditionally, so a production log claimed a dev surface was exposed and a
+  developer following the link hit a 404. Each row is now built by one pure helper of
+  (port, swagger_enabled, dev_admin_enabled), unit tested rather than inferred from stdout.
+  (python#99)
+- **MQTT TLS tests verify the CA before trusting it.** A stale CA file in the shared temp directory
+  made six TLS tests FAIL instead of skip, in all four frameworks, pointing at correct TLS code.
+  The suites now confirm the CA actually validates the broker certificate before treating the TLS
+  environment as present. (python#98)
+- **The gemspec declares `logger` and `base64`.** Ruby 4 dropped both from the default gems.
+  `tina4ruby` requires `logger` and nothing in its transitive closure provided it, so a fresh
+  install on Ruby 4 could fail at require time. `base64` is satisfied through `jwt` today and is
+  declared directly so a change there cannot break us.
+
+
 ## Earlier history (pre-3.x)
 
 Kept for reference only. The versions below are from the 0.x line, long before the unified

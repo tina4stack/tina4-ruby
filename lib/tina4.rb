@@ -156,6 +156,25 @@ module Tina4
     # models with a Symbol/String `self.db` resolve against it.
     def databases = (@databases ||= {})
 
+    # Build the startup banner's optional surface lines (issue #99).
+    #
+    # Only advertise a surface that is actually REACHABLE. In production, or with
+    # TINA4_DEBUG off, /swagger and /__dev return 404 -- printing them anyway
+    # both misleads an operator into believing a dev surface is exposed and sends
+    # a developer to a dead link.
+    #
+    # Kept as a pure function of (port, two booleans) so the contract is unit
+    # testable without booting a server and grepping stdout. Parity: Python
+    # banner_surface_lines, PHP App::bannerSurfaceLines, Node bannerSurfaceLines.
+    #
+    # @return [Array<String>] zero, one or two ready-to-puts banner rows.
+    def banner_surface_lines(port, swagger_enabled:, dev_admin_enabled:)
+      lines = []
+      lines << "  Swagger:   http://localhost:#{port}/swagger" if swagger_enabled
+      lines << "  Dashboard: http://localhost:#{port}/__dev" if dev_admin_enabled
+      lines
+    end
+
     def print_banner(host: "0.0.0.0", port: 7147, server_name: nil)
       # TINA4_SUPPRESS — short-circuit ALL banner output for headless / CI runs.
       return if Tina4::Env.is_truthy(ENV["TINA4_SUPPRESS"])
@@ -187,8 +206,12 @@ module Tina4
       puts "  Simple. Fast. Human. | Built for AI. Built for you."
       puts ""
       puts "  Server:    http://#{display}:#{port} (#{server_name})"
-      puts "  Swagger:   http://localhost:#{port}/swagger"
-      puts "  Dashboard: http://localhost:#{port}/__dev"
+      # Only advertise a surface that is actually reachable (issue #99).
+      banner_surface_lines(
+        port,
+        swagger_enabled: Tina4::Swagger.enabled?,
+        dev_admin_enabled: is_debug
+      ).each { |line| puts line }
       puts "  Debug:     #{is_debug ? 'ON' : 'OFF'} (Log level: #{log_level})"
       puts ""
     rescue

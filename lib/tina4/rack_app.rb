@@ -418,6 +418,19 @@ module Tina4
     def try_static(path, env = nil)
       return nil if path.include?("..")
 
+      # The framework ships the Swagger UI as STATIC assets under
+      # lib/tina4/public/swagger/. Static serving is independent of the gated
+      # /swagger handler, so without this check the UI stays reachable in
+      # production via '/swagger/index.html' or '/swagger/oauth2-redirect.html'
+      # even when swagger is disabled -- silently bypassing
+      # TINA4_SWAGGER_ENABLED / TINA4_DEBUG. (A bare '/swagger' and '/swagger/'
+      # are already intercepted by the gated handler, which is why this leak hid.)
+      normalised_path = path.start_with?("/") ? path : "/#{path}"
+      if (normalised_path == "/swagger" || normalised_path.start_with?("/swagger/")) &&
+         !Tina4::Swagger.enabled?
+        return nil
+      end
+
       @static_roots.each do |root|
         full_path = File.join(root, path)
         if File.file?(full_path)

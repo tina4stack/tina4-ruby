@@ -167,8 +167,13 @@ RSpec.describe "Tina4::Mqtt authentication and TLS" do
     before do
       skip "Mosquitto MQTT TLS broker not reachable at #{mqtt_tls_test_url}" unless
         mqtt_broker_reachable?(mqtt_tls_test_url)
-      skip "MQTT test CA not set: export TINA4_TEST_MQTT_CA_FILE (mqtt-infra.sh prints it)" unless
-        mqtt_test_ca_file && File.exist?(mqtt_test_ca_file)
+      # Guard on "the CA VERIFIES the broker", not merely "a CA file exists" -- a
+      # stale ca.crt from an earlier mqtt-infra.sh run otherwise makes these
+      # examples run and fail on a cert mismatch (an env problem reported as six
+      # code failures). See mqtt_ca_verifies? in spec/support/mqtt_helpers.rb.
+      skip "MQTT test CA missing, or it does not verify the broker's certificate " \
+           "(stale certs -- re-run mqtt-infra.sh, or export TINA4_TEST_MQTT_CA_FILE)" unless
+        mqtt_ca_verifies?(mqtt_tls_test_url, mqtt_test_ca_file)
     end
 
     it "connects over TLS when the CA is supplied, and negotiates a real cipher" do

@@ -27,6 +27,24 @@ Gem::Specification.new do |spec|
   spec.add_dependency "json", "~> 2.7"
   spec.add_dependency "rexml", "~> 3.2"
   spec.add_dependency "webrick", "~> 1.8"
+  # logger and base64 were DEFAULT gems until Ruby 3.4/4.0 demoted them to
+  # BUNDLED gems, and a bundled gem that nothing declares is NOT on the load
+  # path under Bundler. The two are NOT the same severity:
+  #
+  # logger is REQUIRED. Nothing in the transitive runtime closure of the
+  # dependencies above provides it, so `require "logger"` (lib/tina4/log.rb)
+  # raised LoadError on Ruby 4 and `tina4 serve` could not boot at all.
+  #
+  # base64 currently resolves transitively through jwt, so it is NOT a live
+  # failure today. It is declared because eight files require it DIRECTLY
+  # (auth, api, websocket, messenger, mcp, frond, realtime, dev_mailbox), and
+  # leaning on someone else's transitive dep for a direct require breaks the
+  # day jwt drops it.
+  #
+  # ostruct is deliberately NOT declared: tina4 never requires it. (A scaffold
+  # may still need it if the app pulls in oj, which does declare it.)
+  spec.add_dependency "logger", "~> 1.6"
+  spec.add_dependency "base64", "~> 0.2"
   # sqlite3 is a runtime dependency because Tina4 Ruby promises "SQLite
   # works out of the box with zero configuration" (see Chapter 5 of the
   # book). Without this, `tina4 init ruby && tina4 serve` crashes on

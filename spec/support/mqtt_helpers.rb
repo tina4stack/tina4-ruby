@@ -63,6 +63,57 @@ def mqtt_test_ca_file
   File.exist?(default) ? default : nil
 end
 
+# Does the configured CA actually VERIFY the broker's certificate?
+#
+# The gate used to accept any CA file that merely EXISTS. A stale
+# Dir.tmpdir/tina4-mqtt-infra/certs/ca.crt left behind by an earlier
+# mqtt-infra.sh run therefore made the TLS examples RUN and then fail on a
+# certificate mismatch -- six red examples in every framework caused purely by
+# the environment, with an error that reads like a code regression.
+#
+# A CA that cannot validate the broker is functionally the same as no CA, so
+# prove it with a real handshake and skip when it does not hold. Self-healing:
+# regenerate the certs and the examples run again. Memoised for the same reason
+# mqtt_broker_reachable? is -- otherwise every example pays the connect timeout.
+#
+# Uses a FRESH X509::Store rather than context.ca_file=, which writes into the
+# shared DEFAULT_CERT_STORE (the same trap the TLS specs themselves document).
+def mqtt_ca_verifies?(url = mqtt_tls_test_url, ca_file = mqtt_test_ca_file)
+  cache = ($tina4_mqtt_ca_verifies ||= {})
+  key = [url, ca_file]
+  return cache[key] if cache.key?(key)
+
+  cache[key] = begin
+    if ca_file.nil? || !File.exist?(ca_file)
+      false
+    else
+      require "openssl"
+      parsed = Tina4::Mqtt.parse_url(url)
+      store = OpenSSL::X509::Store.new
+      store.add_file(ca_file)
+      context = OpenSSL::SSL::SSLContext.new
+      context.cert_store = store
+      context.verify_mode = OpenSSL::SSL::VERIFY_PEER
+      Socket.tcp(parsed[:host], parsed[:port], connect_timeout: 3) do |socket|
+        ssl = OpenSSL::SSL::SSLSocket.new(socket, context)
+        ssl.hostname = parsed[:host]
+        begin
+          ssl.connect
+          true
+        ensure
+          begin
+            ssl.close
+          rescue StandardError
+            nil
+          end
+        end
+      end
+    end
+  rescue StandardError
+    false
+  end
+end
+
 def mqtt_test_username
   value = ENV["TINA4_TEST_MQTT_USERNAME"].to_s.strip
   value.empty? ? "tina4" : value
