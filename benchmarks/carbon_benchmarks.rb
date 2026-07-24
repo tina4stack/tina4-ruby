@@ -131,10 +131,14 @@ def bench_template
     "show_footer" => true,
     "footer_text" => "This is a footer with some text that may be truncated for display purposes."
   }
-  # render() from a FILE, not render_string(). render_string recompiles on every
-  # call (Frond has no compiled-template cache), so timing it measured
-  # compile+render while every other framework's template benchmark measures
-  # render alone. render("bench.twig") is the per-request call a real app makes.
+  # render() from a FILE rather than render_string(): it is the per-request call a
+  # real app makes, and the honest counterpart to a compiled-template comparison.
+  #
+  # Corrects an earlier comment here that justified this as "render_string
+  # recompiles on every call (Frond has no compiled-template cache)". Frond DOES
+  # cache compiled tokens on both paths, and measured in the Python twin tokenizing
+  # is only 1.9% of a full render. The reason to pick render(file) is fidelity to
+  # real usage, not compile overhead.
   File.write(File.join(dir, "bench.twig"), tpl)
 
   [-> { engine.render("bench.twig", data) }, -> { FileUtils.remove_entry(dir, true) }]
