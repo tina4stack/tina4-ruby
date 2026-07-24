@@ -2,9 +2,19 @@
 # frozen_string_literal: true
 
 ##
-# Framework Comparison: tina4-ruby vs Sinatra vs Rails (ActiveRecord) vs Sequel vs Roda
+# Framework Comparison: tina4-ruby vs Sequel, ActiveRecord (Rails' ORM), Sinatra, Roda
 #
-# Benchmarks database CRUD performance and compares:
+# PART 1 (performance) benchmarks database CRUD across the layers that HAVE a
+# database layer: Raw sqlite3, tina4-ruby, Sequel, and ActiveRecord (Rails'
+# ORM). Sinatra and Roda are deliberately NOT in the performance table: they are
+# HTTP frameworks with no database layer of their own, so giving one a database
+# means pairing it with Sequel or ActiveRecord -- a "Sinatra CRUD benchmark"
+# would just re-measure that library, not Sinatra. Their performance is measured
+# where it is real, in the HTTP-throughput benchmark (see benchmarks/README.md),
+# not here. Fabricating DB numbers for them would be a rigged row.
+#
+# PARTS 2-4 compare all five frameworks qualitatively -- there Sinatra and Roda
+# legitimately appear as columns:
 # - Out-of-the-box features
 # - Lines of code / complexity
 # - AI compatibility
@@ -540,12 +550,15 @@ def main
   puts "=" * 130
   puts "  RUBY FRAMEWORK COMPARISON: Features, Performance, Complexity, and AI Compatibility"
   puts "=" * 130
-  puts "  Frameworks: tina4_ruby, Sinatra, Rails (ActiveRecord), Sequel, Roda"
   puts "  DB Benchmark: #{NUM_ROWS} users | #{ITERATIONS} iterations | SQLite backend (same for all)"
   puts
   puts "=" * 130
   puts "  PART 1: DATABASE PERFORMANCE (ms per operation, lower is better)"
   puts "=" * 130
+  puts "  Measures the DB layers only: Raw sqlite3, tina4_ruby, Sequel, ActiveRecord (Rails' ORM)."
+  puts "  Sinatra and Roda are HTTP frameworks with no DB layer of their own, so they are NOT in this"
+  puts "  table -- they appear in the feature / LOC / AI comparison (PARTS 2-4). Their performance is"
+  puts "  the HTTP-throughput benchmark (benchmarks/README.md), which is where routing overhead is real."
   puts
 
   framework_classes = [RawSqliteBench, Tina4Bench, SequelBench, ActiveRecordBench]
