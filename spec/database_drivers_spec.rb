@@ -530,8 +530,30 @@ RSpec.describe "Database Driver Registration" do
 
     it "inserts a record" do
       result = db.insert("products", { name: "Widget", price: 9.99 })
-      expect(result[:success]).to be true
-      expect(result[:last_id]).not_to be_nil
+      # insert returns a DatabaseResult (parity with Python master): truthy,
+      # success? true, last_id set.
+      expect(result).to be_a(Tina4::DatabaseResult)
+      expect(result.success?).to be true
+      expect(result.last_id).not_to be_nil
+      expect(result.affected_rows).to eq(1)
+    end
+
+    it "update and delete return a DatabaseResult carrying affected_rows" do
+      db.insert("products", { name: "Widget", price: 9.99 })
+      upd = db.update("products", { price: 5.0 }, { name: "Widget" })
+      expect(upd).to be_a(Tina4::DatabaseResult)
+      expect(upd.affected_rows).to eq(1)
+      expect(upd.last_id).to be_nil
+      del = db.delete("products", { name: "Widget" })
+      expect(del).to be_a(Tina4::DatabaseResult)
+      expect(del.affected_rows).to eq(1)
+    end
+
+    it "insert/update/delete FAIL LOUD (raise) on a bad statement — never a falsy return" do
+      # Parity with fetch/execute and the Python master: a write against a
+      # missing table raises rather than returning a falsy value, so a caller
+      # can never mistake a failure for a success by testing the return.
+      expect { db.insert("no_such_table", { x: 1 }) }.to raise_error(StandardError)
     end
 
     it "fetches records" do

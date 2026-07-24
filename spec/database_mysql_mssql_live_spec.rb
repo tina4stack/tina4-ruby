@@ -115,8 +115,8 @@ RSpec.describe "Live MySQL round-trips (#262)" do
 
   it "inserts and fetches a real row" do
     result = @db.insert("_tina4_live_test", { name: "MySQLTest" })
-    expect(result[:success]).to be true
-    expect(result[:last_id]).not_to be_nil
+    expect(result.success?).to be true
+    expect(result.last_id).not_to be_nil
     row = @db.fetch_one("SELECT * FROM _tina4_live_test WHERE name = ?", ["MySQLTest"])
     expect(row).not_to be_nil
     expect(row[:name]).to eq("MySQLTest")
@@ -130,11 +130,11 @@ RSpec.describe "Live MySQL round-trips (#262)" do
     # AT WRITE TIME on every INSERT (mirroring Python's mysql.py which captures
     # cursor.lastrowid in execute()), so get_last_id keeps the inserted id.
     result = @db.insert("_tina4_live_test", { name: "row1" })
-    expect(result[:last_id]).to eq(1)
+    expect(result.last_id).to eq(1)
     expect(@db.get_last_id).to eq(1)
 
     result2 = @db.insert("_tina4_live_test", { name: "row2" })
-    expect(result2[:last_id]).to eq(2)
+    expect(result2.last_id).to eq(2)
     expect(@db.get_last_id).to eq(2)
 
     # A direct execute INSERT then get_last_id must also surface the new id.
@@ -221,7 +221,7 @@ RSpec.describe "Live MSSQL round-trips (#262)" do
 
   it "inserts and fetches a real row" do
     result = @db.insert("_tina4_live_test", { name: "MSSQLTest" })
-    expect(result[:success]).to be true
+    expect(result.success?).to be true
     # MSSQL's OFFSET/FETCH paging (how fetch applies a limit) requires an
     # ORDER BY, so read the row back through an ordered fetch rather than
     # fetch_one (which appends limit 1 with no ORDER BY).
@@ -240,11 +240,11 @@ RSpec.describe "Live MSSQL round-trips (#262)" do
     # caches the id at write time (mirroring Python's mssql.py, which reads
     # SCOPE_IDENTITY() on the same cursor immediately after the INSERT).
     result = @db.insert("_tina4_live_test", { name: "row1" })
-    expect(result[:last_id]).to eq(1)
+    expect(result.last_id).to eq(1)
     expect(@db.get_last_id).to eq(1)
 
     result2 = @db.insert("_tina4_live_test", { name: "row2" })
-    expect(result2[:last_id]).to eq(2)
+    expect(result2.last_id).to eq(2)
     expect(@db.get_last_id).to eq(2)
 
     # A direct execute INSERT then get_last_id must also surface the new id.

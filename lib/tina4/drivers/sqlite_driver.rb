@@ -101,6 +101,13 @@ module Tina4
         @connection.last_insert_row_id
       end
 
+      # Rows changed by the most recent INSERT/UPDATE/DELETE on this connection.
+      # Feeds Database#insert/update/delete's DatabaseResult.affected_rows (parity
+      # with the Python master + PHP, which surface affectedRows on writes).
+      def affected_rows
+        @connection.changes
+      end
+
       def placeholder
         "?"
       end

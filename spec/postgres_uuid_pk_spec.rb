@@ -199,7 +199,7 @@ RSpec.describe "Issue #256 — PostgreSQL INSERT surfaces the actual primary key
 
   it "surfaces the actual generated UUID as last_id (not nil, not an integer)" do
     result = @db.insert("t4_issue256_uuid", { name: "alice" })
-    last_id = result[:last_id]
+    last_id = result.last_id
 
     expect(last_id).not_to be_nil
     expect(last_id).to be_a(String)
@@ -217,9 +217,9 @@ RSpec.describe "Issue #256 — PostgreSQL INSERT surfaces the actual primary key
     @db.insert("t4_issue256_serial", { name: "serial-first" })
     result = @db.insert("t4_issue256_uuid", { name: "bob" })
 
-    expect(result[:last_id]).to be_a(String)
-    expect(result[:last_id]).to match(UUID_RE)
-    expect(result[:last_id]).not_to eq(1) # not the stale serial id
+    expect(result.last_id).to be_a(String)
+    expect(result.last_id).to match(UUID_RE)
+    expect(result.last_id).not_to eq(1) # not the stale serial id
   end
 
   it "db.get_last_id also returns the actual UUID after a UUID insert" do
@@ -233,9 +233,9 @@ RSpec.describe "Issue #256 — PostgreSQL INSERT surfaces the actual primary key
     r1 = @db.insert("t4_issue256_serial", { name: "g1" })
     r2 = @db.insert("t4_issue256_serial", { name: "g2" })
 
-    expect(r1[:last_id]).to be_a(Integer)
-    expect(r2[:last_id]).to be_a(Integer)
-    expect(r2[:last_id]).to eq(r1[:last_id] + 1) # auto-increment still increments
+    expect(r1.last_id).to be_a(Integer)
+    expect(r2.last_id).to be_a(Integer)
+    expect(r2.last_id).to eq(r1.last_id + 1) # auto-increment still increments
   end
 
   it "a bare execute INSERT on a SERIAL table does not leak a prior UUID last_id" do

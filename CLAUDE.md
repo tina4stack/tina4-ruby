@@ -188,20 +188,17 @@ db.execute(sql, params = []) -> true | DatabaseResult  # RAISES on SQL error (ne
     # Python master. On success returns true (or a DatabaseResult for
     # RETURNING/CALL/EXEC/SELECT) — always truthy. Wrap writes in begin/rescue
     # instead of testing the return value.
-db.insert(table, data) -> Hash | DatabaseResult
-    # A SINGLE row (data is a Hash) returns a plain Hash { success: true, last_id: <id> }
-    # on every engine. A BATCH (data is an Array of Hashes) runs one parameterised
-    # INSERT per row in a single transaction and returns a DatabaseResult
-    # (affected_rows == row count). Don't read last_id off the Hash for cross-engine
-    # code — call db.get_last_id, which ORM.save() uses. An empty Array is a no-op
-    # DatabaseResult (affected_rows 0).
-db.update(table, data, filter = {}, params = nil) -> Hash   # { success: true }
-db.delete(table, filter = {}, params = nil) -> Hash         # { success: true }
-    # NOTE (parity gap, not yet unified): the write-result shape differs across the
-    # four frameworks — Python returns DatabaseResult, Node DatabaseWriteResult,
-    # PHP bool, Ruby the Hash above. Treat the return as "truthy on success"; a SQL
-    # error RAISES (see db.execute) rather than returning a falsy result. Unifying
-    # this contract is a breaking change parked for an owner decision.
+db.insert(table, data) -> DatabaseResult   # single row OR list-of-rows batch
+db.update(table, data, filter = {}, params = nil) -> DatabaseResult
+db.delete(table, filter = {}, params = nil) -> DatabaseResult
+    # insert/update/delete return a DatabaseResult (parity with the Python master +
+    # Node), carrying .affected_rows and .last_id (last_id set on insert only; nil for
+    # update/delete). It is truthy and .success? is true when no error. A single-row
+    # insert, a list-of-rows batch, and update/delete all return the SAME shape.
+    # FAIL LOUD like fetch/execute: a bad statement RAISES (never a falsy return);
+    # ORM.save reads db.get_last_id, not the insert return. affected_rows is
+    # best-effort — accurate on SQLite (connection.changes); other drivers report it
+    # where they expose a native count, else a sensible default (1 for a single insert).
 db.transaction { |db| yield }
 db.tables -> Array
 db.columns(table_name) -> Array

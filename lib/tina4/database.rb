@@ -517,7 +517,11 @@ module Tina4
       if drv.respond_to?(:insert)
         result = drv.insert(table, data)
         autocommit_standalone_write(drv)
-        return result
+        # A driver that owns its insert (PostgreSQL, via RETURNING *) returns a
+        # Hash { success:, last_id: }; normalise it to a DatabaseResult so every
+        # engine returns the same write-result shape (parity with Python master).
+        last_id = result.is_a?(Hash) ? result[:last_id] : drv.last_insert_id
+        return Tina4::DatabaseResult.new([], affected_rows: write_affected(drv, 1), last_id: last_id)
       end
 
       columns = data.keys.map(&:to_s)
@@ -526,8 +530,17 @@ module Tina4
       drv.execute(sql, data.values)
       last_id = drv.last_insert_id
       autocommit_standalone_write(drv)
-      { success: true, last_id: last_id }
+      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv, 1), last_id: last_id)
     end
+
+    # Rows a write affected, read from the driver where it exposes a count
+    # (SQLite: connection.changes), else a best-effort default (1 for a single
+    # insert). Mirrors the Python master + PHP, whose write DatabaseResult carries
+    # affected_rows/affectedRows; best-effort on drivers without a native count.
+    def write_affected(drv, default = 0)
+      drv.respond_to?(:affected_rows) ? drv.affected_rows.to_i : default
+    end
+    private :write_affected
 
     def update(table, data, filter = {}, params = nil)
       cache_invalidate if @cache_enabled
@@ -540,7 +553,7 @@ module Tina4
         sql += " WHERE #{filter}" unless filter.empty?
         drv.execute(sql, data.values + Array(params))
         autocommit_standalone_write(drv)
-        return { success: true }
+        return Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
       end
 
       set_parts = data.keys.map { |k| "#{k} = #{drv.placeholder}" }
@@ -550,7 +563,7 @@ module Tina4
       values = data.values + filter.values
       drv.execute(sql, values)
       autocommit_standalone_write(drv)
-      { success: true }
+      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
     end
 
     def delete(table, filter = {}, params = nil)
@@ -559,8 +572,9 @@ module Tina4
 
       # List of hashes — delete each row
       if filter.is_a?(Array)
-        filter.each { |row| delete(table, row) }
-        return { success: true }
+        total = 0
+        filter.each { |row| total += delete(table, row).affected_rows }
+        return Tina4::DatabaseResult.new([], affected_rows: total)
       end
 
       # String filter — raw WHERE clause with optional params
@@ -569,7 +583,7 @@ module Tina4
         sql += " WHERE #{filter}" unless filter.empty?
         drv.execute(sql, Array(params))
         autocommit_standalone_write(drv)
-        return { success: true }
+        return Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
       end
 
       # Hash filter — build WHERE from keys
@@ -578,7 +592,7 @@ module Tina4
       sql += " WHERE #{where_parts.join(' AND ')}" unless filter.empty?
       drv.execute(sql, filter.values)
       autocommit_standalone_write(drv)
-      { success: true }
+      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
     end
 
     # Return the last execute() error message, or nil.

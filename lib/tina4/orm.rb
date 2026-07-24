@@ -785,9 +785,9 @@ module Tina4
               # Only adopt the engine-assigned id for an auto-increment PK. A
               # natural-key PK was set by the caller; don't overwrite it with the
               # driver's last_insert_id (which may be a sequence value that
-              # doesn't apply here).
-              if auto_increment && result[:last_id] && respond_to?("#{pk}=")
-                __send__("#{pk}=", result[:last_id])
+              # doesn't apply here). db.insert returns a DatabaseResult (.last_id).
+              if auto_increment && result.last_id && respond_to?("#{pk}=")
+                __send__("#{pk}=", result.last_id)
               end
             end
           end
