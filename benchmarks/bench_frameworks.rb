@@ -21,6 +21,11 @@ NUM_ROWS  = 5_000
 ITERATIONS = 20
 LIMIT     = 20
 
+# Explicit "give me everything" bound for frameworks whose read API applies a
+# default row cap (Tina4's fetch defaults to limit: 100). Any comparison of a
+# "select all" must have every framework materialise the SAME number of rows.
+ALL_ROWS  = NUM_ROWS * 2
+
 CITIES = %w[NewYork London Tokyo Paris Berlin Sydney Toronto Mumbai SaoPaulo Cairo].freeze
 
 def random_string(len = 12)
@@ -66,14 +71,48 @@ class FrameworkBench
     FileUtils.rm_f(@db_path)
   end
 
+  # Reports the MEDIAN of ITERATIONS samples after an untimed warm-up.
+  #
+  # Was: the mean of 20 samples with NO warm-up. Two problems. The first sample
+  # runs cold (statement not prepared, pages not in cache, no JIT), and one cold
+  # sample 10x the rest moves a 20-sample mean by ~45%. And a mean absorbs any
+  # single scheduler or fsync stall, so a framework could look slower purely
+  # because one of its 20 samples hit a flush. The median is stable against both.
+  # Connection settings every framework in this comparison must share.
+  #
+  # Tina4's SQLite adapter sets journal_mode=WAL and foreign_keys=ON on connect.
+  # Raw sqlite3, Sequel and ActiveRecord were left on SQLite's defaults (rollback
+  # journal), so the write rows were comparing JOURNAL MODES, not frameworks --
+  # Tina4 read 0.034ms against raw sqlite3's 0.592ms for the same insert, a 17x
+  # gap that WAL alone explains. Applying the same pragmas everywhere makes the
+  # writes comparable; the framework, not the journal, is what varies.
+  EQUAL_PRAGMAS = [
+    "PRAGMA journal_mode=WAL",
+    "PRAGMA foreign_keys=ON"
+  ].freeze
+
+  def apply_equal_pragmas
+    EQUAL_PRAGMAS.each { |sql| yield sql }
+  end
+
+  # How many rows this framework's "Select all" actually materialises.
+  #
+  # This exists because the comparison silently stopped being a comparison: Tina4
+  # fetched 100 rows where every competitor fetched 5,000, and nothing in the
+  # output revealed it. Each subclass reports its real count and main() refuses to
+  # print a table when the counts disagree. A rigged row is worse than no row.
+  def select_all_row_count
+    raise NotImplementedError, "#{self.class}: must report its Select-all row count"
+  end
+
   def bench(label)
+    yield                                   # warm-up, untimed
     times = ITERATIONS.times.map do
       t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       yield
       (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000.0
     end
-    avg = times.sum / times.size
-    avg
+    times.sort[times.size / 2]
   end
 
   def run_all
@@ -115,6 +154,7 @@ class RawSqliteBench < FrameworkBench
   def setup
     require "sqlite3"
     @db = SQLite3::Database.new(@db_path)
+    apply_equal_pragmas { |sql| @db.execute(sql) }
     @db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, age INTEGER, city TEXT, active INTEGER)")
     USERS.each do |u|
       @db.execute("INSERT INTO users VALUES (?,?,?,?,?,?)", [u[:id], u[:name], u[:email], u[:age], u[:city], u[:active]])
@@ -144,6 +184,10 @@ class RawSqliteBench < FrameworkBench
       end
       @db.execute("DELETE FROM users WHERE id > ?", [NUM_ROWS])
     end
+  end
+
+  def select_all_row_count
+    @db.execute("SELECT * FROM users").length
   end
 
   def bench_select_all
@@ -206,25 +250,47 @@ class Tina4Bench < FrameworkBench
     end
   end
 
+  # Wrapped in ONE transaction to match raw sqlite3 and Sequel, which both use
+  # db.transaction here. Without it Tina4 did 100 separate autocommitting inserts
+  # against the competitors' single commit -- 100 fsyncs vs 1, biasing this row
+  # heavily AGAINST Tina4. The unfairness in this file ran in both directions.
   def bench_insert_bulk
     bench("Insert bulk") do
-      100.times do
-        @db.insert("users", { name: random_string, email: random_email, age: 25, city: "Test", active: 1 })
+      @db.transaction do
+        100.times do
+          @db.insert("users", { name: random_string, email: random_email, age: 25, city: "Test", active: 1 })
+        end
       end
       @db.execute("DELETE FROM users WHERE id > ?", [NUM_ROWS])
     end
   end
 
+  # NOTE the explicit limit: Tina4's fetch defaults to limit: 100, so a bare
+  # fetch("SELECT * FROM users") returned 100 of the 5,000 rows while Sequel's
+  # .all, ActiveRecord's .all.to_a and raw sqlite3's execute all materialise all
+  # 5,000. That made Tina4 do 50x LESS work in this row and read dramatically
+  # faster for a reason that had nothing to do with the framework. Verified by
+  # counting: bare fetch -> 100 records, fetch(limit: 10_000) -> 5,000.
+  def select_all_row_count
+    @db.fetch("SELECT * FROM users", [], limit: ALL_ROWS).records.length
+  end
+
   def bench_select_all
-    bench("Select all") { @db.fetch("SELECT * FROM users") }
+    bench("Select all") { @db.fetch("SELECT * FROM users", [], limit: ALL_ROWS) }
   end
 
   def bench_select_filtered
-    bench("Select filtered") { @db.fetch("SELECT * FROM users WHERE age > ? AND city = ?", [30, "London"]) }
+    bench("Select filtered") do
+      @db.fetch("SELECT * FROM users WHERE age > ? AND city = ?", [30, "London"], limit: ALL_ROWS)
+    end
   end
 
   def bench_select_paginated
-    bench("Select paginated") { @db.fetch("SELECT * FROM users", [], limit: LIMIT, skip: 100) }
+    # offset:, not skip: -- Tina4's fetch takes offset:. With skip: this row raised
+    # "unknown keyword: :skip" on every run and printed FAIL, so the Tina4 paginated
+    # figure never existed. A row that always errors is not a slow result, it is a
+    # missing one.
+    bench("Select paginated") { @db.fetch("SELECT * FROM users", [], limit: LIMIT, offset: 100) }
   end
 
   def bench_update
@@ -252,6 +318,7 @@ class SequelBench < FrameworkBench
   def setup
     require "sequel"
     @db = Sequel.sqlite(@db_path)
+    apply_equal_pragmas { |sql| @db.run(sql) }
     @db.create_table :users do
       primary_key :id
       String :name
@@ -285,6 +352,10 @@ class SequelBench < FrameworkBench
       end
       @users.where { id > NUM_ROWS }.delete
     end
+  end
+
+  def select_all_row_count
+    @users.all.length
   end
 
   def bench_select_all
@@ -322,6 +393,7 @@ class ActiveRecordBench < FrameworkBench
   def setup
     require "active_record"
     ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: @db_path)
+    apply_equal_pragmas { |sql| ActiveRecord::Base.connection.execute(sql) }
     ActiveRecord::Schema.define do
       create_table :users, force: true do |t|
         t.string :name
@@ -367,6 +439,10 @@ class ActiveRecordBench < FrameworkBench
       end
       ARUser.where("id > ?", NUM_ROWS).delete_all
     end
+  end
+
+  def select_all_row_count
+    ARUser.all.to_a.length
   end
 
   def bench_select_all
@@ -476,6 +552,7 @@ def main
   framework_order = []
   all_results = {}
   bench_names = []
+  row_counts = {}
 
   framework_classes.each do |klass|
     begin
@@ -492,6 +569,16 @@ def main
       puts "  [#{fw.name}] FAILED setup: #{e.message}"
       puts "    #{e.backtrace.first(3).join("\n    ")}"
       next
+    end
+
+    # Equal-work gate. Record what this framework's "Select all" really
+    # materialises; the table is withheld below if the frameworks disagree.
+    begin
+      row_counts[fw.name] = fw.select_all_row_count
+      printf "  [%s] Select-all materialises %d rows\n", fw.name, row_counts[fw.name]
+    rescue => e
+      row_counts[fw.name] = nil
+      puts "  [#{fw.name}] could not report its Select-all row count: #{e.message}"
     end
 
     framework_order << fw.name
@@ -553,6 +640,23 @@ def main
   end
 
   # Features
+
+  # ── Equal-work gate ──────────────────────────────────────────
+  #
+  # Refuse to present a performance comparison in which the frameworks did
+  # different amounts of work. This fired for real: Tina4's fetch defaults to
+  # limit: 100, so it returned 100 of 5,000 rows while Sequel/ActiveRecord/raw
+  # sqlite3 returned all 5,000 -- a 50x advantage that looked like a framework
+  # win. Numbers that flatter us for the wrong reason are worse than no numbers.
+  seen = row_counts.values.compact.uniq
+  if seen.length > 1
+    puts
+    puts "  !! EQUAL-WORK CHECK FAILED - performance table withheld."
+    row_counts.each { |n, c| printf "     %-16s Select-all rows: %s\n", n, c.inspect }
+    puts "     The frameworks materialised different row counts, so these timings"
+    puts "     are not comparable. Fix the read call that truncates, then re-run."
+    puts
+  end
   puts "=" * 130
   puts "  PART 2: OUT-OF-THE-BOX FEATURES (no plugins/extensions needed)"
   puts "=" * 130
