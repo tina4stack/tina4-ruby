@@ -60,7 +60,7 @@ module Tina4
       # Execute a query and return rows as array of symbol-keyed hashes
       def query(sql, params = [])
         results = @connection.execute(sql, params)
-        results.map { |row| symbolize_keys(row) }
+        symbolize_rows(results)
       end
 
       # Paginated fetch
@@ -155,10 +155,30 @@ module Tina4
 
       private
 
-      def symbolize_keys(hash)
-        hash.each_with_object({}) do |(k, v), h|
-          h[k.to_s.to_sym] = v if k.is_a?(String) || k.is_a?(Symbol)
+      # Symbolize a whole result set's keys, computing the mapping ONCE per query
+      # rather than per cell. See the matching helper in drivers/sqlite_driver.rb
+      # for the rationale: the per-row form ran k.to_s.to_sym for every cell, so a
+      # 5,000-row x 6-column fetch did 30,000 conversions for 6 distinct keys. The
+      # is_a? guard still drops any positional Integer keys older gems emit.
+      def symbolize_rows(rows)
+        return rows if rows.empty?
+
+        str_keys = rows.first.keys.select { |k| k.is_a?(String) || k.is_a?(Symbol) }
+        sym_keys = str_keys.map(&:to_sym)
+        count = str_keys.length
+        rows.map do |row|
+          out = {}
+          i = 0
+          while i < count
+            out[sym_keys[i]] = row[str_keys[i]]
+            i += 1
+          end
+          out
         end
+      end
+
+      def symbolize_keys(hash)
+        symbolize_rows([hash]).first
       end
     end
   end

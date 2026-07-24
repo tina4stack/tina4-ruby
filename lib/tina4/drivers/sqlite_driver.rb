@@ -72,7 +72,7 @@ module Tina4
 
       def execute_query(sql, params = [])
         results = @connection.execute(sql, coerce_params(params))
-        results.map { |row| symbolize_keys(row) }
+        symbolize_rows(results)
       end
 
       def execute(sql, params = [])
@@ -174,10 +174,41 @@ module Tina4
         str.to_s.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
       end
 
-      def symbolize_keys(hash)
-        hash.each_with_object({}) do |(k, v), h|
-          h[k.to_s.to_sym] = v if k.is_a?(String) || k.is_a?(Symbol)
+      # Symbolize the keys of a whole result set, computing the key mapping ONCE.
+      #
+      # results_as_hash=true hands back string-keyed hashes; every row of a query
+      # has the same columns, so the string->symbol conversion is identical for
+      # every row. The old code called `symbolize_keys` per row, which ran
+      # `k.to_s.to_sym` and an `is_a?` guard PER CELL: a 5,000-row x 6-column
+      # fetch did 30,000 conversions for 6 distinct keys and made Tina4 the
+      # slowest of the four frameworks at bulk reads (Select ALL 5,000 rows:
+      # 10.16ms vs raw sqlite3 2.56ms). Hoisting the mapping out of the loop
+      # roughly halves the hydration cost with byte-identical output.
+      #
+      # The is_a?(String|Symbol) guard is preserved: older sqlite3 gems put
+      # positional Integer keys in the hash alongside the string names, and those
+      # must still be dropped.
+      def symbolize_rows(rows)
+        return rows if rows.empty?
+
+        str_keys = rows.first.keys.select { |k| k.is_a?(String) || k.is_a?(Symbol) }
+        sym_keys = str_keys.map(&:to_sym)
+        count = str_keys.length
+        rows.map do |row|
+          out = {}
+          i = 0
+          while i < count
+            out[sym_keys[i]] = row[str_keys[i]]
+            i += 1
+          end
+          out
         end
+      end
+
+      # Single-hash convenience kept for any external caller; delegates to the
+      # batch path so there is one implementation of the mapping rule.
+      def symbolize_keys(hash)
+        symbolize_rows([hash]).first
       end
     end
   end
