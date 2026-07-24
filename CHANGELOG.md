@@ -12,13 +12,6 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
-### Added
-
-- **MQTT 3.1.1 client** (`Tina4::Mqtt` / `Tina4::MqttMessage`), zero-dependency (stdlib `socket` +
-  lazily-required `openssl`), verified against a real broker with no mocks. publish/subscribe/consume,
-  QoS 0/1, retained, Last Will, per-client TLS, QoS 2 refused loudly. Ruby ships all 97 shared
-  features plus its native ERB engine, for **98 built-in features**.
-
 ### Changed
 
 - Internal: the SQL dialect-translation file is renamed
@@ -30,26 +23,31 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ### Fixed
 
-- **Security: the bundled Swagger UI static assets now honour the swagger gate.** `/swagger`,
-  `/swagger/`, `/swagger/index.html` and `/swagger/oauth2-redirect.html` were served from the
-  framework's own public directory BEFORE route matching (with directory-index resolution turning
-  `/swagger` into `swagger/index.html`), so a production server with `TINA4_SWAGGER_ENABLED=false`
-  still served the whole UI while `/swagger/openapi.json` correctly 404'd. Static serving now checks
-  the gate before it resolves an index. Bite-verified lock-in test. (python#97)
-- **The startup banner advertises only a surface that answers.** The `Swagger:` and `Dashboard:`
-  rows printed unconditionally, so a production log claimed a dev surface was exposed and a
-  developer following the link hit a 404. Each row is now built by one pure helper of
-  (port, swagger_enabled, dev_admin_enabled), unit tested rather than inferred from stdout.
-  (python#99)
-- **MQTT TLS tests verify the CA before trusting it.** A stale CA file in the shared temp directory
-  made six TLS tests FAIL instead of skip, in all four frameworks, pointing at correct TLS code.
-  The suites now confirm the CA actually validates the broker certificate before treating the TLS
-  environment as present. (python#98)
-- **The gemspec declares `logger` and `base64`.** Ruby 4 dropped both from the default gems.
-  `tina4ruby` requires `logger` and nothing in its transitive closure provided it, so a fresh
-  install on Ruby 4 could fail at require time. `base64` is satisfied through `jwt` today and is
-  declared directly so a change there cannot break us.
-
+- **`tina4 deploy docker` produced images that could not start.** Of the eight
+  Dockerfile generators in the stack (four templates in the `tina4` CLI plus one
+  in each framework's own CLI), exactly one was correct. Python named
+  `python -m tina4_python.cli`, a package with no `__main__.py`, so the container
+  died on startup; PHP ran `php index.php <addr>`, but `App::run(?host, port)`
+  never reads argv so the address was dropped and production never engaged;
+  Node named a path that exists only inside the tina4-nodejs monorepo and
+  depended on tsx, which `npm ci --omit=dev` strips. Every generator now names a
+  published entry point and requests production. Verified by scaffolding,
+  generating, building and running a container for all four languages.
+- **`serve` no longer kills PID 1.** The port-reclaim step read `lsof -ti`
+  without validating it. Where lsof prints a different shape, a non-numeric field
+  coerced to 0 or 1 -- and signalling PID 0 hits every process in the caller's
+  own process group. In a container the server IS PID 1, so it killed itself
+  (Node logged "Killed existing process on port 7148 (PID: 1 ...)" then exited
+  143; PHP logged the same attempt and survived by luck). Reclaiming is now
+  skipped inside a container, only all-digit PIDs are accepted, and PID 0, PID 1
+  and the current process are never signalled.
+- **The Ruby image builds.** The builder stage was `ruby:3.3-slim`, which has no
+  compiler, so `bundle install` failed with `Gem::Ext::BuildError` on the first
+  native extension (date, json, nio4r, sqlite3 are all in the default set). The
+  builder is now the full `ruby:3.3` image and the slim runtime installs
+  `libsqlite3-0`. Bundler's `deployment true` is gone: it demands a lockfile
+  matching the image's bundler exactly, so a lockfile from a newer bundler on a
+  developer machine hard-failed the build.
 
 ## Earlier history (pre-3.x)
 

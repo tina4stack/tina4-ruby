@@ -340,18 +340,81 @@ module Tina4
     end
 
     # Kill any process listening on the given port. Returns true if killed.
+    # True when this process is running inside a container.
+    #
+    # Reclaiming a port makes sense on a dev machine, where a previous
+    # `tina4 serve` may still hold it. Inside a container the server IS the
+    # container, so there is no stale sibling to reclaim from -- and trying is
+    # actively dangerous (see #kill_process_on_port).
+    def in_container?
+      return true if File.exist?("/.dockerenv") || File.exist?("/run/.containerenv")
+
+      blob = File.read("/proc/1/cgroup")
+      blob.include?("docker") || blob.include?("containerd") || blob.include?("kubepods")
+    rescue SystemCallError
+      false
+    end
+
+    # Kill any process listening on `port`. Returns true if anything was killed.
+    #
+    # Every PID is validated before use. `pid.to_i` on a non-numeric field
+    # yields 0, and Process.kill("TERM", 0) signals EVERY process in the
+    # caller's own process group -- the server kills itself. That is exactly
+    # what happened in a container: "Killed existing process on port 7148
+    # (PID: 1 ...)" followed by exit 143.
+    #
+    # So: skip entirely in a container, accept only all-digit PIDs, and never
+    # signal 0 (our process group), 1 (init), or ourselves.
+    # The PIDs from `lsof -ti` output that are safe to signal.
+    #
+    # Pure so the safety rule can be tested directly. An unvalidated parse is a
+    # footgun with real teeth: where lsof prints a different shape than -ti
+    # implies, a non-numeric field becomes 0, and signalling PID 0 hits EVERY
+    # process in the caller's own process group -- the server kills itself.
+    #
+    # Accept only all-digit tokens; never PID 0 (our group), PID 1 (init),
+    # ourselves, or our own process group.
+    def selectable_pids(lsof_output, me, my_group = nil)
+      pids = []
+      lsof_output.split(/\s+/).each do |token|
+        next unless token.match?(/\A\d+\z/)   # never coerce junk into a PID
+
+        pid = token.to_i
+        next if pid <= 1 || pid == me           # 0 = our group, 1 = init, me = suicide
+        next if !my_group.nil? && pid == my_group
+
+        pids << pid unless pids.include?(pid)
+      end
+      pids
+    end
+
     def kill_process_on_port(port)
+      return false if in_container?
+
       result = `lsof -ti :#{port} 2>/dev/null`.strip
       return false if result.empty?
 
-      pids = result.split("\n")
-      pids.each do |pid|
-        Process.kill("TERM", pid.to_i)
-      rescue Errno::ESRCH, Errno::EPERM
-        # Process already gone or no permission
+      me = Process.pid
+      my_group = begin
+        Process.getpgrp
+      rescue StandardError
+        nil
       end
+
+      killed = []
+      selectable_pids(result, me, my_group).each do |pid|
+        begin
+          Process.kill("TERM", pid)
+          killed << pid.to_s
+        rescue Errno::ESRCH, Errno::EPERM
+          # Process already gone or no permission
+        end
+      end
+
+      return false if killed.empty?
+
       sleep 0.5
-      puts "  Killed existing process on port #{port} (PID: #{pids.join(', ')})"
+      puts "  Killed existing process on port #{port} (PID: #{killed.join(', ')})"
       true
     rescue Errno::ENOENT
       false
@@ -3136,7 +3199,7 @@ module Tina4
           ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
 
           # Start the server on all interfaces
-          CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]
+          CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0", "--production"]
         DOCKERFILE
       end
 
