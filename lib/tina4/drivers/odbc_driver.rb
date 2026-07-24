@@ -182,11 +182,9 @@ module Tina4
 
       private
 
-      def symbolize_keys(hash)
-        hash.each_with_object({}) do |(k, v), h|
-          h[k.to_s.to_sym] = v if k.is_a?(String) || k.is_a?(Symbol)
-        end
-      end
+      # (No symbolize_keys here: execute_query already hydrates by zipping a
+      # once-computed symbol column list against each array row, so there is no
+      # per-cell symbolize to hoist. A leftover unused symbolize_keys was removed.)
     end
   end
 end
