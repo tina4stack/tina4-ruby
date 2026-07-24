@@ -837,12 +837,22 @@ module Tina4
     # Find the first occurrence of +needle+ that is not inside quotes or
     # parentheses.  Returns the index, or -1 if not found.
     def find_outside_quotes(expr, needle)
+      # Fast path. This is the hottest method in a render -- profiling the Python
+      # twin showed 415,200 calls and 53% of render time for a single 20-row loop
+      # template, and the overwhelming majority return -1 because the needle
+      # simply is not in the expression. include? is a C-level scan, so bailing
+      # here skips the whole Ruby character loop. Exact, not a heuristic: a
+      # needle absent from the string cannot be present outside quotes either.
+      return -1 unless expr.include?(needle)
+
       in_q = nil
       depth = 0
       bracket_depth = 0
       i = 0
       nlen = needle.length
-      while i <= expr.length - nlen
+      # Hoisted: expr.length was recomputed on every iteration of the condition.
+      last_start = expr.length - nlen
+      while i <= last_start
         ch = expr[i]
         if (ch == '"' || ch == "'") && depth == 0
           if in_q.nil?
