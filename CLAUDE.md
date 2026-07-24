@@ -188,9 +188,20 @@ db.execute(sql, params = []) -> true | DatabaseResult  # RAISES on SQL error (ne
     # Python master. On success returns true (or a DatabaseResult for
     # RETURNING/CALL/EXEC/SELECT) — always truthy. Wrap writes in begin/rescue
     # instead of testing the return value.
-db.insert(table, data) -> DatabaseResult
-db.update(table, data, filter = {}) -> DatabaseResult
-db.delete(table, filter = {}) -> DatabaseResult
+db.insert(table, data) -> Hash | DatabaseResult
+    # A SINGLE row (data is a Hash) returns a plain Hash { success: true, last_id: <id> }
+    # on every engine. A BATCH (data is an Array of Hashes) runs one parameterised
+    # INSERT per row in a single transaction and returns a DatabaseResult
+    # (affected_rows == row count). Don't read last_id off the Hash for cross-engine
+    # code — call db.get_last_id, which ORM.save() uses. An empty Array is a no-op
+    # DatabaseResult (affected_rows 0).
+db.update(table, data, filter = {}, params = nil) -> Hash   # { success: true }
+db.delete(table, filter = {}, params = nil) -> Hash         # { success: true }
+    # NOTE (parity gap, not yet unified): the write-result shape differs across the
+    # four frameworks — Python returns DatabaseResult, Node DatabaseWriteResult,
+    # PHP bool, Ruby the Hash above. Treat the return as "truthy on success"; a SQL
+    # error RAISES (see db.execute) rather than returning a falsy result. Unifying
+    # this contract is a breaking change parked for an owner decision.
 db.transaction { |db| yield }
 db.tables -> Array
 db.columns(table_name) -> Array
