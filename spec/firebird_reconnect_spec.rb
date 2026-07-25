@@ -97,7 +97,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
     end
 
     it "does not retry inside an explicit transaction" do
-      driver.instance_variable_set(:@transaction, double("tx"))
+      driver.instance_variable_set(:@in_transaction, true)
       expect {
         driver.send(:with_reconnect) { raise "Error writing data to the connection." }
       }.to raise_error(/Error writing data/)

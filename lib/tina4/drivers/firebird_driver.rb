@@ -213,16 +213,38 @@ module Tina4
         "SELECT FIRST #{limit} SKIP #{offset} * FROM (#{sql})"
       end
 
+      # Transaction handling — mirrors the Python master's connection-level
+      # contract (tina4_python firebird.py: start_transaction sets a flag,
+      # commit/rollback act on the connection).
+      #
+      # In the `fb` gem the transaction lives ON the connection:
+      # `Fb::Connection#transaction` (no block) STARTS a transaction and returns
+      # `true` (a boolean — NOT a transaction object), and
+      # `Fb::Connection#commit` / `#rollback` end it. The old code stored that
+      # boolean in `@transaction` and called `@transaction&.commit` /
+      # `&.rollback`, i.e. `true.commit` / `true.rollback` — a NoMethodError that
+      # broke every explicit-transaction commit AND rollback (a rolled-back write
+      # was never undone). We now start the transaction on the connection and
+      # commit/rollback the CONNECTION, tracking open-ness with an
+      # `@in_transaction` boolean (parity with Python's `_in_transaction`).
+      #
+      # A standalone write auto-commits inside the gem's own `execute`, so the
+      # framework's autocommit_standalone_write then calls #commit with no txn
+      # open — `Fb::Connection#commit` is a harmless no-op there (returns nil, no
+      # raise), so standalone-autocommit is preserved.
       def begin_transaction
-        @transaction = @connection.transaction
+        @connection.transaction
+        @in_transaction = true
       end
 
       def commit
-        @transaction&.commit
+        @connection&.commit
+        @in_transaction = false
       end
 
       def rollback
-        @transaction&.rollback
+        @connection&.rollback
+        @in_transaction = false
       end
 
       def tables
@@ -263,7 +285,7 @@ module Tina4
           # connection already gone — nothing to clean up
         end
         @connection = nil
-        @transaction = nil
+        @in_transaction = false
         open_connection
       end
 
@@ -273,7 +295,7 @@ module Tina4
       def with_reconnect
         yield
       rescue StandardError => e
-        raise unless self.class.dead_connection?(e) && @transaction.nil?
+        raise unless self.class.dead_connection?(e) && !@in_transaction
         reconnect!
         yield
       end
