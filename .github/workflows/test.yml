@@ -284,3 +284,95 @@ jobs:
       - name: Report results
         if: always()
         run: echo "Test run completed with exit code $?"
+
+  # Dedicated live-Firebird job (systemic coverage-leak fix). Firebird is NOT a
+  # provisioned service in the main `test` job above — its skips stay green there
+  # BY DESIGN (the require-services gate in spec/spec_helper.rb excludes the
+  # firebird keyword), which is correct for that already-heavy multi-service
+  # runner. The consequence, though, was that the Firebird rollback regression
+  # spec only ever went PENDING in CI — the exact gap that let the Firebird
+  # rollback no-op ship. This job stands up a REAL Firebird 5.0.2, installs the
+  # `fb` gem (native driver, linked against libfbclient), and RUNS the firebird
+  # specs against it. A NO-SILENT-SKIP guard fails the job if the rollback spec
+  # did not actually run its examples (an unset URL / unreachable server / missing
+  # fb gem would otherwise leave them green-pending). This is the Ruby twin of
+  # the PHP `firebird:` job's `php -m | grep interbase` teeth.
+  firebird:
+    runs-on: ubuntu-latest
+    env:
+      TINA4_TEST_FIREBIRD_URL: firebird://SYSDBA:masterkey@localhost:3050//var/lib/firebird/data/test.fdb
+      TINA4_TEST_FIREBIRD_USER: SYSDBA
+      TINA4_TEST_FIREBIRD_PASS: masterkey
+      # Install ONLY the firebird group's `fb` gem on top of the base bundle. The
+      # :databases group (mysql2/tiny_tds/redis) is intentionally NOT pulled in —
+      # those engines aren't exercised here and their native libs aren't installed.
+      BUNDLE_WITH: firebird
+    steps:
+      - uses: actions/checkout@v4
+
+      # Firebird 5.0.2 as a plain container (a GitHub `services:` block cannot
+      # wait for Firebird's first-boot DB creation cleanly). FAIL the job if it
+      # never accepts a query, so the coverage has teeth.
+      - name: Start Firebird 5.0.2
+        run: |
+          docker run -d --name tina4-firebird -p 3050:3050 \
+            -e FIREBIRD_ROOT_PASSWORD=masterkey \
+            -e FIREBIRD_DATABASE=test.fdb \
+            firebirdsql/firebird:5.0.2
+          echo "Waiting for Firebird to accept connections on :3050 ..."
+          for i in $(seq 1 30); do
+            if docker exec tina4-firebird /opt/firebird/bin/isql -user SYSDBA -password masterkey \
+                 /var/lib/firebird/data/test.fdb -q -o /dev/null <<<'SELECT 1 FROM RDB$DATABASE;' 2>/dev/null; then
+              echo "Firebird ready after ${i} attempt(s)"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Firebird did not become ready in time"; docker logs tina4-firebird | tail -40; exit 1
+
+      # libfbclient headers + lib so the `fb` gem's native extension compiles and
+      # links. Installed BEFORE setup-ruby, whose bundler-cache runs `bundle
+      # install` (which builds the extension). Mirrors how the main `test` job
+      # installs mysql2/tiny_tds native libs before setup-ruby.
+      - name: Install Firebird client dev libraries (libfbclient)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends firebird-dev
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Install dependencies (incl. fb via BUNDLE_WITH=firebird)
+        run: bundle install
+
+      # PROVE the fb gem actually loads (its native ext linked against
+      # libfbclient). A LoadError here FAILS the job — it must never degrade the
+      # rollback spec to a green pending skip. This is the Ruby equivalent of
+      # PHP's `php -m | grep interbase`.
+      - name: Verify fb gem loads (no-silent-skip guard)
+        run: |
+          bundle exec ruby -e "require 'fb'; puts 'fb gem loaded, version ' + Fb::VERSION"
+
+      # Run the live-Firebird rollback regression spec and PROVE its 3 examples
+      # RAN (not pending). The spec goes pending when the URL is unset / server
+      # unreachable / fb gem missing — and because Firebird is a non-provisioned
+      # engine, a pending run is otherwise green. Assert "3 examples, 0 failures"
+      # AND that nothing is pending; a single pending example fails the job.
+      - name: Run Firebird rollback spec against live Firebird (no-silent-skip guard)
+        run: |
+          set -o pipefail
+          out=$(bundle exec rspec spec/firebird_rollback_spec.rb --format documentation 2>&1 | tee /dev/stderr)
+          printf '%s\n' "$out" | grep -qE "3 examples, 0 failures" || {
+            echo "::error::firebird_rollback_spec did not report '3 examples, 0 failures' — it did not run its 3 live cases."; exit 1; }
+          if printf '%s\n' "$out" | grep -qE "[1-9][0-9]* pending"; then
+            echo "::error::firebird_rollback_spec had pending (skipped) examples — the live-FB coverage did not run."; exit 1
+          fi
+          echo "firebird_rollback_spec RAN its 3 examples against live Firebird and passed (0 pending)."
+
+      # The remaining firebird specs run here too: charset resolver + URL
+      # normaliser are pure-logic; the url spec's live-connectivity block and the
+      # reconnect matcher spec also run (fb gem present + server up). rspec exits
+      # non-zero on any failure.
+      - name: Run remaining Firebird specs
+        run: bundle exec rspec spec/firebird_charset_spec.rb spec/firebird_url_spec.rb spec/firebird_reconnect_spec.rb --format documentation

@@ -22,3 +22,15 @@ group :databases, optional: true do
   gem "tiny_tds", "~> 3.4"
   gem "redis", "~> 5.0"
 end
+
+# The `fb` gem (native Firebird driver) lives in its OWN optional group, kept
+# SEPARATE from :databases on purpose: the main `test` job installs :databases
+# but does NOT apt-install libfbclient/firebird-dev, so folding fb into
+# :databases would break that job's `bundle install` when fb's C extension tries
+# to link. The dedicated live-Firebird CI job (see .github/workflows/test.yml)
+# apt-installs firebird-dev and sets BUNDLE_WITH=firebird, so fb compiles and the
+# firebird specs run against a REAL Firebird 5.0.2. Everywhere else this group is
+# absent and the firebird specs skip cleanly.
+group :firebird, optional: true do
+  gem "fb", "~> 0.10.0"
+end
