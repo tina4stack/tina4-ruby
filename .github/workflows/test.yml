@@ -352,7 +352,7 @@ jobs:
       # PHP's `php -m | grep interbase`.
       - name: Verify fb gem loads (no-silent-skip guard)
         run: |
-          bundle exec ruby -e "require 'fb'; puts 'fb gem loaded, version ' + Fb::VERSION"
+          bundle exec ruby -e "require 'fb'; raise 'Fb module not defined after require' unless defined?(Fb); puts 'fb gem loaded OK (Fb module present)'"
 
       # Run the live-Firebird rollback regression spec and PROVE its 3 examples
       # RAN (not pending). The spec goes pending when the URL is unset / server
