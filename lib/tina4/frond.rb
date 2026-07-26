@@ -106,7 +106,11 @@ module Tina4
       " and ", " or ", " not ",
       " + ", " - ", " * ", " // ", " / ", " % ", " ** "
     ].freeze
-    FUNC_CALL_RE    = /\A(\w+)\s*\((.*)\)\z/m
+    # A dot is allowed in the callee so {% import "f" as m %} can register its macros
+    # under the literal key "m.greet" and {{ m.greet("Andre") }} resolves as a call.
+    # Without the dot the whole expression was not recognised as a function call at
+    # all, so an aliased macro rendered as SILENTLY EMPTY.
+    FUNC_CALL_RE    = /\A([\w.]+)\s*\((.*)\)\z/m
     FILTER_WITH_ARGS_RE = /\A(\w+)\s*\((.*)\)\z/m
     FILTER_CMP_RE   = /\A(\w+)\s*(!=|==|>=|<=|>|<)\s*(.+)\z/
     OR_SPLIT_RE     = /\s+or\s+/
@@ -136,6 +140,7 @@ module Tina4
            .gsub("<", "&lt;").gsub(">", "&gt;")
     end
     FROM_IMPORT_RE  = /\Afrom\s+["'](.+?)["']\s+import\s+(.+)/
+    IMPORT_AS_RE    = /\Aimport\s+["'](.+?)["']\s+as\s+(\w+)/
     CACHE_RE        = /\Acache\s+["'](.+?)["']\s*(\d+)?/
     SPACELESS_RE    = />\s+</
     AUTOESCAPE_RE   = /\Aautoescape\s+(false|true)/
@@ -659,6 +664,9 @@ module Tina4
             end
           when "macro"
             i = handle_macro(tokens, i, context)
+          when "import"
+            handle_import_as(content, context)
+            i += 1
           when "from"
             handle_from_import(content, context)
             i += 1
@@ -1810,6 +1818,54 @@ module Tina4
       }
 
       i
+    end
+
+    # {% import "file" as alias %} — load EVERY macro in a file under one namespace.
+    #
+    # Macros are registered in the context under the dotted key "alias.name", so
+    # {{ alias.greet("Andre") }} resolves through the ordinary function-call path
+    # (FUNC_CALL_RE now admits a dot) and reuses _make_macro_fn — identical argument
+    # binding, default handling and SafeString output as every other macro. Both
+    # import forms therefore render identically, the contract Python locks too.
+    def handle_import_as(content, context)
+      m = content.match(IMPORT_AS_RE)
+      return unless m
+
+      filename = m[1]
+      alias_name = m[2]
+      source = load_template(filename)
+      tokens = tokenize(source)
+
+      i = 0
+      while i < tokens.length
+        ttype, raw = tokens[i]
+        if ttype == BLOCK
+          tag_content, = strip_tag(raw)
+          if tag_content.split(/\s+/).first == "macro"
+            macro_m = tag_content.match(MACRO_RE)
+            if macro_m
+              macro_name = macro_m[1]
+              params = parse_macro_params(macro_m[2])
+
+              body_tokens = []
+              i += 1
+              while i < tokens.length
+                if tokens[i][0] == BLOCK && tokens[i][1].include?("endmacro")
+                  i += 1
+                  break
+                end
+                body_tokens << tokens[i]
+                i += 1
+              end
+
+              context["#{alias_name}.#{macro_name}"] =
+                _make_macro_fn(body_tokens.dup, params.dup, context.dup)
+              next
+            end
+          end
+        end
+        i += 1
+      end
     end
 
     # {% from "file" import macro1, macro2 %}
