@@ -1784,7 +1784,7 @@ module Tina4
       end
 
       macro_name = m[1]
-      param_names = m[2].split(",").map(&:strip).reject(&:empty?)
+      params = parse_macro_params(m[2])
 
       body_tokens = []
       i = start + 1
@@ -1803,8 +1803,8 @@ module Tina4
 
       context[macro_name] = lambda { |*args|
         macro_ctx = captured_context.dup
-        param_names.each_with_index do |pname, pi|
-          macro_ctx[pname] = pi < args.length ? args[pi] : nil
+        params.each_with_index do |(pname, pdefault), pi|
+          macro_ctx[pname] = pi < args.length ? args[pi] : pdefault
         end
         Tina4::SafeString.new(engine.send(:render_tokens, captured_body.dup, macro_ctx))
       }
@@ -1833,7 +1833,7 @@ module Tina4
             macro_m = tag_content.match(MACRO_RE)
             if macro_m && names.include?(macro_m[1])
               macro_name = macro_m[1]
-              param_names = macro_m[2].split(",").map(&:strip).reject(&:empty?)
+              param_names = parse_macro_params(macro_m[2])
 
               body_tokens = []
               i += 1
@@ -1855,13 +1855,34 @@ module Tina4
       end
     end
 
+    # Parse a macro parameter list into [name, default] pairs.
+    #
+    # Handles: name, name="default", name='default'. Splitting on "," alone left
+    # a defaulted parameter NAMED "greeting='Hello'", so the body's {{ greeting }}
+    # matched nothing (rendered empty) AND the caller's positional argument was
+    # stored under that junk key and lost. Mirrors the Python master's
+    # _parse_macro_params. `default` is nil when none is declared.
+    def parse_macro_params(raw_params)
+      raw_params.split(",").map(&:strip).reject(&:empty?).map do |p|
+        name, default = p.split("=", 2)
+        default = default.strip if default
+        if default && default.length >= 2 &&
+           ((default.start_with?('"') && default.end_with?('"')) ||
+            (default.start_with?("'") && default.end_with?("'")))
+          default = default[1..-2]
+        end
+        [name.strip, default]
+      end
+    end
+
     # Build an isolated lambda for a macro — avoids closure-in-loop variable sharing.
-    def _make_macro_fn(body_tokens, param_names, ctx)
+    # `params` is the [name, default] list from parse_macro_params.
+    def _make_macro_fn(body_tokens, params, ctx)
       engine = self
       lambda { |*args|
         macro_ctx = ctx.dup
-        param_names.each_with_index do |pname, pi|
-          macro_ctx[pname] = pi < args.length ? args[pi] : nil
+        params.each_with_index do |(pname, pdefault), pi|
+          macro_ctx[pname] = pi < args.length ? args[pi] : pdefault
         end
         Tina4::SafeString.new(engine.send(:render_tokens, body_tokens.dup, macro_ctx))
       }
