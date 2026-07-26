@@ -147,6 +147,17 @@ module Tina4
     # Set of common no-arg filter names that can be inlined for speed
     INLINE_FILTERS = %w[upper lower length trim capitalize title string int escape e].each_with_object({}) { |f, h| h[f] = true }.freeze
 
+    # Hard cap on the template caches — @compiled and @compiled_strings
+    # (ADR-0004, parity with PHP/Python/Node TEMPLATE_CACHE_MAX).
+    #
+    # An entry here is a whole token list, so the cap sits well below what a
+    # per-expression memo would justify. 256 is far above any real
+    # application's template count, so a normal app never evicts. The cap
+    # exists for the workload that genuinely grows without limit for the life
+    # of a worker: +render_string+ keys on md5(source), so an app that builds
+    # template strings dynamically adds an entry per distinct string.
+    TEMPLATE_CACHE_MAX = 256
+
     # -- Lazy context overlay for for-loops (avoids full Hash#dup) --
     class LoopContext
       def initialize(parent)
@@ -302,6 +313,7 @@ module Tina4
       source = File.read(path, encoding: "utf-8")
       mtime = File.mtime(path)
       tokens = tokenize(source)
+      cap_cache(@compiled, TEMPLATE_CACHE_MAX)
       @compiled[template] = [tokens, mtime, Time.now.to_i]
       execute_with_tokens(source, tokens, context)
     end
@@ -318,6 +330,7 @@ module Tina4
       end
 
       tokens = tokenize(source)
+      cap_cache(@compiled_strings, TEMPLATE_CACHE_MAX)
       @compiled_strings[key] = tokens
       execute_cached(tokens, context)
     end
@@ -412,6 +425,27 @@ module Tina4
     end
 
     private
+
+    # Keep a memo cache bounded (ADR-0004). Call immediately before inserting
+    # a new entry.
+    #
+    # Eviction is insertion-ordered (oldest first), not true LRU: a Ruby Hash
+    # preserves insertion order, so dropping from the front is cheap, whereas
+    # refreshing recency on every cache HIT would add writes to the hottest
+    # path in a render and cost more than it saves. Half the cache is dropped
+    # at once so the sweep amortises to O(1) per insert.
+    #
+    # Evicting can never change what a render produces: every read site treats
+    # a miss as "recompute", so a swept entry is rebuilt on next use.
+    #
+    # @param cache [Hash] memo cache to bound, mutated in place
+    # @param max_entries [Integer] cap for this cache
+    # @return [void]
+    def cap_cache(cache, max_entries)
+      return if cache.size < max_entries
+
+      cache.keys.first(max_entries / 2).each { |key| cache.delete(key) }
+    end
 
     # -----------------------------------------------------------------------
     # Tokenizer
