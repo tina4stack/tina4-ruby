@@ -147,6 +147,17 @@ module Tina4
     # Set of common no-arg filter names that can be inlined for speed
     INLINE_FILTERS = %w[upper lower length trim capitalize title string int escape e].each_with_object({}) { |f, h| h[f] = true }.freeze
 
+    # Hard cap on the template caches — @compiled and @compiled_strings
+    # (ADR-0004, parity with PHP/Python/Node TEMPLATE_CACHE_MAX).
+    #
+    # An entry here is a whole token list, so the cap sits well below what a
+    # per-expression memo would justify. 256 is far above any real
+    # application's template count, so a normal app never evicts. The cap
+    # exists for the workload that genuinely grows without limit for the life
+    # of a worker: +render_string+ keys on md5(source), so an app that builds
+    # template strings dynamically adds an entry per distinct string.
+    TEMPLATE_CACHE_MAX = 256
+
     # -- Lazy context overlay for for-loops (avoids full Hash#dup) --
     class LoopContext
       def initialize(parent)
@@ -302,6 +313,7 @@ module Tina4
       source = File.read(path, encoding: "utf-8")
       mtime = File.mtime(path)
       tokens = tokenize(source)
+      cap_cache(@compiled, TEMPLATE_CACHE_MAX)
       @compiled[template] = [tokens, mtime, Time.now.to_i]
       execute_with_tokens(source, tokens, context)
     end
@@ -318,6 +330,7 @@ module Tina4
       end
 
       tokens = tokenize(source)
+      cap_cache(@compiled_strings, TEMPLATE_CACHE_MAX)
       @compiled_strings[key] = tokens
       execute_cached(tokens, context)
     end
@@ -412,6 +425,27 @@ module Tina4
     end
 
     private
+
+    # Keep a memo cache bounded (ADR-0004). Call immediately before inserting
+    # a new entry.
+    #
+    # Eviction is insertion-ordered (oldest first), not true LRU: a Ruby Hash
+    # preserves insertion order, so dropping from the front is cheap, whereas
+    # refreshing recency on every cache HIT would add writes to the hottest
+    # path in a render and cost more than it saves. Half the cache is dropped
+    # at once so the sweep amortises to O(1) per insert.
+    #
+    # Evicting can never change what a render produces: every read site treats
+    # a miss as "recompute", so a swept entry is rebuilt on next use.
+    #
+    # @param cache [Hash] memo cache to bound, mutated in place
+    # @param max_entries [Integer] cap for this cache
+    # @return [void]
+    def cap_cache(cache, max_entries)
+      return if cache.size < max_entries
+
+      cache.keys.first(max_entries / 2).each { |key| cache.delete(key) }
+    end
 
     # -----------------------------------------------------------------------
     # Tokenizer
@@ -1750,7 +1784,7 @@ module Tina4
       end
 
       macro_name = m[1]
-      param_names = m[2].split(",").map(&:strip).reject(&:empty?)
+      params = parse_macro_params(m[2])
 
       body_tokens = []
       i = start + 1
@@ -1769,8 +1803,8 @@ module Tina4
 
       context[macro_name] = lambda { |*args|
         macro_ctx = captured_context.dup
-        param_names.each_with_index do |pname, pi|
-          macro_ctx[pname] = pi < args.length ? args[pi] : nil
+        params.each_with_index do |(pname, pdefault), pi|
+          macro_ctx[pname] = pi < args.length ? args[pi] : pdefault
         end
         Tina4::SafeString.new(engine.send(:render_tokens, captured_body.dup, macro_ctx))
       }
@@ -1799,7 +1833,7 @@ module Tina4
             macro_m = tag_content.match(MACRO_RE)
             if macro_m && names.include?(macro_m[1])
               macro_name = macro_m[1]
-              param_names = macro_m[2].split(",").map(&:strip).reject(&:empty?)
+              param_names = parse_macro_params(macro_m[2])
 
               body_tokens = []
               i += 1
@@ -1821,13 +1855,34 @@ module Tina4
       end
     end
 
+    # Parse a macro parameter list into [name, default] pairs.
+    #
+    # Handles: name, name="default", name='default'. Splitting on "," alone left
+    # a defaulted parameter NAMED "greeting='Hello'", so the body's {{ greeting }}
+    # matched nothing (rendered empty) AND the caller's positional argument was
+    # stored under that junk key and lost. Mirrors the Python master's
+    # _parse_macro_params. `default` is nil when none is declared.
+    def parse_macro_params(raw_params)
+      raw_params.split(",").map(&:strip).reject(&:empty?).map do |p|
+        name, default = p.split("=", 2)
+        default = default.strip if default
+        if default && default.length >= 2 &&
+           ((default.start_with?('"') && default.end_with?('"')) ||
+            (default.start_with?("'") && default.end_with?("'")))
+          default = default[1..-2]
+        end
+        [name.strip, default]
+      end
+    end
+
     # Build an isolated lambda for a macro — avoids closure-in-loop variable sharing.
-    def _make_macro_fn(body_tokens, param_names, ctx)
+    # `params` is the [name, default] list from parse_macro_params.
+    def _make_macro_fn(body_tokens, params, ctx)
       engine = self
       lambda { |*args|
         macro_ctx = ctx.dup
-        param_names.each_with_index do |pname, pi|
-          macro_ctx[pname] = pi < args.length ? args[pi] : nil
+        params.each_with_index do |(pname, pdefault), pi|
+          macro_ctx[pname] = pi < args.length ? args[pi] : pdefault
         end
         Tina4::SafeString.new(engine.send(:render_tokens, body_tokens.dup, macro_ctx))
       }
