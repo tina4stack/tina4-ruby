@@ -1124,42 +1124,109 @@ module Tina4
     # Helpers return :not_matched when the expression doesn't match their
     # type, so the dispatcher falls through to the next handler.
 
+    # Bound for the expression-form cache. Python bounds its expression caches
+    # (lru_cache 1024) and PHP's were unbounded instance arrays until ADR-0004;
+    # a template with generated expression strings must not grow this forever.
+    # FIFO drop-oldest-half, deliberately not LRU (no per-hit bookkeeping on the
+    # hot path).
+    EXPR_FORM_CACHE_MAX = 2048
+
+    # ── Expression evaluation: a cascade, with the branch memoised ──
+    #
+    # eval_expr tries 12 structural forms in Twig precedence order. The catch is
+    # that the LAST one, `resolve`, is by far the most common (a plain `i.name`),
+    # so every ordinary variable used to walk all 11 detectors ahead of it on
+    # EVERY render. Measured: ~6-7 microseconds and ~38 Frond method calls per
+    # expression evaluation, linear in expression count.
+    #
+    # So: on first sight run the real cascade and RECORD which branch fired; on
+    # later renders jump straight to that branch. The cache key is the expression
+    # string, and a form is a pure property of that string.
+    #
+    # Correctness is owned by the existing evaluators, not by a second copy of the
+    # detection logic (which is what would drift). The fast path calls exactly one
+    # evaluator; if it declines -- returns its own :not_* sentinel -- we fall
+    # through to the full cascade and re-record. A wrong cache entry therefore
+    # costs one wasted call, never a wrong render.
     def eval_expr(expr, context)
       expr = expr.strip
       return nil if expr.empty?
 
+      form = (@expr_form ||= {})[expr]
+      if form
+        result = eval_expr_as(form, expr, context)
+        return result unless result == :form_declined
+      end
+
       result = eval_literal(expr)
-      return result unless result == :not_literal
+      return remember_form(expr, :literal, result) unless result == :not_literal
 
       result = eval_collection_literal(expr, context)
-      return result unless result == :not_collection
+      return remember_form(expr, :collection, result) unless result == :not_collection
 
-      return eval_expr(expr[1..-2], context) if matched_parens?(expr)
+      if matched_parens?(expr)
+        remember_form(expr, :parens, nil)
+        return eval_expr(expr[1..-2], context)
+      end
 
       result = eval_ternary(expr, context)
-      return result unless result == :not_ternary
+      return remember_form(expr, :ternary, result) unless result == :not_ternary
 
       result = eval_inline_if(expr, context)
-      return result unless result == :not_inline_if
+      return remember_form(expr, :inline_if, result) unless result == :not_inline_if
 
       result = eval_null_coalesce(expr, context)
-      return result unless result == :not_coalesce
+      return remember_form(expr, :coalesce, result) unless result == :not_coalesce
 
       result = eval_concat(expr, context)
-      return result unless result == :not_concat
+      return remember_form(expr, :concat, result) unless result == :not_concat
 
-      return eval_comparison(expr, context) if has_comparison?(expr)
+      if has_comparison?(expr)
+        remember_form(expr, :comparison, nil)
+        return eval_comparison(expr, context)
+      end
 
       result = eval_arithmetic(expr, context)
-      return result unless result == :not_arithmetic
+      return remember_form(expr, :arithmetic, result) unless result == :not_arithmetic
 
       result = eval_filter_pipe(expr, context)
-      return result unless result == :not_filter_pipe
+      return remember_form(expr, :pipe, result) unless result == :not_filter_pipe
 
       result = eval_function_call(expr, context)
-      return result unless result == :not_function
+      return remember_form(expr, :function, result) unless result == :not_function
 
+      remember_form(expr, :resolve, nil)
       resolve(expr, context)
+    end
+
+    # Record the branch an expression took, then hand back its value unchanged.
+    def remember_form(expr, form, result)
+      cache = (@expr_form ||= {})
+      if cache.length >= EXPR_FORM_CACHE_MAX
+        cache.keys.first(EXPR_FORM_CACHE_MAX / 2).each { |k| cache.delete(k) }
+      end
+      cache[expr] = form
+      result
+    end
+
+    # Evaluate via the one remembered branch. Returns :form_declined when that
+    # branch no longer applies, so the caller re-runs the full cascade.
+    def eval_expr_as(form, expr, context)
+      case form
+      when :resolve     then resolve(expr, context)
+      when :pipe        then (r = eval_filter_pipe(expr, context)) == :not_filter_pipe ? :form_declined : r
+      when :literal     then (r = eval_literal(expr)) == :not_literal ? :form_declined : r
+      when :function    then (r = eval_function_call(expr, context)) == :not_function ? :form_declined : r
+      when :concat      then (r = eval_concat(expr, context)) == :not_concat ? :form_declined : r
+      when :comparison  then has_comparison?(expr) ? eval_comparison(expr, context) : :form_declined
+      when :arithmetic  then (r = eval_arithmetic(expr, context)) == :not_arithmetic ? :form_declined : r
+      when :ternary     then (r = eval_ternary(expr, context)) == :not_ternary ? :form_declined : r
+      when :inline_if   then (r = eval_inline_if(expr, context)) == :not_inline_if ? :form_declined : r
+      when :coalesce    then (r = eval_null_coalesce(expr, context)) == :not_coalesce ? :form_declined : r
+      when :collection  then (r = eval_collection_literal(expr, context)) == :not_collection ? :form_declined : r
+      when :parens      then matched_parens?(expr) ? eval_expr(expr[1..-2], context) : :form_declined
+      else :form_declined
+      end
     end
 
     # ── Filter pipe: value|filter(args) ──
@@ -1296,7 +1363,12 @@ module Tina4
     def eval_concat(expr, context)
       return :not_concat unless expr.include?("~")
       parts = expr.split("~")
-      parts.map { |p| (eval_expr(p.strip, context) || "").to_s }.join
+      # `|| ""` would swallow a legitimate `false`: in Ruby only nil and false are
+      # falsy, so `false || ""` is "" and a boolean rendered as EMPTY. Guard on nil
+      # only -- false must render as "false", matching the other three frameworks
+      # (and line 635, which already got this right, which is why a comparison
+      # rendered "false" while a bare false variable rendered "").
+      parts.map { |p| v = eval_expr(p.strip, context); v.nil? ? "" : v.to_s }.join
     end
 
     # ── Arithmetic: +, -, *, //, /, %, ** ──
@@ -1490,7 +1562,19 @@ module Tina4
       parts.each do |part|
         part = part.strip.gsub(RESOLVE_STRIP_RE, "") # strip quotes from bracket access
         if value.is_a?(Hash) || value.is_a?(LoopContext)
-          value = value[part] || value[part.to_sym]
+          # `a[k] || a[k.to_sym]` LOSES a stored `false`: only nil and false are
+          # falsy in Ruby, so a legitimate false fell through to the symbol lookup,
+          # missed, and became nil -- rendering as EMPTY. That is why
+          # `{{ flag }}` printed nothing while `{{ n < 3 }}` printed "false".
+          # Probe the string key by presence, not truthiness.
+          value = if value.is_a?(Hash) && value.key?(part)
+                    value[part]
+                  elsif value.is_a?(Hash) && value.key?(part.to_sym)
+                    value[part.to_sym]
+                  else
+                    sv = value[part]
+                    sv.nil? ? value[part.to_sym] : sv
+                  end
         elsif value.is_a?(Array)
           # Slice syntax: value[1:5], value[:10], value[start:end]
           if part.include?(":") && !(part.start_with?('"') || part.start_with?("'"))
