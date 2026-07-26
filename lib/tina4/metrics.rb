@@ -338,7 +338,14 @@ module Tina4
         "total_functions" => all_functions.length,
         "avg_complexity" => avg_cc.round(2),
         "avg_maintainability" => avg_mi.round(1),
+        # Display-only: the top-15 for the "most complex functions" report.
+        # Do NOT source offenders / --fail-on from this — capping here silently
+        # hides the 16th+ over-threshold function from the gate. offenders()
+        # reads "all_functions" (below) instead.
         "most_complex_functions" => all_functions.first(15),
+        # Full, uncapped, complexity-sorted list — offenders()/--fail-on use this
+        # so no function over the complexity threshold ever escapes the gate.
+        "all_functions" => all_functions,
         "file_metrics" => file_metrics,
         "violations" => violations,
         "dependency_graph" => import_graph,
@@ -386,8 +393,10 @@ module Tina4
 
       items = []
 
-      # Function-level: cyclomatic complexity.
-      (analysis["most_complex_functions"] || []).each do |fn|
+      # Function-level: cyclomatic complexity. Use the FULL function list (not the
+      # display-capped most_complex_functions[:15]) so a 16th+ over-threshold
+      # function is never silently dropped from the offenders list or --fail-on.
+      (analysis["all_functions"] || analysis["most_complex_functions"] || []).each do |fn|
         cc = fn["complexity"]
         next unless cc > 10
         items << {
