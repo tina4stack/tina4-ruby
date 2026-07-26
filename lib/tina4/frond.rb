@@ -1248,6 +1248,10 @@ module Tina4
     # looser than the filter pipe. Quote/paren-aware via find_outside_quotes so
     # operator-like text inside a string literal or filter args never matches.
     def has_looser_than_pipe_operator?(expr)
+      # Leading unary `not` -- see has_comparison? for why a space-delimited
+      # match cannot see it. `not x|upper` must be `not (x|upper)`.
+      return true if expr.start_with?("not ")
+
       LOOSER_THAN_PIPE_OPS.any? { |op| find_outside_quotes(expr, op) >= 0 }
     end
 
@@ -1396,7 +1400,21 @@ module Tina4
       fn.call(*args)
     end
 
+    # True when the expression carries a comparison/logical operator, so it is
+    # routed to eval_comparison -- the SAME evaluator {% if %} uses. A condition
+    # therefore means the same thing in a condition and in an output expression.
+    #
+    # The LEADING unary `not` needs its own check: every operator in the list is
+    # matched WITH surrounding spaces, so `not x` (nothing to its left) matched
+    # none of them and fell through to the variable-resolution tail, which
+    # looked up a variable literally named "not x", found nothing, and rendered
+    # EMPTY. `{% if not x %}` and `x and not y` always worked; only the
+    # standalone `{{ not x }}` was dropped, and before booleans rendered
+    # lowercase a dropped expression and `false -> ''` looked identical.
+    # Fixed in 3.13.87 alongside the boolean contract.
     def has_comparison?(expr)
+      return true if expr.start_with?("not ")
+
       [" not in ", " in ", " is not ", " is ", "!=", "==", ">=", "<=", ">", "<",
        " and ", " or ", " not "].any? { |op| expr.include?(op) }
     end
