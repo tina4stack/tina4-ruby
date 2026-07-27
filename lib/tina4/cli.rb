@@ -511,12 +511,10 @@ module Tina4
       root_dir = Dir.pwd
       Tina4.initialize!(root_dir)
 
-      # Register health check endpoint
-      Tina4::Health.register!
-
-      # Register the always-on Frond {% live %} refresh endpoint
-      # (GET /__frond/live/{name}) so server-rendered live blocks can poll/SSE.
-      Tina4::Frond.register_live_endpoint!
+      # Built-in routes (health, Frond live). Shared with Tina4.run! so the two
+      # entry points cannot drift again -- they did, and app.rb served 404 on
+      # /health for it. register! is idempotent, so calling it here is safe.
+      Tina4.register_builtin_routes!
 
       # Load route files
       load_routes(root_dir)

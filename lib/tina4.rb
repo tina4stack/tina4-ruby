@@ -309,6 +309,14 @@ module Tina4
       end
     end
 
+    # The framework's own routes, in ONE place. Both entry points call this:
+    # Tina4.run! (app.rb) and the CLI's cmd_start. Anything added here is
+    # available however the app was launched -- which is the whole point.
+    def register_builtin_routes!
+      Tina4::Health.register!
+      Tina4::Frond.register_live_endpoint!
+    end
+
     def run!(root_dir = nil, port: nil, host: nil, debug: nil)
       # Handle legacy call: run!(port: 7147) where root_dir receives the hash
       if root_dir.is_a?(Hash)
@@ -324,6 +332,14 @@ module Tina4
       ENV["TINA4_DEBUG"] = debug.to_s unless debug.nil?
 
       initialize!(root_dir) unless @root_dir
+
+      # Built-in routes. These used to be registered ONLY by the CLI's
+      # cmd_start, so an app booted the documented way -- `Tina4.run!` from
+      # app.rb, which is exactly what `tina4 init ruby` scaffolds -- served 404
+      # on /health while the identical code under `tina4ruby serve` served 200.
+      # A container health check pointed at /health therefore failed against a
+      # perfectly healthy app.
+      register_builtin_routes!
 
       host = ENV.fetch("HOST", ENV.fetch("TINA4_HOST", "0.0.0.0"))
       port = ENV.fetch("PORT", ENV.fetch("TINA4_PORT", "7147")).to_i
