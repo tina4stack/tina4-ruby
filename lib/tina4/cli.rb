@@ -233,6 +233,21 @@ module Tina4
       to_snake_case(name)
     end
 
+    # Called without --fields, the generators fall back to a single `name`
+    # string column. That default MUST be materialised here, in one place, and
+    # then flow into the model, the migration, the form, the view and the spec
+    # alike. It used to live only inside the model template, so `generate model
+    # X` / `generate crud X` wrote a model declaring `name` while the migration
+    # - built from the parsed field list, which was empty - created only id +
+    # created_at. The first write then failed with "no such column: name".
+    DEFAULT_FIELDS = [["name", "string"]].freeze
+
+    # Parsed --fields, or the default single `name` column when none given.
+    def fields_or_default(fields_str)
+      parsed = parse_fields(fields_str)
+      parsed.any? ? parsed : DEFAULT_FIELDS.map(&:dup)
+    end
+
     # Parse "name:string,price:float" -> [["name","string"], ["price","float"]]
     def parse_fields(fields_str)
       return [] if fields_str.nil? || fields_str.strip.empty?
@@ -1231,19 +1246,15 @@ module Tina4
     # ── Generator: model ─────────────────────────────────────────────────
 
     def generate_model(name, flags, emit_test: true)
-      fields = parse_fields(flags["fields"])
+      fields = fields_or_default(flags["fields"])
       table = to_table_name(name)
       snake = to_snake_case(name)
 
       # Build field lines
       field_lines = ["  integer_field :id, primary_key: true, auto_increment: true"]
-      if fields.any?
-        fields.each do |fname, ftype|
-          info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP["string"]
-          field_lines << "  #{info[:orm]} :#{fname}"
-        end
-      else
-        field_lines << "  string_field :name"
+      fields.each do |fname, ftype|
+        info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP["string"]
+        field_lines << "  #{info[:orm]} :#{fname}"
       end
       field_lines << "  string_field :created_at"
 
@@ -1355,6 +1366,11 @@ module Tina4
           Tina4::Router.post "/api/#{route_path}" do |request, response|
           #{ext_create.chomp}
             item = #{model}.create(request.body)
+            # create/save signal failure by RETURN VALUE, they do not raise -
+            # unchecked, a failed write surfaces as an unrelated NoMethodError
+            # on false and hides the real cause.
+            next response.json({ error: "Could not create #{singular}" }, 400) if item == false
+
             response.json(item.to_h, 201)
           end#{no_auth}
 
@@ -1368,7 +1384,8 @@ module Tina4
               setter = "#{'#'}{key}="
               item.send(setter, value) if item.respond_to?(setter)
             end
-            item.save
+            next response.json({ error: "Could not update #{singular}" }, 400) if item.save == false
+
             response.json(item.to_h)
           end#{no_auth}
 
@@ -1521,7 +1538,11 @@ module Tina4
       end
 
       # Build SQL columns from fields
-      fields = fields_override || parse_fields(flags["fields"])
+      # An EMPTY array is truthy in Ruby, so a plain `fields_override || parse`
+      # short-circuits to [] and the fallback never fires - that is exactly how
+      # a model declaring `name` ended up with a column-less migration. Test for
+      # content, not truthiness, so the semantics match Python/Node.
+      fields = fields_override&.any? ? fields_override : parse_fields(flags["fields"])
       is_create = name.start_with?("create_") || !fields_override.nil?
 
       filename = "#{timestamp}_#{name}.sql"
@@ -1771,7 +1792,7 @@ module Tina4
     # ── Generator: form ──────────────────────────────────────────────────
 
     def generate_form(name, flags = {})
-      fields = parse_fields(flags["fields"])
+      fields = fields_or_default(flags["fields"])
       table = to_table_name(name)
       route_name = "#{table}s"
 
@@ -1794,8 +1815,7 @@ module Tina4
 
       # Build form fields
       field_html = ""
-      form_fields = fields.any? ? fields : [["name", "string"]]
-      form_fields.each do |fname, ftype|
+      fields.each do |fname, ftype|
         itype = input_types[ftype] || "text"
         label = fname.tr("_", " ").split.map(&:capitalize).join(" ")
         step = %w[float numeric decimal].include?(ftype) ? ' step="0.01"' : ""
@@ -1850,11 +1870,11 @@ module Tina4
     # ── Generator: view ──────────────────────────────────────────────────
 
     def generate_view(name, flags = {})
-      fields = parse_fields(flags["fields"])
+      fields = fields_or_default(flags["fields"])
       table = to_table_name(name)
       route_name = "#{table}s"
 
-      cols = fields.any? ? fields.map { |f, _| f } : ["name"]
+      cols = fields.map { |f, _| f }
 
       dir = "src/templates/pages"
       FileUtils.mkdir_p(dir)
@@ -2480,7 +2500,10 @@ module Tina4
 
     # model -> real SQLite roundtrip (create / read back / missing -> nil).
     def emit_model_test(model, table, fields)
-      fields = fields.empty? ? [["name", "string"]] : fields
+      # Reuse the single DEFAULT_FIELDS constant rather than re-stating the
+      # literal, so the co-emitted spec can never describe a shape the model
+      # does not actually have.
+      fields = fields.empty? ? DEFAULT_FIELDS.map(&:dup) : fields
       payload = fields.map { |fname, ftype| %("#{fname}" => #{sample_literal(ftype)}) }.join(", ")
       # Assert a STRING field round-trips (type-safe); else just the id round-trips
       # (avoids datetime/bool/float equality pitfalls on the read-back).

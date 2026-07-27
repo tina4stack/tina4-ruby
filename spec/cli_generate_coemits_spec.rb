@@ -137,6 +137,75 @@ RSpec.describe "CLI generators co-emit a real green spec" do
     end
   end
 
+  # ── Regression (ruby#33 / tina4-python#101) ─────────────────────────────
+  # `generate model/crud` WITHOUT --fields used to write a model declaring
+  # `name` while its migration created only id + created_at, so the first write
+  # died with "no such column: name". Ruby had an extra sting: an EMPTY array is
+  # truthy, so `fields_override || parse_fields(...)` short-circuited to [] and
+  # the fallback never fired. Every case above passes --fields explicitly, which
+  # is exactly why the bug survived — these exercise the no-fields path.
+  describe "generate without --fields (ruby#33)" do
+    # The generated UP migration (Ruby writes UP and DOWN as separate files).
+    def up_sql
+      ups = Dir.glob(File.join(@project, "migrations", "*.sql")).reject { |f| f.end_with?(".down.sql") }
+      expect(ups).not_to be_empty, "no UP migration was generated"
+      File.read(ups.first)
+    end
+
+    # Field names declared on the generated model's *_field DSL calls.
+    def model_fields(snake)
+      File.read(File.join(@project, "src", "orm", "#{snake}.rb"))
+          .scan(/^\s*\w*_field :(\w+)/).flatten
+    end
+
+    it "model: the migration contains EVERY field the model declares" do
+      run_cli("generate", "model", "Todo")
+      declared = model_fields("todo")
+      expect(declared).to include("name"), "model should declare the default name field, got #{declared}"
+      up = up_sql
+      declared.each { |f| expect(up).to include(f), "model declares #{f.inspect} but the migration omits it:\n#{up}" }
+    end
+
+    it "crud: the migration contains EVERY field the model declares" do
+      run_cli("generate", "crud", "Todo")
+      up = up_sql
+      model_fields("todo").each do |f|
+        expect(up).to include(f), "model declares #{f.inspect} but the migration omits it:\n#{up}"
+      end
+    end
+
+    it "explicit --fields still reach the migration (positive control)" do
+      run_cli("generate", "model", "Product", "--fields", "title:string,price:float,in_stock:bool")
+      up = up_sql
+      %w[title price in_stock].each { |f| expect(up).to include(f), "#{f.inspect} missing:\n#{up}" }
+    end
+
+    it "the generated schema accepts a row using the model's own fields (real SQLite)" do
+      require "sqlite3"
+      run_cli("generate", "model", "Todo")
+      cols = model_fields("todo") - %w[id created_at]
+      db = SQLite3::Database.new(":memory:")
+      begin
+        db.execute_batch(up_sql)
+        db.execute("INSERT INTO todo (#{cols.join(', ')}) VALUES (#{(['?'] * cols.size).join(', ')})",
+                   cols.map { "x" })
+        expect(db.get_first_value("SELECT COUNT(*) FROM todo")).to eq(1)
+      ensure
+        db.close
+      end
+    end
+
+    it "the generated create/update routes check the write result before to_h" do
+      run_cli("generate", "crud", "Todo")
+      route = File.read(File.join(@project, "src", "routes", "todos.rb"))
+      # create/save return false rather than raising; unchecked, a failed write
+      # surfaces as an unrelated NoMethodError on false and hides the cause.
+      expect(route).to include("if item == false")
+      expect(route).to include("if item.save == false")
+      expect(route.index("if item == false")).to be < route.index("item.to_h, 201")
+    end
+  end
+
   it "form / view are template-only and co-emit NO spec" do
     run_cli("generate", "form", "Product", "--fields", "name:string")
     run_cli("generate", "view", "Product", "--fields", "name:string")
