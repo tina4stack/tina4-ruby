@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+# Explicit: the live-Mongo group builds a per-example database name from
+# SecureRandom. Do not lean on a transitive require from another gem.
+require "securerandom"
 
 RSpec.describe Tina4::Job do
   describe "#initialize" do
@@ -948,7 +951,9 @@ end
 RSpec.describe "Tina4::Queue MongoDB dead-letter (live, no mocks)" do
   mongo_test_uri = ENV["MONGO_TEST_URI"] || ENV["TINA4_MONGO_URI"] || "mongodb://localhost:27017"
   topic = "tina4_test_dead_letter"
-  db_name = "tina4_test_queue_rb"
+  # Prefix only - the real database name is built per example (see the db_name
+  # `let` below) so no two examples or processes ever share one.
+  db_name_prefix = "tina4_test_queue_rb"
   collection_name = "tina4_test_queue_jobs"
 
   mongo_gem_present =
@@ -985,8 +990,21 @@ RSpec.describe "Tina4::Queue MongoDB dead-letter (live, no mocks)" do
     end
   else
     let(:topic) { topic }
-    let(:db_name) { db_name }
     let(:collection_name) { collection_name }
+
+    # Every example gets its OWN database. These examples finish by DROPPING the
+    # database they used, and the name used to be a fixed constant shared by the
+    # whole group - so example B (or a second `rspec` process on the same mongod,
+    # e.g. CI parallelism or two agents in one checkout) could drop the database
+    # example A was still working in. That produced a real, seed-independent
+    # phantom: "retry_failed re-queues a real failed document back to pending"
+    # failed `expected: 1, got: 0` because the seeded document had been dropped
+    # out from under the update.
+    #
+    # pid keeps concurrent PROCESSES apart; the random suffix keeps examples (and
+    # repeat runs within one process) apart. With a name this specific, `drop` can
+    # only ever destroy data this example created.
+    let(:db_name) { "#{db_name_prefix}_#{Process.pid}_#{SecureRandom.hex(6)}" }
 
     around(:each) do |example|
       keys = {
@@ -1013,6 +1031,18 @@ RSpec.describe "Tina4::Queue MongoDB dead-letter (live, no mocks)" do
       [queue, backend, coll]
     end
 
+    # Teardown, called from each example's `ensure` so it runs only AFTER that
+    # example's assertions.
+    #
+    # Dropping is safe here ONLY because db_name is unique per example: this
+    # drops `backend`'s own database, which no other example or process shares.
+    # If the name ever goes back to being a shared constant, this line becomes a
+    # cross-example (and cross-process) data-destroyer again.
+    #
+    # Closing the client is likewise safe: MongoBackend#initialize builds its own
+    # Mongo::Client per instance (mongo_backend.rb - `@client = Mongo::Client.new`,
+    # no class-level memoization), and build_queue makes a fresh Queue/backend per
+    # example, so close only ever tears down this example's connection.
     def drop_db(backend)
       backend.instance_variable_get(:@db).drop
     rescue StandardError
