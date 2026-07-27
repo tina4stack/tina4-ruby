@@ -842,6 +842,51 @@ module Tina4
         i += 1
       end
 
+      _charge_nested_complexity_to_the_nested_function(functions)
+    end
+
+    # Stop a function being charged for the complexity of the functions nested
+    # inside it.
+    #
+    # Each function's raw score is measured over its whole span, so a branch
+    # inside a nested function landed on BOTH that function and every function
+    # enclosing it. The over-count compounded with depth: a wrapper around twenty
+    # inner handlers absorbed the entire file's complexity and topped the
+    # offenders list, hiding the genuine hot spots.
+    #
+    # The correction is exact. A raw score is 1 + every decision in the span, so
+    # (raw - 1) is the total decision count of a function's whole subtree.
+    # Subtracting that for each DIRECT child leaves the function's own branches:
+    #
+    #   own(F) = raw(F) - sum over direct children C of (raw(C) - 1)
+    #
+    # Blocks and lambdas are deliberately unaffected: they are not reported as
+    # functions of their own, so nothing subtracts them and their decisions stay
+    # with the method that contains them - moved, never lost.
+    def self._charge_nested_complexity_to_the_nested_function(functions)
+      return functions if functions.length < 2
+
+      last_line = ->(f) { f["line"] + [1, f["loc"]].max - 1 }
+      contains = ->(outer, inner) do
+        inner["line"] > outer["line"] && last_line.call(inner) <= last_line.call(outer)
+      end
+
+      raw = functions.map { |f| f["complexity"] }
+      functions.each_with_index do |outer, i|
+        subtract = 0
+        functions.each_with_index do |inner, j|
+          next if i == j || !contains.call(outer, inner)
+
+          # Direct child only: skip it if another function sits between the two,
+          # or its complexity would be subtracted twice.
+          nested_deeper = functions.each_with_index.any? do |mid, k|
+            k != i && k != j && contains.call(outer, mid) && contains.call(mid, inner)
+          end
+          subtract += raw[j] - 1 unless nested_deeper
+        end
+        outer["complexity"] = [1, raw[i] - subtract].max
+      end
+
       functions
     end
 

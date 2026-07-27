@@ -21,6 +21,102 @@ RSpec.describe Tina4::Metrics do
     full
   end
 
+  # Each function's raw score covers its whole span, so a branch inside a nested
+  # function used to land on that function AND every function around it. The
+  # over-count compounded with depth: a wrapper around twenty inner handlers
+  # absorbed the whole file and topped the offenders list. Parity with Python
+  # master, PHP, Node and the Rust engine.
+  describe "nested complexity is measured once" do
+    def complexity_by_name(source)
+      create_file("nested.rb", source)
+      result = Tina4::Metrics.full_analysis(@root)
+      (result["all_functions"] || []).each_with_object({}) do |f, acc|
+        acc[f["name"]] = f["complexity"]
+      end
+    end
+
+    it "scores a parent with no branches of its own as one" do
+      cc = complexity_by_name(<<~RUBY)
+        def outer(a)
+          def inner(x)
+            return 1 if x
+            return 2 if x > 2
+            3
+          end
+          inner(a)
+        end
+      RUBY
+      expect(cc["outer"]).to eq(1)
+      expect(cc["inner"]).to eq(3), "the branches moved, not vanished"
+    end
+
+    it "lets the parent keep its own branches" do
+      cc = complexity_by_name(<<~RUBY)
+        def outer(a)
+          return 0 if a
+          def inner(x)
+            return 1 if x
+            2
+          end
+          inner(a)
+        end
+      RUBY
+      expect(cc["outer"]).to eq(2)
+      expect(cc["inner"]).to eq(2)
+    end
+
+    it "keeps only its own at three levels deep" do
+      cc = complexity_by_name(<<~RUBY)
+        def a(x)
+          return 0 if x
+          def b(y)
+            return 0 if y
+            def c(z)
+              return 1 if z
+              2
+            end
+            c(y)
+          end
+          b(x)
+        end
+      RUBY
+      expect(cc["a"]).to eq(2)
+      expect(cc["b"]).to eq(2)
+      expect(cc["c"]).to eq(2)
+    end
+
+    it "counts a block toward its enclosing method" do
+      # Blocks are not reported as methods of their own, so excluding them would
+      # LOSE their decisions rather than relocate them.
+      cc = complexity_by_name(<<~RUBY)
+        class B
+          def with_block(items)
+            items.map { |i| i.positive? ? 1 : 2 }
+          end
+        end
+      RUBY
+      expect(cc["B.with_block"]).to eq(2), "1 + the block's ternary"
+    end
+
+    it "never lets sibling methods affect each other" do
+      # Guards against an over-eager fix that subtracts from siblings too.
+      cc = complexity_by_name(<<~RUBY)
+        class A
+          def one(x)
+            return 1 if x
+            2
+          end
+          def two(y)
+            return 1 if y
+            2
+          end
+        end
+      RUBY
+      expect(cc["A.one"]).to eq(2)
+      expect(cc["A.two"]).to eq(2)
+    end
+  end
+
   describe ".quick_metrics" do
     it "returns error for missing directory" do
       result = Tina4::Metrics.quick_metrics("nonexistent")
