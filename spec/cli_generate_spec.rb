@@ -83,6 +83,71 @@ RSpec.describe "CLI generate commands" do
     end
   end
 
+  # ── generate model/crud without --fields — migration DDL matches the model ──
+  #
+  # Regression (ruby#33 / tina4-python#101). `generate model/crud` WITHOUT
+  # --fields used to write a model declaring `name` while its migration created
+  # only id + created_at, so the first write died with "no such column: name".
+  # The default field set now lives in ONE place (DEFAULT_FIELDS ->
+  # fields_or_default) and flows into the model AND the migration alike. This is
+  # the in-process mirror of tina4-python's TestGeneratedMigrationMatchesModel
+  # (the coemits spec proves the same via a real subprocess). No mocks: real
+  # generate, real parse of the emitted model + UP migration, real SQLite.
+  describe "generate without --fields (migration matches model, ruby#33)" do
+    # Field names declared by the generated model's *_field DSL calls.
+    def model_fields(snake)
+      File.read(File.join(@tmp_dir, "src", "orm", "#{snake}.rb"))
+          .scan(/^\s*\w*_field\s+:(\w+)/).flatten
+    end
+
+    # The generated UP migration (Ruby writes UP and DOWN as separate files).
+    def up_sql
+      ups = Dir.glob(File.join(@tmp_dir, "migrations", "*.sql")).reject { |f| f.end_with?(".down.sql") }
+      expect(ups).not_to be_empty, "no UP migration was generated"
+      File.read(ups.first)
+    end
+
+    it "model: the default name column reaches the migration DDL" do
+      cli.run(["generate", "model", "Todo"])
+      declared = model_fields("todo")
+      expect(declared).to include("name"), "model should declare the default name field, got #{declared}"
+      up = up_sql
+      declared.each do |f|
+        expect(up).to include(f), "model declares #{f.inspect} but the migration omits it:\n#{up}"
+      end
+    end
+
+    it "crud: the migration contains every field the model declares" do
+      cli.run(["generate", "crud", "Todo"])
+      up = up_sql
+      model_fields("todo").each do |f|
+        expect(up).to include(f), "model declares #{f.inspect} but the migration omits it:\n#{up}"
+      end
+    end
+
+    it "explicit --fields still all reach the migration (positive control)" do
+      cli.run(["generate", "model", "Product", "--fields", "title:string,price:float,in_stock:bool"])
+      up = up_sql
+      %w[title price in_stock].each { |f| expect(up).to include(f), "#{f.inspect} missing:\n#{up}" }
+    end
+
+    it "the generated schema accepts a row using the model's own fields (real SQLite)" do
+      require "sqlite3"
+      cli.run(["generate", "model", "Todo"])
+      cols = model_fields("todo") - %w[id created_at]
+      expect(cols).to include("name")
+      db = SQLite3::Database.new(":memory:")
+      begin
+        db.execute_batch(up_sql)
+        db.execute("INSERT INTO todo (#{cols.join(', ')}) VALUES (#{(['?'] * cols.size).join(', ')})",
+                   cols.map { "x" })
+        expect(db.get_first_value("SELECT COUNT(*) FROM todo")).to eq(1)
+      ensure
+        db.close
+      end
+    end
+  end
+
   # ── generate route ─────────────────────────────────────────────
 
   describe "generate route" do
