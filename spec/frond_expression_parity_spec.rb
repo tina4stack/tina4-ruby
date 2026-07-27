@@ -48,7 +48,11 @@ RSpec.describe "Frond expression parity" do
       "user" => { "name" => "Ann", "addr" => { "city" => "CPT" } },
       "list" => %w[a b c],
       "map" => { "a" => 1, "b" => 2 },
-      "html" => "<b>&x</b>"
+      "html" => "<b>&x</b>",
+      # Non-finite floats: the tina4-php#184 payload. JSON has no Infinity or
+      # NaN, so both must serialize as null in every framework.
+      "inf_val" => Float::INFINITY,
+      "nan_map" => { "v" => Float::NAN }
     }
   end
 
@@ -68,7 +72,7 @@ RSpec.describe "Frond expression parity" do
   # Guard the guard: a corpus entry with no expected value would otherwise pass
   # by never being asserted.
   it "has a corpus and an answer key that line up" do
-    expect(CORPUS.length).to eq(72)
+    expect(CORPUS.length).to eq(79)
     expect(CORPUS.map(&:first).sort).to eq(EXPECTED.keys.sort)
   end
 
@@ -138,14 +142,53 @@ RSpec.describe "Frond expression parity" do
     end
   end
 
-  describe "json_encode escaping" do
-    # `|json_encode` escapes; `|json_encode|raw` does not. Ruby always escaped
-    # here; PHP alone returned raw JSON and was changed to match in 3.13.87.
-    # The assertion lives in all four so one contract is enforced from one place.
-    it "HTML-escapes by default and honours raw as the opt-out" do
-      ctx = { "data" => { "a" => 1 } }
-      expect(engine.render_string("{{ data|json_encode }}", ctx)).to eq("{&quot;a&quot;:1}")
-      expect(engine.render_string("{{ data|json_encode|raw }}", ctx)).to eq('{"a":1}')
+  describe "json_encode output contract" do
+    # 3.13.88 reverts 3.13.87's HTML-escaping of this filter. Entity-encoding the
+    # payload produced {&quot;a&quot;:1}, a SyntaxError inside <script>, which
+    # broke the filter's primary use in all four frameworks at once. The safe
+    # form escapes only the dangerous characters, as JSON \uXXXX escapes: valid
+    # JSON, valid JavaScript, cannot terminate a </script>, safe in a
+    # single-quoted attribute. Jinja2's tojson model.
+    it "emits JSON that is valid inside a script block" do
+      expect(engine.render_string("{{ data|json_encode }}", { "data" => { "a" => 1 } })).to eq('{"a":1}')
+      # Negative case: escapes must be \uXXXX, never HTML entities, and
+      # </script> must not survive intact.
+      out = engine.render_string("{{ data|json_encode }}", { "data" => { "x" => "</script>&'" } })
+      expect(out).to eq('{"x":"\\u003c/script\\u003e\\u0026\\u0027"}')
+      expect(out).not_to include("&quot;")
+      expect(out).not_to include("</script>")
+      # raw is now a no-op rather than the required opt-out.
+      expect(engine.render_string("{{ data|json_encode|raw }}", { "data" => { "a" => 1 } })).to eq('{"a":1}')
+    end
+
+    # tina4-php#184 (justin-k-bruce). JSON.generate RAISES on Infinity, and the
+    # old `rescue v.to_s` answered that raise with Ruby inspect output that no
+    # JSON.parse will read. null is the only answer the JSON grammar allows.
+    it "never emits a non-finite literal" do
+      inf = Float::INFINITY
+      nan = Float::NAN
+      expect(engine.render_string("{{ v|json_encode }}", { "v" => inf })).to eq("null")
+      expect(engine.render_string("{{ v|json_encode }}", { "v" => -inf })).to eq("null")
+      expect(engine.render_string("{{ v|json_encode }}", { "v" => nan })).to eq("null")
+      expect(engine.render_string("{{ v|json_encode }}", { "v" => { "a" => 1, "b" => inf } }))
+        .to eq('{"a":1,"b":null}')
+      expect(engine.render_string("{{ v|json_encode }}", { "v" => [1, nan] })).to eq("[1,null]")
+      # Negative case: none of the old failure outputs, and never empty -- an
+      # empty payload is a silent, invisible failure.
+      out = engine.render_string("{{ v|json_encode }}", { "v" => { "b" => inf } })
+      ["Infinity", "NaN", "false", "=>"].each { |bad| expect(out).not_to include(bad) }
+      expect(engine.render_string("{{ v|json_encode }}", { "v" => inf })).not_to eq("")
+    end
+
+    it "treats json_encode, to_json and tojson as one behaviour" do
+      ctx = { "v" => { "a" => 1, "u" => "a/b", "n" => "caf\u00e9", "bad" => Float::INFINITY } }
+      out = engine.render_string("{{ v|json_encode }}", ctx)
+      expect(engine.render_string("{{ v|to_json }}", ctx)).to eq(out)
+      expect(engine.render_string("{{ v|tojson }}", ctx)).to eq(out)
+      # Slashes stay unescaped and non-ASCII stays raw -- PHP alone used to
+      # write "a\\/b", and Python alone used to write "caf\\u00e9".
+      expect(out).to include('"u":"a/b"')
+      expect(out).to include("caf\u00e9")
     end
   end
 end

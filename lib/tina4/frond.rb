@@ -429,6 +429,66 @@ module Tina4
       str.to_s.gsub(HTML_ESCAPE_RE, HTML_ESCAPE_MAP)
     end
 
+    # Serializes a value to compact JSON text that is always valid JSON.
+    #
+    # Never raises and never returns an empty string: a non-finite float becomes
+    # null (the JSON spec has no Infinity or NaN) and malformed UTF-8 is scrubbed,
+    # so a payload always arrives, in the worst case as null.
+    def self.json_text(value)
+      JSON.generate(value)
+    rescue StandardError
+      # Only reached when the happy path raised, so a well-formed payload never
+      # pays for the walk.
+      begin
+        JSON.generate(json_sanitize(value))
+      rescue StandardError
+        "null"
+      end
+    end
+
+    # Replaces anything JSON.generate refuses with a JSON-representable stand-in.
+    def self.json_sanitize(value)
+      case value
+      when Float   then value.finite? ? value : nil
+      when Hash    then value.transform_values { |item| json_sanitize(item) }
+      when Array   then value.map { |item| json_sanitize(item) }
+      when String  then value.valid_encoding? ? value : value.scrub
+      else value
+      end
+    end
+
+    # Serializes to JSON that is valid JSON, valid JavaScript, and safe in HTML.
+    #
+    # THE cross-framework contract for json_encode / to_json / tojson. Keep the
+    # four implementations byte-identical; frond_expression_corpus.txt locks it.
+    #
+    # Three things this must never do, each of which was a real bug:
+    #
+    # 1. Never emit a non-finite literal. JSON.generate raises on Infinity, and
+    #    the old `rescue v.to_s` turned that raise into Ruby inspect output --
+    #    `{"a" => 1.0}` -- which no JSON.parse will read. Reported as
+    #    tina4-php#184 by justin-k-bruce, who hit the same class of bug in PHP.
+    # 2. Never emit nothing, and never emit something that still parses and means
+    #    something else. "var ROWS = ;" is at least a loud SyntaxError.
+    # 3. Never HTML-escape it. Entity-encoding JSON produces {&quot;a&quot;:1},
+    #    a SyntaxError inside <script>, which is the filter's whole point. Escape
+    #    only the dangerous characters, as JSON \uXXXX escapes: the result stays
+    #    valid JSON AND valid JavaScript, </script> cannot terminate the block,
+    #    and it is safe inside a single-quoted attribute. This is what Jinja2's
+    #    tojson does, and it is why the result is a SafeString.
+    #
+    # U+2028 and U+2029 join that escape set. Both are legal inside a JSON string
+    # and both were illegal inside a JavaScript string literal before ES2019.
+    def self.json_safe(value)
+      Tina4::SafeString.new(json_text(value).gsub(JSON_ESCAPE_RE, JSON_ESCAPE_MAP))
+    end
+
+    JSON_ESCAPE_MAP = {
+      "<" => "\\u003c", ">" => "\\u003e", "&" => "\\u0026", "'" => "\\u0027",
+      "\u2028" => "\\u2028", "\u2029" => "\\u2029"
+    }.freeze
+    JSON_ESCAPE_RE = /[<>&'\u2028\u2029]/
+
     private
 
     # Keep a memo cache bounded (ADR-0004). Call immediately before inserting
@@ -2406,7 +2466,10 @@ module Tina4
         "e"             => ->(v, *_a) { Tina4::SafeString.new(Frond.escape_html(v.to_s)) },
         "raw"           => ->(v, *_a) { v },
         "safe"          => ->(v, *_a) { v },
-        "json_encode"   => ->(v, *_a) { JSON.generate(v) rescue v.to_s },
+        # Frond.json_safe, never a bare JSON.generate: generate RAISES on an
+        # Infinity/NaN float, and the old `rescue v.to_s` answered that raise with
+        # Ruby inspect output that no JSON.parse will read. See Frond.json_safe.
+        "json_encode"   => ->(v, *_a) { Frond.json_safe(v) },
         "json_decode"   => ->(v, *_a) { v.is_a?(String) ? (JSON.parse(v) rescue v) : v },
         "base64_encode" => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
         "base64encode"  => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
@@ -2425,17 +2488,12 @@ module Tina4
         "url_encode"    => ->(v, *_a) { ERB::Util.url_encode(v.to_s) },
 
         # -- JSON / JS --
-        "to_json" => ->(v, *a) {
-          indent = a[0] ? a[0].to_i : nil
-          json = indent ? JSON.pretty_generate(v) : JSON.generate(v)
-          # Escape <, >, & for safe HTML embedding
-          Tina4::SafeString.new(json.gsub("<", '\u003c').gsub(">", '\u003e').gsub("&", '\u0026'))
-        },
-        "tojson" => ->(v, *a) {
-          indent = a[0] ? a[0].to_i : nil
-          json = indent ? JSON.pretty_generate(v) : JSON.generate(v)
-          Tina4::SafeString.new(json.gsub("<", '\u003c').gsub(">", '\u003e').gsub("&", '\u0026'))
-        },
+        # Same serializer as json_encode -- the three names are one behaviour.
+        # The old indent argument is gone: PHP cannot honour an arbitrary indent
+        # (JSON_PRETTY_PRINT is fixed at four spaces), so honouring it here alone
+        # broke byte-parity for the one filter whose whole job is a wire format.
+        "to_json" => ->(v, *_a) { Frond.json_safe(v) },
+        "tojson"  => ->(v, *_a) { Frond.json_safe(v) },
         "js_escape" => ->(v, *_a) {
           Tina4::SafeString.new(
             v.to_s.gsub("\\", "\\\\").gsub("'", "\\'").gsub('"', '\\"')
