@@ -254,7 +254,7 @@ module Tina4
         end
 
         lines = source.lines.map(&:chomp)
-        loc = lines.count { |l| !l.strip.empty? && !l.strip.start_with?('#') }
+        loc = lines.count { |l| _code_line?(l) }
 
         # Extract imports (require/require_relative)
         imports = _extract_imports(lines)
@@ -509,7 +509,7 @@ module Tina4
       end
 
       lines = source.lines.map(&:chomp)
-      loc = lines.count { |l| !l.strip.empty? && !l.strip.start_with?('#') }
+      loc = lines.count { |l| _code_line?(l) }
 
       functions = _extract_functions(source, tokens, lines)
       functions.sort_by! { |f| -f["complexity"] }
@@ -763,6 +763,17 @@ module Tina4
       buffers
     end
 
+    # True for a line that counts toward LOC: not blank, not a comment.
+    #
+    # The single definition of the rule. Method LOC used to ignore it and return a
+    # raw line span while file LOC excluded blanks and comments, so `loc` meant
+    # two different things in one payload - the dashboard sized bubbles in one
+    # unit and printed the method table in the other.
+    def self._code_line?(line)
+      stripped = line.strip
+      !stripped.empty? && !stripped.start_with?("#")
+    end
+
     def self._extract_functions(source, _tokens, _lines)
       functions = []
       # Operate on a neutralised copy: string/regex/comment CONTENT is blanked
@@ -811,7 +822,9 @@ module Tina4
             # Find method end and calculate LOC
             method_start = i
             method_end = _find_method_end(lines, i)
-            method_loc = method_end - method_start + 1
+            # Code lines over the method's span, by the same rule as file LOC.
+            # Floor of 1: a one-line body must never report 0.
+            method_loc = [1, lines[method_start..method_end].count { |l| _code_line?(l) }].max
 
             # Calculate complexity for this method's body
             method_lines = lines[method_start..method_end]

@@ -117,6 +117,43 @@ RSpec.describe Tina4::Metrics do
     end
   end
 
+  # Method LOC used to be a raw line span while file LOC excluded blanks and
+  # comments, so `loc` meant two different things in one payload.
+  describe "method LOC counts code lines" do
+    it "excludes blank lines and comments" do
+      create_file("loc.rb", <<~RUBY)
+        class A
+          # a comment
+          def with_comments(x)
+
+            # another comment
+
+            return 1 if x
+            2
+          end
+        end
+      RUBY
+      result = Tina4::Metrics.full_analysis(@root)
+      by_name = (result["all_functions"] || []).to_h { |f| [f["name"], f["loc"]] }
+      # Code lines are def + modifier-if + 2 + end.
+      expect(by_name["A.with_comments"]).to eq(4)
+    end
+
+    it "never reports zero" do
+      create_file("loc.rb", "def f\n  1\nend\n")
+      result = Tina4::Metrics.full_analysis(@root)
+      expect(result["all_functions"].first["loc"]).to be >= 1
+    end
+
+    it "uses the same rule as file LOC" do
+      # A file that is one single method: the two numbers must agree, which only
+      # holds if both count the same thing.
+      create_file("loc.rb", "def only(x)\n  # comment\n\n  x\nend\n")
+      result = Tina4::Metrics.full_analysis(@root)
+      expect(result["all_functions"].first["loc"]).to eq(result["file_metrics"].first["loc"])
+    end
+  end
+
   describe ".quick_metrics" do
     it "returns error for missing directory" do
       result = Tina4::Metrics.quick_metrics("nonexistent")
