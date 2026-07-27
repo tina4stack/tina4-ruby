@@ -143,6 +143,26 @@ module Tina4
     IMPORT_AS_RE    = /\Aimport\s+["'](.+?)["']\s+as\s+(\w+)/
     CACHE_RE        = /\Acache\s+["'](.+?)["']\s*(\d+)?/
     SPACELESS_RE    = />\s+</
+
+    # Every tag that OPENS a construct. An unknown tag is a typo, and 3.13.89
+    # makes it raise rather than render its body: a mistyped guard --
+    # {% iff is_admin %} instead of {% if is_admin %} -- used to render the gated
+    # content UNCONDITIONALLY, so a reviewer saw a guard that was not there. Twig
+    # and Jinja2 both raise on an unknown tag; Frond now does too. There is no
+    # user-extension point for tags in any of the four frameworks, so an unknown
+    # name is always a mistake, never a plugin.
+    KNOWN_TAGS = %w[
+      autoescape block cache extends for from if import include live macro raw set
+      spaceless
+    ].freeze
+
+    # Terminators and branch keywords. These reach the tag dispatch only when
+    # stray (their own collector consumes them in the normal case), and a stray
+    # one keeps the old render-nothing behaviour -- see the comment at the raise.
+    TERMINATOR_TAGS = %w[
+      elif else elseif endautoescape endblock endcache endfor endif endlive
+      endmacro endraw endset endspaceless
+    ].freeze
     AUTOESCAPE_RE   = /\Aautoescape\s+(false|true)/
     STRIPTAGS_RE    = /<[^>]+>/
     THOUSANDS_RE    = /(\d)(?=(\d{3})+(?!\d))/
@@ -713,8 +733,17 @@ module Tina4
             result, i = handle_for(tokens, i, context)
             output << result
           when "set"
-            handle_set(content, context)
-            i += 1
+            # An assignment has an "="; without one this is the BLOCK form,
+            # {% set name %}...{% endset %}, which captures its rendered body.
+            # A bare include? is exact here, not a shortcut: the block form's tag
+            # content is only ever "set <name>", so an "=" anywhere -- even inside
+            # a quoted value like {% set m = "a = b" %} -- means assignment.
+            if content.include?("=")
+              handle_set(content, context)
+              i += 1
+            else
+              i = handle_set_block(tokens, i, context)
+            end
           when "include"
             if @sandbox && @allowed_tags && !@allowed_tags.include?("include")
               i += 1
@@ -746,6 +775,15 @@ module Tina4
             i += 1
           else
             i += 1
+            unless tag.empty? || TERMINATOR_TAGS.include?(tag)
+              raise ArgumentError,
+                    %(Frond: unknown tag "#{tag}" -- known tags are: #{KNOWN_TAGS.sort.join(", ")})
+            end
+            # An empty tag ({%  %}) or a stray terminator (an {% endif %} with
+            # no {% if %}): no output.
+            # Malformed, but it has always rendered nothing, and nothing is the
+            # safe answer -- unlike an unknown tag it cannot expose content that
+            # was meant to be gated.
           end
 
           if strip_a && i < tokens.length && tokens[i][0] == TEXT
@@ -2342,6 +2380,48 @@ module Tina4
         "GET", "/__frond/live/{name}",
         lambda { |request, response, name| Tina4::Frond.respond_live(request, response, name) }
       )
+    end
+
+    # {% set name %}...{% endset %} -- render the body and bind it.
+    #
+    # Emits nothing itself. The captured value is a SafeString because it is
+    # template output that has already been escaped on the way in; re-escaping it
+    # at {{ name }} would double-encode every entity. Twig and Jinja2 both mark
+    # the capture safe. Returns the index just past {% endset %}.
+    def handle_set_block(tokens, start, context)
+      content, _, _ = strip_tag(tokens[start][1])
+      name = (content.split[1] || "").strip
+
+      body_tokens = []
+      i = start + 1
+      depth = 0
+      while i < tokens.length
+        if tokens[i][0] == BLOCK
+          tc, _, _ = strip_tag(tokens[i][1])
+          tag = tc.split[0] || ""
+          if tag == "set" && !tc.include?("=")
+            depth += 1
+            body_tokens << tokens[i]
+          elsif tag == "endset"
+            if depth.zero?
+              i += 1
+              break
+            end
+            depth -= 1
+            body_tokens << tokens[i]
+          else
+            body_tokens << tokens[i]
+          end
+        else
+          body_tokens << tokens[i]
+        end
+        i += 1
+      end
+
+      unless name.empty?
+        context[name] = Tina4::SafeString.new(render_tokens(body_tokens.dup, context))
+      end
+      i
     end
 
     def handle_spaceless(tokens, start, context)

@@ -72,7 +72,7 @@ RSpec.describe "Frond expression parity" do
   # Guard the guard: a corpus entry with no expected value would otherwise pass
   # by never being asserted.
   it "has a corpus and an answer key that line up" do
-    expect(CORPUS.length).to eq(79)
+    expect(CORPUS.length).to eq(82)
     expect(CORPUS.map(&:first).sort).to eq(EXPECTED.keys.sort)
   end
 
@@ -178,6 +178,59 @@ RSpec.describe "Frond expression parity" do
       out = engine.render_string("{{ v|json_encode }}", { "v" => { "b" => inf } })
       ["Infinity", "NaN", "false", "=>"].each { |bad| expect(out).not_to include(bad) }
       expect(engine.render_string("{{ v|json_encode }}", { "v" => inf })).not_to eq("")
+    end
+
+    # 3.13.89: {% set name %}...{% endset %} binds the rendered body. Core
+    # syntax in BOTH reference engines, and broken identically in all four
+    # frameworks until now: the body rendered inline where it stood and the
+    # variable was never assigned.
+    it "captures a block set body instead of printing it" do
+      out = engine.render_string("{% set g %}Hi {{ n }}{% endset %}[{{ g }}]", { "n" => "Andre" })
+      expect(out).to eq("[Hi Andre]")
+      # Negative case: the old bug printed the body first and left the variable
+      # empty. Neither may happen.
+      expect(out).not_to start_with("Hi")
+      expect(out).not_to include("[]")
+      expect(engine.render_string("{% set g %}{% for i in [1,2] %}{{ i }}{% endfor %}{% endset %}[{{ g }}]", {}))
+        .to eq("[12]")
+      # Nesting: the inner endset must not close the outer block.
+      expect(engine.render_string("{% set a %}A{% set b %}B{% endset %}{{ b }}{% endset %}[{{ a }}]", {}))
+        .to eq("[AB]")
+    end
+
+    # The capture is already-escaped output, so it is not escaped again. Twig and
+    # Jinja2 both mark a captured block safe. A value interpolated INTO the body
+    # is still escaped on the way in -- escaping happens once, in the right place.
+    it "marks the capture safe and leaves the inline set form alone" do
+      expect(engine.render_string("{% set g %}{{ h }}{% endset %}[{{ g }}]", { "h" => "<b>&x</b>" }))
+        .to eq("[&lt;b&gt;&amp;x&lt;/b&gt;]")
+      expect(engine.render_string("{% set g %}<b>hi</b>{% endset %}[{{ g }}]", {})).to eq("[<b>hi</b>]")
+      # Negative case: the inline assignment form is untouched, including an "="
+      # inside a quoted value -- that must NOT be read as the block form.
+      expect(engine.render_string(%q({% set g = "x" %}[{{ g }}]), {})).to eq("[x]")
+      expect(engine.render_string(%q({% set g = "a = b" %}[{{ g }}]), {})).to eq("[a = b]")
+    end
+
+    # THE security-shaped one. {% iff user.is_admin %}...{% endiff %} used to
+    # render the admin block UNCONDITIONALLY: the unknown tag emitted nothing and
+    # its body was parsed as ordinary content, so a reviewer read a guard that was
+    # not there. Twig and Jinja2 both raise on an unknown tag. There is no
+    # user-extension point for tags, so an unknown name is always a mistake.
+    it "raises on an unknown tag instead of leaking its body" do
+      expect { engine.render_string("{% iff admin %}SECRET{% endiff %}", { "admin" => false }) }
+        .to raise_error(ArgumentError, /unknown tag "iff"/)
+      expect { engine.render_string("{% frobnicate 42 %}", {}) }
+        .to raise_error(ArgumentError, /unknown tag "frobnicate"/)
+      # Negative case 1: every real tag still parses.
+      expect(engine.render_string(
+        "{% if 1 %}x{% endif %}{% for i in [1] %}{{ i }}{% endfor %}" \
+        "{% raw %}{{ q }}{% endraw %}{% spaceless %} a {% endspaceless %}" \
+        "{% autoescape true %}y{% endautoescape %}", {}
+      )).to eq("x1{{ q }} a y")
+      # Negative case 2: a STRAY terminator is not an unknown tag. It stays a
+      # silent no-op -- it was always one, and unlike an unknown tag it cannot
+      # expose gated content.
+      expect(engine.render_string("A{% endif %}B", {})).to eq("AB")
     end
 
     it "treats json_encode, to_json and tojson as one behaviour" do
