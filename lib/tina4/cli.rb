@@ -467,12 +467,21 @@ module Tina4
     # ── start ─────────────────────────────────────────────────────────────
 
     def cmd_start(argv)
-      options = { port: nil, host: nil, dev: false, no_browser: false, no_reload: false, production: false }
+      options = { port: nil, host: nil, dev: false, no_browser: false, no_reload: false, production: false,
+                  managed: false }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: tina4ruby start [options]"
         opts.on("-p", "--port PORT", Integer, "Port (default: 7147)") { |v| options[:port] = v }
         opts.on("-h", "--host HOST", "Host (default: 0.0.0.0)") { |v| options[:host] = v }
         opts.on("-d", "--dev", "Enable dev mode with auto-reload") { options[:dev] = true }
+        # --managed says the Rust CLI owns this process (it supervises, watches
+        # files, and compiles SCSS, so the framework must not duplicate any of
+        # it). "managed" was already declared in boolean_flags above, but this
+        # parser never accepted it, so `tina4ruby serve --managed` died with
+        # OptionParser::InvalidOption -- which is precisely how the Rust CLI
+        # invokes PHP. That mismatch is why Ruby could not be launched through
+        # the shared launcher the other frameworks use.
+        opts.on("--managed", "Running under the tina4 CLI supervisor") { options[:managed] = true }
         opts.on("--production", "Use production server (Puma)") { options[:production] = true }
         opts.on("--no-browser", "Do not open browser on start") { options[:no_browser] = true }
         opts.on("--no-reload", "Disable file watcher / live-reload") { options[:no_reload] = true }
@@ -502,12 +511,10 @@ module Tina4
       root_dir = Dir.pwd
       Tina4.initialize!(root_dir)
 
-      # Register health check endpoint
-      Tina4::Health.register!
-
-      # Register the always-on Frond {% live %} refresh endpoint
-      # (GET /__frond/live/{name}) so server-rendered live blocks can poll/SSE.
-      Tina4::Frond.register_live_endpoint!
+      # Built-in routes (health, Frond live). Shared with Tina4.run! so the two
+      # entry points cannot drift again -- they did, and app.rb served 404 on
+      # /health for it. register! is idempotent, so calling it here is safe.
+      Tina4.register_builtin_routes!
 
       # Load route files
       load_routes(root_dir)

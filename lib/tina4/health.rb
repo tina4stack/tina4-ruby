@@ -16,11 +16,21 @@ module Tina4
       end
 
       def register!
+        # Idempotent by ASKING THE ROUTER, not by remembering. run! and the CLI
+        # both call this, and it can run more than once per process. A boolean
+        # flag looked equivalent and was not: Router.clear! (every spec, and
+        # any re-init) wipes the routes while the flag stays true, so /health
+        # silently vanishes for the rest of the run. Querying the router is
+        # self-healing -- cleared routes re-register, present ones don't
+        # duplicate.
+        return if Tina4::Router.find_route("/health", "GET")
+
         # Register at the configured path. The legacy "/health" path stays
         # registered for backward-compat.
         Tina4::Router.add("GET", path, method(:handle))
         Tina4::Router.add("GET", "/health", method(:handle)) unless path == "/health"
       end
+
 
       def handle(_request, response)
         now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
