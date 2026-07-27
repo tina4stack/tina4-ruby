@@ -46,13 +46,18 @@ RSpec.describe Tina4::Auth do
       expect(result[:payload]["user_id"]).to eq(42)
     end
 
-    it "includes iat, exp, nbf claims" do
+    # BREAKING, deliberate: "nbf" is no longer auto-stamped. It duplicated "iat",
+    # added no security, and caused clock-skew rejections; Python/PHP/Node never
+    # stamped it, so Ruby doing so was the parity break. A deliberately post-dated
+    # token is still fully supported by passing "nbf" in the payload yourself.
+    # Locked in with the full contract in spec/auth_jwt_algorithm_nbf_spec.rb.
+    it "includes iat and exp claims, and does NOT auto-stamp nbf" do
       token = Tina4::Auth.create_token({ "role" => "admin" })
       result = Tina4::Auth.validate_token(token)
       expect(result[:valid]).to be true
       expect(result[:payload]).to have_key("iat")
       expect(result[:payload]).to have_key("exp")
-      expect(result[:payload]).to have_key("nbf")
+      expect(result[:payload]).not_to have_key("nbf")
     end
 
     it "rejects an invalid token" do
@@ -346,14 +351,25 @@ RSpec.describe Tina4::Auth do
   end
 
   describe ".authenticate_request with explicit params" do
-    it "accepts secret: and algorithm: keyword params" do
+    # The algorithm: keyword used to be accepted and then dropped on the floor
+    # (it defaulted to a hardcoded "HS256" that was never read). It is now a real
+    # override, so this exercises it against an HMAC-signed token: the matching
+    # algorithm authenticates, a different one does not.
+    it "honours the algorithm: keyword param" do
+      keys_dir = Dir.mktmpdir("tina4_auth_no_rsa")   # empty -> use_hmac? is true
+      previous_secret = ENV["TINA4_SECRET"]
+      ENV["TINA4_SECRET"] = "authenticate-request-algorithm-secret"
+      Tina4::Auth.instance_variable_set(:@keys_dir, keys_dir)
+
       token = Tina4::Auth.get_token({ "user" => 2 })
-      result = Tina4::Auth.authenticate_request(
-        { "HTTP_AUTHORIZATION" => "Bearer #{token}" },
-        algorithm: "HS256"
-      )
-      # authenticate_request still uses env SECRET for validation
-      expect(result).not_to be_nil
+      headers = { "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+
+      expect(Tina4::Auth.authenticate_request(headers, algorithm: "HS256")).not_to be_nil
+      expect(Tina4::Auth.authenticate_request(headers, algorithm: "HS512")).to be_nil
+    ensure
+      previous_secret.nil? ? ENV.delete("TINA4_SECRET") : ENV["TINA4_SECRET"] = previous_secret
+      Tina4::Auth.instance_variable_set(:@keys_dir, nil)
+      FileUtils.rm_rf(keys_dir)
     end
 
     it "returns nil when secret param does not match" do

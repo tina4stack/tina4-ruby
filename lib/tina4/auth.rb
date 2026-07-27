@@ -21,6 +21,23 @@ module Tina4
       "run was NOT detected as dev - typically a container or CI without " \
       "TINA4_DEBUG set, or TINA4_ENV=production."
 
+    # Supported JWT algorithms. HMAC only — the whole family ships in OpenSSL, so
+    # this stays zero-gem. The header's "alg" is now always the one we actually
+    # sign with: the digest is looked up here rather than hardcoded to SHA256.
+    # Mirrors the Python master's _HMAC_ALGORITHMS (a name -> digest map); the
+    # value is the digest CLASS and a fresh instance is made per signature, so
+    # nothing about the digest state is shared between calls or threads.
+    HMAC_ALGORITHMS = {
+      "HS256" => OpenSSL::Digest::SHA256,
+      "HS384" => OpenSSL::Digest::SHA384,
+      "HS512" => OpenSSL::Digest::SHA512
+    }.freeze
+
+    # Seconds of clock skew tolerated on the "nbf" (not-before) claim. Without
+    # this a token minted on one host and validated on another a second behind is
+    # rejected for no real reason; RFC 7519 explicitly allows "a small leeway".
+    JWT_LEEWAY_SECONDS = 60
+
     class << self
       def setup(root_dir = Dir.pwd)
         @keys_dir = File.join(root_dir, KEYS_DIR)
@@ -111,62 +128,120 @@ module Tina4
         Base64.urlsafe_decode64(str)
       end
 
-      # Build a JWT using HS256 with Ruby's OpenSSL::HMAC (no gem needed)
-      def hmac_encode(claims, secret)
-        header = { "alg" => "HS256", "typ" => "JWT" }
+      # Pick the JWT algorithm: explicit argument, else TINA4_JWT_ALGORITHM, else
+      # HS256. A blank value counts as unset (parity with Python, where an empty
+      # env string is falsy and falls through).
+      #
+      # Raises ArgumentError naming the supported set when asked for one we cannot
+      # sign — Ruby's idiomatic equivalent of the master's ValueError. The env var
+      # was registered in the CLI's known_vars and then silently ignored here, so a
+      # user could set HS512 and still get HS256 tokens.
+      def resolve_algorithm(algorithm = nil)
+        candidate = [algorithm, ENV["TINA4_JWT_ALGORITHM"]]
+                    .find { |value| !value.nil? && !value.to_s.strip.empty? }
+        chosen = (candidate || "HS256").to_s.strip
+        unless HMAC_ALGORITHMS.key?(chosen)
+          raise ArgumentError,
+                "Unsupported JWT algorithm #{chosen.inspect}. Tina4 signs with " \
+                "#{HMAC_ALGORITHMS.keys.sort.join(', ')} (HMAC only, zero-dependency). " \
+                "Set TINA4_JWT_ALGORITHM to one of those."
+        end
+        chosen
+      end
+
+      # HMAC the signing input with the digest the algorithm actually names, so the
+      # header's "alg" can never disagree with the bytes we produced.
+      def hmac_signature(algorithm, secret, signing_input)
+        OpenSSL::HMAC.digest(HMAC_ALGORITHMS.fetch(algorithm).new, secret.to_s, signing_input)
+      end
+
+      # Build a JWT with Ruby's OpenSSL::HMAC (no gem needed). The algorithm is the
+      # explicit argument, else TINA4_JWT_ALGORITHM, else HS256 — and the header
+      # advertises exactly the algorithm that signed.
+      def hmac_encode(claims, secret, algorithm: nil)
+        alg = resolve_algorithm(algorithm)
+        header = { "alg" => alg, "typ" => "JWT" }
         segments = [
           base64url_encode(JSON.generate(header)),
           base64url_encode(JSON.generate(claims))
         ]
         signing_input = segments.join(".")
-        signature = OpenSSL::HMAC.digest("SHA256", secret, signing_input)
-        segments << base64url_encode(signature)
+        segments << base64url_encode(hmac_signature(alg, secret, signing_input))
         segments.join(".")
       end
 
-      # Decode and verify a JWT signed with HS256. Returns the payload hash or nil.
-      def hmac_decode(token, secret)
-        parts = token.split(".")
-        return nil unless parts.length == 3
+      # Decode and verify an HMAC-signed JWT. Returns the payload hash or nil.
+      #
+      # The algorithm is PINNED to our configured one rather than trusted from the
+      # token: a header asking to be verified as anything else — "none", a
+      # different HMAC, or an RSA alg we do not implement here — is rejected before
+      # any signature work.
+      def hmac_decode(token, secret, algorithm: nil)
+        # Resolved OUTSIDE the rescue below: an unsupported algorithm is a
+        # configuration error that must surface, not become a nil "invalid token".
+        alg = resolve_algorithm(algorithm)
 
-        header_json = base64url_decode(parts[0])
-        header = JSON.parse(header_json)
-        return nil unless header["alg"] == "HS256"
+        begin
+          parts = token.split(".")
+          return nil unless parts.length == 3
 
-        # Verify signature
-        signing_input = "#{parts[0]}.#{parts[1]}"
-        expected_sig = OpenSSL::HMAC.digest("SHA256", secret, signing_input)
-        actual_sig = base64url_decode(parts[2])
+          header_json = base64url_decode(parts[0])
+          header = JSON.parse(header_json)
+          return nil unless header["alg"] == alg
 
-        # Constant-time comparison to prevent timing attacks
-        return nil unless OpenSSL.fixed_length_secure_compare(expected_sig, actual_sig)
+          # Verify signature
+          signing_input = "#{parts[0]}.#{parts[1]}"
+          expected_sig = hmac_signature(alg, secret, signing_input)
+          actual_sig = base64url_decode(parts[2])
 
-        payload = JSON.parse(base64url_decode(parts[1]))
+          # Constant-time comparison to prevent timing attacks. Lengths must match
+          # first — fixed_length_secure_compare raises on a length mismatch, which
+          # a forged signature of the wrong digest size would trigger.
+          return nil unless expected_sig.bytesize == actual_sig.bytesize
+          return nil unless OpenSSL.fixed_length_secure_compare(expected_sig, actual_sig)
 
-        # Check expiry
-        now = Time.now.to_i
-        return nil if payload["exp"] && now >= payload["exp"]
-        return nil if payload["nbf"] && now < payload["nbf"]
+          payload = JSON.parse(base64url_decode(parts[1]))
 
-        payload
-      rescue ArgumentError, JSON::ParserError, OpenSSL::HMACError
-        nil
+          # Check expiry
+          now = Time.now.to_i
+          return nil if payload["exp"] && now >= payload["exp"]
+
+          # "nbf" (not-before): a post-dated token is not valid yet. Tolerate
+          # JWT_LEEWAY_SECONDS of clock skew so a token minted on a host a second
+          # ahead is not rejected for nothing.
+          return nil if payload["nbf"] && now + JWT_LEEWAY_SECONDS < payload["nbf"]
+
+          payload
+        rescue ArgumentError, JSON::ParserError, OpenSSL::HMACError
+          nil
+        end
       end
 
       # ── Token API (auto-selects HS256 or RS256) ─────────────────
 
-      def get_token(payload, expires_in: 60, secret: nil)
+      # Mint a signed JWT.
+      #
+      # `algorithm:` selects the HMAC algorithm (else TINA4_JWT_ALGORITHM, else
+      # HS256); an unsupported one raises ArgumentError rather than quietly
+      # downgrading. It applies to the HMAC path only — the legacy RS256 path
+      # (RSA keys present in .keys/) is unaffected.
+      #
+      # BREAKING (deliberate): no "nbf" claim is stamped. It duplicated "iat",
+      # added no security, and created clock-skew rejections; RFC 7519 nbf is for
+      # deliberately post-dated tokens, which stays fully supported when the caller
+      # passes its own "nbf" in the payload. Python/PHP/Node never auto-stamped it,
+      # so Ruby doing so was the parity break.
+      def get_token(payload, expires_in: 60, secret: nil, algorithm: nil)
         now = Time.now.to_i
         claims = payload.merge(
           "iat" => now,
-          "exp" => now + (expires_in * 60).to_i,
-          "nbf" => now
+          "exp" => now + (expires_in * 60).to_i
         )
 
         if secret
-          hmac_encode(claims, secret)
+          hmac_encode(claims, secret, algorithm: algorithm)
         elsif use_hmac?
-          hmac_encode(claims, hmac_secret)
+          hmac_encode(claims, hmac_secret, algorithm: algorithm)
         else
           ensure_keys
           require "jwt"
@@ -247,16 +322,28 @@ module Tina4
         nil
       end
 
+      # Validate and re-issue a token with the same claims.
+      #
+      # Only "iat"/"exp" are dropped (they are re-stamped). A caller-supplied "nbf"
+      # is PRESERVED — matching the Python master, and keeping the promise made
+      # when auto-nbf was removed: a deliberately post-dated claim is the issuer's,
+      # and a refresh must not quietly erase it.
       def refresh_token(token, expires_in: 60)
         return nil unless valid_token(token)
 
         payload = get_payload(token)
         return nil unless payload
-        payload = payload.reject { |k, _| %w[iat exp nbf].include?(k) }
+        payload = payload.reject { |k, _| %w[iat exp].include?(k) }
         get_token(payload, expires_in: expires_in)
       end
 
-      def authenticate_request(headers, secret: nil, algorithm: "HS256")
+      # Extract and validate auth from request headers.
+      #
+      # `secret:` and `algorithm:` are real overrides. `algorithm:` used to be
+      # accepted with a hardcoded "HS256" default and then dropped on the floor, so
+      # an explicit argument silently lost to TINA4_JWT_ALGORITHM — the precedence
+      # is now honoured here too (explicit > env > HS256).
+      def authenticate_request(headers, secret: nil, algorithm: nil)
         auth_header = headers["HTTP_AUTHORIZATION"] || headers["Authorization"] || ""
         return nil unless auth_header =~ /\ABearer\s+(.+)\z/i
 
@@ -271,9 +358,10 @@ module Tina4
           return { "api_key" => true }
         end
 
-        # If a custom secret is provided, validate against it directly
-        if secret
-          payload = hmac_decode(token, secret)
+        # If a custom secret and/or algorithm is provided, validate against those
+        # directly rather than this process's env-resolved defaults.
+        if secret || algorithm
+          payload = hmac_decode(token, secret || hmac_secret, algorithm: algorithm)
           return payload ? payload : nil
         end
 
