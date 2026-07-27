@@ -48,5 +48,19 @@
       "features": 4,
       "server": "Puma"
     }
-  ]
+  ],
+  "templates": {
+    "measured": true,
+    "runtime": "Ruby 4.0.2",
+    "output_equivalence": "verified",
+    "engines": {
+      "Frond (Tina4)": 1172,
+      "ERB (stdlib)": 66667,
+      "Erubi (Rails)": 65218
+    },
+    "aot_compile_layer": "NOT IMPLEMENTED in Ruby",
+    "fastest_rival": "ERB (stdlib)",
+    "frond_slower_by": 56.87,
+    "frond_faster_by": null
+  }
 }

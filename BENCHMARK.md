@@ -19,6 +19,43 @@ Real HTTP benchmarks — identical JSON and 100-item list endpoints. All framewo
 
 ---
 
+## 1b. Template rendering, Frond vs ERB and Erubi
+
+**Date:** 2026-07-27 | **Machine:** Apple Silicon (ARM64), macOS | **Ruby:** 4.0.2 | **Tool:** `benchmarks/bench_templates.rb` (p50 over batched samples, min 0.25s / 200 iterations)
+
+This category used to be missing, and its absence flattered us. Sections 1 and 2 above
+measure request throughput and feature count, where Tina4 competes well. Neither says
+anything about template rendering, the one axis where Frond competes head-on with the
+engines it replaced. Here are the numbers, and they are the worst of the four languages.
+
+Same page (20-row product list: loop, index, even/odd class, uppercase, 2-decimal
+money, conditional footer). **Every engine's output is compared and proven identical
+before anything is timed**; a mismatch aborts the run. Each template is compiled ONCE
+outside the clock, so this is steady-state render throughput, not compilation.
+
+| Engine | Renders/s (p50) | Renders/s (mean) | Deps |
+|--------|:---------------:|:----------------:|:----:|
+| ERB (stdlib) | **66,667** | 50,403 | 0 (stdlib) |
+| Erubi (what Rails uses) | **65,218** | 50,082 | 1 |
+| **Frond (Tina4)** | **1,172** | 1,095 | **0** |
+
+**Key takeaway, stated plainly: Frond is roughly 55x slower than ERB, which ships in
+Ruby's own standard library.** Caveat where the data demands one: ERB and Erubi land
+within noise of each other and near a clock-quantisation boundary, so the exact multiple
+is soft, the order of magnitude is not.
+
+Ruby is the worst of the four for a concrete reason the harness reports: **Ruby has no
+AOT compile-to-closure layer**, while PHP (`FrondCompiler`) and Python
+(`frond/compiler.py`) both do. ERB compiles a template into a real Ruby method; Frond
+walks a tree and calls back into engine primitives per hole.
+
+What Frond does buy is the same template syntax across all four Tina4 languages. That is
+a real trade, but it is a trade, not a win. Closing this gap is tracked as the
+ahead-of-time compile layer (ADR-0001), and Ruby is the strongest case for it.
+
+Reproduce: `bundle config set --local with "databases:benchmarks" && bundle install && bundle exec ruby benchmarks/bench_templates.rb`
+
+
 ## 2. Feature Comparison (38 features)
 
 Ships with core install, no extra packages needed.
