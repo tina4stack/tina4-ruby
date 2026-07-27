@@ -1,0 +1,34 @@
+{
+  "language": "ruby",
+  "runtime": "Ruby 4.0.2",
+  "page": {
+    "items": 20,
+    "engines": [
+      "Frond (Tina4)",
+      "ERB (stdlib)",
+      "Erubi (Rails)"
+    ]
+  },
+  "output_equivalence": "verified",
+  "aot_compile_layer": "NOT IMPLEMENTED in Ruby",
+  "results": {
+    "Frond (Tina4)": {
+      "p50_ops_sec": 1172.3329756712442,
+      "mean_ops_sec": 1095.3471742339395,
+      "iterations": 274,
+      "batches": 274
+    },
+    "ERB (stdlib)": {
+      "p50_ops_sec": 66666.6764352071,
+      "mean_ops_sec": 50402.86146331058,
+      "iterations": 12530,
+      "batches": 6265
+    },
+    "Erubi (Rails)": {
+      "p50_ops_sec": 65217.55490767735,
+      "mean_ops_sec": 50081.560669111095,
+      "iterations": 12465,
+      "batches": 4155
+    }
+  }
+}

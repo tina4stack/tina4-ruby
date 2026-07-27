@@ -23,6 +23,23 @@ group :databases, optional: true do
   gem "redis", "~> 5.0"
 end
 
+# Competitor template engines for the Frond throughput comparison
+# (benchmarks/bench_templates.rb). Erubi is the ERB implementation Rails uses, so
+# it is the engine Frond is actually measured against; plain ERB needs nothing
+# because it is stdlib. OPTIONAL on purpose: a benchmark dependency must never be
+# something a plain `bundle install` or the gemspec drags in -- the framework core
+# stays zero-dependency.
+#
+# Opt in by APPENDING to the groups you already have, colon-separated -- do not pass
+# `benchmarks` alone, because `bundle config set --local with` REPLACES the value and
+# would silently drop :databases (which is how the mysql2/tiny_tds/redis specs go quiet):
+#   bundle config set --local with "databases:benchmarks"
+# BUNDLE_WITH in the environment does NOT help here: a local .bundle/config `with`
+# setting outranks it, so an existing local value must be replaced, not overridden.
+group :benchmarks, optional: true do
+  gem "erubi", "~> 1.13"
+end
+
 # The `fb` gem (native Firebird driver) lives in its OWN optional group, kept
 # SEPARATE from :databases on purpose: the main `test` job installs :databases
 # but does NOT apt-install libfbclient/firebird-dev, so folding fb into
