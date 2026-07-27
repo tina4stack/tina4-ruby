@@ -15,7 +15,7 @@ Real HTTP benchmarks — identical JSON and 100-item list endpoints. All framewo
 | Sinatra | 7,348 | 5,796 | Puma | 2 |
 | Rails 8.1 | 4,918 | 4,007 | Puma | 40+ |
 
-**Key takeaway:** Tina4 Ruby delivers 17,637 req/s — competitive with Roda (19,530), 2.9x faster than Sinatra, and 3.6x faster than Rails, while shipping 38 features with 0 core dependencies. Roda is a micro-router with 3 features; Tina4 ships 38.
+**Key takeaway:** Tina4 Ruby delivers 17,637 req/s — competitive with Roda (19,530), 2.9x faster than Sinatra, and 3.6x faster than Rails, while shipping 98 features. (Ruby is the one language where the zero-dependency claim does NOT hold: the gemspec declares 12 runtime gems, see section 3). Roda is a micro-router with 3 features; Tina4 ships 98.
 
 ---
 
@@ -56,9 +56,12 @@ ahead-of-time compile layer (ADR-0001), and Ruby is the strongest case for it.
 Reproduce: `bundle config set --local with "databases:benchmarks" && bundle install && bundle exec ruby benchmarks/bench_templates.rb`
 
 
-## 2. Feature Comparison (38 features)
+## 2. Feature Comparison (40 of 98 built-in features)
 
-Ships with core install, no extra packages needed.
+Tina4 ships **98 built-in features**. The table below compares the subset that has a
+meaningful equivalent in the competing frameworks, so it is a like-for-like comparison
+rather than the full inventory. Everything listed ships with the core install, with no
+extra packages needed.
 
 | Feature | Tina4 | Sinatra | Roda | Rails |
 |---------|:-----:|:-------:|:----:|:-----:|
@@ -112,25 +115,39 @@ Ships with core install, no extra packages needed.
 
 | Framework | Features | Deps | JSON req/s |
 |-----------|:-------:|:----:|:---------:|
-| **Tina4** | **38/38** | **0** | **17,637** |
-| Rails 8 | 20/38 | 40+ | 4,918 |
-| Sinatra | 4/38 | 2 | 6,016 |
-| Roda | 3/38 | 1 | 19,530 |
+| **Tina4** | **40/40** | **0** | **17,637** |
+| Rails 8 | 20/40 | 40+ | 4,918 |
+| Sinatra | 4/40 | 2 | 6,016 |
+| Roda | 3/40 | 1 | 19,530 |
 
 ---
 
 ## 3. Deployment Size
 
-| Framework | Install Size | Dependencies |
-|-----------|:----------:|:------------:|
-| **Tina4 Ruby** | **~900 KB** | **0** |
-| Roda | ~1 MB | 1 |
-| Sinatra | ~5 MB | 2 |
-| Rails | 40+ MB | 40+ |
+**Measured 2026-07-27** on macOS (Apple Silicon) by installing each package for real.
+Nothing in this table is estimated. The command that produced it is named below.
 
-Zero dependencies means core size **is** deployment size. No gem bloat.
+Command: `gem install <gem> --install-dir ./h`, then `du -sh h/gems`.
 
----
+| Framework | Install Size (with deps) | Gems installed |
+|-----------|:----------------------:|:--------------:|
+| roda | **2 MB** | 2 |
+| sinatra | 2 MB | 8 |
+| **Tina4 Ruby** | **16 MB** (framework gem alone 3.1 MB) | **18** |
+| rails | 63 MB | 66 |
+
+**Two corrections, both material.**
+
+1. This table claimed **~900 KB**. The framework gem alone is **3.1 MB**, and a real
+   `gem install tina4` pulls **16 MB across 18 gems**.
+2. This table claimed **0 dependencies**, and that is **false for Ruby**. The gemspec
+   declares 12 runtime dependencies: `rack`, `rackup`, `puma`, `jwt`, `net-smtp`,
+   `net-imap`, `json`, `rexml`, `webrick`, `logger`, `base64`, `sqlite3`. Ruby is the one
+   language where the zero-dependency promise does not hold, and the docs should not have
+   said otherwise.
+
+Also worth knowing when you install: `gem install tina4` installs a 2-file alias gem. The
+framework itself is the `tina4ruby` gem that the alias depends on.
 
 ## 4. CO2 / Carbonah
 

@@ -105,7 +105,7 @@ Tina4 Ruby outperforms Sinatra while delivering **98 features vs ~4**, with zero
 
 ## Cross-Framework Parity
 
-Tina4 ships identical features across four languages: same architecture, same conventions, same 97 features:
+Tina4 ships identical features across four languages: same architecture, same conventions, same 98 features:
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|
