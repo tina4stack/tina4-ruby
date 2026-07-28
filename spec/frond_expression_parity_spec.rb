@@ -72,7 +72,7 @@ RSpec.describe "Frond expression parity" do
   # Guard the guard: a corpus entry with no expected value would otherwise pass
   # by never being asserted.
   it "has a corpus and an answer key that line up" do
-    expect(CORPUS.length).to eq(82)
+    expect(CORPUS.length).to eq(84)
     expect(CORPUS.map(&:first).sort).to eq(EXPECTED.keys.sort)
   end
 
