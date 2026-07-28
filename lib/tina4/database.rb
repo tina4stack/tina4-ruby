@@ -542,19 +542,21 @@ module Tina4
     end
     private :write_affected
 
-    # The table's primary-key column, introspected once and cached.
+    # The table's primary-key columns, introspected once and cached.
+    #
+    # Returns an ARRAY because a primary key may span several columns. A
+    # composite key is still one primary key; it just has more than one column.
+    # Returns [] when the table has no primary key or cannot be introspected.
     #
     # Uses the cross-engine columns() contract (v3.13.14, #48), which reports
-    # :primary_key per column on every driver. Returns nil when the table has no
-    # primary key or cannot be introspected.
+    # :primary_key per column on every driver.
     def primary_key(table)
       @pk_cache ||= {}
       unless @pk_cache.key?(table)
         @pk_cache[table] = begin
-          col = columns(table).find { |c| c[:primary_key] }
-          col && col[:name].to_s
+          columns(table).select { |c| c[:primary_key] }.map { |c| c[:name].to_s }
         rescue StandardError
-          nil
+          []
         end
       end
       @pk_cache[table]
@@ -585,29 +587,36 @@ module Tina4
       data = data.dup
 
       if where_sql.empty?
-        pk = primary_key(table)
-        pk_key = nil
-        unless pk.nil?
-          pk_key = pk if data.key?(pk)
-          pk_key = pk.to_sym if pk_key.nil? && data.key?(pk.to_sym)
+        pk_columns = primary_key(table)
+        # Resolve each key column to whichever form the caller used (String or
+        # Symbol); nil marks one that is absent from the data.
+        pk_keys = pk_columns.map do |col|
+          if data.key?(col) then col
+          elsif data.key?(col.to_sym) then col.to_sym
+          end
         end
+        missing = pk_columns.each_with_index.reject { |_, i| pk_keys[i] }.map(&:first)
 
-        if pk_key.nil?
+        if pk_columns.empty? || !missing.empty?
           raise ArgumentError,
-                "update requires a filter or a primary key in the data; pass a " \
-                "filter explicitly to update multiple rows (table=#{table.inspect}, " \
-                "primary key=#{pk.inspect}). To empty a table use truncate(#{table.inspect})."
+                "update requires a filter or the complete primary key in the data; " \
+                "pass a filter explicitly to update multiple rows " \
+                "(table=#{table.inspect}, primary key=#{pk_columns.inspect}, " \
+                "missing from data=#{missing.inspect}). " \
+                "To empty a table use truncate(#{table.inspect})."
         end
 
-        pk_value = data.delete(pk_key)
+        # EVERY key column goes into the WHERE. A composite key built from only
+        # its first column would match every row sharing that value - the
+        # data-loss bug this method exists to prevent, reintroduced.
+        where_params = pk_keys.map { |k| data.delete(k) }
         if data.empty?
           raise ArgumentError,
-                "update was given only the primary key #{pk.inspect} and no columns " \
-                "to set (table=#{table.inspect})"
+                "update was given only the primary key #{pk_columns.inspect} and no " \
+                "columns to set (table=#{table.inspect})"
         end
 
-        where_sql = "#{pk} = #{current_driver.placeholder}"
-        where_params = [pk_value]
+        where_sql = pk_columns.map { |c| "#{c} = #{current_driver.placeholder}" }.join(" AND ")
       end
 
       cache_invalidate if @cache_enabled

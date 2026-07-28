@@ -104,6 +104,65 @@ RSpec.describe "write-path contract" do
   # --- primary-key introspection ----------------------------------------
 
   it "introspects the primary key rather than assuming id" do
-    expect(db.primary_key("t")).to eq("id")
+    expect(db.primary_key("t")).to eq(["id"])
+  end
+
+  # --- composite primary keys --------------------------------------------
+  # A PK resolver returning only the FIRST key column reintroduces the whole
+  # data-loss bug for composite-key tables: WHERE order_id = 1 matches every
+  # row in that order.
+
+  context "with a composite primary key" do
+    let(:composite) do
+      database = Tina4::Database.new("sqlite:///#{File.join(@dir, 'composite.db')}")
+      database.execute(<<~SQL)
+        CREATE TABLE order_items (
+          order_id INTEGER, product_id INTEGER, qty INTEGER,
+          PRIMARY KEY (order_id, product_id))
+      SQL
+      database.insert("order_items", { "order_id" => 1, "product_id" => 5, "qty" => 1 })
+      database.insert("order_items", { "order_id" => 1, "product_id" => 6, "qty" => 2 })
+      database.insert("order_items", { "order_id" => 2, "product_id" => 5, "qty" => 3 })
+      database
+    end
+
+    def items(database)
+      database
+        .fetch("SELECT * FROM order_items ORDER BY order_id, product_id")
+        .records.map { |r| r.to_h.transform_keys(&:to_s) }
+    end
+
+    it "returns every key column" do
+      expect(composite.primary_key("order_items")).to eq(%w[order_id product_id])
+    end
+
+    it "negative: never returns only the first key column" do
+      expect(composite.primary_key("order_items").length).to eq(2)
+    end
+
+    it "a composite-keyed update touches exactly one row" do
+      composite.update("order_items", { "order_id" => 1, "product_id" => 5, "qty" => 99 })
+      expect(items(composite)).to eq([
+                                       { "order_id" => 1, "product_id" => 5, "qty" => 99 },
+                                       { "order_id" => 1, "product_id" => 6, "qty" => 2 },
+                                       { "order_id" => 2, "product_id" => 5, "qty" => 3 }
+                                     ])
+    end
+
+    it "negative: a partial composite key raises rather than matching many" do
+      before = items(composite)
+      expect { composite.update("order_items", { "order_id" => 1, "qty" => 42 }) }
+        .to raise_error(ArgumentError, /primary key/)
+      expect(items(composite)).to eq(before),
+                                  "a partial composite key modified rows - it matched on the first column"
+    end
+
+    it "delete accepts a full composite key" do
+      composite.delete("order_items", { "order_id" => 1, "product_id" => 5 })
+      expect(items(composite)).to eq([
+                                       { "order_id" => 1, "product_id" => 6, "qty" => 2 },
+                                       { "order_id" => 2, "product_id" => 5, "qty" => 3 }
+                                     ])
+    end
   end
 end

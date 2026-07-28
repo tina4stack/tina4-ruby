@@ -169,7 +169,10 @@ module Tina4
             type: r[:type],
             nullable: r[:notnull] == 0,
             default: r[:dflt_value],
-            primary_key: r[:pk] == 1
+            # PRAGMA table_info reports `pk` as the 1-BASED POSITION within the
+            # primary key, not a boolean: a composite key gives pk=1, pk=2, ...
+            # Testing `== 1` reported only the first column of a composite key.
+            primary_key: r[:pk].to_i.positive?
           }
         end
       end
