@@ -191,6 +191,16 @@ db.execute(sql, params = []) -> true | DatabaseResult  # RAISES on SQL error (ne
 db.insert(table, data) -> DatabaseResult   # single row OR list-of-rows batch
 db.update(table, data, filter = {}, params = nil) -> DatabaseResult
 db.delete(table, filter = {}, params = nil) -> DatabaseResult
+db.truncate(table) -> DatabaseResult       # remove every row, explicitly
+db.primary_key(table) -> String | nil      # introspected PK column (cached)
+    # A WRITE WITH NO FILTER IS AN ERROR, not a full-table operation (3.13.94).
+    # update(table, data) with no filter takes the primary key out of `data` and
+    # uses it as the WHERE clause; with neither a filter nor a PK in `data` it
+    # RAISES ArgumentError instead of overwriting every row. delete(table) with no
+    # filter RAISES too — truncate(table) is the explicit whole-table spelling.
+    # The PK is introspected via the cross-engine columns() contract (#48), not
+    # assumed to be "id". Both filter forms work on every driver: a Hash
+    # ({"id" => 1}) or a String + params ("id = ?", [1]).
     # insert/update/delete return a DatabaseResult (parity with the Python master +
     # Node), carrying .affected_rows and .last_id (last_id set on insert only; nil for
     # update/delete). It is truthy and .success? is true when no error. A single-row

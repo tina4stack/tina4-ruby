@@ -542,57 +542,113 @@ module Tina4
     end
     private :write_affected
 
-    def update(table, data, filter = {}, params = nil)
-      cache_invalidate if @cache_enabled
-      drv = current_driver
-
-      # String filter with explicit params array
-      if filter.is_a?(String) && !params.nil?
-        set_parts = data.keys.map { |k| "#{k} = #{drv.placeholder}" }
-        sql = "UPDATE #{table} SET #{set_parts.join(', ')}"
-        sql += " WHERE #{filter}" unless filter.empty?
-        drv.execute(sql, data.values + Array(params))
-        autocommit_standalone_write(drv)
-        return Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
+    # The table's primary-key column, introspected once and cached.
+    #
+    # Uses the cross-engine columns() contract (v3.13.14, #48), which reports
+    # :primary_key per column on every driver. Returns nil when the table has no
+    # primary key or cannot be introspected.
+    def primary_key(table)
+      @pk_cache ||= {}
+      unless @pk_cache.key?(table)
+        @pk_cache[table] = begin
+          col = columns(table).find { |c| c[:primary_key] }
+          col && col[:name].to_s
+        rescue StandardError
+          nil
+        end
       end
-
-      set_parts = data.keys.map { |k| "#{k} = #{drv.placeholder}" }
-      where_parts = filter.keys.map { |k| "#{k} = #{drv.placeholder}" }
-      sql = "UPDATE #{table} SET #{set_parts.join(', ')}"
-      sql += " WHERE #{where_parts.join(' AND ')}" unless filter.empty?
-      values = data.values + filter.values
-      drv.execute(sql, values)
-      autocommit_standalone_write(drv)
-      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
+      @pk_cache[table]
     end
 
-    def delete(table, filter = {}, params = nil)
+    # Normalise a filter to [sql, params], accepting a Hash or a String.
+    def as_where(filter, params)
+      return ["", []] if filter.nil?
+
+      if filter.is_a?(Hash)
+        return ["", []] if filter.empty?
+
+        drv = current_driver
+        [filter.keys.map { |k| "#{k} = #{drv.placeholder}" }.join(" AND "), filter.values]
+      else
+        [filter.to_s, Array(params)]
+      end
+    end
+    private :as_where
+
+    # Update rows. A write with no filter is an error, not a full-table write.
+    #
+    # With no explicit filter the primary key is taken out of `data` and used as
+    # the WHERE clause. With neither a filter nor a primary key in `data` this
+    # raises rather than overwriting every row (audit feature 4, P1).
+    def update(table, data, filter = {}, params = nil)
+      where_sql, where_params = as_where(filter, params)
+      data = data.dup
+
+      if where_sql.empty?
+        pk = primary_key(table)
+        pk_key = nil
+        unless pk.nil?
+          pk_key = pk if data.key?(pk)
+          pk_key = pk.to_sym if pk_key.nil? && data.key?(pk.to_sym)
+        end
+
+        if pk_key.nil?
+          raise ArgumentError,
+                "update requires a filter or a primary key in the data; pass a " \
+                "filter explicitly to update multiple rows (table=#{table.inspect}, " \
+                "primary key=#{pk.inspect}). To empty a table use truncate(#{table.inspect})."
+        end
+
+        pk_value = data.delete(pk_key)
+        if data.empty?
+          raise ArgumentError,
+                "update was given only the primary key #{pk.inspect} and no columns " \
+                "to set (table=#{table.inspect})"
+        end
+
+        where_sql = "#{pk} = #{current_driver.placeholder}"
+        where_params = [pk_value]
+      end
+
       cache_invalidate if @cache_enabled
       drv = current_driver
+      set_parts = data.keys.map { |k| "#{k} = #{drv.placeholder}" }
+      sql = "UPDATE #{table} SET #{set_parts.join(', ')} WHERE #{where_sql}"
+      drv.execute(sql, data.values + where_params)
+      autocommit_standalone_write(drv)
+      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv), last_id: nil)
+    end
 
+    # Delete rows. A filterless delete raises; use truncate() to empty a table.
+    def delete(table, filter = {}, params = nil)
       # List of hashes — delete each row
       if filter.is_a?(Array)
         total = 0
         filter.each { |row| total += delete(table, row).affected_rows }
-        return Tina4::DatabaseResult.new([], affected_rows: total)
+        return Tina4::DatabaseResult.new([], affected_rows: total, last_id: nil)
       end
 
-      # String filter — raw WHERE clause with optional params
-      if filter.is_a?(String)
-        sql = "DELETE FROM #{table}"
-        sql += " WHERE #{filter}" unless filter.empty?
-        drv.execute(sql, Array(params))
-        autocommit_standalone_write(drv)
-        return Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
+      where_sql, where_params = as_where(filter, params)
+      if where_sql.empty?
+        raise ArgumentError,
+              "delete requires a filter (table=#{table.inspect}). " \
+              "To remove every row use truncate(#{table.inspect})."
       end
 
-      # Hash filter — build WHERE from keys
-      where_parts = filter.keys.map { |k| "#{k} = #{drv.placeholder}" }
-      sql = "DELETE FROM #{table}"
-      sql += " WHERE #{where_parts.join(' AND ')}" unless filter.empty?
-      drv.execute(sql, filter.values)
+      cache_invalidate if @cache_enabled
+      drv = current_driver
+      drv.execute("DELETE FROM #{table} WHERE #{where_sql}", where_params)
       autocommit_standalone_write(drv)
-      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv))
+      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv), last_id: nil)
+    end
+
+    # Remove every row. The explicit spelling of a whole-table delete.
+    def truncate(table)
+      cache_invalidate if @cache_enabled
+      drv = current_driver
+      drv.execute("DELETE FROM #{table} WHERE 1 = 1", [])
+      autocommit_standalone_write(drv)
+      Tina4::DatabaseResult.new([], affected_rows: write_affected(drv), last_id: nil)
     end
 
     # Return the last execute() error message, or nil.
