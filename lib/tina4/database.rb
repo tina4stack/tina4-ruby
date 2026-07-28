@@ -5,6 +5,15 @@ require "digest"
 require "weakref"
 
 module Tina4
+  # Raised at the first USE of a database whose connect failed.
+  #
+  # Connecting is deliberately non-fatal at boot (log loud, then degrade - the same
+  # policy the session backends follow), so the failure has to resurface somewhere.
+  # It used to resurface as a nil dereference inside the driver
+  # ("NoMethodError: private method `exec' called for nil:NilClass"), which named
+  # neither the database nor the reason. This carries both.
+  class DatabaseConnectionError < StandardError; end
+
   # Thread-safe connection pool with round-robin rotation.
   # Connections are created lazily on first use.
   class ConnectionPool
@@ -191,6 +200,9 @@ module Tina4
                      pool
                    end
       @connected = false
+      # Set by #connect when connecting fails; re-raised with context by
+      # #current_driver so the first real call says what went wrong.
+      @connect_error = nil
 
       # Per-instance thread-local key for the transaction adapter pin.
       # Without this pin, every Database method call rotates to a different
@@ -301,9 +313,21 @@ module Tina4
       @driver.autocommit = @autocommit if @driver.respond_to?(:autocommit=)
 
       Tina4::Log.info("Database connected: #{@driver_name}")
+      @connect_error = nil
     rescue => e
       Tina4::Log.error("Database connection failed: #{e.message}")
       @connected = false
+      # REMEMBER the cause. Logging alone is not enough: the driver's own
+      # connection stays nil, so the next call used to die inside the driver as
+      #   NoMethodError: private method `exec' called for nil:NilClass
+      # which names neither the database it failed to reach nor why. That cost
+      # real debugging time when a missing test database looked like a driver
+      # bug. current_driver re-raises this with context instead.
+      #
+      # Boot still does NOT crash on an unreachable database (deliberate, and
+      # the same log-loud-then-degrade policy the session backends use) - the
+      # error surfaces at the first actual USE.
+      @connect_error = e
     end
 
     def close
@@ -324,11 +348,32 @@ module Tina4
     def current_driver
       pinned = Thread.current[@tx_pin_key]
       return pinned if pinned
+
+      # Fail with the REAL reason, at the point of use. Without this the caller
+      # gets a nil dereference from deep inside the driver and has to guess.
+      raise Tina4::DatabaseConnectionError, connect_error_message if @connect_error
+
       if @pool
         @pool.checkout
       else
         @driver
       end
+    end
+
+    # A message that says which database, on which driver, and why - the three
+    # things the old nil-dereference told you nothing about.
+    def connect_error_message
+      target = safe_connection_target
+      "Database not connected (#{@driver_name}#{target.empty? ? '' : " -> #{target}"}): " \
+        "#{@connect_error.class}: #{@connect_error.message}"
+    end
+
+    # The connection string with any password stripped, so a raised error can name
+    # the target without leaking a credential into a log or an HTTP 500 body.
+    def safe_connection_target
+      return '' if @connection_string.nil? || @connection_string.empty?
+
+      @connection_string.sub(%r{://([^:/@]+):[^@]*@}, '://\1:***@')
     end
 
     # ── Query Cache ──────────────────────────────────────────────
