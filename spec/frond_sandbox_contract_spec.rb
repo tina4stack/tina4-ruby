@@ -100,7 +100,34 @@ RSpec.describe "Frond sandbox contract" do
     end
   end
 
-  # --- pair 5: a denied tag consumes its body ---------------------------
+  # --- pair 5: escape is revocable too ----------------------------------
+  # Ruby is immune to this BY CONSTRUCTION and these examples keep it that way.
+  # The escape filter returns a Tina4::SafeString (frond.rb), so escaping is marked
+  # by a value the filter produces only when it actually RUNS -- deny it and no
+  # SafeString exists, so the value is still auto-escaped. Python does the same;
+  # PHP prepends a RAW_MARKER. Node instead set a flag from the filter NAME and
+  # therefore DID emit live markup for a denied escape (fixed in 1eb1c4a). Anyone
+  # who later "simplifies" escape to return a plain String reopens that hole here.
+
+  it "negative: a denied escape filter never produces unescaped output" do
+    out = denied.render_string("{{ x|escape }}", { "x" => xss })
+    expect(out).not_to include("<script>"),
+                       "a DENIED escape filter produced live markup: #{out.inspect}. " \
+                       "Escaping must be conferred by RUNNING the filter, never by its name."
+  end
+
+  it "negative: a denied e filter never produces unescaped output" do
+    out = denied.render_string("{{ x|e }}", { "x" => xss })
+    expect(out).not_to include("<script>"),
+                       "a DENIED e filter produced live markup: #{out.inspect}"
+  end
+
+  it "escapes exactly once when escape is allowed" do
+    engine = Tina4::Frond.new.sandbox(filters: ["escape"], tags: ["if"], vars: ["x"])
+    expect(engine.render_string("{{ x|escape }}", { "x" => xss })).to eq(escaped)
+  end
+
+  # --- pair 6: a denied tag consumes its body ---------------------------
   # The Ruby-specific hazard. `for` is denied here; if the gate skips only the
   # opening token, the body tokens render at the top level and LEAK.
 
