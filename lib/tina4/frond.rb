@@ -163,6 +163,29 @@ module Tina4
       elif else elseif endautoescape endblock endcache endfor endif endlive
       endmacro endraw endset endspaceless
     ].freeze
+
+    # Author-written tags the sandbox allow-list governs. Mirrors Python's
+    # _GATEABLE_TAGS and PHP's GATEABLE_TAGS. A tag absent from this list is
+    # structural, not an author capability, and is never gated -- `block` and
+    # `extends` are template inheritance, and `raw` is consumed by the tokenizer.
+    # Both spellings of set ({% set x = 1 %} and {% set x %}...{% endset %})
+    # dispatch under "set", so one entry covers the pair.
+    GATEABLE_TAGS = %w[
+      autoescape cache for from if import include live macro set spaceless
+    ].freeze
+
+    # Gateable tags that OWN A BODY, mapped to the terminator closing it. A
+    # denied tag has to consume its body -- see skip_block.
+    BLOCK_TAG_ENDS = {
+      "autoescape" => "endautoescape",
+      "cache" => "endcache",
+      "for" => "endfor",
+      "if" => "endif",
+      "live" => "endlive",
+      "macro" => "endmacro",
+      "set" => "endset",
+      "spaceless" => "endspaceless"
+    }.freeze
     AUTOESCAPE_RE   = /\Aautoescape\s+(false|true)/
     STRIPTAGS_RE    = /<[^>]+>/
     THOUSANDS_RE    = /(\d)(?=(\d{3})+(?!\d))/
@@ -444,6 +467,28 @@ module Tina4
       self
     end
 
+    # May this filter RUN under the current sandbox?
+    #
+    # The escaping decision has to ask this rather than read the filter name out
+    # of the source: a denied `raw` that still marked its value safe made the
+    # allow-list entry governing XSS escaping inert.
+    def filter_permitted?(name)
+      return true unless @sandbox && @allowed_filters
+
+      @allowed_filters.include?(name.to_s)
+    end
+
+    # May this tag run under the current sandbox?
+    #
+    # One gate for every tag, so the allow-list governs the whole tag vocabulary
+    # instead of whichever names somebody remembered to check individually.
+    def tag_permitted?(tag)
+      return true unless @sandbox && @allowed_tags
+      return true unless GATEABLE_TAGS.include?(tag)
+
+      @allowed_tags.include?(tag)
+    end
+
     # Utility: HTML escape
     def self.escape_html(str)
       str.to_s.gsub(HTML_ESCAPE_RE, HTML_ESCAPE_MAP)
@@ -692,6 +737,43 @@ module Tina4
     # Token renderer
     # -----------------------------------------------------------------------
 
+    # Consume a denied tag WITHOUT running it, returning the index past its body.
+    #
+    # Ruby walks a token stream, so a denied tag cannot simply be dropped the way
+    # an AST node can. Advancing by one token would leave the body's tokens to
+    # render at the TOP level, leaking exactly the content the sandbox denied.
+    # Running the handler and discarding its output is no better: handle_set binds
+    # its variable before it returns. Consuming the block gives all three
+    # properties at once -- no output, no side effects, correct index.
+    def skip_block(tokens, i, tag, content)
+      terminator = BLOCK_TAG_ENDS[tag]
+      # {% set x = 1 %} is an assignment and owns no body; {% set x %}...{% endset %}
+      # captures one. Same exact-"=" test the dispatch uses.
+      terminator = nil if tag == "set" && content.include?("=")
+      return i + 1 if terminator.nil?
+
+      depth = 1
+      j = i + 1
+      while j < tokens.length
+        if tokens[j][0] == BLOCK
+          inner = strip_tag(tokens[j][1])[0]
+          case inner.split[0]
+          when tag
+            # A nested assignment-form set opens no body, so it must not nest.
+            depth += 1 unless tag == "set" && inner.include?("=")
+          when terminator
+            depth -= 1
+            return j + 1 if depth.zero?
+          end
+        end
+        j += 1
+      end
+
+      # Unterminated block: consume to the end. Nothing renders, which is the
+      # safe answer -- the alternative leaks the body of a denied tag.
+      tokens.length
+    end
+
     def render_tokens(tokens, context)
       output = []
       i = 0
@@ -725,6 +807,18 @@ module Tina4
 
           tag = content.split[0] || ""
 
+          # ONE sandbox gate for the whole tag vocabulary. Previously only
+          # `include` was checked, so every other tag ignored the allow-list --
+          # {% autoescape false %} could switch escaping off from inside a
+          # sandbox whose tags were restricted to something else entirely.
+          unless tag_permitted?(tag)
+            i = skip_block(tokens, i, tag, content)
+            if strip_a && i < tokens.length && tokens[i][0] == TEXT
+              tokens[i] = [TEXT, tokens[i][1].lstrip]
+            end
+            next
+          end
+
           case tag
           when "if"
             result, i = handle_if(tokens, i, context)
@@ -745,12 +839,8 @@ module Tina4
               i = handle_set_block(tokens, i, context)
             end
           when "include"
-            if @sandbox && @allowed_tags && !@allowed_tags.include?("include")
-              i += 1
-            else
-              output << handle_include(content, context)
-              i += 1
-            end
+            output << handle_include(content, context)
+            i += 1
           when "macro"
             i = handle_macro(tokens, i, context)
           when "import"
@@ -913,14 +1003,16 @@ module Tina4
       is_safe = false
       filters.each do |fname, args|
         if fname == "raw" || fname == "safe"
-          is_safe = true
+          # Decide from what was permitted to RUN, not from what the source
+          # asked for. Marking the value safe here regardless meant a DENIED
+          # raw produced byte-identical output to an allowed one -- the
+          # allow-list entry that governs XSS escaping did nothing at all.
+          is_safe = true if filter_permitted?(fname)
           next
         end
 
         # Sandbox: check filter access
-        if @sandbox && @allowed_filters && !@allowed_filters.include?(fname)
-          next
-        end
+        next if @sandbox && @allowed_filters && !@allowed_filters.include?(fname)
 
         # Filter + property-access chain: `first.groupSummary` — apply
         # the filter, then traverse the path on the result. Done BEFORE
