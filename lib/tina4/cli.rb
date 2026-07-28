@@ -3223,10 +3223,18 @@ module Tina4
 
           EXPOSE 7147
 
-          # Swagger defaults (override with env vars in docker-compose/k8s if needed)
-          ENV SWAGGER_TITLE="Tina4 API"
-          ENV SWAGGER_VERSION="0.1.0"
-          ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
+          # Swagger defaults (override with env vars in docker-compose/k8s if needed).
+          # The TINA4_ prefix is REQUIRED: the un-prefixed names are the legacy
+          # v2/v3.11 forms, and check_legacy_env_vars! refuses to boot when it
+          # finds one, so a generated image would exit 2 during startup.
+          ENV TINA4_SWAGGER_TITLE="Tina4 API"
+          ENV TINA4_SWAGGER_VERSION="0.1.0"
+          ENV TINA4_SWAGGER_DESCRIPTION="Auto-generated API documentation"
+
+          # Required: WebServer#start exits 1 unless the tina4 CLI launched it
+          # (--managed) or this is set. A container has no CLI supervising it.
+          ENV TINA4_OVERRIDE_CLIENT=true
+          ENV TINA4_DEBUG=false
 
           # Start the server on all interfaces
           CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0", "--production"]
