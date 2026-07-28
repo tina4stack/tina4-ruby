@@ -87,7 +87,7 @@ RSpec.describe "lazy feature loading" do
     out = in_fresh_ruby(<<~RUBY)
       require "tina4"
       names = %i[Queue Job Messenger MessengerError MessengerConnectionError
-                 DevMessengerProxy IMAP_CONNECTION_ERRORS DocStore]
+                 IMAP_CONNECTION_ERRORS DocStore]
       missing = names.reject { |n| Tina4.const_get(n) rescue false }
       puts missing.empty? ? "all ok" : "MISSING: \#{missing.join(', ')}"
     RUBY

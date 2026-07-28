@@ -879,45 +879,63 @@ RSpec.describe Tina4::DevMailbox do
   end
 end
 
-RSpec.describe Tina4::DevMessengerProxy do
-  let(:test_dir) { Dir.mktmpdir("tina4-proxy-test") }
-  let(:mailbox) { Tina4::DevMailbox.new(mailbox_dir: test_dir) }
-  let(:proxy) { described_class.new(mailbox, from_address: "dev@localhost", from_name: "Dev") }
+# DevMessengerProxy is GONE (3.13.94). It was a second return type from
+# create_messenger whose #send took no text: keyword, so the documented call raised
+# ArgumentError on a dev messenger and the plain-text alternative was dropped.
+# Capture is now a branch inside Messenger#send, so these are the same behaviours
+# asserted against the one type that actually exists.
+RSpec.describe "Tina4::Messenger capture path (replaces DevMessengerProxy)" do
+  let(:test_dir) { Dir.mktmpdir("tina4-capture-test") }
+
+  around(:each) do |example|
+    saved = ENV.to_h.slice("TINA4_MAIL_HOST", "TINA4_MAIL_CAPTURE", "TINA4_MAILBOX_DIR")
+    ENV.delete("TINA4_MAIL_HOST")
+    ENV.delete("TINA4_MAIL_CAPTURE")
+    ENV["TINA4_MAILBOX_DIR"] = test_dir
+    example.run
+    ENV.delete("TINA4_MAILBOX_DIR")
+    saved.each { |k, v| ENV[k] = v }
+  end
 
   after(:each) { FileUtils.rm_rf(test_dir) }
 
+  subject(:messenger) do
+    Tina4.create_messenger(
+      mailbox_dir: test_dir, from_address: "dev@localhost", from_name: "Dev"
+    )
+  end
+
   describe "#send" do
-    it "delegates to mailbox capture" do
-      result = proxy.send(to: "test@test.com", subject: "Hello", body: "World")
+    it "captures to the mailbox when no SMTP host is configured" do
+      result = messenger.send(to: "test@test.com", subject: "Hello", body: "World")
       expect(result[:success]).to be true
     end
-  end
 
-  describe "#test_connection" do
-    it "returns success in dev mode" do
-      result = proxy.test_connection
-      expect(result[:success]).to be true
-      expect(result[:message]).to include("DevMailbox")
+    it "carries the plain-text alternative, which the proxy dropped" do
+      messenger.send(
+        to: "test@test.com", subject: "Hello", body: "<p>World</p>",
+        html: true, text: "the text part"
+      )
+      captured = messenger.dev_mailbox.inbox.first
+      expect(captured[:text]).to eq("the text part")
     end
   end
 
-  describe "#inbox" do
-    it "delegates to mailbox" do
-      proxy.send(to: "test@test.com", subject: "Hello", body: "World")
-      inbox = proxy.inbox
-      expect(inbox.length).to eq(1)
-    end
-  end
-
-  describe "#folders" do
-    it "returns inbox and outbox" do
-      expect(proxy.folders).to eq(["inbox", "outbox"])
-    end
-  end
-
-  describe "#mailbox" do
+  describe "#dev_mailbox" do
     it "exposes the underlying mailbox" do
-      expect(proxy.mailbox).to eq(mailbox)
+      expect(messenger.dev_mailbox).to be_a(Tina4::DevMailbox)
+    end
+
+    it "receives what send captured" do
+      messenger.send(to: "test@test.com", subject: "Hello", body: "World")
+      expect(messenger.dev_mailbox.inbox.length).to eq(1)
+    end
+  end
+
+  describe "one concrete type" do
+    it "always returns a Messenger, never a second proxy class" do
+      expect(messenger).to be_a(Tina4::Messenger)
+      expect(messenger).to respond_to(:send)
     end
   end
 end

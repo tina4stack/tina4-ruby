@@ -71,6 +71,28 @@ module Tina4
   #   mail.send(to: "user@test.com", subject: "Welcome", body: "<h1>Hello!</h1>", html: true, text: "Hello!")
   #
   class Messenger
+    # Factory: returns a Messenger configured for the current environment.
+    #
+    # Returns ONE concrete type, always. It used to return either a Messenger or a
+    # DevMessengerProxy; both happened to expose #send, so Ruby escaped the crash that
+    # nodejs#41 describes by luck of naming rather than by design -- but the proxy's
+    # #send took no text: keyword, so the documented call raised ArgumentError on a dev
+    # messenger. Capture is now a branch inside Messenger#send.
+    #
+    # The gate is availability, not verbosity: capture when no SMTP host is configured,
+    # send when one is EVEN WITH TINA4_DEBUG ON, and TINA4_MAIL_CAPTURE forces capture.
+    def self.create_messenger(**options)
+      mailbox_dir = options.delete(:mailbox_dir) || ENV["TINA4_MAILBOX_DIR"]
+      messenger = Messenger.new(**options)
+      messenger.instance_variable_set(:@mailbox_dir, mailbox_dir)
+
+      # Attach the mailbox eagerly when this messenger will capture, so callers (and
+      # the dev dashboard) can inspect it before the first send.
+      messenger.dev_mailbox = DevMailbox.new(mailbox_dir: mailbox_dir) if messenger.should_capture?
+
+      messenger
+    end
+
     attr_reader :host, :port, :username, :from_address, :from_name,
                 :imap_host, :imap_port, :use_tls, :encryption,
                 :imap_encryption, :imap_use_tls
@@ -80,6 +102,14 @@ module Tina4
     def initialize(host: nil, port: nil, username: nil, password: nil,
                    from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
                    imap_host: nil, imap_port: nil, imap_encryption: nil)
+      # Whether a host was actually CONFIGURED, which is not the same as @host being
+      # set: it falls back to "localhost", so it is never nil and cannot answer
+      # "can this messenger send?". The capture gate needs that answer, so record it
+      # here while the real inputs are still in scope.
+      configured_host = host || ENV["TINA4_MAIL_HOST"]
+      @smtp_configured = !configured_host.nil? && !configured_host.to_s.empty?
+      @mailbox_dir = nil
+      @dev_mailbox = nil
       @host         = host         || ENV["TINA4_MAIL_HOST"]     || "localhost"
       @port         = (port        || ENV["TINA4_MAIL_PORT"]     || 587).to_i
       @username     = username     || ENV["TINA4_MAIL_USERNAME"]
@@ -113,8 +143,47 @@ module Tina4
 
     # Send email using Ruby's Net::SMTP
     # Returns { success: true/false, message: "...", id: "..." }
+    # The local mailbox, present only once this messenger has captured something
+    # (or eagerly, when create_messenger knows it will).
+    attr_accessor :dev_mailbox
+
+    # Should send capture locally instead of talking to SMTP?
+    #
+    # Availability decides, not verbosity. With no SMTP host configured sending is
+    # impossible, so simulate it into a folder rather than failing -- that is what
+    # makes a laptop with no mail server usable, and it is the original Tina4
+    # "messages folder" behaviour restored. TINA4_MAIL_CAPTURE forces capture even
+    # when a host IS configured.
+    #
+    # TINA4_DEBUG deliberately does NOT gate this. Debug must still be able to send:
+    # tying capture to it means nobody can test a real send from a dev box. The old
+    # gate required debug AND no SMTP host, so a dev box with neither set went
+    # straight to localhost:587 and failed.
+    def should_capture?
+      return true if Tina4::Env.is_truthy(ENV["TINA4_MAIL_CAPTURE"])
+
+      !@smtp_configured
+    end
+
+    def dev_mailbox
+      @dev_mailbox ||= DevMailbox.new(mailbox_dir: @mailbox_dir)
+    end
+
     def send(to:, subject:, body:, html: false, text: nil, cc: [], bcc: [],
              reply_to: nil, attachments: [], headers: {})
+      # Dev capture is a BRANCH here, not a different object handed back by the
+      # factory. create_messenger used to return a DevMessengerProxy whose #send had
+      # no text: keyword at all, so the documented call raised ArgumentError and the
+      # plain-text alternative was silently dropped from the captured message.
+      if should_capture?
+        return dev_mailbox.capture(
+          to: to, subject: subject, body: body, html: html, text: text,
+          cc: cc, bcc: bcc, reply_to: reply_to,
+          from_address: @from_address, from_name: @from_name,
+          attachments: attachments
+        )
+      end
+
       message_id = "<#{SecureRandom.uuid}@#{@host}>"
       raw = build_message(
         to: to, subject: subject, body: body, html: html, text: text,
@@ -649,50 +718,4 @@ module Tina4
     end
   end
 
-  # Factory: returns a DevMailbox-intercepting messenger in dev mode,
-  # or a real Messenger in production.
-  def self.create_messenger(**options)
-    dev_mode = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
-
-    smtp_configured = ENV["TINA4_MAIL_HOST"] && !ENV["TINA4_MAIL_HOST"].empty?
-
-    if dev_mode && !smtp_configured
-      mailbox_dir = options.delete(:mailbox_dir) || ENV["TINA4_MAILBOX_DIR"]
-      mailbox = DevMailbox.new(mailbox_dir: mailbox_dir)
-      DevMessengerProxy.new(mailbox, **options)
-    else
-      Messenger.new(**options)
-    end
-  end
-
-  # Proxy that wraps DevMailbox with the same interface as Messenger#send
-  class DevMessengerProxy
-    attr_reader :mailbox
-
-    def initialize(mailbox, **options)
-      @mailbox = mailbox
-      @from_address = options[:from_address] || ENV["TINA4_MAIL_FROM"] || "dev@localhost"
-      @from_name    = options[:from_name]    || ENV["TINA4_MAIL_FROM_NAME"] || "Dev Mailer"
-    end
-
-    def send(to:, subject:, body:, html: false, cc: [], bcc: [],
-             reply_to: nil, attachments: [], headers: {})
-      @mailbox.capture(
-        to: to, subject: subject, body: body, html: html,
-        cc: cc, bcc: bcc, reply_to: reply_to,
-        from_address: @from_address, from_name: @from_name,
-        attachments: attachments
-      )
-    end
-
-    def test_connection
-      { success: true, message: "DevMailbox mode — no SMTP connection needed" }
-    end
-
-    def inbox(**args)  = @mailbox.inbox(**args)
-    def read(...)      = @mailbox.read(...)
-    def unread(...)    = @mailbox.unread_count
-    def search(**args) = @mailbox.inbox(**args)
-    def folders        = ["inbox", "outbox"]
-  end
 end

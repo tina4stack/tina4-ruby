@@ -127,7 +127,18 @@ module Tina4
   autoload :Messenger,           File.expand_path("tina4/messenger", __dir__)
   autoload :MessengerError,      File.expand_path("tina4/messenger", __dir__)
   autoload :MessengerConnectionError, File.expand_path("tina4/messenger", __dir__)
-  autoload :DevMessengerProxy,   File.expand_path("tina4/messenger", __dir__)
+
+  # Factory for a Messenger configured from the environment.
+  #
+  # Defined HERE, eagerly, and not in messenger.rb: `autoload` only fires on a
+  # CONSTANT reference, and a module function is not a constant. A cold
+  # `require "tina4"; Tina4.create_messenger` therefore raised NoMethodError until
+  # something else happened to touch Tina4::Messenger first -- the documented entry
+  # point was unreachable on a fresh process. Naming the constant below is what
+  # triggers the autoload.
+  def self.create_messenger(**options)
+    Tina4::Messenger.create_messenger(**options)
+  end
   autoload :IMAP_CONNECTION_ERRORS, File.expand_path("tina4/messenger", __dir__)
   autoload :DocStore,            File.expand_path("tina4/docstore", __dir__)
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)

@@ -16,7 +16,10 @@ module Tina4
     end
 
     # Capture an outgoing email to the local filesystem instead of sending
-    def capture(to:, subject:, body:, html: false, cc: [], bcc: [],
+    # text: carries the plain-text alternative onto the dev path. Every framework
+    # used to drop it, so what you inspected in the mailbox was not what would have
+    # been sent -- a mailbox that shows you a different message is worse than none.
+    def capture(to:, subject:, body:, html: false, text: nil, cc: [], bcc: [],
                 reply_to: nil, from_address: nil, from_name: nil, attachments: [])
       msg_id = SecureRandom.uuid
       timestamp = Time.now
@@ -30,6 +33,7 @@ module Tina4
         reply_to: reply_to,
         subject: subject,
         body: body,
+        text: text,
         html: html,
         attachments: store_attachments(msg_id, attachments),
         read: false,
