@@ -1,3 +1,13 @@
+# docker.io/tina4stack/tina4-ruby
+#
+# Base image for Tina4 Ruby apps: the Ruby runtime plus the framework and its
+# gems already installed, so a developer injects only their own src/.
+#
+#   FROM docker.io/tina4stack/tina4-ruby:3.13.93
+#   COPY src/ /app/src/
+#
+# Pinning: prefer an exact version tag. `latest` and `v3` also exist and move.
+#
 # === Build Stage ===
 FROM ruby:3.3-alpine AS builder
 
