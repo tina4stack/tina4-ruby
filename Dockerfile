@@ -3,8 +3,28 @@
 # Base image for Tina4 Ruby apps: the Ruby runtime plus the framework and its
 # gems already installed, so a developer injects only their own src/.
 #
+# Usage. THREE STEPS, in this order: inherit, get the tool you need, then modify.
+# That shape is the same for all four Tina4 base images.
+#
 #   FROM docker.io/tina4stack/tina4-ruby:3.13.93
 #   COPY src/ /app/src/
+#
+# NOTHING TO COPY IN HERE. Unlike the Python and PHP images, this one already
+# carries its package manager: gem 3.5.22 and bundler 2.5.22 are on PATH, so
+# adding a driver is one line with no COPY step:
+#
+#   RUN gem install pg --no-document
+#
+# Verified: builds and `require "pg"` loads, 119 MB derived. That works even
+# though the runtime stage drops build-base, which is worth knowing because the
+# obvious assumption is that it would not.
+#
+# For comparison, the other three: Node also has its manager built in (npm), so
+# `RUN npm install pg` just works. Python and PHP do NOT, and their headers
+# document the one-line `COPY --from=` that brings uv or composer in.
+#
+# The default database is SQLite, so a plain FROM plus your code needs no gem at
+# all.
 #
 # Pinning: prefer an exact version tag. `latest` and `v3` also exist and move.
 #
