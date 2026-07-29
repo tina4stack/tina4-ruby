@@ -171,7 +171,7 @@ db = Tina4::Database.new("firebird://localhost:3050/mydb", username: "sysdba", p
 # TINA4_DATABASE_PASSWORD=pass
 db = Tina4::Database.new  # reads from ENV
 
-db.fetch(sql, params = [], limit: nil, offset: nil) -> DatabaseResult
+db.fetch(sql, params = [], limit: 100, offset: nil) -> DatabaseResult
 # A DatabaseResult auto-serializes to a JSON array when returned from a route
 # via response.json(...) / response.call(...).
 # FAILS LOUD: a SQL error (bad SQL, missing table/column) RAISES — it never
@@ -308,15 +308,17 @@ MyModel.belongs_to(name, class_name: nil, foreign_key: nil) # Declare many:1 rel
 MyModel.find(id) -> MyModel | nil
 MyModel.find_or_fail(id) -> MyModel   # Find or raise error
 MyModel.create(attributes = {}) -> MyModel
-MyModel.where(conditions, params = [], limit: nil, offset: nil, order_by: nil, include: nil) -> Array
-MyModel.all(limit: nil, offset: nil, order_by: nil, include: nil) -> Array
+MyModel.where(conditions, params = [], limit: 100, offset: nil, order_by: nil, include: nil) -> Array
+MyModel.all(limit: 100, offset: nil, order_by: nil, include: nil) -> Array
 MyModel.count(conditions = nil, params = []) -> Integer
-MyModel.select(sql, params = [], limit: nil, offset: nil, include: nil) -> Array
+MyModel.select(sql, params = [], limit: 100, offset: nil, include: nil) -> Array
 MyModel.select_one(sql, params = [], include: nil) -> MyModel | nil
-MyModel.with_trashed(conditions = "1=1", params = [], limit: 20, offset: 0) -> Array
+MyModel.with_trashed(conditions = "1=1", params = [], limit: 100, offset: 0) -> Array
 MyModel.create_table -> Boolean
 MyModel.query -> QueryBuilder         # Fluent query builder
 MyModel.scope(name, filter_sql, params = [])  # Register reusable query scope
+#   The generated method takes limit:/offset: (default limit: 100) and PASSES
+#   them through to where -- before 3.13.95 both were accepted and discarded.
 MyModel.from_hash(hash) -> MyModel    # Create instance from DB row hash
 
 # Relationship definitions (class level)
