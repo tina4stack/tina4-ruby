@@ -179,7 +179,11 @@ module Tina4
           size: size,
           decimals: decimals,
           nullable: col.key?(:nullable) ? col[:nullable] : (col.key?("nullable") ? col["nullable"] : true),
-          primary_key: col[:primary_key] || col["primary_key"] || col[:primary] || col["primary"] || false
+          # Symbol OR string key, because a driver row may arrive either way.
+          # The `:primary` / `"primary"` fallbacks that used to sit here were
+          # dead: no Ruby driver has ever emitted that spelling. It was mirroring
+          # PHP's odd `primary`, which PHP itself has now dropped for `primaryKey`.
+          primary_key: col[:primary_key] || col["primary_key"] || false
         }
       end
     end
