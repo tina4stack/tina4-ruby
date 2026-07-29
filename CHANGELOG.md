@@ -14,6 +14,26 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ### Changed
 
+- **Breaking: every ORM read path that takes a `limit:` now defaults to 100 rows, and
+  three of them were returning EVERY ROW.** `where`, `all` and `select` defaulted to
+  `limit: nil`, and `Database#fetch` skips `apply_limit` entirely when the limit is nil,
+  so all three read the whole table. `with_trashed` and a `scope`-generated method
+  defaulted to 20. All five now default to 100.
+
+  Migration: this one can change results in both directions. A caller relying (knowingly
+  or not) on an unbounded read must now ask for it: `Model.all(limit: 10_000)`. A caller
+  relying on the old 20 gets 100. Code that already passes a limit is unaffected.
+
+  `QueryBuilder#get` and `fetch_all` are deliberately UNCHANGED and stay uncapped.
+  Neither takes a `limit:`, so a cap there can only ever be silent, and that silent
+  `LIMIT 100` was the data-loss-on-read footgun removed in 3.13.39 (ruby#4). The rule: a
+  path that advertises `limit:` caps at 100, a path without one never caps.
+
+- **Fixed** a `scope`-generated method accepted `limit:` and `offset:` and then discarded
+  both. It called `where(filter_sql, params)` without passing either, so
+  `User.active(limit: 5)` returned the whole table: 150 rows came back from a 5-row
+  request against a 150-row table. Both arguments now reach `where`.
+
 - Internal: the SQL dialect-translation file is renamed
   `lib/tina4/sql_translation.rb` -> `lib/tina4/sql_translator.rb`, so the filename matches the
   `Tina4::SQLTranslator` class it defines (and the sibling frameworks). The class name, its
