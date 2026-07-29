@@ -124,7 +124,10 @@ RSpec.describe "tina4ruby metrics" do
     it "ranks error before warn before info" do
       write_bad_project
       offenders = Tina4::Metrics.offenders("src", 50)["offenders"]
-      ranks = offenders.map { |o| Tina4::Metrics::SEVERITY_RANK[o["severity"]] }
+      # The rank lives in the engine now; state it here so the ordering contract
+      # is asserted against a value this spec owns, not one it imports.
+      rank = { "error" => 2, "warn" => 1, "info" => 0 }
+      ranks = offenders.map { |o| rank.fetch(o["severity"]) }
       expect(ranks).to eq(ranks.sort.reverse), "must be severity-descending"
       expect(offenders.first["severity"]).to eq("error")
     end
@@ -175,10 +178,13 @@ RSpec.describe "tina4ruby metrics" do
       expect(result["summary"]["total_offenders"]).to eq(0)
     end
 
-    it "returns an error summary for a missing directory" do
+    it "falls back to a framework scan for a missing directory" do
+      # Matches the Python master and PHP: a missing target scans the framework
+      # package rather than erroring, and scan_mode says so. The engine raises
+      # only when it genuinely cannot run (see the MetricsEngineError specs).
       result = Tina4::Metrics.offenders("does_not_exist", 20)
-      expect(result["offenders"]).to eq([])
-      expect(result["summary"]).to have_key("error")
+      expect(result["summary"]["scan_mode"]).to eq("framework")
+      expect(result["summary"]["engine"]).to eq("tina4-cli")
     end
   end
 

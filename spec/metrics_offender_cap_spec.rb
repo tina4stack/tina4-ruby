@@ -67,6 +67,10 @@ RSpec.describe "Tina4::Metrics offenders complexity cap" do
 
     analysis = Tina4::Metrics.full_analysis(@root)
     expect(analysis["most_complex_functions"].length).to eq(15) # display cap intact
-    expect(analysis["all_functions"].length).to eq(18)          # full list exposed for offenders
+    expect(analysis).not_to have_key("all_functions")            # the engine owns the ranking now
+      # total_offenders is the honest proof nothing was lost at the display cap.
+      uncapped = Tina4::Metrics.offenders(@root, 2**31)
+      expect(uncapped["summary"]["total_offenders"]).to be >= 18
+      expect(uncapped["offenders"].length).to be >= 18
   end
 end

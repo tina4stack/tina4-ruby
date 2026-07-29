@@ -1,19 +1,25 @@
 # frozen_string_literal: true
 
-# Tina4 Code Metrics — Ripper-based static analysis for the dev dashboard.
+# Tina4 Code Metrics — the native engine (ADR-0002) plus an instant file census.
 #
 # Two-tier analysis:
 #   1. Quick metrics (instant): LOC, file counts, class/function counts
 #   2. Full analysis (on-demand, cached): cyclomatic complexity, maintainability
 #      index, coupling, Halstead metrics, violations
 #
-# Zero dependencies — uses Ruby's built-in Ripper module.
+# Zero dependencies. The census is pure Ruby; the analysis is `tina4 metrics --json`.
 
-require 'ripper'
+require 'json'
 require 'digest'
 require 'pathname'
 
 module Tina4
+  # The native metrics engine could not produce a payload.
+  #
+  # Raised instead of falling back to a second implementation: two engines is
+  # exactly the condition that made the four frameworks' numbers incomparable.
+  class MetricsEngineError < StandardError; end
+
   module Metrics
     # ── Cache ───────────────────────────────────────────────────
     @full_cache_hash = ""
@@ -44,6 +50,20 @@ module Tina4
 
     def self.last_scan_root
       @last_scan_root
+    end
+
+    # Return [directory to scan, scan_mode] for any metrics producer.
+    #
+    # The CLI engine is language-agnostic and cannot know which directory holds a
+    # framework package, so root resolution and the "framework" label stay here,
+    # shared by the census and the engine adapter so the two never disagree about
+    # what was measured.
+    def self.resolve_scan_target(root = 'src')
+      resolved = _resolve_root(root)
+      framework_dir = File.dirname(__FILE__)
+      resolved_real = File.expand_path(resolved)
+      scanning_framework = resolved_real == framework_dir || resolved_real.start_with?(framework_dir)
+      [resolved, scanning_framework ? 'framework' : 'project']
     end
 
     # ── Quick Metrics ───────────────────────────────────────────
@@ -211,928 +231,196 @@ module Tina4
     end
 
     # ── Full Analysis (Ripper-based) ────────────────────────────
+    # ── The native engine (ADR-0002) ─────────────────────────────
+    #
+    # The Ripper-based analyzer that used to live below here is gone. Everything
+    # except the instant file census now comes from `tina4 metrics --json`, so a
+    # number measured in Ruby is comparable with the same number measured in
+    # Python, PHP or Node. There is deliberately NO fallback: a second engine is
+    # exactly the condition that made the four frameworks' numbers incomparable.
 
-    def self.full_analysis(root = 'src')
-      # Check if the requested directory exists before falling back
-      root_path = Pathname.new(root)
-      return { "error" => "Directory not found: #{root}" } unless root_path.directory?
+    TIMEOUT_SECONDS = 60
 
-      root = _resolve_root(root)
-      root_path = Pathname.new(root)
+    INSTALL_HINT = <<~HINT.strip
+      the tina4 CLI provides the metrics engine (ADR-0002). Install it with
+        curl -fsSL https://tina4.com/install.sh | sh
+      or see https://tina4.com/cli
+    HINT
 
-      current_hash = _files_hash(root)
-      now = Time.now.to_f
+    # Fields the dashboard renders. Checking for the DATA is honest where checking
+    # a version string is not: a user may run any CLI build, and the payload is
+    # what tells us what that build can actually do.
+    SUMMARY_KEYS = %w[files_analyzed total_functions avg_complexity avg_maintainability].freeze
+    FILE_KEYS = %w[path loc avg_complexity maintainability has_tests].freeze
+    FUNCTION_KEYS = %w[name file line complexity loc].freeze
 
-      if @full_cache_hash == current_hash && !@full_cache_data.nil? && (now - @full_cache_time) < CACHE_TTL
-        return @full_cache_data
+    # Absolute path to the tina4 CLI binary, or nil when it is not installed.
+    #
+    # Skips shebang scripts. The engine is a COMPILED Rust binary, but `bundle
+    # exec` prepends RubyGems' bin directory to PATH, and a gem executable named
+    # `tina4` sits there as a Ruby shim. Taking the first PATH hit found that
+    # shim and running it died with "can't find executable tina4 for gem" -- so
+    # every metrics call failed under the ordinary `bundle exec` workflow. The
+    # same guard also steps over rbenv/asdf shims and any gem squatting the name.
+    def self.engine_path
+      ENV['PATH'].to_s.split(File::PATH_SEPARATOR).each do |dir|
+        next if dir.empty?
+
+        %w[tina4 tina4.exe].each do |name|
+          candidate = File.join(dir, name)
+          next unless File.file?(candidate) && File.executable?(candidate)
+          next if _shebang_script?(candidate)
+
+          return candidate
+        end
       end
-
-      rb_files = Dir.glob(root_path.join('**', '*.rb'))
-
-      all_functions = []
-      file_metrics = []
-      import_graph = {}
-      reverse_graph = {}
-
-      rb_files.each do |f|
-        source = begin
-          File.read(f, encoding: 'utf-8')
-        rescue StandardError
-          next
-        end
-
-        tokens = begin
-          Ripper.lex(source)
-        rescue StandardError
-          next
-        end
-
-        rel_path = begin
-          Pathname.new(f).relative_path_from(root_path).to_s
-        rescue ArgumentError
-          f
-        end
-
-        lines = source.lines.map(&:chomp)
-        loc = lines.count { |l| _code_line?(l) }
-
-        # Extract imports (require/require_relative)
-        imports = _extract_imports(lines)
-        import_graph[rel_path] = imports
-
-        imports.each do |imp|
-          reverse_graph[imp] ||= []
-          reverse_graph[imp] << rel_path
-        end
-
-        # Parse functions/methods and their complexity
-        file_functions = _extract_functions(source, tokens, lines)
-        file_complexity = 0
-
-        file_functions.each do |func_info|
-          func_info["file"] = rel_path
-          all_functions << func_info
-          file_complexity += func_info["complexity"]
-        end
-
-        # Halstead metrics from tokens
-        halstead = _count_halstead(tokens)
-        n1 = halstead[:unique_operators].length
-        n2 = halstead[:unique_operands].length
-        n_total_1 = halstead[:operators]
-        n_total_2 = halstead[:operands]
-        vocabulary = n1 + n2
-        length = n_total_1 + n_total_2
-        volume = vocabulary > 0 ? length * Math.log2(vocabulary) : 0.0
-
-        # Maintainability index
-        avg_cc = file_functions.empty? ? 0 : file_complexity.to_f / file_functions.length
-        mi = _maintainability_index(volume, avg_cc, loc)
-
-        # Coupling
-        ce = imports.length
-        ca = (reverse_graph[rel_path] || []).length
-        instability = (ca + ce) > 0 ? ce.to_f / (ca + ce) : 0.0
-
-        file_metrics << {
-          "path" => rel_path,
-          "loc" => loc,
-          "complexity" => file_complexity,
-          "avg_complexity" => avg_cc.round(2),
-          "functions" => file_functions.length,
-          "maintainability" => mi.round(1),
-          "halstead_volume" => volume.round(1),
-          "coupling_afferent" => ca,
-          "coupling_efferent" => ce,
-          "instability" => instability.round(3),
-          "has_tests" => _has_matching_test(rel_path),
-          "dep_count" => imports.length
-        }
-      end
-
-      # Update afferent coupling now that all files are processed
-      file_metrics.each do |fm|
-        fm["coupling_afferent"] = (reverse_graph[fm["path"]] || []).length
-        ca = fm["coupling_afferent"]
-        ce = fm["coupling_efferent"]
-        fm["instability"] = (ca + ce) > 0 ? (ce.to_f / (ca + ce)).round(3) : 0.0
-      end
-
-      all_functions.sort_by! { |f| -f["complexity"] }
-      file_metrics.sort_by! { |f| f["maintainability"] }
-
-      violations = _detect_violations(all_functions, file_metrics)
-
-      total_cc = all_functions.sum { |f| f["complexity"] }
-      avg_cc = all_functions.empty? ? 0 : total_cc.to_f / all_functions.length
-      total_mi = file_metrics.sum { |f| f["maintainability"] }
-      avg_mi = file_metrics.empty? ? 0 : total_mi.to_f / file_metrics.length
-
-      # Detect if we're scanning framework or project
-      framework_dir = File.expand_path(File.dirname(__FILE__))
-      resolved_root = File.expand_path(root_path.to_s)
-      scanning_framework = resolved_root == framework_dir || resolved_root.start_with?(framework_dir + '/')
-
-      result = {
-        "files_analyzed" => file_metrics.length,
-        "total_functions" => all_functions.length,
-        "avg_complexity" => avg_cc.round(2),
-        "avg_maintainability" => avg_mi.round(1),
-        # Display-only: the top-15 for the "most complex functions" report.
-        # Do NOT source offenders / --fail-on from this — capping here silently
-        # hides the 16th+ over-threshold function from the gate. offenders()
-        # reads "all_functions" (below) instead.
-        "most_complex_functions" => all_functions.first(15),
-        # Full, uncapped, complexity-sorted list — offenders()/--fail-on use this
-        # so no function over the complexity threshold ever escapes the gate.
-        "all_functions" => all_functions,
-        "file_metrics" => file_metrics,
-        "violations" => violations,
-        "dependency_graph" => import_graph,
-        "scan_mode" => scanning_framework ? "framework" : "project",
-        "scan_root" => resolved_root
-      }
-
-      @full_cache_hash = current_hash
-      @full_cache_data = result
-      @full_cache_time = now
-
-      result
+      nil
     end
 
-    # ── Top Offenders (CLI + dashboard) ──────────────────────────
-
-    # Severity ranking for sorting (higher = more severe).
-    SEVERITY_RANK = { "error" => 2, "warn" => 1, "info" => 0 }.freeze
-
-    # Rank the worst code-quality issues into a single "top offenders" list.
-    #
-    # Reuses full_analysis (does NOT re-analyze). Each offender is a hash:
-    #   {"file", "line", "kind", "severity", "score", "detail"}
-    #
-    # Rules (one offender per matching condition):
-    #   - function complexity > 10  → kind "complexity"
-    #         severity "error" if >20 else "warn"; score = complexity
-    #   - file loc > 500            → kind "large_file" (warn); score = loc/100
-    #   - file functions > 20       → kind "too_many_functions" (warn); score = functions/4
-    #   - file maintainability < 40 → kind "low_maintainability"
-    #         severity "error" if <20 else "warn"; score = (50 - mi)
-    #   - file has_tests false      → kind "untested" (info); score = loc/100
-    #
-    # Sorted by (severity rank, score) DESCENDING and truncated to `top`.
-    #
-    # Returns {"offenders" => [...], "summary" => {...}} where summary carries
-    # the headline numbers the CLI prints (files_analyzed, total_functions,
-    # avg_complexity, avg_maintainability, scan_mode, scan_root, and the total
-    # offender count before truncation).
-    def self.offenders(root = 'src', top = 20)
-      analysis = full_analysis(root)
-      if analysis.key?("error")
-        return { "offenders" => [], "summary" => { "error" => analysis["error"] } }
-      end
-
-      items = []
-
-      # Function-level: cyclomatic complexity. Use the FULL function list (not the
-      # display-capped most_complex_functions[:15]) so a 16th+ over-threshold
-      # function is never silently dropped from the offenders list or --fail-on.
-      (analysis["all_functions"] || analysis["most_complex_functions"] || []).each do |fn|
-        cc = fn["complexity"]
-        next unless cc > 10
-        items << {
-          "file" => fn["file"],
-          "line" => fn["line"],
-          "kind" => "complexity",
-          "severity" => cc > 20 ? "error" : "warn",
-          "score" => cc.to_f,
-          "detail" => "#{fn['name']} — cyclomatic complexity #{cc}"
-        }
-      end
-
-      # File-level rules.
-      (analysis["file_metrics"] || []).each do |fm|
-        path = fm["path"]
-        loc = fm["loc"]
-        funcs = fm["functions"]
-        mi = fm["maintainability"]
-
-        if loc > 500
-          items << {
-            "file" => path,
-            "line" => 1,
-            "kind" => "large_file",
-            "severity" => "warn",
-            "score" => loc / 100.0,
-            "detail" => "#{loc} LOC (max 500)"
-          }
-        end
-
-        if funcs > 20
-          items << {
-            "file" => path,
-            "line" => 1,
-            "kind" => "too_many_functions",
-            "severity" => "warn",
-            "score" => funcs / 4.0,
-            "detail" => "#{funcs} functions (max 20)"
-          }
-        end
-
-        if mi < 40
-          items << {
-            "file" => path,
-            "line" => 1,
-            "kind" => "low_maintainability",
-            "severity" => mi < 20 ? "error" : "warn",
-            "score" => 50 - mi,
-            "detail" => "maintainability index #{mi} (min 40)"
-          }
-        end
-
-        if fm["has_tests"] == false
-          items << {
-            "file" => path,
-            "line" => 1,
-            "kind" => "untested",
-            "severity" => "info",
-            "score" => loc / 100.0,
-            "detail" => "no referencing test"
-          }
-        end
-      end
-
-      # Sort by (severity rank, score) DESCENDING — stable so insertion order
-      # breaks ties deterministically.
-      items = items.each_with_index.sort_by do |o, idx|
-        [-SEVERITY_RANK[o["severity"]], -o["score"], idx]
-      end.map(&:first)
-
-      summary = {
-        "files_analyzed" => analysis["files_analyzed"],
-        "total_functions" => analysis["total_functions"],
-        "avg_complexity" => analysis["avg_complexity"],
-        "avg_maintainability" => analysis["avg_maintainability"],
-        "scan_mode" => analysis["scan_mode"],
-        "scan_root" => analysis["scan_root"],
-        "total_offenders" => items.length
-      }
-
-      { "offenders" => items.first(top), "summary" => summary }
-    end
-
-    # ── File Detail ─────────────────────────────────────────────
-
-    def self.file_detail(file_path)
-      unless File.exist?(file_path)
-        # Try resolving relative to the last scan root (framework mode)
-        if @last_scan_root && !@last_scan_root.empty?
-          candidate = File.join(@last_scan_root, file_path)
-          if File.exist?(candidate)
-            file_path = candidate
-          end
-        end
-      end
-      unless File.exist?(file_path)
-        return { "error" => "File not found: #{file_path}" }
-      end
-
-      source = begin
-        File.read(file_path, encoding: 'utf-8')
-      rescue StandardError => e
-        return { "error" => "Read error: #{e.message}" }
-      end
-
-      tokens = begin
-        Ripper.lex(source)
-      rescue StandardError => e
-        return { "error" => "Syntax error: #{e.message}" }
-      end
-
-      lines = source.lines.map(&:chomp)
-      loc = lines.count { |l| _code_line?(l) }
-
-      functions = _extract_functions(source, tokens, lines)
-      functions.sort_by! { |f| -f["complexity"] }
-
-      classes = lines.count { |l| l.strip.match?(/\A(class|module)\s+/) }
-      imports = _extract_imports(lines)
-
-      warnings = []
-      functions.each do |f|
-        if f["loc"] <= 1
-          warnings << { "type" => "empty_method", "message" => "Method '#{f["name"]}' appears to be empty", "line" => f["line"] }
-        end
-      end
-      if classes > 0 && functions.empty? && loc <= 1
-        warnings << { "type" => "empty_class", "message" => "Class/module appears to be empty", "line" => 1 }
-      end
-
-      {
-        "path" => file_path,
-        "loc" => loc,
-        "total_lines" => lines.length,
-        "classes" => classes,
-        "functions" => functions.map { |f|
-          {
-            "name" => f["name"],
-            "line" => f["line"],
-            "complexity" => f["complexity"],
-            "loc" => f["loc"],
-            "args" => f["args"]
-          }
-        },
-        "imports" => imports,
-        "warnings" => warnings
-      }
-    end
-
-    # ── Private Helpers ─────────────────────────────────────────
-
-    private_class_method
-
-    # Check whether a source file has a test that actually exercises it.
-    #
-    # PRECISE detection (a bare word-mention is NOT enough — that over-reported
-    # badly: `sqlite3_adapter.rb` looked "tested" because some spec merely said
-    # "sqlite3_adapter"):
-    #
-    #   1. Filename — a dedicated `<module>_spec.rb` / `<module>_test.rb` /
-    #      `test_<module>.rb` for THIS exact module (NOT the parent directory —
-    #      one `database_spec.rb` must not mark every file under `database/`
-    #      tested).
-    #   2. Require — a spec that actually requires this file: its require path
-    #      (`require "tina4/database/sqlite"` / `require_relative ".../sqlite"`)
-    #      matched by the basename of a require target. A constant/class that is
-    #      genuinely DEFINED in this file (top-level class/module) referenced by
-    #      a spec also counts.
-    #
-    # Returns true only on a real, file-specific signal — so the "untested"
-    # offenders surfaced by `tina4 metrics` and the dashboard "T" badge are
-    # trustworthy. (If you wire real coverage data later, prefer it over this.)
-    def self._has_matching_test(rel_path)
-      require 'set'
-
-      name = File.basename(rel_path, '.rb')
-
-      # Require path WITHOUT extension, leading lib/ stripped:
-      # "lib/tina4/database/sqlite.rb" -> "tina4/database/sqlite"
-      require_path = rel_path.sub(/\.rb$/, '').sub(%r{^lib/}, '')
-
-      # Constants (classes/modules) DEFINED at the top level of this file — a
-      # spec referencing one of them genuinely exercises this file. Names only,
-      # distinctive (>3 chars, leading uppercase); bare module-name words and
-      # guessed CamelCase are too loose to trust.
-      defined_symbols = _defined_constants(rel_path)
-
-      # Search roots: CWD plus (in framework-fallback mode) the repo root that
-      # owns spec/ — walk up from the scan root to find it.
-      search_roots = ['.']
-      if @last_scan_root && !@last_scan_root.empty?
-        scan_root = @last_scan_root
-        5.times do
-          if %w[spec test tests].any? { |d| Dir.exist?(File.join(scan_root, d)) }
-            search_roots << scan_root
-            break
-          end
-          parent = File.dirname(scan_root)
-          break if parent == scan_root
-          scan_root = parent
-        end
-      end
-      search_roots.uniq!
-
-      test_dirs = %w[spec test tests]
-
-      # Stage 1: a dedicated spec/test FILE named for THIS module (no parent-dir
-      # blanket match).
-      filename_patterns = [
-        "#{name}_spec.rb",
-        "#{name}s_spec.rb",
-        "#{name}_test.rb",
-        "test_#{name}.rb",
-      ]
-      search_roots.each do |root|
-        test_dirs.each do |td|
-          filename_patterns.each do |fn|
-            return true if File.exist?(File.join(root, td, fn))
-          end
-        end
-      end
-
-      # Stage 2: a spec that actually REQUIRES this module (precise — matched by
-      # the require target's basename / tail of the require path), or references
-      # a constant defined in it. NO bare word-of-the-module-name match.
-      require_regexps = []
-      unless require_path.empty?
-        # require "…/<module>" or require_relative "…/<module>" — match the
-        # require string ending in this file's require path or basename.
-        rp = Regexp.escape(require_path)
-        nm = Regexp.escape(name)
-        require_regexps << /(?:require|require_relative)\s+['"][^'"]*#{rp}['"]/
-        require_regexps << %r{(?:require|require_relative)\s+['"][^'"]*/#{nm}['"]}
-      end
-      unless defined_symbols.empty?
-        sym_alt = defined_symbols.map { |s| Regexp.escape(s) }.join('|')
-        require_regexps << /\b(?:#{sym_alt})\b/
-      end
-
-      return false if require_regexps.empty?
-
-      search_roots.each do |root|
-        test_dirs.each do |td|
-          dir = File.join(root, td)
-          next unless Dir.exist?(dir)
-          Dir.glob(File.join(dir, '**', '*.rb')).each do |test_file|
-            content = begin
-              File.read(test_file, encoding: 'utf-8')
-            rescue StandardError
-              next
-            end
-            return true if require_regexps.any? { |re| content.match?(re) }
-          end
-        end
-      end
-
+    # True when the file begins with `#!` -- a script, never the native engine.
+    def self._shebang_script?(path)
+      File.binread(path, 2) == '#!'
+    rescue StandardError
       false
     end
 
-    # Top-level class/module names defined in the file at rel_path (resolved
-    # against the last scan root when present). Distinctive names only:
-    # leading-uppercase, longer than 2 chars — so genuine 3-char constants like
-    # ORM (orm.rb) and API (api.rb), which specs reference as `Tina4::ORM` /
-    # `Tina4::API`, are detected as tested instead of being mislabelled
-    # untested. (Was > 3, which silently excluded every 3-char constant.)
-    def self._defined_constants(rel_path)
-      src_file = if @last_scan_root && !@last_scan_root.empty? && !File.exist?(rel_path)
-                   File.join(@last_scan_root, rel_path)
-                 else
-                   rel_path
-                 end
-      symbols = Set.new
-      content = begin
-        File.read(src_file, encoding: 'utf-8')
-      rescue StandardError
-        return symbols
-      end
-      content.each_line do |line|
-        stripped = line.strip
-        m = stripped.match(/\A(?:class|module)\s+([A-Z][A-Za-z0-9_]*)/)
-        next unless m
-        const = m[1]
-        symbols.add(const) if const.length > 2
-      end
-      symbols
-    end
-
-    def self._files_hash(root)
-      md5 = Digest::MD5.new
-      root_path = Pathname.new(root)
-      if root_path.directory?
-        Dir.glob(root_path.join('**', '*.rb')).sort.each do |f|
-          begin
-            md5.update("#{f}:#{File.mtime(f).to_f}")
-          rescue StandardError
-            # ignore
-          end
-        end
-      end
-      md5.hexdigest
-    end
-
-    def self._extract_imports(lines)
-      imports = []
-      lines.each do |line|
-        stripped = line.strip
-        if stripped.match?(/\Arequire\s+/)
-          m = stripped.match(/\Arequire\s+['"]([^'"]+)['"]/)
-          imports << m[1] if m
-        elsif stripped.match?(/\Arequire_relative\s+/)
-          m = stripped.match(/\Arequire_relative\s+['"]([^'"]+)['"]/)
-          imports << m[1] if m
-        end
-      end
-      imports
-    end
-
-    # Replace the CONTENT of Ruby string literals, regex literals, and comments
-    # with neutral spaces — keeping every line's length and the line count
-    # identical to the original — so decision-point keywords and method-shaped
-    # text that live INSIDE strings/comments are never miscounted. Returns an
-    # array of cleaned lines (chomped) aligned 1:1 with the original lines.
+    # Run `tina4 metrics --json` over path and return the raw payload.
     #
-    # Ruby's own lexer (Ripper) does the hard parsing: it tags string/heredoc/
-    # regex bodies as :on_tstring_content (and :on_comment, :on_embdoc — the
-    # =begin/=end block-comment body), which we blank out positionally. The
-    # surrounding code structure (def/if/end keywords, operators) is left intact.
-    NOISE_TOKEN_TYPES = %i[
-      on_tstring_content on_comment on_embdoc on_embdoc_beg on_embdoc_end
-    ].freeze
+    # Raises MetricsEngineError naming the actual cause: a caller that cannot get
+    # metrics needs to know whether the binary is missing, the run failed, or the
+    # output was unreadable.
+    def self._run_engine(path)
+      binary = engine_path
+      raise MetricsEngineError, "tina4 not found on PATH - #{INSTALL_HINT}" if binary.nil?
 
-    def self._clean_source(source)
-      lines = source.lines.map(&:chomp)
-      # Mutable per-line character buffers we can blank out by column range.
-      buffers = lines.map(&:dup)
-
-      tokens = begin
-        Ripper.lex(source)
-      rescue StandardError
-        return lines
+      stdout = nil
+      status = nil
+      stderr = nil
+      begin
+        require 'open3'
+        stdout, stderr, status = Open3.capture3(
+          binary, 'metrics', '--path', path.to_s, '--json'
+        )
+        # capture3 tags the output with the LOCALE's encoding, so under a
+        # minimal locale (LANG=C / LANG unset, common on CI runners and in slim
+        # containers) the engine's UTF-8 JSON arrives labelled US-ASCII and the
+        # first String#strip raises Encoding::CompatibilityError. The bytes were
+        # always UTF-8; only the label was wrong.
+        stdout = stdout.to_s.dup.force_encoding(Encoding::UTF_8)
+        stderr = stderr.to_s.dup.force_encoding(Encoding::UTF_8)
+      rescue StandardError => e
+        raise MetricsEngineError, "could not run #{binary}: #{e.message}"
       end
 
-      tokens.each do |(pos, type, token)|
-        next unless NOISE_TOKEN_TYPES.include?(type)
-
-        row = pos[0] - 1
-        col = pos[1]
-        # A noise token may span multiple physical lines (heredocs, block
-        # comments, multi-line strings). Blank each covered line segment.
-        token.to_s.each_line.with_index do |seg, offset|
-          line_idx = row + offset
-          next if line_idx.negative? || line_idx >= buffers.length
-
-          buf = buffers[line_idx]
-          # On the token's first line the content starts at `col`; on
-          # continuation lines it starts at column 0.
-          start = offset.zero? ? col : 0
-          seg_len = seg.chomp.length
-          stop = [start + seg_len, buf.length].min
-          (start...stop).each { |c| buf[c] = ' ' } if stop > start
-        end
+      unless status.success?
+        detail = (stderr.to_s.strip.empty? ? stdout.to_s : stderr.to_s).strip.lines.first
+        first = detail ? detail.strip : "exit code #{status.exitstatus}"
+        raise MetricsEngineError, "tina4 metrics failed on #{path}: #{first}"
       end
 
-      buffers
+      raise MetricsEngineError, "tina4 metrics produced no output for #{path}" if stdout.to_s.strip.empty?
+
+      begin
+        payload = JSON.parse(stdout)
+      rescue JSON::ParserError => e
+        raise MetricsEngineError, "tina4 metrics returned unreadable JSON: #{e.message}"
+      end
+
+      raise MetricsEngineError, 'tina4 metrics returned a non-object payload' unless payload.is_a?(Hash)
+
+      payload
     end
 
-    # True for a line that counts toward LOC: not blank, not a comment.
+    # Pull a key out of the payload or raise naming what the engine is missing.
+    def self._require(payload, key, kind)
+      value = payload[key]
+      unless value.is_a?(kind)
+        raise MetricsEngineError,
+              "engine payload has no usable '#{key}' - the installed tina4 CLI predates " \
+              "a field the dashboard renders. Update it: #{INSTALL_HINT}"
+      end
+      value
+    end
+
+    # Full code analysis from the native engine, shaped for the dashboard.
+    def self.full_analysis(root = 'src')
+      resolved, scan_mode = resolve_scan_target(root)
+      payload = _run_engine(resolved)
+
+      summary = _require(payload, 'summary', Hash)
+      file_metrics = _require(payload, 'file_metrics', Array)
+      functions = _require(payload, 'most_complex_functions', Array)
+
+      missing = SUMMARY_KEYS.reject { |k| summary.key?(k) }
+      unless missing.empty?
+        raise MetricsEngineError,
+              "engine summary is missing #{missing.join(', ')} - update the CLI: #{INSTALL_HINT}"
+      end
+      unless file_metrics.empty?
+        absent = FILE_KEYS.reject { |k| file_metrics.first.key?(k) }
+        raise MetricsEngineError, "engine file_metrics is missing #{absent.join(', ')}" unless absent.empty?
+      end
+      unless functions.empty?
+        absent = FUNCTION_KEYS.reject { |k| functions.first.key?(k) }
+        raise MetricsEngineError, "engine function metrics are missing #{absent.join(', ')}" unless absent.empty?
+      end
+
+      result = SUMMARY_KEYS.each_with_object({}) { |k, h| h[k] = summary[k] }
+      result['file_metrics'] = file_metrics
+      # Display cap only. offenders reads the engine's own uncapped list, so a
+      # 16th over-threshold function is never hidden from the gate.
+      result['most_complex_functions'] = functions.first(15)
+      result['dependency_graph'] = payload['dependency_graph'] || {}
+      # The framework owns these two: the engine always reports "project" because
+      # it cannot know which directory is a framework package.
+      result['scan_mode'] = scan_mode
+      result['scan_root'] = File.expand_path(resolved)
+      result['engine'] = 'tina4-cli'
+      result
+    end
+
+    # Top code-health offenders from the native engine.
     #
-    # The single definition of the rule. Method LOC used to ignore it and return a
-    # raw line span while file LOC excluded blanks and comments, so `loc` meant
-    # two different things in one payload - the dashboard sized bubbles in one
-    # unit and printed the method table in the other.
-    def self._code_line?(line)
-      stripped = line.strip
-      !stripped.empty? && !stripped.start_with?("#")
+    # The engine ranks and severity-tags them, and its own --fail-on gate reads
+    # the same list, so the CLI and the dashboard can never disagree about what
+    # counts as an offender.
+    def self.offenders(root = 'src', top = 20)
+      resolved, scan_mode = resolve_scan_target(root)
+      payload = _run_engine(resolved)
+
+      found = _require(payload, 'offenders', Array)
+      summary = _require(payload, 'summary', Hash).dup
+      summary['scan_mode'] = scan_mode
+      summary['scan_root'] = File.expand_path(resolved)
+      summary['engine'] = 'tina4-cli'
+      summary['total_offenders'] ||= found.length
+      { 'offenders' => found.first(top), 'summary' => summary }
     end
 
-    def self._extract_functions(source, _tokens, _lines)
-      functions = []
-      # Operate on a neutralised copy: string/regex/comment CONTENT is blanked
-      # so keywords inside them are never read as real code (line numbers, line
-      # count and column widths are preserved).
-      lines = _clean_source(source)
-      # Track class/module nesting for method names
-      context_stack = []
-      i = 0
-
-      while i < lines.length
-        stripped = lines[i].strip
-
-        # Track class/module context
-        if stripped.match?(/\A(class|module)\s+(\S+)/)
-          m = stripped.match(/\A(class|module)\s+(\S+)/)
-          class_name = m[2].to_s.split('<').first.to_s.strip
-          context_stack.push(class_name) unless class_name.empty?
-        end
-
-        # Detect method definitions — require a real `def ` declaration so a
-        # `def`-shaped substring inside a (now-blanked) string is never a method.
-        if stripped.match?(/\Adef\s+/)
-          method_match = stripped.match(/\Adef\s+(self\.)?(\S+?)(\(.*\))?\s*$/)
-          if method_match
-            prefix = method_match[1] ? 'self.' : ''
-            method_name = prefix + method_match[2]
-
-            # Build full name with class context
-            full_name = if context_stack.any?
-                          "#{context_stack.last}.#{method_name}"
-                        else
-                          method_name
-                        end
-
-            # Extract arguments
-            args = []
-            if method_match[3]
-              arg_str = method_match[3].gsub(/[()]/, '')
-              arg_str.split(',').each do |arg|
-                arg = arg.strip.split('=').first.strip.gsub(/^[*&]+/, '')
-                args << arg unless arg == 'self' || arg.empty?
-              end
-            end
-
-            # Find method end and calculate LOC
-            method_start = i
-            method_end = _find_method_end(lines, i)
-            # Code lines over the method's span, by the same rule as file LOC.
-            # Floor of 1: a one-line body must never report 0.
-            method_loc = [1, lines[method_start..method_end].count { |l| _code_line?(l) }].max
-
-            # Calculate complexity for this method's body
-            method_lines = lines[method_start..method_end]
-            method_source = method_lines.join("\n")
-            cc = _cyclomatic_complexity_from_source(method_source)
-
-            functions << {
-              "name" => full_name,
-              "line" => i + 1,
-              "complexity" => cc,
-              "loc" => method_loc,
-              "args" => args
-            }
-          end
-        end
-
-        # Track end keywords for context popping
-        if stripped == 'end'
-          # Check if this closes a class/module
-          # Simple heuristic: count def/class/module opens vs end closes
-          # We only pop context when we're back at the class/module level
-          indent = lines[i].length - lines[i].lstrip.length
-          if indent == 0 && context_stack.any?
-            context_stack.pop
-          end
-        end
-
-        i += 1
-      end
-
-      _charge_nested_complexity_to_the_nested_function(functions)
-    end
-
-    # Stop a function being charged for the complexity of the functions nested
-    # inside it.
+    # Per-file metrics from the native engine.
     #
-    # Each function's raw score is measured over its whole span, so a branch
-    # inside a nested function landed on BOTH that function and every function
-    # enclosing it. The over-count compounded with depth: a wrapper around twenty
-    # inner handlers absorbed the entire file's complexity and topped the
-    # offenders list, hiding the genuine hot spots.
-    #
-    # The correction is exact. A raw score is 1 + every decision in the span, so
-    # (raw - 1) is the total decision count of a function's whole subtree.
-    # Subtracting that for each DIRECT child leaves the function's own branches:
-    #
-    #   own(F) = raw(F) - sum over direct children C of (raw(C) - 1)
-    #
-    # Blocks and lambdas are deliberately unaffected: they are not reported as
-    # functions of their own, so nothing subtracts them and their decisions stay
-    # with the method that contains them - moved, never lost.
-    def self._charge_nested_complexity_to_the_nested_function(functions)
-      return functions if functions.length < 2
+    # The engine accepts a single file for --path, so one code path serves both
+    # the whole-tree scan and one file.
+    def self.file_detail(file_path)
+      raise MetricsEngineError, 'file_detail needs a path' if file_path.nil? || file_path.to_s.empty?
 
-      last_line = ->(f) { f["line"] + [1, f["loc"]].max - 1 }
-      contains = ->(outer, inner) do
-        inner["line"] > outer["line"] && last_line.call(inner) <= last_line.call(outer)
-      end
-
-      raw = functions.map { |f| f["complexity"] }
-      functions.each_with_index do |outer, i|
-        subtract = 0
-        functions.each_with_index do |inner, j|
-          next if i == j || !contains.call(outer, inner)
-
-          # Direct child only: skip it if another function sits between the two,
-          # or its complexity would be subtracted twice.
-          nested_deeper = functions.each_with_index.any? do |mid, k|
-            k != i && k != j && contains.call(outer, mid) && contains.call(mid, inner)
-          end
-          subtract += raw[j] - 1 unless nested_deeper
-        end
-        outer["complexity"] = [1, raw[i] - subtract].max
-      end
-
-      functions
-    end
-
-    # Keywords that ALWAYS open a block needing a matching `end`.
-    BLOCK_OPENERS = %w[def class module begin case].freeze
-    # Keywords that open a block ONLY in statement-leading position; in trailing
-    # position they are modifiers (`return x if y`) and need no `end`.
-    CONDITIONAL_OPENERS = %w[if unless while until for].freeze
-
-    # Find the line index where the method that starts at `start_index` ends.
-    #
-    # Token-driven (Ripper) so it is immune to the line-regex footguns that made
-    # this over-run to end-of-file (CC 496 on tiny methods):
-    #   * `self.class` — `class` after a `.` is an identifier, not a block opener
-    #     (Ripper tags it :on_ident), so it no longer bumps depth.
-    #   * modifier `if/unless/while/until/for` (`return x if y`) — only counted
-    #     as an opener in statement-LEADING position (first real token of a
-    #     statement), never trailing.
-    #   * `lines` are already string/comment-cleaned, so keywords inside string
-    #     bodies are gone too.
-    # Falls back to the last line only if no matching `end` is found.
-    def self._find_method_end(lines, start_index)
-      source = lines[start_index..].join("\n")
-      tokens = begin
-        Ripper.lex(source)
-      rescue StandardError
-        return lines.length - 1
-      end
-
-      depth = 0
-      # A keyword is a block opener only when it leads a statement. Track that:
-      # we are at statement start initially and right after a newline / `;`.
-      at_statement_start = true
-      seen_opener = false
-
-      tokens.each do |(pos, type, token)|
-        case type
-        when :on_kw
-          if BLOCK_OPENERS.include?(token)
-            depth += 1
-            seen_opener = true
-          elsif token == 'do'
-            depth += 1
-            seen_opener = true
-          elsif CONDITIONAL_OPENERS.include?(token)
-            # Leading => real block opener; trailing => modifier (no end).
-            if at_statement_start
-              depth += 1
-              seen_opener = true
-            end
-          elsif token == 'end'
-            depth -= 1
-            if seen_opener && depth <= 0
-              return start_index + (pos[0] - 1)
-            end
-          end
-          at_statement_start = false
-        when :on_nl, :on_ignored_nl, :on_semicolon
-          at_statement_start = true
-        when :on_sp, :on_comment, :on_embdoc, :on_embdoc_beg, :on_embdoc_end
-          # whitespace/comments don't change statement-start state
-        else
-          at_statement_start = false
+      target = Pathname.new(file_path.to_s)
+      unless target.exist?
+        # Try it relative to whatever the census last resolved, so the dashboard
+        # can pass a path taken straight out of file_metrics.
+        unless @last_scan_root.to_s.empty?
+          candidate = Pathname.new(@last_scan_root).join(file_path.to_s)
+          target = candidate if candidate.exist?
         end
       end
+      raise MetricsEngineError, "no such file: #{file_path}" unless target.exist?
+      raise MetricsEngineError, "not a file: #{file_path}" if target.directory?
 
-      # If we never found the end, return last line
-      lines.length - 1
-    end
+      payload = _run_engine(target.to_s)
+      file_metrics = _require(payload, 'file_metrics', Array)
+      raise MetricsEngineError, "engine reported no metrics for #{file_path}" if file_metrics.empty?
 
-    def self._cyclomatic_complexity_from_source(source)
-      cc = 1
-
-      # Use Ripper tokens for accurate counting
-      tokens = begin
-        Ripper.lex(source)
-      rescue StandardError
-        return cc
-      end
-
-      tokens.each do |(_pos, type, token)|
-        case type
-        when :on_kw
-          case token
-          when 'if', 'elsif', 'unless', 'when', 'while', 'until', 'for', 'rescue'
-            # Skip modifier forms by checking if it's the first keyword on the line
-            # For simplicity, count all — modifiers still add a decision path
-            cc += 1
-          end
-        when :on_op
-          case token
-          when '&&', '||'
-            cc += 1
-          when '?'
-            # Ternary operator
-            cc += 1
-          end
-        when :on_ident
-          # 'and' and 'or' are parsed as identifiers in some contexts
-          # but usually as keywords
-        end
-
-        # Check for 'and'/'or' as keywords
-        if type == :on_kw && (token == 'and' || token == 'or')
-          cc += 1
-        end
-      end
-
-      cc
-    end
-
-    OPERATOR_TYPES = %i[
-      on_op
-    ].freeze
-
-    OPERAND_TYPES = %i[
-      on_ident on_int on_float on_tstring_content
-      on_const on_symbeg on_rational on_imaginary
-    ].freeze
-
-    def self._count_halstead(tokens)
-      stats = {
-        operators: 0,
-        operands: 0,
-        unique_operators: Set.new,
-        unique_operands: Set.new
-      }
-
-      # Need Set
-      require 'set' unless defined?(Set)
-
-      stats[:unique_operators] = Set.new
-      stats[:unique_operands] = Set.new
-
-      tokens.each do |(_pos, type, token)|
-        case type
-        when :on_op
-          stats[:operators] += 1
-          stats[:unique_operators].add(token)
-        when :on_kw
-          # Keywords that act as operators
-          if %w[and or not defined? return yield raise].include?(token)
-            stats[:operators] += 1
-            stats[:unique_operators].add(token)
-          end
-        when :on_ident, :on_const
-          stats[:operands] += 1
-          stats[:unique_operands].add(token)
-        when :on_int, :on_float, :on_rational, :on_imaginary
-          stats[:operands] += 1
-          stats[:unique_operands].add(token)
-        when :on_tstring_content
-          stats[:operands] += 1
-          stats[:unique_operands].add(token[0, 50])
-        end
-      end
-
-      stats
-    end
-
-    def self._maintainability_index(halstead_volume, avg_cc, loc)
-      return 100.0 if loc <= 0
-
-      v = [halstead_volume, 1].max
-      mi = 171 - 5.2 * Math.log(v) - 0.23 * avg_cc - 16.2 * Math.log(loc)
-      [[0.0, mi * 100.0 / 171].max, 100.0].min
-    end
-
-    def self._detect_violations(functions, file_metrics)
-      violations = []
-
-      functions.each do |f|
-        if f["complexity"] > 20
-          violations << {
-            "type" => "error",
-            "rule" => "high_complexity",
-            "message" => "#{f['name']} has cyclomatic complexity #{f['complexity']} (max 20)",
-            "file" => f["file"],
-            "line" => f["line"]
-          }
-        elsif f["complexity"] > 10
-          violations << {
-            "type" => "warning",
-            "rule" => "moderate_complexity",
-            "message" => "#{f['name']} has cyclomatic complexity #{f['complexity']} (recommended max 10)",
-            "file" => f["file"],
-            "line" => f["line"]
-          }
-        end
-      end
-
-      file_metrics.each do |fm|
-        if fm["loc"] > 500
-          violations << {
-            "type" => "warning",
-            "rule" => "large_file",
-            "message" => "#{fm['path']} has #{fm['loc']} LOC (recommended max 500)",
-            "file" => fm["path"],
-            "line" => 1
-          }
-        end
-
-        if fm["functions"] > 20
-          violations << {
-            "type" => "warning",
-            "rule" => "too_many_functions",
-            "message" => "#{fm['path']} has #{fm['functions']} functions (recommended max 20)",
-            "file" => fm["path"],
-            "line" => 1
-          }
-        end
-
-        if fm["maintainability"] < 20
-          violations << {
-            "type" => "error",
-            "rule" => "low_maintainability",
-            "message" => "#{fm['path']} has maintainability index #{fm['maintainability']} (min 20)",
-            "file" => fm["path"],
-            "line" => 1
-          }
-        elsif fm["maintainability"] < 40
-          violations << {
-            "type" => "warning",
-            "rule" => "moderate_maintainability",
-            "message" => "#{fm['path']} has maintainability index #{fm['maintainability']} (recommended min 40)",
-            "file" => fm["path"],
-            "line" => 1
-          }
-        end
-      end
-
-      violations.sort_by! { |v| [v["type"] == "error" ? 0 : 1, v["file"]] }
-      violations
+      file_metrics.first.dup.merge('engine' => 'tina4-cli')
     end
   end
 end

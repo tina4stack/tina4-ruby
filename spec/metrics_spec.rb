@@ -30,7 +30,7 @@ RSpec.describe Tina4::Metrics do
     def complexity_by_name(source)
       create_file("nested.rb", source)
       result = Tina4::Metrics.full_analysis(@root)
-      (result["all_functions"] || []).each_with_object({}) do |f, acc|
+      (result["most_complex_functions"] || []).each_with_object({}) do |f, acc|
         acc[f["name"]] = f["complexity"]
       end
     end
@@ -134,7 +134,7 @@ RSpec.describe Tina4::Metrics do
         end
       RUBY
       result = Tina4::Metrics.full_analysis(@root)
-      by_name = (result["all_functions"] || []).to_h { |f| [f["name"], f["loc"]] }
+      by_name = (result["most_complex_functions"] || []).to_h { |f| [f["name"], f["loc"]] }
       # Code lines are def + modifier-if + 2 + end.
       expect(by_name["A.with_comments"]).to eq(4)
     end
@@ -142,7 +142,7 @@ RSpec.describe Tina4::Metrics do
     it "never reports zero" do
       create_file("loc.rb", "def f\n  1\nend\n")
       result = Tina4::Metrics.full_analysis(@root)
-      expect(result["all_functions"].first["loc"]).to be >= 1
+      expect(result["most_complex_functions"].first["loc"]).to be >= 1
     end
 
     it "uses the same rule as file LOC" do
@@ -150,7 +150,7 @@ RSpec.describe Tina4::Metrics do
       # holds if both count the same thing.
       create_file("loc.rb", "def only(x)\n  # comment\n\n  x\nend\n")
       result = Tina4::Metrics.full_analysis(@root)
-      expect(result["all_functions"].first["loc"]).to eq(result["file_metrics"].first["loc"])
+      expect(result["most_complex_functions"].first["loc"]).to eq(result["file_metrics"].first["loc"])
     end
   end
 
@@ -178,9 +178,13 @@ RSpec.describe Tina4::Metrics do
   end
 
   describe ".full_analysis" do
-    it "returns error for missing directory" do
+    it "falls back to a framework scan for a missing directory" do
+      # Verified against the Python master AND PHP: _resolve_root deliberately
+      # scans the framework package when the target has no source, so the
+      # dashboard is never empty. scan_mode reports which one was measured.
       result = Tina4::Metrics.full_analysis("nonexistent")
-      expect(result).to have_key("error")
+      expect(result["scan_mode"]).to eq("framework")
+      expect(result["files_analyzed"]).to be > 0
     end
 
     it "analyzes files and returns file_metrics with expected keys" do
@@ -275,19 +279,22 @@ RSpec.describe Tina4::Metrics do
         end
       RUBY
       result = Tina4::Metrics.full_analysis("src")
-      violations = result["violations"]
 
-      # The detection must actually fire — not an empty list that a broken
+      # `violations` was the deleted analyzer's key. The engine publishes one
+      # ranked `offenders` list instead, and its own --fail-on gate reads that
+      # same list, so the dashboard and the build cannot disagree.
+      expect(result).not_to have_key("violations")
+
+      found = Tina4::Metrics.offenders("src", 2**31)["offenders"]
+      # The detection must actually fire -- not an empty list that a broken
       # detector would also satisfy.
-      expect(violations).not_to be_empty
+      expect(found).not_to be_empty
 
-      complexity_violation = violations.find do |v|
-        v["file"].to_s.include?("complex.rb") && v["rule"].to_s.include?("complexity")
+      complexity_offender = found.find do |o|
+        o["file"].to_s.include?("complex.rb") && o["kind"] == "complexity"
       end
-      expect(complexity_violation).not_to be_nil
-      expect(complexity_violation["type"]).to eq("warning")
-      expect(complexity_violation["rule"]).to eq("moderate_complexity")
-      expect(complexity_violation["message"]).to include("Complex.big_method")
+      expect(complexity_offender).not_to be_nil
+      expect(complexity_offender["detail"]).to include("Complex.big_method")
 
       # And the offending method's COMPUTED complexity must really be above the
       # threshold of 10 (mirrors the `.offenders` complexity assertions in
@@ -306,9 +313,9 @@ RSpec.describe Tina4::Metrics do
   end
 
   describe ".file_detail" do
-    it "returns error for missing file" do
-      result = Tina4::Metrics.file_detail("no_such_file.rb")
-      expect(result).to have_key("error")
+    it "raises for a missing file and names the path" do
+      expect { Tina4::Metrics.file_detail("no_such_file.rb") }
+        .to raise_error(Tina4::MetricsEngineError, /no such file: no_such_file\.rb/)
     end
 
     it "returns detail for an existing file" do
@@ -323,9 +330,13 @@ RSpec.describe Tina4::Metrics do
       RUBY
       result = Tina4::Metrics.file_detail(path)
       expect(result["loc"]).to be > 0
-      expect(result["classes"]).to eq(1)
-      expect(result["functions"].length).to eq(1)
-      expect(result["imports"]).to include("json")
+      # The engine's per-file shape: `functions` is a COUNT, dependencies are
+      # counted rather than listed, and there is no `classes` / `imports` key.
+      expect(result["functions"]).to eq(1)
+      expect(result["dep_count"]).to be >= 1
+      expect(result["engine"]).to eq("tina4-cli")
+      expect(result).not_to have_key("classes")
+      expect(result).not_to have_key("imports")
     end
   end
 
@@ -335,13 +346,18 @@ RSpec.describe Tina4::Metrics do
   # keywords inside strings/comments inflated CC and the method-end finder ran
   # past the real `end` (tiny methods reported CC ~496).
   describe "complexity accuracy (strings/comments/regex are neutralised)" do
+    # The engine reports per-file `functions` as a COUNT; per-function detail
+    # lives in the scan's most_complex_functions. Attach that list under a
+    # distinct key so every call site below keeps working unchanged.
     def detail_for(content)
       path = create_file("src/sample.rb", content)
-      Tina4::Metrics.file_detail(path)
+      Tina4::Metrics.file_detail(path).merge(
+        "function_list" => Tina4::Metrics.full_analysis(File.dirname(path))["most_complex_functions"]
+      )
     end
 
     def func(detail, name_suffix)
-      detail["functions"].find { |f| f["name"].end_with?(name_suffix) }
+      detail["function_list"].find { |f| f["name"].end_with?(name_suffix) }
     end
 
     it "ignores && / || / if that live inside a STRING literal" do
@@ -398,12 +414,12 @@ RSpec.describe Tina4::Metrics do
           end
         end
       RUBY
-      names = detail["functions"].map { |f| f["name"] }
+      names = detail["function_list"].map { |f| f["name"] }
       expect(names).to include("Holder.real_method")
       expect(names).not_to include("Holder.fake_method")
       # A bare `something(...)` call inside a string is never a method either.
       expect(names.none? { |n| n.include?("fake_method") }).to be true
-      expect(detail["functions"].length).to eq(1)
+      expect(detail["function_list"].length).to eq(1)
     end
 
     it "does NOT over-run the method end on `self.class` (regression: CC ~496)" do
@@ -426,7 +442,7 @@ RSpec.describe Tina4::Metrics do
       expect(add_thing["complexity"]).to eq(1)
       expect(add_thing["loc"]).to eq(5)
       # Both methods are still detected as separate functions.
-      expect(detail["functions"].map { |f| f["name"] }).to contain_exactly(
+      expect(detail["function_list"].map { |f| f["name"] }).to contain_exactly(
         "Registry.add_thing", "Registry.add_other"
       )
     end
@@ -459,33 +475,45 @@ RSpec.describe Tina4::Metrics do
     end
   end
 
-  describe "._has_matching_test" do
-    it "finds spec files in spec/ directory" do
+  # Test detection moved into the engine (ADR-0002). The private
+  # _has_matching_test / _defined_constants helpers are gone, so these assert the
+  # SAME claims through the engine's public `has_tests` flag: a dedicated test
+  # filename counts, an unreferenced module does not, and a SHORT constant
+  # (class ORM) that a spec references counts -- that last one was a real bug, a
+  # length gate excluded exactly the short framework types that matter most.
+  describe "has_tests detection (through the engine)" do
+    def has_tests_for(rel_path)
+      analysis = Tina4::Metrics.full_analysis(File.join(@root, "lib"))
+      entry = analysis["file_metrics"].find { |f| f["path"].end_with?(File.basename(rel_path)) }
+      expect(entry).not_to be_nil, "engine reported no metrics for #{rel_path}"
+      entry["has_tests"]
+    end
+
+    it "counts a dedicated <module>_spec.rb file" do
+      create_file("lib/tina4/router.rb", "module Tina4\n  class Router\n  end\nend\n")
       create_file("spec/router_spec.rb", "# test\n")
-      expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/router.rb")).to eq(true)
+      expect(has_tests_for("lib/tina4/router.rb")).to eq(true)
     end
 
-    it "finds test files in test/ directory" do
+    it "counts a dedicated <module>_test.rb file" do
+      create_file("lib/tina4/router.rb", "module Tina4\n  class Router\n  end\nend\n")
       create_file("test/router_test.rb", "# test\n")
-      expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/router.rb")).to eq(true)
+      expect(has_tests_for("lib/tina4/router.rb")).to eq(true)
     end
 
-    it "finds test_ prefixed files in test/ directory" do
+    it "counts a test_ prefixed file" do
+      create_file("lib/tina4/router.rb", "module Tina4\n  class Router\n  end\nend\n")
       create_file("test/test_router.rb", "# test\n")
-      expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/router.rb")).to eq(true)
+      expect(has_tests_for("lib/tina4/router.rb")).to eq(true)
     end
 
-    it "returns false when no matching test exists" do
-      expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/nonexistent.rb")).to eq(false)
+    it "reports UNTESTED when nothing references the module" do
+      create_file("lib/tina4/lonely.rb", "module Tina4\n  class Lonely\n  end\nend\n")
+      create_file("spec/something_else_spec.rb", "# unrelated\n")
+      expect(has_tests_for("lib/tina4/lonely.rb")).to eq(false)
     end
 
-    # Regression (mirrors the Python master fix): a file whose only distinctive
-    # top-level constant is <= 3 chars (e.g. `class ORM`) used to be mislabelled
-    # UNTESTED because the defined-constant gate excluded names of length <= 3.
-    # A spec referencing `Tina4::ORM` must mark orm.rb tested via the constant
-    # signal — even with NO dedicated <module>_spec.rb filename match.
-    it "detects a 3-char constant (ORM) referenced by a spec" do
-      # Source file: only distinctive constant is the 3-char ORM.
+    it "counts a 3-char constant (ORM) a spec references, with no filename match" do
       create_file("lib/tina4/orm.rb", <<~RUBY)
         module Tina4
           class ORM
@@ -493,17 +521,16 @@ RSpec.describe Tina4::Metrics do
           end
         end
       RUBY
-      # Spec references the constant but does NOT match the filename pattern
-      # (no orm_spec.rb / orm_test.rb / test_orm.rb) and does NOT require it.
+      # Deliberately NOT orm_spec.rb -- the constant is the only signal.
       create_file("spec/persistence_spec.rb", <<~RUBY)
-        it "saves" do
-          record = Tina4::ORM.new
-          record.save
+        require "spec_helper"
+        RSpec.describe Tina4::ORM do
+          it "saves" do
+            expect(Tina4::ORM.new.save).to be_nil
+          end
         end
       RUBY
-
-      expect(Tina4::Metrics.send(:_defined_constants, "lib/tina4/orm.rb")).to include("ORM")
-      expect(Tina4::Metrics.send(:_has_matching_test, "lib/tina4/orm.rb")).to eq(true)
+      expect(has_tests_for("lib/tina4/orm.rb")).to eq(true)
     end
   end
 end

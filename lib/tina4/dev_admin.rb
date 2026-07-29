@@ -631,10 +631,25 @@ module Tina4
         when ["GET", "/__dev/api/metrics"]
           json_response(Tina4::Metrics.quick_metrics)
         when ["GET", "/__dev/api/metrics/full"]
-          json_response(Tina4::Metrics.full_analysis)
+          # No fallback (ADR-0002). A missing or stale CLI is a 503 naming the
+          # install command, never zeros that read as a healthy codebase.
+          begin
+            json_response(Tina4::Metrics.full_analysis)
+          rescue Tina4::MetricsEngineError => e
+            json_response({ "error" => e.message }, 503)
+          end
         when ["GET", "/__dev/api/metrics/file"]
           file_path = (query_param(env, "path") || "").to_s
-          json_response(Tina4::Metrics.file_detail(file_path))
+          begin
+            json_response(Tina4::Metrics.file_detail(file_path))
+          rescue Tina4::MetricsEngineError => e
+            # A bad path is the caller's mistake (404); anything else is the
+            # engine being unavailable (503).
+            bad_path = e.message.include?("no such file") ||
+                       e.message.include?("not a file") ||
+                       e.message.include?("needs a path")
+            json_response({ "error" => e.message }, bad_path ? 404 : 503)
+          end
         when ["GET", "/__dev/api/thoughts"]
           json_response(thoughts_payload)
         when ["POST", "/__dev/api/supervise/create"]

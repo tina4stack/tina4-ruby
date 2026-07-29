@@ -1145,18 +1145,22 @@ module Tina4
         exit 2
       end
 
-      result = Tina4::Metrics.offenders(path, top)
-      summary = result["summary"]
-      found = result["offenders"]
-
-      if summary.key?("error")
-        puts "  metrics error: #{summary['error']}"
+      # ONE engine run. Ask for every offender and slice for display: the gate
+      # must read the FULL set, not the printed top-N, and the old second call
+      # re-ran the whole analysis (its "full_analysis is cached" comment stopped
+      # being true when the in-process analyzer and its cache were deleted).
+      # An Integer, not Float::INFINITY -- Array#first demands an Integer.
+      every_offender = 2**31
+      begin
+        result = Tina4::Metrics.offenders(path, every_offender)
+      rescue Tina4::MetricsEngineError => e
+        warn "  metrics error: #{e.message}"
         exit 2
       end
+      summary = result["summary"]
+      all_offenders = result["offenders"]
+      found = all_offenders.first(top)
 
-      # Decide exit code from the FULL offender set, not just the printed top-N.
-      # full_analysis is cached, so this reuses the same analysis.
-      all_offenders = Tina4::Metrics.offenders(path, [summary["total_offenders"], 1].max)["offenders"]
       severities = all_offenders.map { |o| o["severity"] }.to_set
       exit_code = 0
       if fail_on == "warn" && !(severities & %w[warn error]).empty?
