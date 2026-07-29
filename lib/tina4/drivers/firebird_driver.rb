@@ -1,3 +1,4 @@
+require "set"
 # frozen_string_literal: true
 
 module Tina4
@@ -259,13 +260,33 @@ module Tina4
               "JOIN RDB\$FIELDS F ON RF.RDB\$FIELD_SOURCE = F.RDB\$FIELD_NAME " \
               "WHERE RF.RDB\$RELATION_NAME = ?"
         rows = execute_query(sql, [table_name.upcase])
+
+        # The primary key comes from the constraint catalogue. This used to be
+        # hardcoded `false` for every column, so primary_key(table) always
+        # answered [] on Firebird -- which silently breaks anything that
+        # introspects the key, including the filterless-write guard that lifts
+        # the PK out of `data`. Same bug the Python master carried.
+        pk_sql = "SELECT SG.RDB\$FIELD_NAME FROM RDB\$INDEX_SEGMENTS SG " \
+                 "JOIN RDB\$RELATION_CONSTRAINTS RC ON SG.RDB\$INDEX_NAME = RC.RDB\$INDEX_NAME " \
+                 "WHERE RC.RDB\$CONSTRAINT_TYPE = 'PRIMARY KEY' AND RC.RDB\$RELATION_NAME = ? " \
+                 "ORDER BY SG.RDB\$FIELD_POSITION"
+        pk_names = begin
+          execute_query(pk_sql, [table_name.upcase]).map do |r|
+            (r["RDB\$FIELD_NAME"] || r["rdb\$field_name"] || "").strip.upcase
+          end.reject(&:empty?).to_set
+        rescue StandardError
+          # A table with no primary key is not an error.
+          Set.new
+        end
+
         rows.map do |r|
+          field_name = (r["RDB\$FIELD_NAME"] || r["rdb\$field_name"] || "").strip
           {
-            name: (r["RDB\$FIELD_NAME"] || r["rdb\$field_name"] || "").strip,
+            name: field_name,
             type: r["RDB\$FIELD_TYPE"] || r["rdb\$field_type"],
             nullable: (r["RDB\$NULL_FLAG"] || r["rdb\$null_flag"]).nil?,
             default: r["RDB\$DEFAULT_SOURCE"] || r["rdb\$default_source"],
-            primary_key: false
+            primary_key: pk_names.include?(field_name.upcase)
           }
         end
       end
