@@ -5,7 +5,7 @@
 # Two-tier analysis:
 #   1. Quick metrics (instant): LOC, file counts, class/function counts
 #   2. Full analysis (on-demand, cached): cyclomatic complexity, maintainability
-#      index, coupling, Halstead metrics, violations
+#      index, coupling, Halstead metrics, offenders
 #
 # Zero dependencies. The census is pure Ruby; the analysis is `tina4 metrics --json`.
 
