@@ -120,6 +120,22 @@ module Tina4
       # Auto-map flag — defaults to TRUE for cross-framework parity (Python's
       # ORM has auto_map=True by default). The instance variable is treated
       # as "unset" when nil; only an explicit `false` disables it.
+      #
+      # INERT IN RUBY, DELIBERATELY. Nothing reads this flag: Ruby is
+      # snake_case-native, so the attribute name a developer writes IS the
+      # column name and there is nothing for a case mapping to do. It exists
+      # only so a model ported from PHP (where `autoMap` really does map a
+      # camelCase property onto a snake_case column) does not blow up on an
+      # unknown setter. Setting it either way changes NOTHING.
+      #
+      # This is not an oversight to "fix" by adding conversion: the owner's
+      # naming rule (2026-07-29) is that the column name must mirror the
+      # DATABASE, and a language-specific case mapping may only ever be an
+      # OPT-IN. Adding camel->snake here by default would be that mapping, on
+      # by default, which is the opposite. Use `field_mapping` to point an
+      # attribute at a differently-named column — that is the supported
+      # mechanism, and spec/orm_column_case_spec.rb pins all of this so the
+      # flag cannot quietly grow behaviour later.
       def auto_map
         defined?(@auto_map) && !@auto_map.nil? ? @auto_map : true
       end
