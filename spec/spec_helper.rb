@@ -58,7 +58,11 @@ TINA4_GATE_SERVICE_KEYWORDS = [
   "mongo",                               # also matches "mongodb"
   "rabbit", "amqp",
   "kafka",                               # also matches "rdkafka"
-  "mqtt", "mosquitto"                    # Eclipse Mosquitto for the MQTT specs
+  "mqtt", "mosquitto",                   # Eclipse Mosquitto for the MQTT specs
+  # GreenMail (real SMTP 3025 / IMAP 3143) for the Messenger IMAP specs. 16 of
+  # those specs sat pending on "GreenMail mail server not reachable" with no
+  # mail keyword here, so they passed green in CI indefinitely.
+  "greenmail", "smtp", "imap"
 ].freeze
 
 TINA4_GATE_UNAVAILABLE_HINTS = [
