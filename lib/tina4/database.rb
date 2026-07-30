@@ -310,7 +310,7 @@ module Tina4
       # native toggle (default ON — see @autocommit in #initialize). The
       # framework-level commit in #autocommit_standalone_write covers drivers
       # that have no native setter.
-      @driver.autocommit = @autocommit if @driver.respond_to?(:autocommit=)
+      @driver.autocommit = @autocommit if driver_implements?(@driver, :autocommit=)
 
       Tina4::Log.info("Database connected: #{@driver_name}")
       @connect_error = nil
@@ -559,7 +559,7 @@ module Tina4
       # — instead of probing a session sequence (lastval()) that returns nil or
       # a stale wrong id for a UUID table. Other engines (SQLite/MySQL/MSSQL/
       # Firebird) keep the generic build-then-last_insert_id path below.
-      if drv.respond_to?(:insert)
+      if driver_implements?(drv, :insert)
         result = drv.insert(table, data)
         autocommit_standalone_write(drv)
         # A driver that owns its insert (PostgreSQL, via RETURNING *) returns a
@@ -583,7 +583,7 @@ module Tina4
     # insert). Mirrors the Python master + PHP, whose write DatabaseResult carries
     # affected_rows/affectedRows; best-effort on drivers without a native count.
     def write_affected(drv, default = 0)
-      drv.respond_to?(:affected_rows) ? drv.affected_rows.to_i : default
+      driver_implements?(drv, :affected_rows) ? drv.affected_rows.to_i : default
     end
     private :write_affected
 
@@ -930,7 +930,7 @@ module Tina4
       # v3.13.14 (#48): drivers that can resolve a schema/catalog-qualified
       # name ("gift_cards.gift_card", "dbo.widget", "attached.table") answer
       # directly; the rest fall back to a case-insensitive scan of tables.
-      return drv.table_exists?(table_name) if drv.respond_to?(:table_exists?)
+      return drv.table_exists?(table_name) if driver_implements?(drv, :table_exists?)
 
       tables.any? { |t| t.downcase == table_name.to_s.downcase }
     end
@@ -1075,7 +1075,7 @@ module Tina4
     # Prefer the driver's own last_error (postgres sets one) over str(e), so the
     # captured message matches what each engine surfaces; never blank.
     def driver_error_message(drv, error)
-      drv_err = drv.respond_to?(:last_error) ? drv.last_error : nil
+      drv_err = driver_implements?(drv, :last_error) ? drv.last_error : nil
       msg = drv_err || error.message
       msg = error.message if msg.nil? || msg.to_s.empty?
       msg || @last_error
@@ -1167,7 +1167,7 @@ module Tina4
     # lock (NOT via ensure_sequence_table, which would re-enter current_driver/
     # table_exists? and risk a nested touch).
     def sequence_next_sqlite(drv, seq_name, table, pk_column)
-      conn = drv.respond_to?(:connection) ? drv.connection : nil
+      conn = driver_implements?(drv, :connection) ? drv.connection : nil
       raise "get_next_id: SQLite driver has no live connection" if conn.nil?
 
       Tina4::Drivers::SqliteDriver.write_lock.synchronize do
@@ -1438,6 +1438,24 @@ module Tina4
       return row unless row.is_a?(Hash)
 
       row.each_with_object({}) { |(k, v), h| h[k.to_sym] = v }
+    end
+
+    # Did the driver actually OVERRIDE this, or is it inheriting the raising
+    # stub from Tina4::DatabaseAdapter?
+    #
+    # These call sites used to ask `respond_to?`. Including the contract module
+    # makes every driver respond to every contract method, so `respond_to?` can
+    # no longer tell "implemented" from "declared and not yet written" - and
+    # answering it wrongly turns a working path into a NotImplementedError.
+    #
+    # Methods outside the contract (affected_rows, last_error, connection) are
+    # not on the module at all, so this degrades to a plain respond_to? for them.
+    def driver_implements?(drv, name)
+      return false if drv.nil?
+      return Tina4::DatabaseAdapter.implemented_by?(drv, name) if
+        Tina4::DatabaseAdapter::CONTRACT.include?(name.to_s.chomp("=").chomp("?").to_sym)
+
+      drv.respond_to?(name)
     end
 
     def detect_driver(conn)

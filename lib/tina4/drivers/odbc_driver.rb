@@ -3,6 +3,7 @@
 module Tina4
   module Drivers
     class OdbcDriver
+      include Tina4::DatabaseAdapter
       attr_reader :connection
 
       # Connect to an ODBC data source.

@@ -4,6 +4,7 @@ require "set"
 module Tina4
   module Drivers
     class FirebirdDriver
+      include Tina4::DatabaseAdapter
       attr_reader :connection
 
       # Substring markers (lowercased) that identify a dead-socket Firebird

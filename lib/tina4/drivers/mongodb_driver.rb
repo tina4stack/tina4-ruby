@@ -3,6 +3,7 @@
 module Tina4
   module Drivers
     class MongodbDriver
+      include Tina4::DatabaseAdapter
       attr_reader :connection, :db
 
       def connect(connection_string, username: nil, password: nil)

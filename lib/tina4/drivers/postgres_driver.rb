@@ -5,6 +5,7 @@ require_relative "schema_split"
 module Tina4
   module Drivers
     class PostgresDriver
+      include Tina4::DatabaseAdapter
       include SchemaSplit
       attr_reader :connection
 
