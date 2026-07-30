@@ -131,21 +131,40 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
 
   # ── TINA4_LOG_FILE / DIR / FORMAT / OUTPUT / CRITICAL ─────────────
   describe "TINA4_LOG_DIR" do
-    it "defaults to <root>/logs" do
+    it "defaults to <cwd>/logs" do
       Dir.mktmpdir do |dir|
+        real = File.realpath(dir)
         with_env("TINA4_LOG_DIR" => nil, "TINA4_LOG_FILE" => nil) do
-          Tina4::Log.configure(dir)
-          expect(Tina4::Log.log_dir).to eq(File.join(dir, "logs"))
+          # configure() with no argument defaults to <cwd>/logs. It used to take
+          # a project ROOT and append logs/, which made "put the logs exactly
+          # here" impossible to say (feature 2 of the feature audit).
+          Dir.chdir(real) { Tina4::Log.configure }
+          expect(Tina4::Log.log_dir).to eq(File.join(real, "logs"))
         end
         Tina4::Log.close_file_logger
       end
     end
 
-    it "uses an explicit relative dir" do
+    it "uses an explicit directory argument as the log directory" do
       Dir.mktmpdir do |dir|
+        real = File.realpath(dir)
+        with_env("TINA4_LOG_DIR" => nil, "TINA4_LOG_FILE" => nil) do
+          Tina4::Log.configure(File.join(real, "somewhere"))
+          expect(Tina4::Log.log_dir).to eq(File.join(real, "somewhere"))
+        end
+        Tina4::Log.close_file_logger
+      end
+    end
+
+    it "uses an explicit relative dir, resolved against the working directory" do
+      Dir.mktmpdir do |dir|
+        real = File.realpath(dir)
         with_env("TINA4_LOG_DIR" => "var/log", "TINA4_LOG_FILE" => nil) do
-          Tina4::Log.configure(dir)
-          expect(Tina4::Log.log_dir).to eq(File.join(dir, "var/log"))
+          # A relative TINA4_LOG_DIR resolves against the WORKING DIRECTORY.
+          # It used to resolve against the configure() argument, which only made
+          # sense while that argument was a project root.
+          Dir.chdir(real) { Tina4::Log.configure }
+          expect(Tina4::Log.log_dir).to eq(File.join(real, "var/log"))
         end
         Tina4::Log.close_file_logger
       end
@@ -156,8 +175,8 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
     it "defaults to tina4.log under log_dir" do
       Dir.mktmpdir do |dir|
         with_env("TINA4_LOG_FILE" => nil, "TINA4_LOG_DIR" => nil) do
-          Tina4::Log.configure(dir)
-          expect(Tina4::Log.log_file_path).to eq(File.join(dir, "logs", "tina4.log"))
+          Dir.chdir(File.realpath(dir)) { Tina4::Log.configure }
+          expect(Tina4::Log.log_file_path).to eq(File.join(File.realpath(dir), "logs", "tina4.log"))
         end
         Tina4::Log.close_file_logger
       end
@@ -414,12 +433,16 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
                  "TINA4_LOG_ROTATE_SIZE" => "200",
                  "TINA4_LOG_ROTATE_KEEP" => "3",
                  "TINA4_LOG_OUTPUT" => "file") do
-          Tina4::Log.configure(dir)
+          # TINA4_LOG_DIR is relative, so it resolves against the working
+          # directory (the configure() argument is a log directory now, not a
+          # project root).
+          real = File.realpath(dir)
+          Dir.chdir(real) { Tina4::Log.configure }
           # Force the file size past the threshold by writing many lines.
           80.times { |i| Tina4::Log.info("rotation line #{i} " + ("x" * 30)) }
           Tina4::Log.close_file_logger
 
-          rotated = Dir.glob(File.join(dir, "logs", "tina4.log.*"))
+          rotated = Dir.glob(File.join(real, "logs", "tina4.log.*"))
           expect(rotated).not_to be_empty
         end
       end

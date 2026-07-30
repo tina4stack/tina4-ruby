@@ -29,6 +29,12 @@ module Tina4
     # ANSI escape code regex for stripping from file output
     ANSI_RE = /\033\[[0-9;]*m/
 
+    # The logger must never be surprised by what it is handed. Console lines are
+    # capped; control characters never reach a terminal. Same numbers in all four
+    # frameworks (feature 2 of the feature audit).
+    STDOUT_MAX_CHARS = 2000
+    CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/
+
     # Defaults used when env vars are unset.
     DEFAULT_ROTATE_SIZE = 10 * 1024 * 1024 # 10MB
     DEFAULT_ROTATE_KEEP = 5
@@ -36,21 +42,50 @@ module Tina4
     class << self
       attr_reader :log_dir, :log_file_path
 
-      def configure(root_dir = Dir.pwd)
-        # TINA4_LOG_DIR — relative or absolute. Default "logs".
+      # configure(target = nil)
+      #
+      # Logs land in a `logs/` folder by default. The argument OVERRIDES that,
+      # and it accepts a DIRECTORY or a FILE PATH:
+      #
+      #   configure                            -> ./logs/tina4.log + ./logs/error.log
+      #   configure("/var/log/myapp")          -> /var/log/myapp/tina4.log + error.log
+      #   configure("/var/log/myapp/app.log")  -> that exact file (no error.log sibling)
+      #   TINA4_LOG_DIR=log                    -> ./log/
+      #
+      # A target with a file extension is a file path; anything else is a
+      # directory (an existing directory is always treated as one, extension or
+      # not). Naming a file means "one file at this path", so no error.log
+      # appears beside it -- same rule TINA4_LOG_FILE already followed.
+      #
+      # BREAKING for Ruby callers: the argument used to be a project ROOT with
+      # `logs/` appended, so `configure("/app")` wrote to /app/logs/ while the
+      # identical call on Python and PHP wrote to /app/. That is the same
+      # file-versus-directory confusion feature 1 found in loadEnv, and it made
+      # "put the logs exactly here" impossible to express. If you relied on the
+      # old behaviour, pass the parent explicitly: `configure(File.join(root, "logs"))`.
+      def configure(target = nil)
+        # Explicit argument wins, then TINA4_LOG_DIR, then ./logs.
         log_dir_env = ENV["TINA4_LOG_DIR"]
-        log_dir_env = "logs" if log_dir_env.nil? || log_dir_env.empty?
-        @log_dir = if File.absolute_path?(log_dir_env)
-                     log_dir_env
-                   else
-                     File.join(root_dir, log_dir_env)
-                   end
+        log_dir_env = nil if log_dir_env && log_dir_env.empty?
+        chosen = target || log_dir_env || "logs"
+        chosen = File.join(Dir.pwd, chosen) unless File.absolute_path?(chosen)
+
+        if target_is_file?(chosen)
+          @log_dir = File.dirname(chosen)
+          explicit_target_file = chosen
+        else
+          @log_dir = chosen
+          explicit_target_file = nil
+        end
         FileUtils.mkdir_p(@log_dir)
 
-        # TINA4_LOG_FILE — explicit log file path (absolute or relative to log_dir).
-        # Default: <log_dir>/tina4.log.
+        # A file path passed to configure() wins, then TINA4_LOG_FILE (absolute
+        # or relative to log_dir). Default: <log_dir>/tina4.log.
         log_file_env = ENV["TINA4_LOG_FILE"]
-        @log_file_path = if log_file_env && !log_file_env.empty?
+        log_file_env = nil if log_file_env && log_file_env.empty?
+        @log_file_path = if explicit_target_file
+                           explicit_target_file
+                         elsif log_file_env
                            File.absolute_path?(log_file_env) ? log_file_env : File.join(@log_dir, log_file_env)
                          else
                            File.join(@log_dir, "tina4.log")
@@ -80,7 +115,10 @@ module Tina4
         # be written even in production (parity with the Python master, where an
         # explicit log_file builds a writer unconditionally), so the dev-gated
         # default below resolves to "both" (stdout + file) rather than "stdout".
-        explicit_file = !(log_file_env.nil? || log_file_env.empty?)
+        # "The operator named ONE file" — via TINA4_LOG_FILE or by passing a file
+        # path to configure(). Either way a file must be written even in
+        # production, and no error.log sibling appears next to it.
+        explicit_file = !log_file_env.nil? || !explicit_target_file.nil?
         default_output = if explicit_file || truthy?(ENV["TINA4_DEBUG"])
                            "both"
                          else
@@ -115,14 +153,35 @@ module Tina4
         #   shift_size = bytes before rotation
         # When @rotate_size is 0, omit rotation args.
         close_file_logger
+
+        # TINA4_LOG_APPEND — append (default) or overwrite on startup.
+        #
+        # APPEND IS THE DEFAULT: a log you can lose by restarting the process is
+        # not a log. Set it false when you want one file per run (a short CLI, a
+        # test fixture, a container that ships logs elsewhere) and the file is
+        # truncated once here at configure time, never per line.
+        @append = ENV["TINA4_LOG_APPEND"].nil? || truthy?(ENV["TINA4_LOG_APPEND"])
+
         if @output != "stdout"
-          @file_logger = if @rotate_size > 0
-                           ::Logger.new(@log_file_path, @rotate_keep, @rotate_size)
-                         else
-                           ::Logger.new(@log_file_path)
-                         end
-          # We do our own formatting — strip Logger's default formatter.
-          @file_logger.formatter = proc { |_sev, _t, _p, msg| msg.to_s.end_with?("\n") ? msg : "#{msg}\n" }
+          unless @append
+            [@log_file_path, File.join(@log_dir, "error.log")].each do |path|
+              File.write(path, "") if File.exist?(path)
+            end
+          end
+          @file_logger = build_file_logger(@log_file_path)
+
+          # Mirror WARNING and above into a dedicated error.log so
+          # `tail -f logs/error.log` gives just the stuff worth looking at.
+          # Ruby wrote ONE file where Python and PHP wrote two, so anyone whose
+          # alerting tails error.log got silence here (feature 2 of the audit,
+          # D3). Skipped when the operator named an explicit TINA4_LOG_FILE:
+          # they asked for one file at one path, so a sibling error.log
+          # appearing next to it would be a surprise.
+          @error_logger = if explicit_file
+                            nil
+                          else
+                            build_file_logger(File.join(@log_dir, "error.log"))
+                          end
         end
 
         @initialized = true
@@ -195,6 +254,8 @@ module Tina4
       def close_file_logger
         @file_logger&.close rescue nil
         @file_logger = nil
+        @error_logger&.close rescue nil
+        @error_logger = nil
       end
 
       private
@@ -212,22 +273,27 @@ module Tina4
         configure unless @initialized
         @current_context = context.is_a?(Hash) ? context : {}
 
+        # Coerce FIRST. Anything can arrive as a message: a Hash from a handler,
+        # a binary payload off a socket, a 10MB string. See coerce_message.
+        message = coerce_message(message)
         formatted = format_line(level, message)
 
         # Console output respects TINA4_LOG_LEVEL and TINA4_LOG_OUTPUT
         severity = SEVERITY_MAP[level] || 0
         if severity >= @console_level && @output != "file"
+          # Truncate on the CONSOLE only. The file keeps the full line so a
+          # consumer parsing it loses nothing; a terminal does not need 10MB.
           if @json_mode
-            $stdout.puts json_line(level, message)
+            $stdout.puts truncate_for_stdout(json_line(level, message))
           else
-            $stdout.puts colorize(level, formatted)
+            $stdout.puts colorize(level, truncate_for_stdout(formatted))
           end
         end
 
         # File output — always full level (consumer parses themselves) — unless disabled.
         if @output != "stdout" && @file_logger
           payload = @json_mode ? json_line(level, message) : strip_ansi(formatted)
-          write_to_file(payload)
+          write_to_file(payload, level)
         end
 
         @current_context = {}
@@ -295,7 +361,10 @@ module Tina4
         fn = caller_name
         fn_str = fn ? " [#{fn}]" : ""
         ctx = @current_context && !@current_context.empty? ? " #{JSON.generate(@current_context)}" : ""
-        "#{ts} [#{level_str.ljust(7)}]#{rid_str}#{fn_str} #{message}#{ctx}"
+        # Pad to 8, not 7: CRITICAL is eight characters, so a 7-wide column was
+        # broken by our own highest level. 8 is the only width that fits every
+        # level name. Cross-framework format table (feature 2 of the audit).
+        "#{ts} [#{level_str.ljust(8)}]#{rid_str}#{fn_str} #{message}#{ctx}"
       end
 
       def json_line(level, message)
@@ -359,10 +428,80 @@ module Tina4
         "#{color}#{line}#{COLORS[:reset]}"
       end
 
-      def write_to_file(line)
+      # Build one rotating file logger. stdlib Logger handles rotation natively:
+      #   Logger.new(path, shift_age, shift_size)  — files to keep, bytes before roll.
+      # With @rotate_size 0 the rotation args are omitted. tina4.log and error.log
+      # each get their own logger so they rotate independently.
+      # Turn anything into a single safe line of text.
+      #
+      # A String passes through when it is valid UTF-8. Binary is described
+      # rather than dumped: raw bytes at a terminal garble it and can emit
+      # escape sequences. Anything else becomes JSON, because a Hash rendered as
+      # text is the whole reason the caller logged it, falling back to inspect
+      # for a value JSON cannot represent. The logger must never be the reason a
+      # request dies.
+      def coerce_message(message)
+        text = case message
+               when String
+                 if message.encoding == Encoding::BINARY || !message.valid_encoding?
+                   utf8 = message.dup.force_encoding(Encoding::UTF_8)
+                   return "<binary #{message.bytesize} bytes>" unless utf8.valid_encoding?
+                   utf8
+                 else
+                   message
+                 end
+               when Hash, Array
+                 begin
+                   JSON.generate(message)
+                 rescue StandardError
+                   message.inspect
+                 end
+               when nil
+                 ""
+               else
+                 message.respond_to?(:to_s) ? message.to_s : message.inspect
+               end
+        text.gsub(CONTROL_CHARS, "")
+      end
+
+      def truncate_for_stdout(line)
+        return line if line.length <= STDOUT_MAX_CHARS
+        "#{line[0, STDOUT_MAX_CHARS]}... (truncated, #{line.length} chars)"
+      end
+
+      # Is this target a FILE PATH or a DIRECTORY?
+      #
+      # An existing directory is always a directory, extension or not. Otherwise
+      # a basename with an extension (app.log, app.txt) is a file and anything
+      # else is a directory to create. That keeps `configure("/var/log/myapp")`
+      # a directory and `configure("/var/log/myapp/app.log")` a file without
+      # needing the path to exist yet.
+      def target_is_file?(path)
+        return false if File.directory?(path)
+        File.extname(path) != ""
+      end
+
+      def build_file_logger(path)
+        logger = if @rotate_size > 0
+                   ::Logger.new(path, @rotate_keep, @rotate_size)
+                 else
+                   ::Logger.new(path)
+                 end
+        # We do our own formatting — strip Logger's default formatter.
+        logger.formatter = proc { |_sev, _t, _p, msg| msg.to_s.end_with?("\n") ? msg : "#{msg}\n" }
+        logger
+      end
+
+      def write_to_file(line, level = nil)
         return unless @file_logger
         # Use << to bypass Logger's severity filtering — we already filtered above.
         @file_logger << "#{line}\n"
+        # WARNING and above only. Matches the Python master and PHP, which both
+        # mirror warning+ rather than error+ -- error.log is "the stuff worth
+        # looking at", and a warning qualifies.
+        if @error_logger && level && (SEVERITY_MAP[level] || 0) >= SEVERITY_MAP[:warn]
+          @error_logger << "#{line}\n"
+        end
       rescue IOError, SystemCallError => e
         raise if @strict
         # Don't crash on log write failure

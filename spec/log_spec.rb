@@ -27,12 +27,12 @@ RSpec.describe Tina4::Log do
 
   describe ".setup" do
     it "creates the logs directory" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Dir.exist?(File.join(tmpdir, "logs"))).to be true
     end
 
     it "creates tina4.log file" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.info("test message")
       expect(File.exist?(File.join(tmpdir, "logs", "tina4.log"))).to be true
     end
@@ -43,7 +43,7 @@ RSpec.describe Tina4::Log do
 
     it "writes an INFO entry to the log file" do
       ENV["TINA4_LOG_LEVEL"] = "debug" # ensure debug-level config doesn't suppress the file (file records all anyway)
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.info("hello-info")
       content = File.read(log_path)
       expect(content).to include("hello-info")
@@ -56,7 +56,7 @@ RSpec.describe Tina4::Log do
       # The log FILE records every level regardless of TINA4_LOG_LEVEL, but set
       # debug explicitly to mirror the documented "enable debug" workflow.
       ENV["TINA4_LOG_LEVEL"] = "debug"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.debug("hello-debug")
       content = File.read(log_path)
       expect(content).to include("hello-debug")
@@ -66,7 +66,7 @@ RSpec.describe Tina4::Log do
     end
 
     it "writes a WARNING entry with the WARNING level label" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.warning("hello-warn")
       content = File.read(log_path)
       expect(content).to include("hello-warn")
@@ -74,7 +74,7 @@ RSpec.describe Tina4::Log do
     end
 
     it "writes an ERROR entry with the ERROR level label" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.error("hello-err")
       content = File.read(log_path)
       expect(content).to include("hello-err")
@@ -83,7 +83,7 @@ RSpec.describe Tina4::Log do
 
     it "lands a message at every standard level in the file" do
       ENV["TINA4_LOG_LEVEL"] = "debug"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       %w[info debug warning error].each { |lvl| Tina4::Log.public_send(lvl, "probe-#{lvl}") }
       content = File.read(log_path)
       %w[info debug warning error].each do |lvl|
@@ -95,7 +95,7 @@ RSpec.describe Tina4::Log do
   end
 
   describe "request ID support" do
-    before { Tina4::Log.configure(tmpdir) }
+    before { Tina4::Log.configure(File.join(tmpdir, "logs")) }
     after { Tina4::Log.clear_request_id }
 
     it "sets and retrieves request_id" do
@@ -121,7 +121,7 @@ RSpec.describe Tina4::Log do
   describe "JSON mode" do
     before do
       ENV["TINA4_ENV"] = "production"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
     end
 
     after do
@@ -144,7 +144,7 @@ RSpec.describe Tina4::Log do
   describe "text mode (development)" do
     before do
       ENV.delete("TINA4_ENV")
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
     end
 
     it "does not activate JSON mode in development" do
@@ -161,7 +161,7 @@ RSpec.describe Tina4::Log do
       rotated = File.join(log_dir, "tina4.log.1")
       File.write(rotated, "old log data\n" * 100)
 
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
 
       # The rotated file should still exist (compression not implemented)
       expect(File.exist?(rotated)).to be true
@@ -171,7 +171,7 @@ RSpec.describe Tina4::Log do
   # ── Log Level Filtering Tests ──────────────────────────────────
 
   describe "log level filtering" do
-    before { Tina4::Log.configure(tmpdir) }
+    before { Tina4::Log.configure(File.join(tmpdir, "logs")) }
 
     it "info level is higher than debug" do
       # Info messages should always be logged
@@ -202,7 +202,7 @@ RSpec.describe Tina4::Log do
   # ── Log File Content Tests ─────────────────────────────────────
 
   describe "log file content" do
-    before { Tina4::Log.configure(tmpdir) }
+    before { Tina4::Log.configure(File.join(tmpdir, "logs")) }
 
     it "includes timestamp in log entries" do
       Tina4::Log.info("timestamp test")
@@ -230,7 +230,7 @@ RSpec.describe Tina4::Log do
   # ── Context Data Tests ─────────────────────────────────────────
 
   describe "context data in logs" do
-    before { Tina4::Log.configure(tmpdir) }
+    before { Tina4::Log.configure(File.join(tmpdir, "logs")) }
     after { Tina4::Log.clear_request_id }
 
     it "logs with request_id context" do
@@ -274,19 +274,22 @@ RSpec.describe Tina4::Log do
 
   describe "setup edge cases" do
     it "creates nested log directories" do
-      nested_dir = File.join(tmpdir, "deep", "nested")
-      FileUtils.mkdir_p(nested_dir)
+      # configure() takes the LOG DIRECTORY and creates it, however deep, even
+      # when no part of the path exists yet. It used to take a project ROOT and
+      # append logs/ to it, which made "put the logs exactly here" impossible
+      # to say (feature 2 of the feature audit).
+      nested_dir = File.join(tmpdir, "deep", "nested", "logs")
       Tina4::Log.configure(nested_dir)
-      expect(Dir.exist?(File.join(nested_dir, "logs"))).to be true
+      expect(Dir.exist?(nested_dir)).to be true
     end
 
     it "still logs (once, no truncation/dup) after a repeated setup" do
       log_path = File.join(tmpdir, "logs", "tina4.log")
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.info("before-reconfigure")
       # Re-configuring the same dir must not crash, truncate the existing file,
       # or duplicate handlers (which would double-write every subsequent line).
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.info("after-reconfigure")
 
       content = File.read(log_path)
@@ -324,7 +327,7 @@ RSpec.describe Tina4::Log do
   # of the function/method that called Log.info / .debug / .warning /
   # .error. Default is OFF so existing log formats are untouched.
   describe "function-name injection (TINA4_LOG_FUNC)" do
-    before { Tina4::Log.configure(tmpdir) }
+    before { Tina4::Log.configure(File.join(tmpdir, "logs")) }
     after  { ENV.delete("TINA4_LOG_FUNC") }
 
     # Named methods so the caller-walk has a real label to find,
@@ -383,7 +386,7 @@ RSpec.describe Tina4::Log do
     context "in JSON mode" do
       before do
         ENV["TINA4_ENV"] = "production"
-        Tina4::Log.configure(tmpdir)
+        Tina4::Log.configure(File.join(tmpdir, "logs"))
       end
 
       after do
@@ -482,7 +485,7 @@ RSpec.describe Tina4::Log do
 
     it "at the info threshold: debug off, info/warning/error on" do
       ENV["TINA4_LOG_LEVEL"] = "info"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?("debug")).to be false
       expect(Tina4::Log.enabled?("info")).to be true
       expect(Tina4::Log.enabled?("warning")).to be true
@@ -491,7 +494,7 @@ RSpec.describe Tina4::Log do
 
     it "at the error threshold: info/warning off, error on" do
       ENV["TINA4_LOG_LEVEL"] = "error"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?("info")).to be false
       expect(Tina4::Log.enabled?("warning")).to be false
       expect(Tina4::Log.enabled?("error")).to be true
@@ -499,14 +502,14 @@ RSpec.describe Tina4::Log do
 
     it "is case-insensitive (string)" do
       ENV["TINA4_LOG_LEVEL"] = "info"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?("INFO")).to be true
       expect(Tina4::Log.enabled?("Debug")).to be false
     end
 
     it "accepts symbols too" do
       ENV["TINA4_LOG_LEVEL"] = "info"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?(:info)).to be true
       expect(Tina4::Log.enabled?(:debug)).to be false
       expect(Tina4::Log.enabled?(:warning)).to be true
@@ -515,7 +518,7 @@ RSpec.describe Tina4::Log do
     it "equals the internal console-threshold check for all standard levels" do
       %w[all debug info warning error none].each do |threshold|
         ENV["TINA4_LOG_LEVEL"] = threshold
-        Tina4::Log.configure(tmpdir)
+        Tina4::Log.configure(File.join(tmpdir, "logs"))
         %i[debug info warning error].each do |level|
           expect(Tina4::Log.enabled?(level)).to eq(console_gate(level)),
             "enabled?(#{level.inspect}) disagreed with the console gate at TINA4_LOG_LEVEL=#{threshold}"
@@ -530,23 +533,23 @@ RSpec.describe Tina4::Log do
     # does NOT slip through at TINA4_LOG_LEVEL=none).
     it "treats critical as a first-class top-level severity" do
       ENV["TINA4_LOG_LEVEL"] = "info"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?("critical")).to be true
       expect(Tina4::Log.enabled?(:critical)).to be true
 
       ENV["TINA4_LOG_LEVEL"] = "error"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       # critical (4) outranks error (3), so it stays enabled at the error gate.
       expect(Tina4::Log.enabled?("critical")).to be true
 
       ENV["TINA4_LOG_LEVEL"] = "critical"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?("critical")).to be true
       expect(Tina4::Log.enabled?("error")).to be false
 
       # NONE-bump regression: critical is silenced ONLY by `none` (5).
       ENV["TINA4_LOG_LEVEL"] = "none"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.enabled?("critical")).to be false
     end
 
@@ -563,7 +566,7 @@ RSpec.describe Tina4::Log do
 
     it "resolves TINA4_LOG_LEVEL=critical to 4" do
       ENV["TINA4_LOG_LEVEL"] = "critical"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       expect(Tina4::Log.send(:resolve_level)).to eq(4)
     end
   end
@@ -580,7 +583,7 @@ RSpec.describe Tina4::Log do
     end
 
     it "writes a CRITICAL entry to the log file" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.critical("crit-probe")
       content = File.read(File.join(tmpdir, "logs", "tina4.log"))
       expect(content).to include("crit-probe")
@@ -589,7 +592,7 @@ RSpec.describe Tina4::Log do
 
     it "ALWAYS writes a critical entry to the log file (no opt-in toggle)" do
       ENV.delete("TINA4_LOG_LEVEL") # default INFO
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.critical("meltdown imminent")
       log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
       expect(log_content).to include("meltdown imminent")
@@ -598,14 +601,14 @@ RSpec.describe Tina4::Log do
 
     it "still writes critical to the file at the error threshold (4 >= 3)" do
       ENV["TINA4_LOG_LEVEL"] = "error"
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.critical("critical at error gate")
       log_content = File.read(File.join(tmpdir, "logs", "tina4.log"))
       expect(log_content).to include("critical at error gate")
     end
 
     it "writes a critical message with the CRITICAL label to the file" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       Tina4::Log.critical("safe-crit")
       content = File.read(File.join(tmpdir, "logs", "tina4.log"))
       expect(content).to include("safe-crit")
@@ -613,7 +616,7 @@ RSpec.describe Tina4::Log do
     end
 
     it "renders critical in magenta on the console" do
-      Tina4::Log.configure(tmpdir)
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
       line = Tina4::Log.send(:colorize, :critical, "boom")
       expect(line).to start_with(Tina4::Log::COLORS[:magenta])
       expect(line).to end_with(Tina4::Log::COLORS[:reset])
