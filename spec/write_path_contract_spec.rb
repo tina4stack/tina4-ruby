@@ -23,11 +23,56 @@ RSpec.describe "write-path contract" do
     end
   end
 
+  # RUN THIS AGAINST EVERY LIVE ENGINE. SQLite alone proves almost nothing here:
+  # the whole reason per-adapter write SQL exists is that placeholder style,
+  # RETURNING support and identifier quoting differ exactly where the engine
+  # differs. Point it at a real engine with:
+  #
+  #   TINA4_TEST_WRITE_PATH_URL=postgres://host:5432/db \
+  #   TINA4_TEST_WRITE_PATH_USERNAME=u TINA4_TEST_WRITE_PATH_PASSWORD=p \
+  #     bundle exec rspec spec/write_path_contract_spec.rb
+  #
+  # Unset, it falls back to a temp SQLite file so the suite still runs anywhere.
+  def self.engine_url
+    url = ENV["TINA4_TEST_WRITE_PATH_URL"]
+    url.nil? || url.empty? ? nil : url
+  end
+
   let(:db) do
-    database = Tina4::Database.new("sqlite:///#{File.join(@dir, 'contract.db')}")
-    database.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
-    database.insert("t", { "id" => 1, "name" => "one" })
-    database.insert("t", { "id" => 2, "name" => "two" })
+    url = self.class.engine_url
+    database =
+      if url
+        Tina4::Database.new(
+          url,
+          username: ENV["TINA4_TEST_WRITE_PATH_USERNAME"].to_s,
+          password: ENV["TINA4_TEST_WRITE_PATH_PASSWORD"].to_s
+        )
+      else
+        Tina4::Database.new("sqlite:///#{File.join(@dir, 'contract.db')}")
+      end
+
+    begin
+      database.execute("DROP TABLE t")
+    rescue StandardError
+      nil # first run against this engine
+    end
+
+    # AUTOINCREMENT is SQLite's spelling; the translator rewrites it per engine.
+    # `id INTEGER PRIMARY KEY` self-increments on SQLite and is a plain NOT NULL
+    # column everywhere else - writing it by hand is how a suite silently stays
+    # SQLite-only.
+    ddl = "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(80))"
+    engine = database.get_database_type.to_s
+    engine = %w[postgres postgresql].include?(engine) ? "postgresql" : engine
+    database.execute(Tina4::SQLTranslator.auto_increment_syntax(ddl, engine))
+
+    # Let the SEQUENCE assign the ids. The assertions key on id 1 and 2, and a
+    # fresh sequence yields exactly those in insertion order on every engine.
+    # Hand-seeding id => 1, 2 instead leaves a real sequence still pointing at 1,
+    # so the first insert that omits an id collides on the primary key - SQLite
+    # hides that because its rowid follows the max.
+    database.insert("t", { "name" => "one" })
+    database.insert("t", { "name" => "two" })
     database
   end
 
