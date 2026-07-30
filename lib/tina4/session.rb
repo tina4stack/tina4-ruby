@@ -328,6 +328,8 @@ module Tina4
         Tina4::SessionHandlers::MongoHandler.new(@options[:handler_options])
       when :valkey
         Tina4::SessionHandlers::ValkeyHandler.new(@options[:handler_options])
+      when :memcached, :memcache
+        Tina4::SessionHandlers::MemcachedHandler.new(@options[:handler_options])
       when :database, :db
         # Parity with Python: the database backend "uses whatever DB is
         # connected", so reuse the single ORM resolver (named binding → global

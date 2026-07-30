@@ -139,6 +139,38 @@ RSpec.describe Tina4::SQLTranslator, ".build_batch_inserts" do
     end
   end
 
+  # Regression: collapsing a batch silently changed last_id on MySQL.
+  #
+  # MySQL's last_insert_id reports the FIRST generated id of a multi-row INSERT,
+  # not the last (verified live: a 3-row insert into a fresh table reports 1
+  # while MAX(id) is 3). A row-at-a-time batch reported the LAST row's id simply
+  # because the last statement inserted the last row, so the collapse quietly
+  # redefined the contract.
+  it "still reports the LAST row's id on mysql after a collapse" do
+    expect(described_class.batch_last_id(1, 3, "mysql")).to eq(3)
+    expect(described_class.batch_last_id(10, 5, "mariadb")).to eq(14)
+  end
+
+  it "negative: leaves engines that already report the last id alone" do
+    # Adding the offset on SQLite/PostgreSQL/MSSQL would push last_id PAST the
+    # real row.
+    %w[sqlite postgres postgresql mssql].each do |engine|
+      expect(described_class.batch_last_id(7, 3, engine)).to eq(7), engine
+    end
+  end
+
+  it "negative: never shifts the id for a single-row chunk" do
+    %w[mysql sqlite postgres mssql].each do |engine|
+      expect(described_class.batch_last_id(42, 1, engine)).to eq(42), engine
+    end
+  end
+
+  it "negative: passes a non-numeric last id through unchanged" do
+    # A UUID/ULID primary key has no arithmetic successor.
+    expect(described_class.batch_last_id("018f-2b7c-uuid", 3, "mysql")).to eq("018f-2b7c-uuid")
+    expect(described_class.batch_last_id(nil, 3, "mysql")).to be_nil
+  end
+
   it "collapses when the engine is spelled postgresql in full" do
     # Ruby's own driver reports "postgres", but a caller may pass either and the
     # other three frameworks report "postgresql" - the shared rule must hold for

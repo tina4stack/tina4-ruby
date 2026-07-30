@@ -171,6 +171,26 @@ module Tina4
       # @return [Array<Array(String, Array)>] statements to run INSTEAD of the
       #   loop, or an EMPTY array meaning "not collapsible - keep looping",
       #   which is always correct.
+      # Normalise a collapsed batch's last id to the LAST row's id.
+      #
+      # A row-at-a-time batch reports the last row's id simply because the last
+      # statement inserted the last row. Collapsing rows into one statement
+      # changes that on any engine that reports the FIRST generated id, so this
+      # restores the contract instead of quietly redefining it.
+      #
+      # Verified live, not assumed: a 3-row insert into a fresh MySQL table
+      # reports 1 while MAX(id) is 3. SQLite, PostgreSQL and MSSQL already
+      # report the last and are left alone. The ids in one statement are
+      # consecutive, so the last is +first + rows - 1+.
+      def batch_last_id(reported_id, rows_in_chunk, engine)
+        name = engine.to_s.downcase
+        name = ENGINE_ALIASES.fetch(name, name)
+        return reported_id unless FIRST_ID_ENGINES.include?(name)
+        return reported_id unless reported_id.is_a?(Integer) || reported_id.to_s.match?(/\A-?\d+\z/)
+
+        reported_id.to_i + [rows_in_chunk.to_i, 1].max - 1
+      end
+
       def build_batch_inserts(sql, params_list, engine)
         rows = params_list || []
         return [] if rows.length < 2
@@ -240,5 +260,9 @@ module Tina4
     }.freeze
 
     INSERT_VALUES = /\A\s*INSERT\s+INTO\s+.+?\s+VALUES\s*\(([^()]*)\)\s*\z/im
+
+    # Engines whose last_insert_id reports the FIRST generated id of a multi-row
+    # INSERT rather than the last. Verified live against MySQL.
+    FIRST_ID_ENGINES = %w[mysql].freeze
   end
 end

@@ -53,6 +53,7 @@ module Tina4
       end
 
       def execute(sql, params = [])
+        stmt = nil
         result =
           if params.empty?
             @connection.query(sql)
@@ -68,7 +69,28 @@ module Tina4
         # returned 0 after an insert (issue #262). Snapshot it for every INSERT so
         # last_insert_id keeps the id of the last insert regardless of any
         # subsequent COMMIT / SELECT on the connection.
-        @last_insert_id = @connection.last_id if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
+        # MySQL reports the FIRST generated id of a MULTI-ROW INSERT, not the
+        # last (verified live: a 3-row insert into a fresh table reports 1 while
+        # MAX(id) is 3). Every other engine reports the last, and callers -
+        # get_last_id, ORM#save, the batch DatabaseResult - all expect the last.
+        # The ids in one statement are consecutive, so normalise here, where both
+        # the first id and the row count are known; doing it further up would
+        # leave get_last_id disagreeing with the returned result.
+        if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
+          first_id = @connection.last_id
+          # The row count MUST come from the STATEMENT, not the connection.
+          # mysql2's client.affected_rows is unreliable after a prepared
+          # execute - measured live, it reported 3 (stale, from the previous
+          # query) for a 1-row prepared insert, and 0 for a 3-row one. Using it
+          # would shift last_id by a wrong offset. stmt.affected_rows is exact.
+          rows = stmt ? stmt.affected_rows.to_i : @connection.affected_rows.to_i
+          @last_insert_id =
+            if first_id.to_i.positive?
+              first_id.to_i + [rows, 1].max - 1
+            else
+              first_id
+            end
+        end
         result
       end
 

@@ -824,6 +824,11 @@ module Tina4
         nil
       end
 
+      # last_id stays the LAST inserted row's id. MySQL reports the FIRST id of
+      # a multi-row INSERT; its DRIVER normalises that at write time (the only
+      # place that knows both the first id and the row count), so get_last_id
+      # and this result always agree. Normalising here instead would
+      # double-apply.
       Tina4::DatabaseResult.new(
         [],
         affected_rows: params_list.length,

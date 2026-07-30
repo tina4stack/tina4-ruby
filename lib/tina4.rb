@@ -73,6 +73,7 @@ module Tina4
     autoload :RedisHandler, File.expand_path("tina4/session_handlers/redis_handler", __dir__)
     autoload :MongoHandler,  File.expand_path("tina4/session_handlers/mongo_handler", __dir__)
     autoload :ValkeyHandler,   File.expand_path("tina4/session_handlers/valkey_handler", __dir__)
+    autoload :MemcachedHandler, File.expand_path("tina4/session_handlers/memcached_handler", __dir__)
     autoload :DatabaseHandler, File.expand_path("tina4/session_handlers/database_handler", __dir__)
   end
 
