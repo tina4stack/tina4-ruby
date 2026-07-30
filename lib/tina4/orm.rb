@@ -356,6 +356,51 @@ module Tina4
         results.first
       end
 
+      # The ONE process-wide query cache, shared by every model.
+      #
+      # The Python master holds this as a module-level `_query_cache =
+      # Cache(default_ttl=0, max_size=500)` in orm/model.py, so every model shares
+      # a single store. A plain `@query_cache ||=` here would NOT be that
+      # contract: `class << self` ivars are per-class, so each subclass would get
+      # its own cache and User.clear_cache would silently leave Order's entries
+      # alone. Anchoring the ivar on ORM itself keeps one store for all models,
+      # however deep the subclass.
+      def query_cache
+        ORM.instance_variable_get(:@query_cache) ||
+          ORM.instance_variable_set(:@query_cache, QueryCache.new(default_ttl: 0, max_size: 500))
+      end
+
+      # SQL query with result caching. Returns an array of ORM instances.
+      #
+      # Parity with the Python master's `cached` (orm/model.py:1077): same key
+      # shape, same tag, and a miss delegates to `select` so eager loading and the
+      # row cap behave identically to an uncached read.
+      #
+      # Entries are tagged with the model name so #clear_cache invalidates only
+      # this model's queries and leaves every other model's cached reads intact.
+      def cached(sql, params = [], ttl: 60, limit: 100, offset: nil, include: nil)
+        key = "#{name}:#{QueryCache.query_key(sql, params)}:#{limit}:#{offset || 0}"
+
+        # nil-check, NOT a truthiness check: a query that legitimately returns no
+        # rows caches an empty array, and that is a HIT. Treating it as a miss
+        # would re-run the query on every call for exactly the queries where
+        # caching pays off most.
+        hit = query_cache.get(key)
+        return hit unless hit.nil?
+
+        result = select(sql, params, limit: limit, offset: offset, include: include)
+        query_cache.set(key, result, ttl: ttl, tags: [name])
+        result
+      end
+
+      # Invalidate every cached query for THIS model. Tag-scoped, so it never
+      # flushes another model's entries. Mirrors the master's
+      # `_query_cache.clear_tag(cls.__name__)`.
+      def clear_cache
+        query_cache.clear_tag(name)
+        nil
+      end
+
       def count(conditions = nil, params = [])
         sql = "SELECT COUNT(*) as cnt FROM #{table_name}"
         where_parts = []
