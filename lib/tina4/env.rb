@@ -252,20 +252,108 @@ module Tina4
       # genuinely need to force values.
       def parse_env_file(path, override: false)
         return unless File.exist?(path)
-        File.readlines(path).each do |line|
-          line = line.strip
-          next if line.empty? || line.start_with?("#")
-          if (match = line.match(/\A([A-Za-z_][A-Za-z0-9_]*)=["']?(.*)["']?\z/))
-            key = match[1]
-            value = match[2].gsub(/["']\z/, "")
-            if override
-              ENV[key] = value
-            else
-              ENV[key] ||= value
-            end
-            @loaded_keys ||= []
-            @loaded_keys << key
+        warned_refs = {}
+        File.readlines(path).each_with_index do |raw, index|
+          key, value = parse_env_line(raw, path, index + 1, warned_refs)
+          next if key.nil?
+          if override
+            ENV[key] = value
+          else
+            ENV[key] ||= value
           end
+          @loaded_keys ||= []
+          @loaded_keys << key
+        end
+      end
+
+      # Parse ONE dotenv line into [key, value], or [nil, nil] for a line that
+      # sets nothing (blank, comment, or malformed).
+      #
+      # The rules are the cross-framework behaviour table (feature 1 of the
+      # feature audit): identical in Python, PHP, Ruby and Node, driven off one
+      # committed fixture. Ruby used to differ on two of them, silently.
+      def parse_env_line(raw, path, line_no, warned_refs)
+        line = raw.strip
+        return [nil, nil] if line.empty? || line.start_with?("#")
+
+        # Rule 2: a shell-style `export FOO=bar` is valid input, not an error.
+        # Ruby used to fall straight through this line, leaving the variable
+        # UNSET with no warning -- so a .env copied out of a shell profile lost
+        # keys, and the failure surfaced somewhere unrelated (a blank
+        # TINA4_SECRET, a missing database URL).
+        line = line.sub(/\Aexport\s+/, "")
+
+        # Rule 3: split on the FIRST `=` only. A line with no `=` is skipped
+        # with a warning naming the line -- never in silence.
+        eq = line.index("=")
+        if eq.nil?
+          warn_env("#{path}:#{line_no}: no '=' in \"#{line}\", line skipped")
+          return [nil, nil]
+        end
+
+        key = line[0...eq].strip
+        # Rule 4: reject a key that is not a valid identifier, by name and line.
+        unless key.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+          warn_env("#{path}:#{line_no}: invalid key #{key.inspect}, line skipped")
+          return [nil, nil]
+        end
+
+        [key, parse_env_value(line[(eq + 1)..].to_s.strip, path, line_no, warned_refs)]
+      end
+
+      # Rule 5 + 6: quoting decides escapes AND interpolation, in that order.
+      def parse_env_value(value, path, line_no, warned_refs)
+        # A fully single-quoted value is verbatim: no escapes, no interpolation.
+        # That is shell semantics, and it is the documented way to keep a literal
+        # ${...} now that interpolation is on.
+        if value.length >= 2 && value.start_with?("'") && value.end_with?("'")
+          return value[1..-2]
+        end
+
+        if value.length >= 2 && value.start_with?('"') && value.end_with?('"')
+          # A double-quoted value keeps its interior verbatim (a `#` inside stays
+          # a `#`), minus the quotes, with escape processing.
+          inner = value[1..-2]
+                    .gsub("\\n", "\n")
+                    .gsub("\\t", "\t")
+                    .gsub("\\\\", "\\")
+          return interpolate_env(inner, path, line_no, warned_refs)
+        end
+
+        # Rule 5: an unquoted value is truncated at the first SPACE-HASH, then
+        # trimmed. Ruby used to keep the whole line, so `FOO=value # note`
+        # became "value # note" -- a wrong value rather than an absent one,
+        # which is the harder kind to notice.
+        hash = value.index(" #")
+        value = value[0...hash] if hash
+        interpolate_env(value.rstrip, path, line_no, warned_refs)
+      end
+
+      # Rule 6: expand ${VAR} against already-loaded keys plus the real
+      # environment. An unresolved name is left LITERAL and warned about once
+      # per name, so a typo is visible without breaking the load.
+      def interpolate_env(value, path, line_no, warned_refs)
+        value.gsub(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/) do
+          name = Regexp.last_match(1)
+          if ENV.key?(name)
+            ENV[name]
+          else
+            unless warned_refs[name]
+              warned_refs[name] = true
+              warn_env("#{path}:#{line_no}: ${#{name}} is not set, left as-is")
+            end
+            "${#{name}}"
+          end
+        end
+      end
+
+      # One place to emit a parse warning. Routed through Tina4::Log when it is
+      # loaded (env.rb is required before the logger during boot), else $stderr.
+      def warn_env(message)
+        if defined?(Tina4::Log) && Tina4::Log.respond_to?(:warning)
+          Tina4::Log.warning(message)
+        else
+          $stderr.puts("[tina4] #{message}")
         end
       end
     end
