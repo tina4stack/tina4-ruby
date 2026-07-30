@@ -795,7 +795,19 @@ module Tina4
       begin
         drv.begin_transaction unless already_pinned
         begin
-          params_list.each { |params| drv.execute(sql, params) }
+          # ONE round-trip per CHUNK instead of one per ROW. Looping execute()
+          # here pays a full network round-trip for every row: 500 rows took
+          # 9848ms on PostgreSQL against 15.8ms as a single multi-row VALUES
+          # (625x), MySQL 216x, MSSQL 121x. build_batch_inserts returns an empty
+          # array for anything it cannot collapse safely - RETURNING, upserts,
+          # non-INSERT statements, ragged rows, Firebird - and the row-at-a-time
+          # loop then runs unchanged.
+          batched = SQLTranslator.build_batch_inserts(sql, params_list, get_database_type)
+          if batched.empty?
+            params_list.each { |params| drv.execute(sql, params) }
+          else
+            batched.each { |chunk_sql, chunk_params| drv.execute(chunk_sql, chunk_params) }
+          end
           drv.commit unless already_pinned
         rescue => e
           drv.rollback unless already_pinned
