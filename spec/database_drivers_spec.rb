@@ -629,11 +629,24 @@ RSpec.describe "Database Driver Registration" do
   # ── Unknown scheme falls back to sqlite ───────────────────────────
 
   describe "Unknown scheme" do
-    it "falls back to sqlite for unrecognised connection strings" do
-      # detect_driver defaults to sqlite when scheme is unknown
+    # This used to assert that `fakedb://localhost/test` detected as SQLITE.
+    #
+    # That silent fallback is the dangerous outcome the corpus error cases exist
+    # to prevent: the user names a database at localhost, the app instead writes
+    # to a local SQLite file, boots fine, and nobody learns the real database was
+    # never reached. PHP, Node and Python all raise; Ruby was the outlier, and
+    # the outlying behaviour had a test holding it in place.
+    it "raises for an unknown scheme instead of silently becoming sqlite" do
       db_instance = Tina4::Database.new
-      detected = db_instance.send(:detect_driver, "fakedb://localhost/test")
-      expect(detected).to eq("sqlite")
+      expect { db_instance.send(:detect_driver, "fakedb://localhost/test") }
+        .to raise_error(ArgumentError, /Unsupported database scheme/)
+    end
+
+    # A connection string that is not a URL at all still falls back, because a
+    # bare path is how sqlite has always been named.
+    it "still treats a bare path as sqlite" do
+      db_instance = Tina4::Database.new
+      expect(db_instance.send(:detect_driver, "app.db")).to eq("sqlite")
     end
   end
 

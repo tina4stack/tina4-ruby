@@ -1441,7 +1441,22 @@ module Tina4
     end
 
     def detect_driver(conn)
-      case conn.to_s.downcase
+      # A real URL is decided by its SCHEME, through DatabaseUrl, which resolves
+      # aliases once and RAISES on a scheme it does not know.
+      #
+      # The substring matching below is kept only for connection strings that
+      # are not URLs at all (a bare "app.db" path). It used to handle
+      # everything, and its `else "sqlite"` meant an unrecognised URL did not
+      # fail - it quietly became SQLite. The app boots, writes to a local file,
+      # and nobody learns the real database was never reached. It also matched
+      # on substrings, so a postgres database named "mysqldata" could be
+      # detected as MySQL.
+      text = conn.to_s
+      if text.match?(/\A[a-zA-Z][a-zA-Z0-9+.-]*:/)
+        return Tina4::DatabaseUrl.new(text).engine
+      end
+
+      case text.downcase
       when /\.db$/, /\.sqlite/, /sqlite/
         "sqlite"
       when /postgres/, /^pg:/
