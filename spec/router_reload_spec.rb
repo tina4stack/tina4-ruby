@@ -185,4 +185,37 @@ RSpec.describe "Tina4::Router reload-aware discovery" do
     matches = Tina4::Router.routes.select { |r| r.method == "GET" && r.path == "/endpoint" }
     expect(matches.length).to eq(1)
   end
+
+  # Parity with tina4-python's
+  # test_every_new_route_file_is_seen_by_a_later_discover. Python had a real
+  # intermittent bug here: importlib served a cached directory listing, so a
+  # file created after a prior discover warmed that cache was invisible to the
+  # importer and its route silently never registered (~50% of the time). Ruby
+  # re-globs the directory and `load` re-executes, so it should hold -- this
+  # proves it under repetition. A single add-then-reload would pass half the
+  # time on a broken implementation, which is exactly how the Python bug hid.
+  it "sees EVERY new route file when they are added one at a time" do
+    new_files = 12
+
+    write_route("seed", <<~RUBY)
+      Tina4::Router.get("/seed") { |req, res| res.json({ ok: true }) }
+    RUBY
+    Tina4::Router.load_routes(routes_dir)
+    expect(Tina4::Router.routes.map(&:path)).to include("/seed")
+
+    new_files.times do |i|
+      write_route("added#{i}", <<~RUBY)
+        Tina4::Router.get("/added-#{i}") { |req, res| res.json({ n: #{i} }) }
+      RUBY
+      Tina4::Router.load_routes(routes_dir)
+
+      paths = Tina4::Router.routes.map(&:path)
+      expect(paths).to include("/added-#{i}"),
+        "iteration #{i}: the new route file was written to disk but its route never registered (got #{paths.inspect})"
+    end
+
+    # Every route from every iteration survives the later reloads.
+    paths = Tina4::Router.routes.map(&:path)
+    new_files.times { |i| expect(paths).to include("/added-#{i}") }
+  end
 end
