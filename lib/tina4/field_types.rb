@@ -15,6 +15,18 @@ module Tina4
         @primary_key_field
       end
 
+      # EVERY primary-key field name, in declaration order.
+      #
+      # A key may span several columns. +primary_key_field+ returns only ONE and
+      # is kept for the auto-increment paths, which are single-column by
+      # definition. Anything that ADDRESSES a row must use this: keying on one
+      # column of a composite key matches every row sharing that value, which is
+      # the data-loss shape feature 4 removed from the raw write path below.
+      def primary_key_fields
+        keys = field_definitions.select { |_n, o| o[:primary_key] }.keys
+        keys.empty? ? [:id] : keys
+      end
+
       def table_name(name = nil)
         if name
           @table_name = name

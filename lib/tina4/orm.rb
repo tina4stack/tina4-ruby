@@ -517,7 +517,11 @@ module Tina4
           end
 
           parts = ["#{name} #{sql_type}"]
-          parts << "PRIMARY KEY" if opts[:primary_key]
+          # A COMPOSITE key is declared ONCE, at table level (below). An inline
+          # PRIMARY KEY per column is invalid DDL - SQLite, PostgreSQL and MySQL
+          # all reject two of them in one table, so a composite-key model could
+          # not create its own table at all.
+          parts << "PRIMARY KEY" if opts[:primary_key] && primary_key_fields.length == 1
           parts << "AUTOINCREMENT" if opts[:auto_increment]
           parts << "NOT NULL" if !opts[:nullable] && !opts[:primary_key]
           # A JSON column carries no DDL DEFAULT (parity with the Python master):
@@ -533,6 +537,12 @@ module Tina4
             parts << "DEFAULT #{default_literal(opts[:default], opts[:type], bool_sql)}"
           end
           col_defs << parts.join(" ")
+        end
+
+        # A COMPOSITE key is declared ONCE, at table level; the per-column inline
+        # form above is suppressed for it.
+        if primary_key_fields.length > 1
+          col_defs << "PRIMARY KEY (#{primary_key_fields.join(', ')})"
         end
 
         sql = "CREATE TABLE IF NOT EXISTS #{table_name} (#{col_defs.join(', ')})"
@@ -766,6 +776,17 @@ module Tina4
     # existence makes the choice correct regardless of @persisted. Auto-increment
     # PKs keep the legacy @persisted-based decision (a nil PK means "new row,
     # let the engine assign an id").
+    # A filter hash naming EVERY primary-key column.
+    #
+    # Addressing a row by one column of a composite key matches every row
+    # sharing that value. Feature 4 removed that from the raw write path; this
+    # is the same rule for the ORM above it.
+    def pk_filter
+      self.class.primary_key_fields.each_with_object({}) do |name, acc|
+        acc[name] = __send__(name) if respond_to?(name)
+      end
+    end
+
     def save
       @errors = []
       @relationship_cache = {} # Clear relationship cache on save
@@ -801,7 +822,20 @@ module Tina4
           # itself fails (e.g. table missing), fall back to INSERT so the caller
           # sees the real driver error rather than a silent no-op UPDATE.
           begin
-            self.class.exists(pk_value)
+            # This asked exists(pk_value), which tests only ONE key column. On a
+            # composite key that is true for any row sharing it, so inserting a
+            # genuinely NEW row was decided to be an UPDATE and silently
+            # OVERWROTE a different row: saving (acme, a2) rewrote (acme, a1).
+            # The probe has to name the whole key, like the write that follows.
+            if self.class.primary_key_fields.length > 1
+              self.class.where(
+                pk_filter.keys.map { |k| "#{k} = ?" }.join(" AND "),
+                pk_filter.values,
+                limit: 1
+              ).any?
+            else
+              self.class.exists(pk_value)
+            end
           rescue StandardError
             false
           end
@@ -817,11 +851,13 @@ module Tina4
             # UPDATE is unchanged (#165 targets INSERT only): keep excluding nil
             # so a save never nulls a column the caller didn't touch.
             data = to_db_hash(exclude_nil: true)
-            filter = { pk => pk_value }
-            data.delete(pk)
-            # Remove mapped primary key too
-            mapped_pk = self.class.field_mapping[pk.to_s]
-            data.delete(mapped_pk.to_sym) if mapped_pk
+            filter = pk_filter
+            # Never SET a key column - it is what addresses the row.
+            self.class.primary_key_fields.each do |k|
+              data.delete(k)
+              mapped = self.class.field_mapping[k.to_s]
+              data.delete(mapped.to_sym) if mapped
+            end
             db.update(self.class.table_name, data, filter)
           else
             # #165: OMIT a column the caller left unset (value nil, never
@@ -915,10 +951,10 @@ module Tina4
           db.update(
             self.class.table_name,
             { self.class.soft_delete_field => 1 },
-            { pk => pk_value }
+            pk_filter
           )
         else
-          db.delete(self.class.table_name, { pk => pk_value })
+          db.delete(self.class.table_name, pk_filter)
         end
       end
       @persisted = false
@@ -931,7 +967,7 @@ module Tina4
       raise "Cannot delete: no primary key value" unless pk_value
 
       self.class.db.transaction do |db|
-        db.delete(self.class.table_name, { pk => pk_value })
+        db.delete(self.class.table_name, pk_filter)
       end
       @persisted = false
       true
@@ -948,7 +984,7 @@ module Tina4
         db.update(
           self.class.table_name,
           { self.class.soft_delete_field => 0 },
-          { pk => pk_value }
+          pk_filter
         )
       end
       __send__("#{self.class.soft_delete_field}=", 0) if respond_to?("#{self.class.soft_delete_field}=")
