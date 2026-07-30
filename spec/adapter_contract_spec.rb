@@ -24,16 +24,14 @@ RSpec.describe Tina4::DatabaseAdapter do
   # `table_exists`/`table_exists?` are idiomatic variants, not divergences.
   SPELLINGS = {
     "open" => %i[open connect], "close" => %i[close],
-    "execute" => %i[execute], "executeMany" => %i[execute_many],
-    "fetch" => %i[fetch query], "fetchOne" => %i[fetch_one],
-    "insert" => %i[insert], "update" => %i[update], "delete" => %i[delete],
+    "getDatabaseType" => %i[get_database_type],
+    "execute" => %i[execute], "fetch" => %i[fetch query],
     "startTransaction" => %i[start_transaction], "commit" => %i[commit],
-    "rollback" => %i[rollback],
+    "rollback" => %i[rollback], "autocommit" => %i[autocommit autocommit=],
     "getTables" => %i[get_tables tables], "getColumns" => %i[get_columns columns],
     "tableExists" => %i[table_exists table_exists?],
-    "createTable" => %i[create_table], "addColumn" => %i[add_column],
     "lastInsertId" => %i[last_insert_id last_id],
-    "error" => %i[error last_error], "autocommit" => %i[autocommit autocommit=]
+    "error" => %i[error last_error]
   }.freeze
 
   # Measured 2026-07-30 with the contract module in place. These are FLOORS.
@@ -43,10 +41,18 @@ RSpec.describe Tina4::DatabaseAdapter do
   # module's raising stub. That is one lower per driver than the pre-module
   # probe, and it is the honest number: `autocommit` is a facade-set attr_writer
   # on most drivers rather than a driver method.
+  # Against the REDESIGNED 14-method contract, measured 2026-07-30.
+  #
+  # Ruby scores LOWER here than against the old 20-method list, and that is the
+  # honest result: the old list credited it for insert/update/delete, which the
+  # FACADE implements, not the driver. Strip the methods that were never the
+  # adapter's job and the real gap shows - and it is the SAME five everywhere
+  # (getDatabaseType, fetch, startTransaction, autocommit, error), plus
+  # tableExists on three. Five methods, not eleven scattered ones.
   FLOORS = {
     "FirebirdDriver" => 8, "MongodbDriver" => 8, "OdbcDriver" => 8,
     "MssqlDriver" => 9, "MysqlDriver" => 9, "SqliteDriver" => 9,
-    "PostgresDriver" => 10
+    "PostgresDriver" => 9
   }.freeze
 
   def implemented_count(klass)
@@ -56,8 +62,18 @@ RSpec.describe Tina4::DatabaseAdapter do
   end
 
   it "declares exactly the shared contract" do
-    want = contract["methods"].map { |m| m["name"] }
+    want = contract["contracts"].values.flat_map { |c| c["methods"] }
     expect(described_class::CONTRACT.length).to eq(want.length)
+    expect(want.length).to eq(14)
+  end
+
+  # The redesign's central claim, pinned. Ruby already had this shape; the first
+  # contract this row produced would have taken it away.
+  it "keeps CRUD and DDL off the adapter" do
+    names = described_class::CONTRACT.map(&:to_s)
+    %w[insert update delete create_table add_column execute_many fetch_one].each do |gone|
+      expect(names).not_to include(gone), gone
+    end
   end
 
   describe "every driver" do
@@ -84,18 +100,18 @@ RSpec.describe Tina4::DatabaseAdapter do
     # driver and the method, instead of a silent skip on an engine nobody ran.
     it "raises NotImplementedError naming the driver and the method" do
       bare = Class.new { include Tina4::DatabaseAdapter }
-      expect { bare.new.create_table }
-        .to raise_error(NotImplementedError, /does not implement #create_table/)
+      expect { bare.new.get_database_type }
+        .to raise_error(NotImplementedError, /does not implement #get_database_type/)
     end
 
     it "is distinguishable from an implemented one" do
       bare = Class.new { include Tina4::DatabaseAdapter }
       real = Class.new do
         include Tina4::DatabaseAdapter
-        def create_table(*) = true
+        def get_database_type = "sqlite"
       end
-      expect(Tina4::DatabaseAdapter.implemented_by?(bare.new, :create_table)).to be false
-      expect(Tina4::DatabaseAdapter.implemented_by?(real.new, :create_table)).to be true
+      expect(Tina4::DatabaseAdapter.implemented_by?(bare.new, :get_database_type)).to be false
+      expect(Tina4::DatabaseAdapter.implemented_by?(real.new, :get_database_type)).to be true
     end
   end
 end

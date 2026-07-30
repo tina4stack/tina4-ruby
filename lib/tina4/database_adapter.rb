@@ -42,14 +42,21 @@ module Tina4
   module DatabaseAdapter
     # Methods a driver MUST override. Kept as data so the conformance spec can
     # read it instead of maintaining a second copy of the list.
+    # The REDESIGNED contract: only what genuinely differs per engine.
+    #
+    # CRUD (insert/update/delete), executeMany, fetchOne and DDL
+    # (create_table/add_column) are NOT here. They are composable above the
+    # adapter from execute + fetch + get_database_type, and Ruby was already
+    # doing exactly that in the facade - which is why Ruby's driver layer is
+    # 1335 LOC against PHP's 5823 for the same job. The first contract this row
+    # produced would have made Ruby write those seven more times; this one keeps
+    # the shape Ruby already had and asks the other three to adopt it.
     CONTRACT = %i[
-      open close
-      execute execute_many fetch fetch_one
-      insert update delete
-      start_transaction commit rollback
+      open close get_database_type
+      execute fetch
+      start_transaction commit rollback autocommit
       get_tables get_columns table_exists
-      create_table add_column
-      last_insert_id error autocommit
+      last_insert_id error
     ].freeze
 
     CONTRACT.each do |name|
