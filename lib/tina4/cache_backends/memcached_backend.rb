@@ -47,29 +47,58 @@ module Tina4
       def set(key, value, ttl)
         data = JSON.generate(value)
         exptime = ttl > 0 ? ttl : 0
-        payload = "set #{mc_key(key)} 0 #{exptime} #{data.bytesize}\r\n#{data}\r\n"
+        k = mc_key(key)
+        payload = "set #{k} 0 #{exptime} #{data.bytesize}\r\n#{data}\r\n"
         command(payload, "\r\n")
+        # Keys THIS backend wrote, mapped to the moment each expires (0 = never).
+        @own ||= {}
+        @own[k] = exptime.positive? ? (Time.now.to_f + exptime) : 0.0
       end
 
       def delete(key)
-        command("delete #{mc_key(key)}\r\n", "\r\n").start_with?("DELETED")
+        k = mc_key(key)
+        result = command("delete #{k}\r\n", "\r\n").start_with?("DELETED")
+        (@own ||= {}).delete(k)
+        result
       end
 
+      # Remove OUR entries, not the whole server's.
+      #
+      # This used to send +flush_all+, which wipes EVERY key on the memcached
+      # instance - including every other application sharing it. cache_clear is
+      # public API, so calling it destroyed other tenants' data. No other
+      # backend does that: they each clear only what they own.
+      #
+      # Now that the backend tracks the keys it wrote, it deletes exactly those.
+      # A key it never wrote is not its to remove.
       def clear
         @hits = 0
         @misses = 0
-        command("flush_all\r\n", "\r\n")
+        (@own || {}).each_key { |k| command("delete #{k}\r\n", "\r\n") }
+        @own = {}
       end
 
+      # Report OUR entries, not the whole server's.
+      #
+      # This used to read memcached's +curr_items+, which is a GLOBAL counter:
+      # it includes every key written by every other tenant of that server. On a
+      # shared memcached (the normal deployment) +size+ was reporting somebody
+      # else's data, and every other backend here is scoped - memory counts its
+      # own hash, redis/valkey scan their own prefix, file counts its own
+      # directory, mongo its own collection, database its own table. Memcached
+      # was the only one leaking.
+      #
+      # It cannot be fixed by asking the server: memcached has no KEYS or
+      # prefix-scan command. So the count comes from our own write log, filtered
+      # by the TTLs we set. That is exact for the keys this process wrote; a key
+      # EVICTED early under memory pressure is invisible to us and would be
+      # over-counted, which is a far smaller and more honest error than counting
+      # another application's keys.
       def stats
-        size = 0
-        resp = command("stats\r\n", "END\r\n")
-        resp.split("\r\n").each do |line|
-          if line.start_with?("STAT curr_items ")
-            size = line.split[2].to_i
-          end
-        end
-        { hits: @hits, misses: @misses, size: size, backend: "memcached" }
+        now = Time.now.to_f
+        # Drop the expired ones so the log cannot grow without bound.
+        @own = (@own || {}).select { |_k, expires| expires.zero? || expires > now }
+        { hits: @hits, misses: @misses, size: @own.size, backend: "memcached" }
       end
 
       def name

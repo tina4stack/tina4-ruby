@@ -310,4 +310,79 @@ RSpec.describe "Persistent DB query cache backend" do
       db2.cache_clear
     end
   end
+
+  describe "memcached scoping (regression)" do
+    mc_up = begin
+      Socket.tcp("127.0.0.1", 11_211, connect_timeout: 2, &:close)
+      true
+    rescue StandardError
+      false
+    end
+
+    before { skip("memcached not running on 11211") unless mc_up }
+
+    def raw_memcached
+      sock = Socket.tcp("127.0.0.1", 11_211, connect_timeout: 3)
+      yield sock
+    ensure
+      begin
+        sock&.close
+      rescue IOError
+        nil
+      end
+    end
+
+    # Regression: size reported the WHOLE SERVER's item count. Memcached was the
+    # only backend of the seven that leaked - it read the global curr_items, so
+    # size counted every key written by every other application sharing that
+    # server. NO MOCK: a second REAL client writes to the same REAL server.
+    it "counts OUR entries, not another tenant's" do
+      b = Tina4::CacheBackends::MemcachedBackend.new(url: "memcached://127.0.0.1:11211")
+      b.clear
+      expect(b.stats[:size]).to eq(0)
+
+      raw_memcached do |sock|
+        6.times do |i|
+          sock.write("set other:tenant:#{i} 0 60 5\r\nhello\r\n")
+          sock.readline
+        end
+      end
+
+      expect(b.stats[:size]).to eq(0), "size must count OUR entries, not the server's"
+
+      b.set("mine", { "a" => 1 }, 60)
+      expect(b.stats[:size]).to eq(1)
+      b.clear
+    end
+
+    # Regression: clear sent flush_all and wiped the WHOLE server, destroying
+    # every other application's keys. cache_clear is public API.
+    it "does not wipe another tenant's keys on clear" do
+      b = Tina4::CacheBackends::MemcachedBackend.new(url: "memcached://127.0.0.1:11211")
+      b.clear
+      b.set("ours", { "a" => 1 }, 60)
+
+      raw_memcached do |sock|
+        sock.write("set other:survivor 0 60 5\r\nhello\r\n")
+        sock.readline
+      end
+
+      b.clear
+
+      expect(b.get("ours")).to be_nil
+      expect(b.stats[:size]).to eq(0)
+
+      resp = +""
+      raw_memcached do |sock|
+        sock.write("get other:survivor\r\n")
+        resp << sock.readline until resp.include?("END\r\n")
+      end
+      expect(resp).to include("hello"), "clear destroyed another tenant's key"
+
+      raw_memcached do |sock|
+        sock.write("delete other:survivor\r\n")
+        sock.readline
+      end
+    end
+  end
 end
