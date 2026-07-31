@@ -240,6 +240,20 @@ module Tina4
 
     # Merged params: query + body + path_params (path_params highest priority)
     # Supports both string and symbol key access (indifferent access).
+    # Attach the matched route's path params AFTER construction.
+    #
+    # The request is built BEFORE route matching now, so pre-match middleware
+    # has something to read and mutate. Path params are only known once a route
+    # has matched, so they are set here and the memoised #params is dropped -
+    # without that reset a pre-match middleware that touched #params would
+    # freeze a param-less copy for the handler.
+    def path_params=(value)
+      @path_params = value || {}
+      @params = nil
+    end
+
+    attr_reader :path_params
+
     def params
       @params ||= build_params
     end

@@ -35,6 +35,32 @@ module Tina4
         global_middleware << klass unless global_middleware.include?(klass)
       end
 
+      # Global middleware that runs BEFORE route matching.
+      #
+      # A middleware opts in by declaring `def self.pre_match?; true; end`.
+      #
+      # NOT `before_match?` - the hook discovery treats every `before_*` method
+      # as a middleware hook and calls it with (request, response), so that name
+      # made the flag itself run as middleware and 500 the request.
+      # Everything else stays where it has always run - after matching - so
+      # this is additive and no existing middleware changes behaviour.
+      #
+      # The split exists because the two groups need opposite things. CORS must
+      # run before matching so its headers survive a short-circuited 401/403;
+      # a browser that gets a 401 without them reports a CORS error and the real
+      # status is invisible. CSRF must run AFTER, because it reads the matched
+      # route's metadata to honour a route marked no_auth - PHP shipped exactly
+      # that bypass as dead code once, because the metadata was not set yet.
+      def pre_match_middleware
+        global_middleware.select { |k| k.respond_to?(:pre_match?) && k.pre_match? }
+      end
+
+      # Global middleware that runs after matching, once the matched route's
+      # metadata is readable. This is the default.
+      def post_match_middleware
+        global_middleware.reject { |k| k.respond_to?(:pre_match?) && k.pre_match? }
+      end
+
       def clear!
         @before_handlers = []
         @after_handlers = []
