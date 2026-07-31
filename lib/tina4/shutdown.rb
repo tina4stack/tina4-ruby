@@ -23,7 +23,18 @@ module Tina4
     class << self
       attr_reader :in_flight_count
 
-      def setup(server: nil, timeout: nil)
+      # The resolved TINA4_SHUTDOWN_TIMEOUT. Public because the production path
+      # does not drain in Ruby at all - it maps this onto Puma's own
+      # force_shutdown_after so the documented env var means the same thing
+      # whichever server owns the socket.
+      attr_reader :timeout
+
+      # trap_signals: false when another server owns INT/TERM (Puma does). A
+      # Tina4 trap on that path would be installed but never usefully serviced:
+      # there is no listener to close and nothing calls track_request, so if the
+      # other server's own trap install ever failed, ours would swallow the
+      # default terminate and do nothing - the process would survive the signal.
+      def setup(server: nil, timeout: nil, trap_signals: true)
         @server = server
         @timeout = resolve_timeout(timeout)
         @shutting_down = false
@@ -32,7 +43,7 @@ module Tina4
         @in_flight_count = 0
         @in_flight_cv = ConditionVariable.new
 
-        install_signal_handlers
+        install_signal_handlers if trap_signals
       end
 
       def shutting_down?
@@ -58,10 +69,8 @@ module Tina4
         Tina4::Log.info("Shutdown signal received, stopping gracefully...")
 
         stop_accepting
-        close_websockets
         drained = wait_for_in_flight
-        stop_background_tasks
-        close_database
+        release_resources
 
         Tina4::Log.info("Shutdown complete")
         @shutdown_complete = true
@@ -76,6 +85,20 @@ module Tina4
         $stdout.flush
         $stderr.flush
         exit!(0)
+      end
+
+      # The teardown NO web server can do for us, because no web server knows
+      # these things exist: live WebSocket peers owed an RFC 6455 close frame,
+      # Tina4 background threads, and ORM-bound database connections.
+      #
+      # Public so the production path can run exactly the same teardown from an
+      # ensure around Puma's launcher: Puma owns the socket, the drain and the
+      # signals there, but a database connection it has never heard of would
+      # otherwise leak on every single shutdown.
+      def release_resources
+        close_websockets
+        stop_background_tasks
+        close_database
       end
 
       # Block until initiate_shutdown has finished every teardown step.
@@ -191,13 +214,20 @@ module Tina4
         Tina4::Log.error("Error stopping background tasks: #{e.message}")
       end
 
+      # Close the DEFAULT connection and every NAMED one. Only closing
+      # Tina4.database leaked every connection registered with
+      # bind_database(db, name:) - a model pointed at a secondary database held
+      # its connection open through shutdown.
       def close_database
-        return unless Tina4.database
+        connections = [Tina4.database, *Tina4.databases.values].compact.uniq(&:object_id)
+        return if connections.empty?
 
-        Tina4.database.close
-        Tina4::Log.info("Database connections closed")
-      rescue StandardError => e
-        Tina4::Log.error("Error closing database: #{e.message}")
+        connections.each do |connection|
+          connection.close
+        rescue StandardError => e
+          Tina4::Log.error("Error closing database: #{e.message}")
+        end
+        Tina4::Log.info("Database connections closed (#{connections.size})")
       end
 
       def install_signal_handlers

@@ -435,38 +435,82 @@ module Tina4
       is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
       # Try Puma first (production-grade), fall back to WEBrick
-      if !is_debug
-        begin
-          require "puma"
-          require "puma/configuration"
-          require "puma/launcher"
-
-          config = Puma::Configuration.new do |user_config|
-            user_config.bind "tcp://#{host}:#{port}"
-            user_config.app app
-            user_config.threads 0, 16
-            user_config.workers 0
-            user_config.environment "production"
-            user_config.log_requests false
-            user_config.quiet
-          end
-
-          Tina4::Log.info("Production server: puma")
-          Tina4::Shutdown.setup
-
-          open_browser(url)
-          launcher = Puma::Launcher.new(config)
-          launcher.run
-          return
-        rescue LoadError
-          # Puma not installed, fall through to WEBrick
-        end
+      if !is_debug && !builtin_webserver_pinned? && puma_available?
+        open_browser(url)
+        start_puma_server(app, host: host, port: port)
+        return
       end
 
       Tina4::Log.info("Development server: WEBrick")
       open_browser(url)
       server = Tina4::WebServer.new(app, host: host, port: port)
       server.start
+    end
+
+    # TINA4_DEFAULT_WEBSERVER=TRUE pins Tina4's BUILT-IN server (WEBrick) even
+    # in production, where Puma would otherwise be chosen. Unset/FALSE keeps
+    # today's behaviour, so this is non-breaking.
+    #
+    # This is NOT the remedy for a production shutdown problem - an operator
+    # must never have to give up Puma to get their database connections closed.
+    # It exists so CI can pin the built-in server deterministically without
+    # having to switch TINA4_DEBUG on to get there.
+    def builtin_webserver_pinned?
+      Tina4::Env.is_truthy(ENV["TINA4_DEFAULT_WEBSERVER"])
+    end
+
+    # Is Puma loadable? Separate from start_puma_server so the caller can fall
+    # back to WEBrick BEFORE any side effect (opening a browser) happens.
+    def puma_available?
+      require "puma"
+      require "puma/configuration"
+      require "puma/launcher"
+      true
+    rescue LoadError
+      false
+    end
+
+    # Boot the production server (Puma) with Tina4's shutdown contract wired in.
+    #
+    # Feature 9's OUTCOMES are the framework's contract whichever server owns
+    # the socket; the MECHANISM differs per server. Puma already stops
+    # accepting and drains in-flight requests properly, so that is CONFIGURED,
+    # not reimplemented:
+    #
+    #   * TINA4_SHUTDOWN_TIMEOUT -> Puma's force_shutdown_after. Puma's default
+    #     is :forever, so before this the documented env var meant NOTHING on
+    #     the path operators actually run.
+    #   * raise_exception_on_sigterm false -> Puma's default is true, which
+    #     re-raises SignalException after the graceful stop and terminates the
+    #     process BY the signal. The contract is a clean exit 0.
+    #
+    # What Puma cannot know about is ours, and runs in the ensure: live
+    # WebSocket peers get RFC 6455 1001, background tasks stop, and every
+    # database connection is closed. Nothing but Tina4 knows those connections
+    # exist, so without this they leaked on every production shutdown.
+    def start_puma_server(app, host:, port:)
+      # Puma owns INT/TERM here, so Tina4 installs no handlers of its own.
+      Tina4::Shutdown.setup(trap_signals: false)
+      shutdown_timeout = Tina4::Shutdown.timeout
+
+      config = Puma::Configuration.new do |user_config|
+        user_config.bind "tcp://#{host}:#{port}"
+        user_config.app app
+        user_config.threads 0, 16
+        user_config.workers 0
+        user_config.environment "production"
+        user_config.log_requests false
+        user_config.quiet
+        user_config.force_shutdown_after shutdown_timeout
+        user_config.raise_exception_on_sigterm false
+      end
+
+      Tina4::Log.info("Production server: puma (TINA4_SHUTDOWN_TIMEOUT=#{shutdown_timeout}s)")
+      begin
+        Puma::Launcher.new(config).run
+      ensure
+        Tina4::Shutdown.release_resources
+      end
     end
 
     # DSL methods for route registration
