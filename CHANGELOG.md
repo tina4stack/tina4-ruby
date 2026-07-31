@@ -100,6 +100,60 @@ same; Python gets it by resolving at registration). An unknown name raises
 middleware would mean serving the route unprotected. The registry holds
 `ResponseCache` only, matching PHP and Node; unifying it with Python's larger
 name list is scheduled separately.
+### CORS denies by default, and never pairs the wildcard with credentials
+
+**Breaking:** `TINA4_CORS_ORIGINS` defaulted to `*`, which allowed every origin
+on a fresh install. It now defaults to UNSET, which denies every cross-origin
+request: no `Access-Control-Allow-Origin` is sent, and the browser's own CORS
+check blocks the request. Django, Rails and ASP.NET all require an explicit
+policy before emitting any CORS header, and now so does Tina4.
+
+**Migration:** name the origins your frontend runs on.
+
+```
+TINA4_CORS_ORIGINS=https://app.example.com
+```
+
+Comma-separate several. `TINA4_CORS_ORIGINS=*` restores the old allow-any
+behaviour for anyone who wants it: only the DEFAULT changed, not the capability.
+Non-browser clients (curl, server-to-server) never consult CORS and are
+unaffected. The status code of a denied preflight is unchanged at 204.
+
+Also in this change:
+
+- `Access-Control-Allow-Origin: *` is never sent alongside
+  `Access-Control-Allow-Credentials: true`. The Fetch Standard's CORS check
+  treats `*` as a literal once the request carries credentials, so every browser
+  rejects the pair. When both are configured the wildcard wins, credentials are
+  dropped, and a warning names the fix.
+- `Vary: Origin` is now sent whenever the allowed origin is computed from the
+  request's `Origin` header, including when the origin is REJECTED. Without it a
+  shared cache can store one origin's response and serve it to another
+  (RFC 9110 s12.5.5). It is not sent for a constant `*`, which does not vary.
+- Every rejected cross-origin request logs an actionable warning naming the
+  origin, the environment variable, and the fix. Silence was the common thread
+  in every defect this audit found.
+
+See ADR-0018.
+
+### Fixed: CORS headers now reach the actual response, not only the preflight
+
+`Tina4::CorsMiddleware.apply_headers` was never called from the dispatch path.
+Only the preflight was answered. A browser sent its preflight, got a 204 saying
+yes, sent the real request, and received no `Access-Control-Allow-Origin`, so it
+blocked the response. Cross-origin browser access did not work in ANY
+configuration. `apply_cors` now runs as an `ALWAYS_STAGE`, so the headers also
+survive a short-circuited 401 and the early-returning swagger and static paths.
+
+Ruby was also the only framework of the four that emitted
+`Access-Control-Allow-Origin: *` together with
+`Access-Control-Allow-Credentials: true`. It no longer does.
+
+`Tina4::CorsClassMiddleware` is now a thin adapter over `Tina4::CorsMiddleware`
+instead of a second copy of the rules. The copy had already drifted three ways:
+no wildcard guard, a `Referer` fallback (a `Referer` is a URL, not an origin),
+and an allow-list miss that returned the FIRST allowed origin, stamping another
+site's origin onto a rejected caller's response. The `Referer` fallback is gone.
 
 ### CORS preflight responses now carry `Allow`
 

@@ -155,12 +155,13 @@ RSpec.describe "Dispatch characterisation" do
     expect(head_body).to eq("") if head_status == 200
   end
 
-  # ── 8. CORS today: preflight only ────────────────────────────────
+  # ── 8. CORS on every response, including a 401 ───────────────────
   #
-  # CHARACTERISATION, and it pins a GAP rather than the desired behaviour.
+  # Was CHARACTERISATION pinning a GAP; is now the guarantee.
   #
-  # Measured 2026-07-31: Ruby emits Access-Control-* on an OPTIONS preflight and
-  # on NOTHING else - not on a 200, and not on a short-circuited 401.
+  # Measured 2026-07-31 (BEFORE the fix): Ruby emitted Access-Control-* on an
+  # OPTIONS preflight and on NOTHING else - not on a 200, and not on a
+  # short-circuited 401.
   #
   # The parked pattern wants global_middleware (stage 2) to run BEFORE
   # match_route (stage 3) precisely so a 401 still carries CORS, and calls PHP's
@@ -168,12 +169,25 @@ RSpec.describe "Dispatch characterisation" do
   # Without CORS on the 401 a browser reports a CORS error and the real 401 is
   # invisible to the developer debugging it.
   #
-  # That is a step-4 parity finding, to be fixed in step 6 with its own
-  # positive/negative pair - NOT silently inside the extraction. This test
-  # exists to make the refactor preserve today's behaviour exactly, and to fail
-  # loudly if someone "fixes" it mid-refactor without a decision.
+  # FIXED 2026-07-31 (ADR-0018). Ruby now emits CORS on a 401, via apply_cors
+  # in ALWAYS_STAGES. The paragraph above describes the behaviour BEFORE that
+  # fix and is kept for the history; the assertion below is now the guarantee,
+  # not the bug.
 
   it "dispatch cors headers present on 401" do
+    # THE STEP-6 FIX HAS LANDED (ADR-0018, feature 10 audit 2026-07-31).
+    #
+    # This assertion was `be(false)`, pinning the bug the comment above
+    # describes, and demanding the fix arrive deliberately with its own test
+    # pair rather than as a silent side effect. It has: `apply_cors` is now an
+    # ALWAYS_STAGE, and the positive/negative pair lives in
+    # spec/cors_policy_conformance_spec.rb (same case names in all four).
+    #
+    # The root cause was bigger than the 401: CorsMiddleware.apply_headers was
+    # never called from the dispatch path at all, so NO response carried CORS
+    # headers - only the preflight did.
+    ENV["TINA4_CORS_ORIGINS"] = "https://example.com"
+    Tina4::CorsMiddleware.reset!
     Tina4::Router.post("/needs-auth") { |_req, res| res.call("secret", Tina4::HTTP_OK) }
     origin = { "ORIGIN" => "https://example.com" }
 
@@ -181,16 +195,19 @@ RSpec.describe "Dispatch characterisation" do
     expect([401, 403]).to include(status), "expected the write route to be secured by default"
 
     cors_on_401 = headers.keys.any? { |k| k.to_s.downcase.start_with?("access-control") }
-    expect(cors_on_401).to be(false),
-                           "Ruby now emits CORS on a 401. That is the DESIRED end state, " \
-                           "but it must arrive via the step-6 fix with its own test pair, " \
-                           "not as a silent side effect of the pipeline extraction."
+    expect(cors_on_401).to be(true),
+                           "CORS headers vanished from a 401 - a browser shown that response " \
+                           "reports a CORS error and the real status never reaches the developer. " \
+                           "This is what running apply_cors as an ALWAYS_STAGE guarantees."
 
     # The preflight DOES carry CORS, and must keep doing so.
     pf_status, pf_headers, _pb = call("OPTIONS", "/needs-auth", headers: origin)
     expect(pf_status).to eq(204)
     expect(pf_headers.keys.map { |k| k.to_s.downcase })
       .to include("access-control-allow-origin")
+  ensure
+    ENV.delete("TINA4_CORS_ORIGINS")
+    Tina4::CorsMiddleware.reset!
   end
 
   # ── 9. Matched-route metadata is visible to the auth stage ───────

@@ -39,7 +39,12 @@ RSpec.describe "Dispatch pipeline contract" do
     # not conditional, so it must also cover the swagger and static branches
     # that return early. Moving it back would silently reintroduce a HEAD
     # response carrying a body.
-    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[head_strip])
+    # apply_cors joined head_strip here (ADR-0018): CORS policy headers must
+    # survive a short-circuited 401/403 and the early-returning swagger/static
+    # branches, exactly like the HEAD strip. Ruby previously stamped CORS
+    # headers on the PREFLIGHT only, so the real response carried none and the
+    # browser blocked it.
+    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[head_strip apply_cors])
     expect(Tina4::DispatchPipeline::RESPONSE_STAGES).to eq(%i[
       dev_inspector_capture
       request_log

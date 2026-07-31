@@ -40,12 +40,18 @@ RSpec.describe "OPTIONS Allow conformance" do
 
   before(:each) do
     Tina4::Router.clear!
+    # ADR-0018 made the CORS default deny; this suite is about the CORS
+    # POLICY headers, so it declares the policy it used to inherit.
+    ENV["TINA4_CORS_ORIGINS"] = "*"
+    Tina4::CorsMiddleware.reset!
     FileUtils.mkdir_p(File.join(tmp_dir, "src", "public"))
     Tina4::Router.get("/only-get") { |_q, s| s.call("ok", Tina4::HTTP_OK) }
     Tina4::Router.post("/only-get") { |_q, s| s.call("ok", Tina4::HTTP_OK) }
   end
 
   after(:each) do
+    ENV.delete("TINA4_CORS_ORIGINS")
+    Tina4::CorsMiddleware.reset!
     Tina4::Router.clear!
     FileUtils.rm_rf(tmp_dir)
   end

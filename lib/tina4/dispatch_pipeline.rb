@@ -69,6 +69,7 @@ module Tina4
     # returned 15 bytes where PHP, Python and Node all returned 0.
     ALWAYS_STAGES = %i[
       head_strip
+      apply_cors
     ].freeze
 
     RESPONSE_STAGES = %i[
@@ -305,6 +306,32 @@ module Tina4
       new_headers = headers.dup
       new_headers["content-length"] = joined.bytesize.to_s
       [status, new_headers, [""]]
+    end
+
+    # Stamp the CORS policy headers on every response.
+    #
+    # This was the gap that made Ruby's CORS unusable: CorsMiddleware only ever
+    # answered the PREFLIGHT (see #cors_preflight), and `apply_headers` - the
+    # method that handles the ACTUAL response - was never called from anywhere
+    # in the dispatch path. Measured 2026-07-31 through the real Rack app: a
+    # preflight came back 204 with Access-Control-Allow-Origin, then the real
+    # GET came back 200 with no CORS headers at all, so the browser blocked it.
+    # The preflight said "yes you may" and the response did not follow through.
+    #
+    # It lives in ALWAYS_STAGES, not RESPONSE_STAGES, so the headers survive a
+    # short-circuited 401/403 and the swagger/static early-return branches. A
+    # browser shown a 401 without CORS headers reports a CORS error and the
+    # real status never reaches the developer debugging it (ADR-0012).
+    #
+    # A preflight already carries them from #cors_preflight, so re-applying
+    # would be harmless but wasteful - policy_headers is idempotent either way.
+    def apply_cors(ctx, response)
+      status, headers, body = response
+      new_headers = headers.dup
+      Tina4::CorsMiddleware.apply_headers(new_headers, ctx.env)
+      return nil if new_headers == headers
+
+      [status, new_headers, body]
     end
 
     # Capture the request for the dev inspector.
