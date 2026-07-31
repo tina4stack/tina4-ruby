@@ -3,7 +3,7 @@
 module Tina4
   # CORS policy — reads config from env, computes the response headers.
   #
-  # DENY BY DEFAULT (ADR-0014). With TINA4_CORS_ORIGINS unset, NO
+  # DENY BY DEFAULT (ADR-0018). With TINA4_CORS_ORIGINS unset, NO
   # Access-Control-Allow-Origin is emitted and the browser's own CORS check
   # blocks the cross-origin request. "*" still works, it just has to be asked
   # for. Breaking change from the old permissive default.
@@ -154,7 +154,7 @@ module Tina4
 
       def load_config
         {
-          # Default is EMPTY, not "*" — deny by default (ADR-0014).
+          # Default is EMPTY, not "*" — deny by default (ADR-0018).
           origins: ENV["TINA4_CORS_ORIGINS"] || "",
           methods: ENV["TINA4_CORS_METHODS"] || "GET, POST, PUT, PATCH, DELETE, OPTIONS",
           headers: ENV["TINA4_CORS_HEADERS"] || "Content-Type,Authorization,X-Request-ID",

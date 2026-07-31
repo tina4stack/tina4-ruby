@@ -169,13 +169,13 @@ RSpec.describe "Dispatch characterisation" do
   # Without CORS on the 401 a browser reports a CORS error and the real 401 is
   # invisible to the developer debugging it.
   #
-  # FIXED 2026-07-31 (ADR-0014). Ruby now emits CORS on a 401, via apply_cors
+  # FIXED 2026-07-31 (ADR-0018). Ruby now emits CORS on a 401, via apply_cors
   # in ALWAYS_STAGES. The paragraph above describes the behaviour BEFORE that
   # fix and is kept for the history; the assertion below is now the guarantee,
   # not the bug.
 
   it "dispatch cors headers present on 401" do
-    # THE STEP-6 FIX HAS LANDED (ADR-0014, feature 10 audit 2026-07-31).
+    # THE STEP-6 FIX HAS LANDED (ADR-0018, feature 10 audit 2026-07-31).
     #
     # This assertion was `be(false)`, pinning the bug the comment above
     # describes, and demanding the fix arrive deliberately with its own test

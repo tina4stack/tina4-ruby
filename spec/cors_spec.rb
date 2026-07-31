@@ -11,7 +11,7 @@ RSpec.describe Tina4::CorsMiddleware do
 
   describe ".config" do
     it "returns default config when no env vars set" do
-      # BREAKING (ADR-0014): origins defaulted to "*" (allow every origin).
+      # BREAKING (ADR-0018): origins defaulted to "*" (allow every origin).
       # It is now empty = deny, and "*" has to be asked for explicitly.
       config = Tina4::CorsMiddleware.config
       expect(config[:origins]).to eq("")
@@ -82,7 +82,7 @@ RSpec.describe Tina4::CorsMiddleware do
 
   describe ".origin_allowed?" do
     it "denies every origin when nothing is configured" do
-      # BREAKING (ADR-0014): with no policy, nothing is allowed.
+      # BREAKING (ADR-0018): with no policy, nothing is allowed.
       # Clear explicitly - RSpec randomises file order, so another spec may
       # have left TINA4_CORS_ORIGINS set.
       ENV.delete("TINA4_CORS_ORIGINS")
