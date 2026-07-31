@@ -174,8 +174,11 @@ module Tina4
         # gitignored .env.local (e.g. a stale auto-generated dev secret) must
         # not override an explicitly-set real TINA4_SECRET. The ensure-dev-secret
         # bootstrap runs AFTER this (only mints a secret if still unset in dev).
-        load_local_env(root_dir)
-        parse_env_file(env_file)
+        local = load_local_env(root_dir)
+        # .env.local WINS on a duplicate key, so it merges last. Both hashes
+        # already report the value in effect, so a real env var that beat both
+        # is what a caller reads back either way.
+        parse_env_file(env_file).merge(local)
       end
 
       # Load .env.local with first-wins semantics (override=false). A real
@@ -184,7 +187,8 @@ module Tina4
       # > .env). No-op when the file is absent (common for fresh checkouts).
       def load_local_env(root_dir = Dir.pwd)
         local_file = File.join(root_dir, ".env.local")
-        parse_env_file(local_file) if File.exist?(local_file)
+        return {} unless File.exist?(local_file)
+        parse_env_file(local_file)
       end
 
       # Get an env var value, with optional default
@@ -203,11 +207,28 @@ module Tina4
       end
 
       # Raise if any of the given keys are missing from ENV
-      def require_env!(*keys)
-        missing = keys.map(&:to_s).reject { |k| ENV.key?(k) }
+      # Validate that required env vars exist, and return them.
+      #
+      # RENAMED from require_env! on 2026-07-31. The bang was Ruby-idiomatic for
+      # "raises", but the concept is named require_env in the other three, and
+      # the surface-table rule is one name per concept with idiomatic CASING
+      # only. An alias would paper over the mismatch instead of fixing it, so
+      # the primary is renamed. Breaking for anyone calling require_env!.
+      #
+      # Returns a hash of every requested key to its value, matching Python,
+      # PHP and Node - it used to return nothing, so a caller could validate but
+      # not read in one step.
+      #
+      # Reports every missing name in one raise rather than the first: an
+      # operator fixing a deployment wants the whole list, not one name per
+      # restart.
+      def require_env(*keys)
+        names = keys.flatten.map(&:to_s)
+        missing = names.reject { |k| ENV.key?(k) }
         unless missing.empty?
-          raise KeyError, "Missing required env vars: #{missing.join(', ')}"
+          raise KeyError, "Missing required environment variables: #{missing.join(', ')}"
         end
+        names.to_h { |k| [k, ENV[k]] }
       end
 
       # Reset: clear all env vars that were loaded (restore to process defaults)
@@ -250,8 +271,15 @@ module Tina4
       # override=true: `ENV[key] = value` — unconditional set. NOT used by the
       # boot load sequence; kept only as an explicit opt-in for callers that
       # genuinely need to force values.
+      # Returns a hash of the keys this file declared, mapped to the value that
+      # WON - not the value the file declared. The two differ exactly when the
+      # real environment beat the file, which is the case an operator most needs
+      # to see: reporting the file's value there would return "from_local" while
+      # the process is actually running on the real env var. A map that
+      # disagrees with ENV is worse than no map, because it looks authoritative.
       def parse_env_file(path, override: false)
-        return unless File.exist?(path)
+        effective = {}
+        return effective unless File.exist?(path)
         warned_refs = {}
         File.readlines(path).each_with_index do |raw, index|
           key, value = parse_env_line(raw, path, index + 1, warned_refs)
@@ -263,7 +291,9 @@ module Tina4
           end
           @loaded_keys ||= []
           @loaded_keys << key
+          effective[key] = ENV[key]
         end
+        effective
       end
 
       # Parse ONE dotenv line into [key, value], or [nil, nil] for a line that

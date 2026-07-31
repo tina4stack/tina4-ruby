@@ -142,6 +142,69 @@ module Tina4
   def self.create_messenger(**options)
     Tina4::Messenger.create_messenger(**options)
   end
+
+  # ── dotenv surface, at the top level ──────────────────────────────
+  #
+  # Python, PHP and Node all expose these as plain module/namespace functions.
+  # Ruby had them only as Tina4::Env.*, so the obvious cross-framework call
+  # (Tina4.load_env) raised NoMethodError - a parity defect by the audit's rule
+  # that a concept carries one name in all four, differing only in casing.
+  #
+  # These are thin delegators, defined EAGERLY for the same reason
+  # create_messenger above is: `autoload` fires on a CONSTANT reference, and a
+  # module function is not a constant, so a cold `require "tina4"` would
+  # otherwise leave the documented entry point unreachable until something else
+  # happened to touch Tina4::Env first. Naming Tina4::Env inside each body is
+  # what triggers the autoload.
+  #
+  # Tina4::Env.* stays as the implementation namespace (PHP keeps Env:: the same
+  # way). Neither is an alias of the other - one is the surface, one is the home.
+
+  # Load .env.local then .env from a ROOT DIRECTORY (canonical in all four).
+  def self.load_env(root = nil)
+    root.nil? ? Tina4::Env.load_env : Tina4::Env.load_env(root)
+  end
+
+  def self.get_env(key, default = nil)
+    Tina4::Env.get_env(key, default)
+  end
+
+  # Raises KeyError naming EVERY missing variable; returns the requested map.
+  def self.require_env(*keys)
+    Tina4::Env.require_env(*keys)
+  end
+
+  def self.has_env?(key)
+    Tina4::Env.has_env?(key)
+  end
+
+  def self.all_env
+    Tina4::Env.all_env
+  end
+
+  def self.reset_env
+    Tina4::Env.reset_env
+  end
+
+  def self.truthy?(value)
+    Tina4::Env.is_truthy(value)
+  end
+
+  def self.env_bool(name, default: false)
+    Tina4::Env.bool(name, default: default)
+  end
+
+  def self.env_int(name, default: 0)
+    Tina4::Env.int(name, default: default)
+  end
+
+  def self.env_float(name, default: 0.0)
+    Tina4::Env.float(name, default: default)
+  end
+
+  def self.env_str(name, default: "")
+    Tina4::Env.str(name, default: default)
+  end
   autoload :IMAP_CONNECTION_ERRORS, File.expand_path("tina4/messenger", __dir__)
   autoload :DocStore,            File.expand_path("tina4/docstore", __dir__)
   autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)

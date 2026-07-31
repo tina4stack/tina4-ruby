@@ -224,19 +224,36 @@ RSpec.describe Tina4::Env do
     end
   end
 
-  # ── require_env! Tests ──────────────────────────────────────────
+  # ── require_env Tests ───────────────────────────────────────────
+  #
+  # RENAMED from require_env! on 2026-07-31: the concept is require_env in the
+  # other three, and the surface rule allows idiomatic CASING to differ, not the
+  # name. It also now RETURNS the requested map, where it used to return nothing.
 
-  describe ".require_env!" do
-    it "returns normally when all vars are present" do
+  describe ".require_env" do
+    it "returns the requested vars when all are present" do
       ENV["DOTENV_REQ_A"] = "1"
       ENV["DOTENV_REQ_B"] = "2"
-      expect { Tina4::Env.require_env!("DOTENV_REQ_A", "DOTENV_REQ_B") }.not_to raise_error
+      result = Tina4::Env.require_env("DOTENV_REQ_A", "DOTENV_REQ_B")
+      expect(result).to eq({ "DOTENV_REQ_A" => "1", "DOTENV_REQ_B" => "2" })
       ENV.delete("DOTENV_REQ_A")
       ENV.delete("DOTENV_REQ_B")
     end
 
     it "raises when a var is missing" do
-      expect { Tina4::Env.require_env!("DOTENV_DEFINITELY_NOT_SET_99999") }.to raise_error(KeyError)
+      expect { Tina4::Env.require_env("DOTENV_DEFINITELY_NOT_SET_99999") }.to raise_error(KeyError)
+    end
+
+    # An operator fixing a deployment wants the whole list, not one name per
+    # restart, so a single raise has to carry every missing name.
+    it "names EVERY missing var in one raise, not just the first" do
+      expect { Tina4::Env.require_env("DOTENV_MISSING_X", "DOTENV_MISSING_Y") }
+        .to raise_error(KeyError, /DOTENV_MISSING_X.*DOTENV_MISSING_Y/)
+    end
+
+    # NEGATIVE: the retired name must be gone, not aliased.
+    it "no longer responds to the retired require_env! name" do
+      expect(Tina4::Env).not_to respond_to(:require_env!)
     end
   end
 
