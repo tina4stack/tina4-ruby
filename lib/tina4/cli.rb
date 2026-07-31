@@ -529,36 +529,14 @@ module Tina4
 
       # Use Puma only when explicitly requested via --production flag
       # WEBrick is used for development (supports dev toolbar/reload)
-      if options[:production]
-        begin
-          require "puma"
-          require "puma/configuration"
-          require "puma/launcher"
-
-          puma_host = options[:host]
-          puma_port = options[:port]
-
-          config = Puma::Configuration.new do |user_config|
-            user_config.bind "tcp://#{puma_host}:#{puma_port}"
-            user_config.app app
-            user_config.threads 0, 16
-            user_config.workers 0
-            user_config.environment "production"
-            user_config.log_requests false
-            user_config.quiet
-          end
-
-          Tina4::Log.info("Production server: puma")
-
-          # Setup graceful shutdown (Puma manages its own signals, but we handle DB cleanup)
-          Tina4::Shutdown.setup
-
-          launcher = Puma::Launcher.new(config)
-          launcher.run
-          return
-        rescue LoadError
-          # Puma not installed, fall through to WEBrick
-        end
+      # Same production server, same shutdown contract as Tina4.run! - one
+      # implementation, so the two entry points cannot drift again (the old
+      # copy here claimed "we handle DB cleanup" and did no cleanup at all).
+      # TINA4_DEFAULT_WEBSERVER=TRUE pins the built-in server even with
+      # --production.
+      if options[:production] && !Tina4.builtin_webserver_pinned? && Tina4.puma_available?
+        Tina4.start_puma_server(app, host: options[:host], port: options[:port])
+        return
       end
 
       Tina4::Log.info("Development server: WEBrick")

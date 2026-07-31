@@ -130,7 +130,18 @@ module Tina4
         end
 
         define_method(:handle_request) do |webrick_req, webrick_res|
-          # Reject new requests during shutdown
+          # Belt-and-braces, NOT the primary mechanism. Shutdown closes the
+          # listening socket FIRST, so a connection arriving after the signal is
+          # refused by the kernel and never reaches here. What is left is a
+          # genuine race: WEBrick accepts a connection and parses its request in
+          # a worker thread, and the @shutting_down flag can flip in the gap
+          # before that worker reaches this line.
+          #
+          # Measured (macOS 26.5.2, Ruby 4.0.2, webrick 1.9.2, 48 threads
+          # hammering across a real SIGTERM): the window is the ~10-90ms between
+          # the flag flip and the listener actually closing, and 0-2 requests per
+          # run land in it out of ~2000. Every request after that is
+          # ECONNREFUSED. Rare, but reachable - so the guard stays.
           if Tina4::Shutdown.shutting_down?
             webrick_res.status = 503
             webrick_res.body = '{"error":"Service shutting down"}'
@@ -232,6 +243,8 @@ module Tina4
             end
 
             define_method(:handle_request) do |webrick_req, webrick_res|
+              # Same accepted-a-moment-before-the-listener-closed race as the
+              # main servlet above - see the comment there.
               if Tina4::Shutdown.shutting_down?
                 webrick_res.status = 503
                 webrick_res.body = '{"error":"Service shutting down"}'
@@ -299,6 +312,12 @@ module Tina4
       end
 
       @server.start
+
+      # Shutdown closes the listener FIRST, so #start returns as soon as the
+      # in-flight workers are joined - potentially while the signal handler's
+      # thread is still stopping background tasks and closing the database.
+      # Wait for that teardown instead of exiting out from under it.
+      Tina4::Shutdown.wait_for_completion
     end
 
     def stop
