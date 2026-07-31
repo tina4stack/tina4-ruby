@@ -63,6 +63,19 @@ RSpec.describe "Global middleware pre/post split" do
     end
   end
 
+  # A post-match middleware that stamps a header. It MUST stamp, or the
+  # negative case below would pass even if the middleware never ran.
+  def post_match_stamping_middleware
+    Class.new do
+      class << self
+        def before_stamp(req, res)
+          res.add_header("X-Ran-After-Match", "yes") if res.respond_to?(:add_header)
+          [req, res]
+        end
+      end
+    end
+  end
+
   # ── POSITIVE: middleware runs before a route is even matched ────
 
   it "pre match middleware runs on a path with NO route at all" do
@@ -135,5 +148,45 @@ RSpec.describe "Global middleware pre/post split" do
     expect(status).to eq(200)
     expect(body).to include("42"),
                     "path params were lost - the pre-built request memoised #params too early"
+  end
+  # ── The order: post-match globals -> auth gate -> route middleware ──
+  #
+  # Decided 2026-07-31 (ADR-0012) against how the mainstream frameworks build
+  # the same pipeline, not against internal precedent. Ruby and Python ran the
+  # gate first; Node and PHP did not. Django ships CsrfViewMiddleware ahead of
+  # AuthenticationMiddleware and enforces auth in a view decorator after all
+  # MIDDLEWARE; Laravel runs the `web` group before the `auth` route
+  # middleware; ASP.NET puts UseAuthorization last before the endpoint.
+  #
+  # BREAKING for Ruby and Python: a global middleware now runs on requests it
+  # previously never saw (401s), so one written assuming an authenticated
+  # request must check for itself.
+
+  it "post match middleware runs on a 401" do
+    # POSITIVE, and the behaviour change itself. A global middleware has to see
+    # rejected requests or it cannot throttle a brute-force login, and an
+    # access log silently drops every 401.
+    Tina4::Middleware.use(post_match_stamping_middleware)
+    Tina4::Router.post("/gated") { |_q, s| s.call("x", Tina4::HTTP_OK) }
+
+    status, headers, _b = call("POST", "/gated")
+    expect(status).to eq(401)
+    stamped = headers.find { |k, _| k.to_s.downcase == "x-ran-after-match" }
+    expect(stamped).not_to be_nil,
+                          "a global middleware did not run on a 401 - the auth " \
+                          "gate is still ahead of the global pass"
+  end
+
+  it "post match middleware does not run when no route matched" do
+    # NEGATIVE, and the case that actually discriminates the two groups. A
+    # post-match middleware CANNOT run when nothing matched. That - not the
+    # 401, which both groups now survive by design - is the real difference.
+    Tina4::Middleware.use(post_match_stamping_middleware)
+
+    status, headers, _b = call("GET", "/no/such/route")
+    expect(status).to eq(404)
+    stamped = headers.find { |k, _| k.to_s.downcase == "x-ran-after-match" }
+    expect(stamped).to be_nil,
+                       "a post-match middleware ran with no matched route"
   end
 end

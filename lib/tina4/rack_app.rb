@@ -344,7 +344,43 @@ module Tina4
 
     private
 
+    # Order: POST-MATCH globals -> auth gate -> the route's OWN middleware.
+    #
+    # The globals run BEFORE the gate so a rate limiter can throttle a
+    # brute-force login and an access log records the 401 - neither is possible
+    # if they only run on authenticated requests. That is what every mainstream
+    # framework does: Django ships CsrfViewMiddleware ahead of
+    # AuthenticationMiddleware and enforces auth in a view decorator after all
+    # MIDDLEWARE, Laravel runs the `web` group before the `auth` route
+    # middleware, ASP.NET puts UseAuthorization last before the endpoint. Ruby
+    # and Python ran the gate first; Node and PHP did not. Aligned on the
+    # mainstream answer (ADR-0012).
+    #
+    # The route's OWN middleware stays AFTER the gate, so middleware attached to
+    # a secured route never processes an unauthenticated request.
     def handle_route(env, route, path_params, pre_request = nil, pre_response = nil)
+      # Reuse the pre-match pair when one was built, so anything the pre-match
+      # middleware set (headers, request.user) reaches the handler. Path params
+      # are only known now, so they are attached here. The pair is built BEFORE
+      # the gate because the post-match pass below needs it.
+      request = pre_request || Tina4::Request.new(env)
+      request.path_params = path_params
+      env["tina4.request"] = request  # Store for session save after response
+      response = pre_response || Tina4::Response.new
+
+      # Run global middleware (block-based + class-based before_* methods).
+      # M2 — AFTER-ON-4xx RULE: when a before_* short-circuits (4xx/skip) or
+      # throws (clean 500), the after-pass STILL runs so after_* can add
+      # headers/logging — consistent across all 4 frameworks.
+      # POST-match global middleware: the default. It runs after the route
+      # matched, because middleware like CSRF reads the matched route's metadata
+      # to honour no_auth. Pre-match middleware already ran in #call.
+      post_middleware = Tina4::Middleware.post_match_middleware
+      unless Tina4::Middleware.run_before(post_middleware, request, response)
+        Tina4::Middleware.run_after(post_middleware, request, response)
+        return response.to_rack
+      end
+
       # Auth check (legacy per-route auth_handler)
       if route.auth_handler
         auth_result = route.auth_handler.call(env)
@@ -357,41 +393,22 @@ module Tina4
       # tests too, or a green test hides a live 401 and the verification lies).
       unauthorized = self.class.enforce_route_auth(env, route)
       if unauthorized
-        # Carry the PRE-match middleware's headers onto the 401. This is the
-        # case the pre/post split exists for: a browser shown a 401 with no
-        # CORS headers reports a CORS error, so the real status never reaches
-        # the developer. enforce_route_auth builds a bare Rack tuple (it is a
-        # class method shared with TestClient and has no Response object), so
-        # the merge happens here rather than inside it.
-        if pre_response.respond_to?(:headers) && pre_response.headers.is_a?(Hash)
+        # Carry the middleware headers onto the 401. This is the case the
+        # pre/post split exists for: a browser shown a 401 with no CORS headers
+        # reports a CORS error, so the real status never reaches the developer.
+        # enforce_route_auth builds a bare Rack tuple (it is a class method
+        # shared with TestClient and has no Response object), so the merge
+        # happens here. `response` carries BOTH passes now, not just pre-match.
+        if response.respond_to?(:headers) && response.headers.is_a?(Hash)
           status, headers, body = unauthorized
           # The auth tuple wins on a genuine clash - it owns content-type.
-          unauthorized = [status, pre_response.headers.merge(headers), body]
+          unauthorized = [status, response.headers.merge(headers), body]
         end
         return unauthorized
       end
 
-      # Reuse the pre-match pair when one was built, so anything the pre-match
-      # middleware set (headers, request.user) reaches the handler. Path params
-      # are only known now, so they are attached here.
-      request = pre_request || Tina4::Request.new(env)
-      request.path_params = path_params
+      # The verified JWT payload is only on env once the gate has run.
       request.user = env["tina4.auth_payload"] if env["tina4.auth_payload"]
-      env["tina4.request"] = request  # Store for session save after response
-      response = pre_response || Tina4::Response.new
-
-      # Run global middleware (block-based + class-based before_* methods).
-      # M2 — AFTER-ON-4xx RULE: when a before_* short-circuits (4xx/skip) or
-      # throws (clean 500), the after-pass STILL runs so after_* can add
-      # headers/logging — consistent across all 4 frameworks.
-      # POST-match global middleware: the default. It runs here, after the
-      # route matched, because middleware like CSRF reads the matched route's
-      # metadata to honour no_auth. Pre-match middleware already ran in #call.
-      post_middleware = Tina4::Middleware.post_match_middleware
-      unless Tina4::Middleware.run_before(post_middleware, request, response)
-        Tina4::Middleware.run_after(post_middleware, request, response)
-        return response.to_rack
-      end
 
       # Run per-route middleware
       if route.respond_to?(:run_middleware)
