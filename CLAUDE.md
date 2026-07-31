@@ -159,7 +159,15 @@ Tina4::WebServer.new(app, host: "0.0.0.0", port: 7147).start
 # v3 connection string format: driver://host:port/database
 # Supported drivers: sqlite, postgres, mysql, mssql, firebird
 # Driver aliases: sqlite3 -> sqlite, postgresql -> postgres, sqlserver -> mssql
-db = Tina4::Database.new("sqlite://path/to/database.db")
+# SQLite slash count decides relative vs absolute (the SQLAlchemy convention,
+# identical in all four frameworks). Three slashes is RELATIVE to the working
+# directory; an absolute path needs FOUR.
+db = Tina4::Database.new("sqlite:///app.db")            # relative: ./app.db
+db = Tina4::Database.new("sqlite:////var/data/app.db")  # absolute: /var/data/app.db
+db = Tina4::Database.new("sqlite:/var/data/app.db")     # absolute (one slash) too
+# FOOTGUN: "sqlite://" + an absolute path yields THREE slashes, so the file is
+# created UNDER the working directory and a stray ./var/data/ tree appears.
+# Concatenate onto "sqlite:///" instead.
 db = Tina4::Database.new("postgres://localhost:5432/mydb", username: "user", password: "pass")
 db = Tina4::Database.new("mysql://localhost:3306/mydb", username: "root", password: "secret")
 db = Tina4::Database.new("mssql://localhost:1433/mydb", username: "sa", password: "pass")
