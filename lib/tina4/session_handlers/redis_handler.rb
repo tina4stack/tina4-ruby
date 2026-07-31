@@ -5,7 +5,9 @@ require_relative "resp_client"
 module Tina4
   module SessionHandlers
     # Redis-backed session handler. Prefers the `redis` gem when it is installed
-    # (parity with the Python redis-py and Node redis-npm handlers); otherwise
+    # (parity with Python, which prefers redis-py the same way, INSIDE this one
+    # handler rather than as a separate backend name — Node's `redis-npm`
+    # backend did the latter and was retired 2026-07-31 as drift); otherwise
     # speaks raw RESP over a TCP socket via RespClient — zero dependencies, so a
     # Tina4 app stores sessions in Redis with no extra gem.
     class RedisHandler
