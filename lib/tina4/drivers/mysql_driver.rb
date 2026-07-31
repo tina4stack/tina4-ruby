@@ -5,6 +5,10 @@ require_relative "schema_split"
 module Tina4
   module Drivers
     class MysqlDriver
+      # First SIX characters of the statements whose row count #affected_rows
+      # reports. "REPLAC" is REPLACE truncated to the same width.
+      WRITE_VERBS = %w[INSERT UPDATE DELETE REPLAC].freeze
+
       include Tina4::DatabaseAdapter
       include SchemaSplit
       attr_reader :connection
@@ -76,14 +80,26 @@ module Tina4
         # The ids in one statement are consecutive, so normalise here, where both
         # the first id and the row count are known; doing it further up would
         # leave get_last_id disagreeing with the returned result.
+        # The row count MUST come from the STATEMENT, not the connection.
+        # mysql2's client.affected_rows is unreliable after a prepared
+        # execute - measured live, it reported 3 (stale, from the previous
+        # query) for a 1-row prepared insert, and 0 for a 3-row one. Using it
+        # would shift last_id by a wrong offset. stmt.affected_rows is exact.
+        #
+        # Hoisted out of the INSERT branch: the count was computed for an INSERT
+        # only, so the driver exposed no #affected_rows at all and
+        # Database#write_affected fell through to its default of 0 - an UPDATE
+        # that really changed a row reported affected_rows = 0, indistinguishable
+        # from "matched nothing". Gated on the WRITE verbs because a SELECT's
+        # count is its returned-row count, which would clobber the write before
+        # it (SQLite's connection.changes has the same last-write-wins rule).
+        if WRITE_VERBS.include?(sql.to_s.lstrip[0, 6].upcase)
+          @affected_rows = stmt ? stmt.affected_rows.to_i : @connection.affected_rows.to_i
+        end
+
         if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
           first_id = @connection.last_id
-          # The row count MUST come from the STATEMENT, not the connection.
-          # mysql2's client.affected_rows is unreliable after a prepared
-          # execute - measured live, it reported 3 (stale, from the previous
-          # query) for a 1-row prepared insert, and 0 for a 3-row one. Using it
-          # would shift last_id by a wrong offset. stmt.affected_rows is exact.
-          rows = stmt ? stmt.affected_rows.to_i : @connection.affected_rows.to_i
+          rows = @affected_rows.to_i
           @last_insert_id =
             if first_id.to_i.positive?
               first_id.to_i + [rows, 1].max - 1
@@ -96,6 +112,13 @@ module Tina4
 
       def last_insert_id
         @last_insert_id
+      end
+
+      # Rows changed by the most recent INSERT/UPDATE/DELETE on this connection.
+      # Parity with SQLite (connection.changes), PostgreSQL (cmd_tuples), MSSQL
+      # (TinyTds::Result#do) and the Python master (cursor.rowcount).
+      def affected_rows
+        @affected_rows.to_i
       end
 
       def placeholder

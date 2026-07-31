@@ -41,6 +41,7 @@ module Tina4
                  else
                    @connection.exec_params(converted_sql, params)
                  end
+        track_affected(result)
         symbolize_result(result)
       end
 
@@ -53,11 +54,25 @@ module Tina4
         # which is the correct source for a sequence-backed bare INSERT.
         @last_returning_id = nil if sql.lstrip[0, 6].upcase == "INSERT"
         converted_sql = convert_placeholders(sql)
-        if params.empty?
-          @connection.exec(converted_sql)
-        else
-          @connection.exec_params(converted_sql, params)
-        end
+        result = if params.empty?
+                   @connection.exec(converted_sql)
+                 else
+                   @connection.exec_params(converted_sql, params)
+                 end
+        track_affected(result)
+        result
+      end
+
+      # Rows changed by the most recent INSERT/UPDATE/DELETE on this connection.
+      #
+      # Feeds Database#update/delete's DatabaseResult.affected_rows. The driver
+      # exposed NO such method, so write_affected fell through to its default of
+      # 0 and an UPDATE that really changed a row reported affected_rows = 0 —
+      # indistinguishable from "matched nothing". Parity with SQLite
+      # (connection.changes), MySQL (stmt.affected_rows) and the Python master
+      # (cursor.rowcount).
+      def affected_rows
+        @affected_rows.to_i
       end
 
       # Issue #256: surface the ACTUAL primary key value an INSERT wrote —
@@ -190,20 +205,64 @@ module Tina4
         # v3.13.14 (#48): honour a schema-qualified name; default to public.
         schema, tbl = split_schema(table_name)
         schema ||= "public"
-        sql = "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2"
-        rows = execute_query(sql, [tbl, schema])
+        # :primary_key was hardcoded false, so Database#primary_key introspected
+        # NOTHING on PostgreSQL. The filterless-write guard (feature 4) reads it,
+        # so `update(table, data)` keyed on the primary key in `data` raised
+        # "update requires a filter or the complete primary key in the data"
+        # against every PostgreSQL table. Port the Python master's LEFT JOIN so
+        # the cross-engine columns() contract (#48) actually holds here — the
+        # subquery yields every column of the PK, so a COMPOSITE key reports
+        # true on each of its columns, not just the first.
+        sql = <<~SQL
+          SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+                 CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END AS is_primary
+          FROM information_schema.columns c
+          LEFT JOIN (
+            SELECT ku.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage ku
+              ON tc.constraint_name = ku.constraint_name
+             AND tc.table_schema = ku.table_schema
+            WHERE tc.table_name = $1 AND tc.table_schema = $2
+              AND tc.constraint_type = 'PRIMARY KEY'
+          ) pk ON c.column_name = pk.column_name
+          WHERE c.table_name = $3 AND c.table_schema = $4
+          ORDER BY c.ordinal_position
+        SQL
+        rows = execute_query(sql, [tbl, schema, tbl, schema])
         rows.map do |r|
           {
             name: r[:column_name],
             type: r[:data_type],
             nullable: r[:is_nullable] == "YES",
             default: r[:column_default],
-            primary_key: false
+            # The result type map decodes bool to true/false, but stay tolerant
+            # of the raw "t"/"f" text form if the map could not be built.
+            primary_key: r[:is_primary] == true || r[:is_primary] == "t"
           }
         end
       end
 
       private
+
+      # Record the row count of a WRITE so #affected_rows can report it.
+      #
+      # Gated on the command tag rather than recorded for every statement: a
+      # SELECT's cmd_tuples is its ROW COUNT, so tracking it unconditionally
+      # would let an ordinary read overwrite the count of the write before it.
+      # SQLite's connection.changes has exactly this "last write wins, reads
+      # don't touch it" semantic, and Database#write_affected reads the count
+      # immediately after the write, so the two agree.
+      def track_affected(result)
+        tag = result.cmd_status.to_s
+        return unless tag.start_with?("INSERT", "UPDATE", "DELETE", "MERGE")
+
+        @affected_rows = result.cmd_tuples.to_i
+      rescue PG::Error, NoMethodError
+        # A result that cannot report its status leaves the previous count
+        # alone rather than zeroing a real one.
+        nil
+      end
 
       # Issue #256: normalise the ``id`` of an ``INSERT ... RETURNING *`` row.
       #

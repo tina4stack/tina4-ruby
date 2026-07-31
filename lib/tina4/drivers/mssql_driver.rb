@@ -52,20 +52,39 @@ module Tina4
         # the INSERT and SELECT SCOPE_IDENTITY() in ONE batch (a single
         # @connection.execute), read the id from the SAME batch, and cache it.
         if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
-          result = @connection.execute("#{effective_sql}; SELECT SCOPE_IDENTITY() AS id")
+          # @@ROWCOUNT rides along in the SAME batch for the same reason
+          # SCOPE_IDENTITY() does: it reports the row count of the immediately
+          # preceding statement (the INSERT), and read in a later batch it would
+          # describe something else entirely.
+          result = @connection.execute(
+            "#{effective_sql}; SELECT SCOPE_IDENTITY() AS id, @@ROWCOUNT AS affected"
+          )
           rows = result.each(symbolize_keys: true).to_a
           result.cancel if result.respond_to?(:cancel)
           row = rows.last
           @last_insert_id = row && row[:id] ? row[:id].to_i : nil
+          @affected_rows = row && row[:affected] ? row[:affected].to_i : 1
           return true
         end
 
         result = @connection.execute(effective_sql)
-        result.do
+        # TinyTds::Result#do runs the statement and RETURNS the number of rows
+        # it affected. That count was computed and thrown away: the driver
+        # exposed no #affected_rows, so Database#write_affected fell through to
+        # its default of 0 and an UPDATE that really changed a row reported
+        # affected_rows = 0 — indistinguishable from "matched nothing".
+        @affected_rows = result.do
       end
 
       def last_insert_id
         @last_insert_id
+      end
+
+      # Rows changed by the most recent INSERT/UPDATE/DELETE on this connection.
+      # Parity with SQLite (connection.changes), MySQL (stmt.affected_rows),
+      # PostgreSQL (cmd_tuples) and the Python master (cursor.rowcount).
+      def affected_rows
+        @affected_rows.to_i
       end
 
       def placeholder
@@ -117,16 +136,34 @@ module Tina4
       def columns(table_name)
         # v3.13.14 (#48): honour a schema-qualified name; bare names match any schema.
         schema, tbl = split_schema(table_name)
-        sql = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS " \
-              "WHERE TABLE_NAME = ? AND (? IS NULL OR TABLE_SCHEMA = ?)"
-        rows = execute_query(sql, [tbl, schema, schema])
+        # Same hole PostgreSQL had: :primary_key hardcoded false meant
+        # Database#primary_key introspected NOTHING on SQL Server, so the
+        # feature-4 filterless-write guard rejected every PK-keyed update.
+        # Ported from the Python master; the subquery yields every column of the
+        # PK, so a COMPOSITE key reports true on each of its columns.
+        sql = <<~SQL
+          SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
+                 CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_primary
+          FROM INFORMATION_SCHEMA.COLUMNS c
+          LEFT JOIN (
+            SELECT ku.COLUMN_NAME
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+              ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+            WHERE tc.TABLE_NAME = ? AND (? IS NULL OR tc.TABLE_SCHEMA = ?)
+              AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+          ) pk ON c.COLUMN_NAME = pk.COLUMN_NAME
+          WHERE c.TABLE_NAME = ? AND (? IS NULL OR c.TABLE_SCHEMA = ?)
+          ORDER BY c.ORDINAL_POSITION
+        SQL
+        rows = execute_query(sql, [tbl, schema, schema, tbl, schema, schema])
         rows.map do |r|
           {
             name: r[:COLUMN_NAME] || r[:column_name],
             type: r[:DATA_TYPE] || r[:data_type],
             nullable: (r[:IS_NULLABLE] || r[:is_nullable]) == "YES",
             default: r[:COLUMN_DEFAULT] || r[:column_default],
-            primary_key: false
+            primary_key: (r[:is_primary] || r[:IS_PRIMARY]).to_i == 1
           }
         end
       end
