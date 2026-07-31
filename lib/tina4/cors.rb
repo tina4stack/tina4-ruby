@@ -11,20 +11,41 @@ module Tina4
         @config = nil
       end
 
-      # Handle OPTIONS preflight request, returns a Rack response array
-      def preflight_response(env = {})
+      # Handle OPTIONS preflight request, returns a Rack response array.
+      #
+      # `allow` is the resource's REAL method set, and it is emitted as the
+      # `Allow` header alongside the CORS headers. RFC 9110 s9.3.7 says a
+      # successful OPTIONS response SHOULD carry Allow, and a preflight is an
+      # OPTIONS response - dropping it means a bare OPTIONS and a preflight to
+      # the same path answer two different questions.
+      #
+      # This is CONFORMANCE, not a deviation. The frameworks' own OPTIONS
+      # handlers already do it - Django's View.options() sets Allow from
+      # _allowed_methods(), Express's router auto-answers OPTIONS with Allow.
+      # The add-on CORS libraries (cors npm, django-cors-headers, rack-cors,
+      # stack-cors, ASP.NET CORS) omit it, but that is a LAYERING artifact:
+      # each sits ahead of the framework, so short-circuiting the preflight
+      # also skips the framework's OPTIONS handler and the header it would
+      # have produced. Tina4 owns both paths, so it costs one header to answer
+      # both questions at once. See ADR-0013.
+      #
+      # Note Allow and Access-Control-Allow-Methods are NOT the same thing and
+      # are not interchangeable: Allow is what the resource supports, ACAM is
+      # what the CORS policy permits cross-origin. A policy allowing DELETE on
+      # a GET-only route is still a 405.
+      def preflight_response(env = {}, allow: nil)
         origin = resolve_origin(env)
-        [
-          204,
-          {
-            "access-control-allow-origin" => origin,
-            "access-control-allow-methods" => config[:methods],
-            "access-control-allow-headers" => config[:headers],
-            "access-control-max-age" => config[:max_age],
-            "access-control-allow-credentials" => config[:credentials]
-          },
-          [""]
-        ]
+        headers = {
+          "access-control-allow-origin" => origin,
+          "access-control-allow-methods" => config[:methods],
+          "access-control-allow-headers" => config[:headers],
+          "access-control-max-age" => config[:max_age],
+          "access-control-allow-credentials" => config[:credentials]
+        }
+        # An unknown path yields "" - the same shape the bare-OPTIONS branch
+        # uses - so a client can tell "nothing here" from "not told".
+        headers["allow"] = Array(allow).join(", ") unless allow.nil?
+        [204, headers, [""]]
       end
 
       # Apply CORS headers to a response headers hash

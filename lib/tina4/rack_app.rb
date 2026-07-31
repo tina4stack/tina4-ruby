@@ -100,7 +100,13 @@ module Tina4
       # OPTIONS support and force every operator to hand-register CORS
       # exceptions for every introspection client.
       if method == "OPTIONS" && (env["HTTP_ORIGIN"] || env["HTTP_ACCESS_CONTROL_REQUEST_METHOD"])
-        return Tina4::CorsMiddleware.preflight_response(env)
+        # Carry the resource's REAL method set as Allow (RFC 9110 s9.3.7) so a
+        # preflight answers the same question a bare OPTIONS does, on top of
+        # the CORS policy headers. Without it, a preflight to a path told the
+        # caller nothing about what the path actually supports.
+        return Tina4::CorsMiddleware.preflight_response(
+          env, allow: Tina4::Router.methods_allowed_for_path(path)
+        )
       end
 
       # WebSocket upgrade — match against registered ws_routes
