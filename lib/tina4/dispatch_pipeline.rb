@@ -489,12 +489,22 @@ module Tina4
       nil
     end
 
-    # Per-route class-based middleware.
+    # Per-route class-based middleware — its before_* pass.
     def route_middleware(ctx)
       return nil unless ctx.route.respond_to?(:run_middleware)
       return nil if ctx.route.run_middleware(ctx.request, ctx.response)
 
-      [403, { "content-type" => "text/html" }, ["403 Forbidden"]]
+      # AFTER-ON-HALT: the route's own after_* hooks still run when one of its
+      # before_* hooks short-circuited, exactly as the global ones do.
+      ctx.route.run_after_middleware(ctx.request, ctx.response) if ctx.route.respond_to?(:run_after_middleware)
+
+      # Send the response the middleware SET. This used to be a hardcoded
+      # [403, {"content-type" => "text/html"}, ["403 Forbidden"]], which threw
+      # away the middleware's own answer: a 401 with a WWW-Authenticate header,
+      # a 302 to /login and a JSON error body all arrived as the same bare 403.
+      # A middleware that halts having set nothing still gets a 403 — that is
+      # applied by the return-value table (Tina4::Middleware.refuse), not here.
+      ctx.response.to_rack
     end
 
     # Invoke the route handler, wrapped in any function-style middleware.
@@ -506,8 +516,9 @@ module Tina4
     # Function middleware folds into a Russian-doll chain around the handler:
     # first declared is the OUTERMOST layer, receiving the request first,
     # calling next_handler to descend, and running its "after" code on the way
-    # out. Class-based middleware (before_*/after_*) is handled by
-    # #route_middleware above and never comes through here.
+    # out. Class-based middleware (before_*/after_*) never comes through here:
+    # its before_* pass is #route_middleware above and its after_* pass is
+    # #finalise_route_response below, both via Tina4::Middleware.
     # tina4-book#141 PY-10-01 (cross-framework parity).
     def invoke_route_handler(ctx)
       handler_params = ctx.route.handler.parameters.map(&:last)
@@ -551,6 +562,12 @@ module Tina4
 
       # Global after middleware (block-based + class-based after_* methods).
       Tina4::Middleware.run_after(Tina4::Middleware.global_middleware, ctx.request, final)
+
+      # The route's OWN class middleware after_* hooks. Same orchestrator and
+      # same discovery as the global pass. Scope order matches the before pass
+      # (global, then route) — after hooks are deliberately NOT unwound in
+      # reverse; that decision is being taken separately.
+      ctx.route.run_after_middleware(ctx.request, final) if ctx.route.respond_to?(:run_after_middleware)
 
       # Inject FreshToken when a body formToken was used for auth.
       final.add_header("FreshToken", ctx.env["tina4.fresh_token"]) if ctx.env["tina4.fresh_token"]

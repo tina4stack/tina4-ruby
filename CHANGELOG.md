@@ -12,6 +12,95 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
+### Security: a before hook that refuses without returning the pair no longer runs the handler
+
+A `before_*` middleware hook that set a 4xx status and returned `nil` did NOT
+short-circuit - the response carried the 403 but the route handler ran anyway.
+The `status_code >= 400` check was nested INSIDE the "did the hook return a
+2-element Array" branch, so refusal was only honoured for hooks that also
+returned `[request, response]`. Any auth/guard middleware written as
+
+```ruby
+def self.before_auth(request, response)
+  response.json({ error: "denied" }, 403) unless authorised?(request)
+end
+```
+
+executed its protected handler. Reproduced with a real `Tina4::Request` /
+`Tina4::Response`: the pair-returning form returned `false` (correct), the
+nil-returning form returned `true`. The check is now unconditional after EVERY
+hook call, matching Python, PHP and Node (Rails short-circuits on the response
+STATE, not on what the filter returned).
+
+Regression test: `a before hook that sets 4xx and returns nothing skips the
+handler` in `spec/middleware_pipeline_characterisation_spec.rb`.
+
+### Breaking: per-route class middleware now runs its before_*/after_* hooks
+
+`Route#run_middleware` called `mw.call(request, response)` on every attached
+middleware. A class declaring `def self.before_auth` does not respond to
+`.call`, so per-route class middleware raised `NoMethodError` and the
+dispatcher turned every such request into a clean 500. **In Ruby this is
+broken-to-working, not inert-to-active**: the documented per-route
+`before_*`/`after_*` mechanism did not silently do nothing, it 500'd. (In PHP
+and Node the equivalent fix makes previously-INERT middleware start running -
+that difference matters when reading those changelogs.)
+
+Per-route class middleware now goes through `Tina4::Middleware.run_before` /
+`run_after` - the SAME orchestrator, hook discovery and return-value table as
+global middleware, not a second parallel runner. 2-arg callable ("filter")
+middleware and 3-arg function middleware are unchanged.
+
+**Migration:** if you attached a class with `before_*`/`after_*` hooks to a
+route, those hooks now RUN. Routes that were returning 500 will start serving,
+and a hook that refuses will now actually refuse. Audit any such middleware
+before upgrading - it has never executed in production.
+
+**Also breaking:** a halting per-route middleware used to answer with a
+hardcoded `[403, text/html, "403 Forbidden"]`, discarding whatever the
+middleware had set. The response the middleware SET is now sent - a 401 with
+`WWW-Authenticate`, a 302 to `/login`, or a JSON error body all survive. A
+middleware that halts having set nothing still gets a 403 (now
+`{"error":"Forbidden","status":403}`, the same shape as the middleware 500).
+
+### Middleware hook return values are one documented table
+
+Applied to EVERY `before_*`/`after_*` hook at EVERY scope (global and
+per-route):
+
+| return value | meaning |
+| --- | --- |
+| a `Tina4::Response` | SHORT-CIRCUIT; that object IS the response, at ANY status |
+| `[request, response]` | rebind both, continue |
+| `false` | SHORT-CIRCUIT; send the response as set, 403 only if still default/empty |
+| `nil` | continue |
+
+The `Tina4::Response` row is the PRIMARY rule and is new: it is the only one
+that can express a 302 redirect from middleware. The `status >= 400`
+short-circuit is retained as a documented LEGACY COMPATIBILITY PATH so
+middleware written before it keeps working.
+
+Note for Ruby specifically: Ruby has implicit returns, so a hook whose last
+expression is a chainable response call (`response.add_header(...)` returns
+`self`) now short-circuits. End such hooks with `[request, response]` or `nil`.
+Block-based handlers registered with `Tina4::Middleware.before(pattern) { }`
+are deliberately NOT covered by the table - a block's value is its last
+expression, so reading a returned Response as a refusal there would fire
+constantly. They keep their "`false` halts" contract.
+
+### String-form route middleware (Python/PHP/Node parity)
+
+`middleware: ["ResponseCache"]` and `middleware: ["ResponseCache:300"]` now
+resolve, via `Tina4::Router.resolve_string_middleware`. Ruby was the only one
+of the four frameworks without the mechanism - a String reached
+`mw.call(request, response)` and raised `NoMethodError`. One instance is
+memoised per spec so the cache can actually hit across requests (PHP does the
+same; Python gets it by resolving at registration). An unknown name raises
+`ArgumentError` naming the known set - never a silent skip, which for an auth
+middleware would mean serving the route unprotected. The registry holds
+`ResponseCache` only, matching PHP and Node; unifying it with Python's larger
+name list is scheduled separately.
+
 ### CORS preflight responses now carry `Allow`
 
 A CORS preflight (`OPTIONS` with an `Origin`) returned 204 with the

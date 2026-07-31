@@ -97,20 +97,66 @@ module Tina4
       end
     end
 
-    # Run per-route CLASS-based middleware. Function-style middleware
-    # (Proc/Lambda taking 3+ args: req, resp, next_handler) is skipped
-    # here — it's dispatched separately via #function_middleware which
-    # wraps the route handler in a continuation chain (see rack_app.rb).
+    # Run per-route middleware BEFORE the handler.
     #
-    # Returns true if all class-based middleware passed, false if any
-    # returned literal false (halt request).
+    # Dispatch is by SHAPE, in declaration order:
+    #
+    #   * a CLASS (or instance) declaring before_*/after_* hooks — handed to
+    #     Tina4::Middleware.run_before, the SAME orchestrator global middleware
+    #     goes through, so it gets the SAME hook discovery (definition order,
+    #     base->derived) and the SAME return-value table. There is no second,
+    #     divergent runner here.
+    #   * a String spec ("ResponseCache", "ResponseCache:300") — resolved to the
+    #     configured middleware first (parity with Python/PHP/Node).
+    #   * a 2-arg callable ("filter" middleware) — called directly; false halts.
+    #
+    # Function-style middleware (3+ args: req, resp, next_handler) is NOT run
+    # here — it wraps the handler in a continuation chain (see
+    # #function_middleware and DispatchPipeline#invoke_route_handler).
+    #
+    # This method used to call `mw.call(request, response)` on EVERYTHING. A
+    # class declaring `def self.before_auth` does not respond to .call, so
+    # per-route class middleware raised NoMethodError and the dispatcher turned
+    # every such request into a clean 500 — the documented per-route
+    # before_*/after_* mechanism never ran at all. The .call-everything body is
+    # superseded by the shape dispatch above; the 2-arg filter path below is
+    # what remains of it.
+    #
+    # Returns true if every middleware passed, false to halt (handler skipped).
     def run_middleware(request, response)
-      @middleware.each do |mw|
-        next if Route.function_middleware?(mw)
-        result = mw.call(request, response)
-        return false if result == false
+      hook_middleware.each do |mw|
+        if Route.filter_middleware?(mw)
+          next unless mw.call(request, response) == false
+
+          # Same `false` row of the return-value table a before_* hook gets:
+          # keep the response the filter set, 403 only if it set nothing.
+          Tina4::Middleware.refuse(response)
+          return false
+        else
+          return false unless Tina4::Middleware.run_before([mw], request, response)
+        end
       end
       true
+    end
+
+    # Run per-route class middleware's after_* hooks, once the handler has run
+    # (or once a before_* halted). Same orchestrator, same discovery — see
+    # #run_middleware. Filter middleware has no after phase by construction.
+    def run_after_middleware(request, response)
+      hook_middleware.each do |mw|
+        next if Route.filter_middleware?(mw)
+
+        Tina4::Middleware.run_after([mw], request, response)
+      end
+      response
+    end
+
+    # Per-route middleware that takes part in the before/after passes:
+    # everything except function-style middleware, with String specs resolved
+    # to the middleware they name.
+    def hook_middleware
+      @middleware.reject { |mw| Route.function_middleware?(mw) }
+                 .map { |mw| mw.is_a?(::String) ? Router.resolve_string_middleware(mw) : mw }
     end
 
     # Function-style middleware attached to this route, in declaration
@@ -137,6 +183,22 @@ module Tina4
       return false unless mw.respond_to?(:arity)
       ar = mw.arity
       ar >= 3 || ar <= -4
+    rescue StandardError
+      false
+    end
+
+    # Detect "filter" middleware: a plain 2-arg callable (Proc/Lambda/Method)
+    # that receives (request, response) and halts by returning false.
+    #
+    # This is the shape #run_middleware has always supported, kept working
+    # unchanged. It is NOT function middleware (3+ args, wraps the handler) and
+    # NOT class middleware (declares before_*/after_* hooks) — a Class or Module
+    # is never a filter even when it defines .call, because its hooks are the
+    # documented mechanism.
+    def self.filter_middleware?(mw)
+      return false if mw.is_a?(Class) || mw.is_a?(Module)
+
+      mw.respond_to?(:arity) && mw.respond_to?(:call)
     rescue StandardError
       false
     end
@@ -295,6 +357,22 @@ module Tina4
   end
 
   module Router
+    # Known string-addressable middleware, for a route declared as
+    # `middleware: ["ResponseCache:300"]`. Matches PHP
+    # (Router::resolveStringMiddleware) and Node (resolveStringMiddleware),
+    # which both know exactly one name today. Python's registry is larger;
+    # unifying the three registries is scheduled separately, so this
+    # deliberately does NOT guess at Python's extra names.
+    #
+    # Each entry is a builder taking the parsed colon-args. See
+    # .resolve_string_middleware.
+    STRING_MIDDLEWARE = {
+      "ResponseCache" => lambda { |args|
+        ttl = args.first
+        ttl.to_s.match?(/\A\d+\z/) ? Tina4::ResponseCache.new(ttl: ttl.to_i) : Tina4::ResponseCache.new
+      }
+    }.freeze
+
     class << self
       def routes
         @routes ||= []
@@ -547,6 +625,42 @@ module Tina4
       #   Tina4::Router.use(AuthMiddleware)
       def use(klass)
         Tina4::Middleware.use(klass)
+      end
+
+      # Resolve a string middleware spec to the middleware it names.
+      #
+      #   "ResponseCache"      -> ResponseCache with the default/env TTL
+      #   "ResponseCache:300"  -> ResponseCache with ttl = 300
+      #
+      # The head before the first ":" is the name; the colon-separated tail is
+      # its arguments. Same parse as Python's _resolve_string_middleware, PHP's
+      # Router::resolveStringMiddleware and Node's resolveStringMiddleware.
+      #
+      # ONE INSTANCE PER SPEC. Route middleware is resolved per dispatch in
+      # Ruby, so without memoising, every request would build a fresh
+      # ResponseCache with a fresh empty store and the cache could never hit.
+      # PHP memoises for exactly this reason; Python gets it for free by
+      # resolving once at registration.
+      #
+      # An unknown name RAISES, naming the known set — never a silent skip.
+      # Python raises ValueError, Node throws; a typo must surface, not
+      # quietly drop the middleware (which for an auth middleware would mean
+      # serving the route unprotected).
+      def resolve_string_middleware(spec)
+        spec = spec.to_s
+        @resolved_string_middleware ||= {}
+        return @resolved_string_middleware[spec] if @resolved_string_middleware.key?(spec)
+
+        name, _sep, tail = spec.partition(":")
+        builder = STRING_MIDDLEWARE[name]
+        unless builder
+          raise ArgumentError,
+                "Unknown middleware #{name.inspect}. Known string middleware: " \
+                "#{STRING_MIDDLEWARE.keys.sort.join(', ')}. For custom middleware, " \
+                "pass the class directly to .middleware(MyMiddleware)."
+        end
+
+        @resolved_string_middleware[spec] = builder.call(tail.empty? ? [] : tail.split(":"))
       end
 
       def clear!

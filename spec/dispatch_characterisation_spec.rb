@@ -212,10 +212,12 @@ RSpec.describe "Dispatch characterisation" do
 
   it "dispatch middleware runs in registration order" do
     order = []
-    # PER-ROUTE middleware is anything responding to .call(request, response).
-    # The before_*/after_* CLASS-hook discovery is a different mechanism, used
-    # for GLOBAL middleware; passing such a class here raises "undefined method
-    # 'call'" and the dispatcher turns it into a clean 500.
+    # PER-ROUTE "filter" middleware: a 2-arg callable taking (request,
+    # response). A CLASS declaring before_*/after_* hooks is also valid here —
+    # it goes through the same Tina4::Middleware orchestrator global middleware
+    # does (feature-7). It used to raise "undefined method 'call'" and the
+    # dispatcher turned it into a clean 500; see
+    # spec/middleware_pipeline_characterisation_spec.rb.
     first  = ->(req, res) { order << :first;  [req, res] }
     second = ->(req, res) { order << :second; [req, res] }
 
