@@ -73,17 +73,33 @@ module Tina4
       # Signature matches Python/PHP/Node orchestrators: pass the list of
       # middleware classes explicitly.
       #
+      # THE RETURN-VALUE CONTRACT is #apply_before_result below — one table,
+      # applied to EVERY before_* hook at EVERY scope. Per-route middleware
+      # comes through this same method (Tina4::Route#run_middleware), so there
+      # is exactly one implementation of the table, not two.
+      #
       # M2 — visible-but-resilient: every before_* call is wrapped so a THROW
       # never crashes the worker. On a throw the error is LOGGED and the
       # response becomes a clean 500 ({"error":"Internal Server Error",
       # "status":500}), then processing halts (handler skipped) — deterministic,
-      # never an unhandled exception. A before_* that sets status >= 400 also
-      # halts (the existing 4xx short-circuit). after_* still run on either
-      # halt path (see the dispatcher / #run_after docstring).
+      # never an unhandled exception. after_* still run on either halt path
+      # (see the dispatcher / #run_after docstring).
       #
       # Returns true on success, or false to halt the request (handler skipped).
       def run_before(middleware_classes, request, response)
-        # 1. Block-based before handlers (pattern-matched)
+        # The response object the CALLER holds. A hook may hand back a
+        # different Response; on a halt that object IS the answer, so its state
+        # is adopted onto this one before returning — otherwise the dispatcher
+        # would serve the object it still has a reference to and the
+        # short-circuit would silently vanish.
+        origin = response
+
+        # 1. Block-based before handlers (pattern-matched). These are a
+        #    Ruby-only surface (Python/PHP/Node have no block form) and keep
+        #    their historical "false halts" contract: a block's value is its
+        #    last expression, so reading a returned Response as a
+        #    short-circuit would fire on any block ending in a chainable
+        #    response call.
         before_handlers.each do |entry|
           next unless matches_pattern?(request.path, entry[:pattern])
 
@@ -105,14 +121,12 @@ module Tina4
               middleware_500(response, "#{class_label(klass)}.#{method_name}", error)
               return false
             end
-            # Support returning [request, response] (Python convention) or false to halt
-            if result == false
-              return false
-            elsif result.is_a?(Array) && result.length == 2
-              request, response = result
-              # If response already has a non-2xx status, halt processing
-              return false if response.status_code >= 400
-            end
+
+            halt, request, response = apply_before_result(result, request, response)
+            next unless halt
+
+            adopt_response(origin, response) unless response.equal?(origin)
+            return false
           end
         end
 
@@ -134,7 +148,17 @@ module Tina4
       # M2 — every after_* call is wrapped: a THROW is LOGGED and turns the
       # response into a clean 500, then the REMAINING after_* still run (they
       # may add headers/logging). Never an unhandled crash.
+      #
+      # RETURN VALUES: an after_* hook shapes the response the same way a
+      # before_* one does — a returned Tina4::Response BECOMES the response, a
+      # returned [request, response] pair rebinds both. What it CANNOT do is
+      # halt: the handler has already run, so there is nothing left to skip,
+      # and stopping the remaining after_* would contradict the AFTER-ON-4xx
+      # resilience rule above (they exist to add headers/logging on every path).
+      # So `false` and a >= 400 status are inert here by design.
       def run_after(middleware_classes, request, response)
+        origin = response
+
         # 1. Block-based after handlers (pattern-matched)
         after_handlers.each do |entry|
           next unless matches_pattern?(request.path, entry[:pattern])
@@ -155,11 +179,16 @@ module Tina4
               middleware_500(response, "#{class_label(klass)}.#{method_name}", error)
               next
             end
-            if result.is_a?(Array) && result.length == 2
+            if result.is_a?(Tina4::Response)
+              response = result
+            elsif result.is_a?(Array) && result.length == 2
               request, response = result
             end
           end
         end
+
+        adopt_response(origin, response) unless response.equal?(origin)
+        response
       end
 
       # Deterministic clean 500 for a middleware that threw. Logs the cause
@@ -182,7 +211,117 @@ module Tina4
         response.json({ error: "Internal Server Error", status: 500 }, 500)
       end
 
+      # The `false` row of the return-value table, on its own.
+      #
+      # A middleware that halts by returning false keeps the response it set;
+      # only a response still left default/empty becomes a 403. Public because
+      # per-route "filter" middleware (a 2-arg callable returning false, see
+      # Tina4::Route#run_middleware) must obey the SAME row as a before_* hook,
+      # and the rule should exist exactly once.
+      def refuse(response)
+        forbid(response) if default_response?(response)
+        response
+      end
+
       private
+
+      # ── THE BEFORE-HOOK RETURN-VALUE TABLE ────────────────────────────────
+      #
+      # Interpret ONE before_* hook's return value. Identical in Python, PHP,
+      # Ruby and Node, and applied at EVERY scope — global (Router.use) and
+      # per-route (route.middleware) both land here.
+      #
+      #   a Tina4::Response      SHORT-CIRCUIT. That object IS the response, at
+      #                          ANY status. This is the PRIMARY rule: it is the
+      #                          only one that can express a 302 redirect.
+      #   [request, response]    rebind both, continue
+      #   false                  SHORT-CIRCUIT. Send the response AS SET; only
+      #                          when it is still default/empty does it become a
+      #                          403. (Per-route middleware used to answer a
+      #                          halt with a HARDCODED 403 that threw away
+      #                          whatever the middleware had set — that is gone.)
+      #   nil / anything else    continue
+      #
+      # LEGACY COMPATIBILITY PATH (retained, deliberately NOT the main
+      # mechanism): after the hook returns, a response status >= 400 also
+      # short-circuits, even when the hook returned nil. Middleware written
+      # before the Response rule existed signals refusal that way, so it stays
+      # honoured — but it cannot express a 3xx redirect, which is exactly why
+      # the Response rule above is primary and this one is the fallback.
+      #
+      # This check used to be nested INSIDE the "returned a 2-element Array"
+      # branch, so a hook that set 403 and returned nil was ignored and the
+      # handler RAN — an auth middleware that refused without returning the pair
+      # was a no-op. Python, PHP and Node all check the status unconditionally
+      # after the call; Rails short-circuits on the response STATE, not on what
+      # the filter returned. Now it is unconditional here too.
+      #
+      # Returns [halt?, request, response].
+      def apply_before_result(result, request, response)
+        if result.is_a?(Tina4::Response)
+          return [true, request, result]
+        elsif result.is_a?(Array) && result.length == 2
+          request, response = result
+        elsif result == false
+          refuse(response)
+          return [true, request, response]
+        end
+
+        status = status_of(response)
+        return [true, request, response] if status.is_a?(Integer) && status >= 400
+
+        [false, request, response]
+      end
+
+      # Read a response's status defensively — a middleware may hand back any
+      # response-shaped object. Mirrors the Python master's
+      # `getattr(response, "status_code", None) or getattr(response, "status", 0)`.
+      def status_of(response)
+        return response.status_code if response.respond_to?(:status_code)
+        return response.status if response.respond_to?(:status)
+
+        nil
+      end
+
+      # Has this response been left untouched? Only then does a `false` return
+      # get turned into a 403 — a middleware that already answered keeps its
+      # own answer.
+      def default_response?(response)
+        status = status_of(response)
+        return false unless status.nil? || status == 200
+
+        body = response.respond_to?(:body) ? response.body : nil
+        body.to_s.empty?
+      end
+
+      # The canonical refusal, in the same shape as #middleware_500 so the two
+      # framework-generated error bodies match byte for byte across all four
+      # frameworks.
+      def forbid(response)
+        if response.respond_to?(:json)
+          response.json({ error: "Forbidden", status: 403 }, 403)
+        elsif response.respond_to?(:status_code=)
+          response.status_code = 403
+        end
+        response
+      end
+
+      # Copy a response's state onto the object the CALLER still holds.
+      #
+      # Ruby passes references, so a hook that MUTATES the response it was given
+      # needs nothing from us. This exists for the hook that hands back a
+      # DIFFERENT Response object: the contract says that object IS the
+      # response, and the dispatcher only ever serves the one it passed in.
+      # Applied on the halt paths, where the response is the answer.
+      def adopt_response(target, source)
+        return target unless target.is_a?(Tina4::Response) && source.is_a?(Tina4::Response)
+
+        target.status_code = source.status_code
+        target.headers     = source.headers
+        target.body        = source.body
+        target.cookies     = source.cookies
+        target
+      end
 
       # Human-readable label for a middleware (class name, or the class of an
       # instance) used in the logged 500 message.
