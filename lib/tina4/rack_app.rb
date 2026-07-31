@@ -131,22 +131,16 @@ module Tina4
         return fb_response if fb_response
       end
 
-      # Fast-path: API routes skip static file + swagger checks entirely
-      unless path.start_with?("/api/")
-        # Swagger
-        if path == "/swagger" || path == "/swagger/"
-          return serve_swagger_ui
-        end
-        if path == "/swagger/openapi.json"
-          return serve_openapi_json
-        end
-
-        # Static files (only for non-API paths)
-        static_response = try_static(path, env)
-        return static_response if static_response
-      end
-
-      # Route matching
+      # Route matching. ROUTES BEAT FILES (ADR-0010): static assets and the
+      # swagger UI are resolved in the not-found fallback below, only once no
+      # route has claimed the path. A file in public/ can arrive from a build
+      # step or a careless deploy, and it must never silently shadow a
+      # reviewed route.
+      #
+      # This also retires the `unless path.start_with?("/api/")` guard that
+      # used to wrap the static check. That guard existed ONLY because
+      # file-first would otherwise shadow API routes - a partial patch for
+      # exactly the hazard route-first removes outright.
       result = Tina4::Router.match(method, path)
       if result
         route, path_params = result
@@ -180,6 +174,17 @@ module Tina4
           }, [body]]
           matched_pattern = nil
         else
+          # No route claimed the path. NOW try the swagger UI and the
+          # filesystem - after matching, per ADR-0010.
+          if path == "/swagger" || path == "/swagger/"
+            return serve_swagger_ui
+          elsif path == "/swagger/openapi.json"
+            return serve_openapi_json
+          end
+
+          static_response = try_static(path, env)
+          return static_response if static_response
+
           rack_response = handle_404(path)
           matched_pattern = nil
         end

@@ -227,4 +227,51 @@ RSpec.describe "Dispatch characterisation" do
     expect(order).to eq(%i[first second]),
                      "middleware ran out of registration order"
   end
+
+  # ── ADR-0010: routes beat files ──────────────────────────────────
+  #
+  # A BEHAVIOUR CHANGE, decided rather than refactored. Static resolution
+  # moved AFTER route matching, so a reviewed route can no longer be shadowed
+  # by a file that arrived from a build step, an upload directory, or a
+  # careless deploy.
+  #
+  # Ruby previously guarded against exactly this with `unless
+  # path.start_with?("/api/")` around the static check - a partial patch that
+  # only protected paths beginning /api/. Route-first removes the hazard
+  # outright and that guard with it.
+
+  it "a route wins over a file at the same path" do
+    # A file that WOULD have been served first under the old ordering.
+    File.write(File.join(tmp_dir, "src", "public", "clash.json"), '{"from":"file"}')
+    Tina4::Router.get("/clash.json") { |_req, res| res.call('{"from":"route"}', Tina4::HTTP_OK) }
+
+    status, _h, body = call("GET", "/clash.json")
+    expect(status).to eq(200)
+    expect(body).to include("route"),
+                    "a file in public/ shadowed a registered route - ADR-0010 is not in effect"
+    expect(body).not_to include("file")
+  end
+
+  # NEGATIVE: route-first must not stop files being served at all.
+  it "a file is still served when no route matches" do
+    File.write(File.join(tmp_dir, "src", "public", "plain.json"), '{"from":"file"}')
+
+    status, _h, body = call("GET", "/plain.json")
+    expect(status).to eq(200)
+    expect(body).to include("file"),
+                    "moving static after matching stopped files being served"
+  end
+
+  # The retired guard must not come back: an /api/ path with no route is a
+  # 404, and one WITH a route reaches the route - neither needs a special case.
+  it "an api path needs no special case now that routes win" do
+    Tina4::Router.get("/api/thing") { |_req, res| res.call("routed", Tina4::HTTP_OK) }
+
+    status, _h, body = call("GET", "/api/thing")
+    expect(status).to eq(200)
+    expect(body).to include("routed")
+
+    miss_status, _mh, _mb = call("GET", "/api/nothing")
+    expect(miss_status).to eq(404)
+  end
 end
