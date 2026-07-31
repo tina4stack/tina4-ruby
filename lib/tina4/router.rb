@@ -445,8 +445,23 @@ module Tina4
         normalized_path = "/#{normalized_path}" unless normalized_path.start_with?("/")
         normalized_path = normalized_path.chomp("/") unless normalized_path == "/"
 
-        # Check ANY routes first, then method-specific routes
-        candidates = (method_index["ANY"] || []) + (method_index[normalized_method] || [])
+        # Candidates in REGISTRATION order, which is what Python, PHP and Node
+        # all do. This used to be `ANY + method`, which made an ANY route beat
+        # every same-path specific route no matter when either was registered -
+        # so an app with an ordinary CMS catch-all (`any("/{slug}")`) silently
+        # swallowed the framework's own GET routes, `/__health` among them. The
+        # route was registered correctly; the router simply never reached it.
+        #
+        # `routes` is the registration-order array and `method_index` is the
+        # per-method fast path. With no ANY routes registered - the common case -
+        # the fast path is exactly what it was. Only an app that actually uses
+        # ANY pays for the ordered scan, and only that app needed it.
+        any_routes = method_index["ANY"]
+        candidates = if any_routes.nil? || any_routes.empty?
+                       method_index[normalized_method] || []
+                     else
+                       routes.select { |r| r.method == "ANY" || r.method == normalized_method }
+                     end
         candidates.each do |route|
           params = route.match_path(normalized_path)
           return [route, params] if params

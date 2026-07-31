@@ -345,6 +345,13 @@ module Tina4
       # Connect database if configured
       setup_database
 
+      # Framework routes FIRST, then the app's. Routes resolve in registration
+      # order, so anything registered later cannot shadow these - and an app
+      # with an ordinary catch-all (`any("/{slug}")`) would otherwise swallow
+      # /__health, which is exactly what a container health check probes.
+      # Python registers its built-ins first for the same reason.
+      register_builtin_routes!
+
       # Auto-discover routes
       auto_discover(root_dir)
 
@@ -411,12 +418,16 @@ module Tina4
 
       initialize!(root_dir) unless @root_dir
 
-      # Built-in routes. These used to be registered ONLY by the CLI's
-      # cmd_start, so an app booted the documented way -- `Tina4.run!` from
-      # app.rb, which is exactly what `tina4 init ruby` scaffolds -- served 404
-      # on /health while the identical code under `tina4ruby serve` served 200.
-      # A container health check pointed at /health therefore failed against a
-      # perfectly healthy app.
+      # Built-in routes now register inside initialize!, BEFORE route discovery,
+      # so they cannot be shadowed by an app catch-all. Kept here as a safety net
+      # for a caller that reaches run! without initialize! having run (the guard
+      # above skips it when @root_dir is already set). register! is idempotent
+      # and Router.add replaces in place, so a second call is a no-op.
+      #
+      # They used to be registered ONLY by the CLI's cmd_start, so an app booted
+      # the documented way -- `Tina4.run!` from app.rb, which is what
+      # `tina4 init ruby` scaffolds -- served 404 on /health while the identical
+      # code under `tina4ruby serve` served 200.
       register_builtin_routes!
 
       host = ENV.fetch("HOST", ENV.fetch("TINA4_HOST", "0.0.0.0"))
