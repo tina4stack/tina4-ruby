@@ -19,6 +19,8 @@ module Tina4
   end
 
   class RackApp
+    include Tina4::DispatchPipeline
+
     class << self
       # The process-wide RackApp — the app actually serving traffic. Set by
       # #initialize (last one wins, the same convention as
@@ -78,264 +80,33 @@ module Tina4
       Tina4::Router.websocket("/__dev_reload", &DEV_RELOAD_WS_HANDLER)
     end
 
+    # Run the dispatch pipeline. See REQUEST_STAGES / RESPONSE_STAGES above.
+    #
+    # Every branch this used to hold now lives in a named stage, so the only
+    # control flow left here is "walk the list, stop when a stage answers".
     def call(env)
-      method = env["REQUEST_METHOD"]
-      path = env["PATH_INFO"] || "/"
-      request_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      ctx = DispatchContext.new(
+        env: env,
+        method: env["REQUEST_METHOD"],
+        path: env["PATH_INFO"] || "/",
+        started_at: Process.clock_gettime(Process::CLOCK_MONOTONIC),
+        bypass_response_stages: false
+      )
 
-      # Request-scoped query cache boundary (v3.13.23). Tina4 Ruby runs a
-      # long-running Rack server, so the request-scoped DB cache (default-on)
-      # would otherwise serve rows from a previous request. Clear it on every
-      # live connection at the very start of each request, before any routing.
-      # No-op for persistent-mode (TINA4_DB_CACHE=true) connections.
-      Tina4::Database.reset_request_caches if defined?(Tina4::Database)
-
-      # Fast-path: CORS preflight. Real CORS preflight requests carry an
-      # Origin header AND an Access-Control-Request-Method header — the
-      # browser is asking "may I send this method?" before the actual
-      # request. If neither is present, the OPTIONS is a plain protocol-
-      # introspection request (link checker, monitoring probe, RFC 9110
-      # §9.3.7 OPTIONS) and must fall through to the router's generic
-      # Allow-header response. Otherwise we'd shadow the framework's own
-      # OPTIONS support and force every operator to hand-register CORS
-      # exceptions for every introspection client.
-      if method == "OPTIONS" && (env["HTTP_ORIGIN"] || env["HTTP_ACCESS_CONTROL_REQUEST_METHOD"])
-        # Carry the resource's REAL method set as Allow (RFC 9110 s9.3.7) so a
-        # preflight answers the same question a bare OPTIONS does, on top of
-        # the CORS policy headers. Without it, a preflight to a path told the
-        # caller nothing about what the path actually supports.
-        return Tina4::CorsMiddleware.preflight_response(
-          env, allow: Tina4::Router.methods_allowed_for_path(path)
-        )
+      response = nil
+      REQUEST_STAGES.each do |stage|
+        response = send(stage, ctx)
+        break if response
       end
 
-      # WebSocket upgrade — match against registered ws_routes
-      if websocket_upgrade?(env)
-        ws_result = Tina4::Router.find_ws_route(path)
-        if ws_result
-          ws_route, ws_params = ws_result
-          return handle_websocket_upgrade(env, ws_route, ws_params)
-        end
+      return response if ctx.bypass_response_stages
+
+      RESPONSE_STAGES.each do |stage|
+        replacement = send(stage, ctx, response)
+        response = replacement if replacement
       end
 
-      # Dev dashboard routes (handled before anything else)
-      if path.start_with?("/__dev")
-        # Block live-reload endpoint on the AI port — AI tools must get stable responses
-        if path == "/__dev_reload" && env["tina4.ai_port"]
-          return [404, { "content-type" => "text/plain" }, ["Not available on AI port"]]
-        end
-        dev_response = Tina4::DevAdmin.handle_request(env)
-        return dev_response if dev_response
-      end
-
-      # Customer feedback widget routes (parity with Python's /__feedback/*
-      # surface — see tina4/feedback.rb). Always available — the master
-      # switch (TINA4_ENABLE_FEEDBACK) is enforced INSIDE handle_request
-      # so route shape stays stable across environments.
-      if path.start_with?("/__feedback")
-        fb_response = Tina4::Feedback.handle_request(env)
-        return fb_response if fb_response
-      end
-
-      # Route matching. ROUTES BEAT FILES (ADR-0010): static assets and the
-      # swagger UI are resolved in the not-found fallback below, only once no
-      # route has claimed the path. A file in public/ can arrive from a build
-      # step or a careless deploy, and it must never silently shadow a
-      # reviewed route.
-      #
-      # This also retires the `unless path.start_with?("/api/")` guard that
-      # used to wrap the static check. That guard existed ONLY because
-      # file-first would otherwise shadow API routes - a partial patch for
-      # exactly the hazard route-first removes outright.
-      # PRE-MATCH global middleware. Built here, before matching, so CORS and
-      # anything else that must survive a short-circuit can set headers that
-      # outlive a 401/403 - a browser shown a 401 with no CORS headers reports
-      # a CORS error and hides the real status.
-      #
-      # The SAME request and response objects are threaded into handle_route
-      # below; building a second pair would silently discard whatever the
-      # pre-match pass set, which is the entire point of running it.
-      pre_request = Tina4::Request.new(env)
-      pre_request.user = env["tina4.auth_payload"] if env["tina4.auth_payload"]
-      pre_response = Tina4::Response.new
-      pre_middleware = Tina4::Middleware.pre_match_middleware
-      unless pre_middleware.empty?
-        unless Tina4::Middleware.run_before(pre_middleware, pre_request, pre_response)
-          Tina4::Middleware.run_after(pre_middleware, pre_request, pre_response)
-          return pre_response.to_rack
-        end
-      end
-
-      result = Tina4::Router.match(method, path)
-      if result
-        route, path_params = result
-        rack_response = handle_route(env, route, path_params, pre_request, pre_response)
-        matched_pattern = route.path
-      else
-        # RFC 9110 conformance — before falling through to 404, check whether
-        # the PATH is known to the router under any OTHER method.
-        #   - OPTIONS request → 204 with Allow header (§9.3.7). Bare OPTIONS
-        #     on an unknown path also returns 204 (empty Allow header) —
-        #     OPTIONS is a discovery method; rejecting unknown probes with
-        #     404 confuses link checkers and monitoring tools and breaks
-        #     CORS preflight that lacks the Origin/ACRM headers our earlier
-        #     fast-path requires. Matches PHP/Node behaviour. Fixes
-        #     spec/rack_app_spec.rb OPTIONS preflight.
-        #   - Any other method (PUT on GET-only, TRACE, CONNECT, etc.)
-        #     → 405 with Allow header (§15.5.6 + §10.2.1) when the path
-        #     exists; → 404 when nothing about the path is known.
-        allowed = Tina4::Router.methods_allowed_for_path(path)
-        if method.to_s.upcase == "OPTIONS"
-          allow_header = allowed.empty? ? "" : allowed.join(", ")
-          rack_response = [204, { "allow" => allow_header, "content-length" => "0" }, [""]]
-          matched_pattern = nil
-        elsif !allowed.empty?
-          allow_header = allowed.join(", ")
-          body = %({"error":"Method Not Allowed","path":"#{path}","method":"#{method}","allow":[#{allowed.map { |m| %("#{m}") }.join(",")}],"status":405})
-          rack_response = [405, {
-            "allow" => allow_header,
-            "content-type" => "application/json",
-            "content-length" => body.bytesize.to_s
-          }, [body]]
-          matched_pattern = nil
-        else
-          # No route claimed the path. NOW try the swagger UI and the
-          # filesystem - after matching, per ADR-0010.
-          if path == "/swagger" || path == "/swagger/"
-            return serve_swagger_ui
-          elsif path == "/swagger/openapi.json"
-            return serve_openapi_json
-          end
-
-          static_response = try_static(path, env)
-          return static_response if static_response
-
-          rack_response = handle_404(path)
-          matched_pattern = nil
-        end
-      end
-
-      # RFC 9110 §9.3.2: a HEAD response MUST NOT include content. Strip
-      # the body unconditionally and record what Content-Length the GET
-      # would have sent. Cache validators / link checkers / monitoring
-      # probes use that header to estimate sizes.
-      if method.to_s.upcase == "HEAD"
-        status, headers, body_parts = rack_response
-        joined = body_parts.respond_to?(:join) ? body_parts.join : body_parts.to_s
-        unless joined.empty?
-          new_headers = headers.dup
-          new_headers["content-length"] = joined.bytesize.to_s
-          rack_response = [status, new_headers, [""]]
-        end
-      end
-
-      # Capture request for dev inspector
-      if dev_mode? && !path.start_with?("/__dev")
-        duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - request_start) * 1000).round(3)
-        Tina4::DevAdmin.request_inspector.capture(
-          method: method,
-          path: path,
-          status: rack_response[0],
-          duration: duration_ms
-        )
-      end
-
-      # Request log line (v3.13.14). The dev inspector above only feeds the
-      # /__dev UI — it never reached stdout, so `tina4ruby serve` printed the
-      # banner then went silent. Emit a per-request line through Tina4::Log so
-      # it lands on stdout (docker logs / k8s). On by default in dev, opt-in in
-      # production via TINA4_LOG_REQUESTS. Same format across all four frameworks.
-      if request_logging_enabled? && !path.start_with?("/__dev")
-        log_elapsed = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - request_start) * 1000).round(3)
-        Tina4::Log.info("#{method} #{path} -> #{rack_response[0]} (#{log_elapsed}ms)")
-      end
-
-      # Inject dev overlay button for HTML responses in dev mode
-      if dev_mode? && !path.start_with?("/__dev")
-        status, headers, body_parts = rack_response
-        content_type = headers["content-type"] || ""
-        if content_type.include?("text/html")
-          request_info = {
-            method: method,
-            path: path,
-            matched_pattern: matched_pattern || "(no match)",
-          }
-          joined = body_parts.join
-          overlay = inject_dev_overlay(joined, request_info, ai_port: env["tina4.ai_port"])
-          rack_response = [status, headers, [overlay]]
-        end
-      end
-
-      # Customer feedback widget injection — runs LAST so its <script>
-      # tag survives any earlier post-processing. No-op if disabled
-      # (TINA4_ENABLE_FEEDBACK off), the user isn't whitelisted, the
-      # path is /__dev or /__feedback, or the body isn't text/html with
-      # a closing </body> tag. Mirrors Python's server.py call site —
-      # see tina4_python/core/server.py around line 1543.
-      begin
-        status, headers, body_parts = rack_response
-        content_type = headers["content-type"] || ""
-        if content_type.include?("text/html") && body_parts.respond_to?(:join)
-          joined = body_parts.join
-          if joined.include?("</body>")
-            injected = Tina4::Feedback.inject_feedback_widget(
-              Struct.new(:path, :env).new(path, env),
-              joined
-            )
-            if injected != joined
-              new_headers = headers.dup
-              new_headers["content-length"] = injected.bytesize.to_s if new_headers["content-length"]
-              rack_response = [status, new_headers, [injected]]
-            end
-          end
-        end
-      rescue StandardError
-        # Injection is best-effort — never break the response.
-      end
-
-      # Save session and set cookie if session was used
-      if result && defined?(rack_response)
-        status, headers, body_parts = rack_response
-        request_obj = env["tina4.request"]
-        if request_obj&.instance_variable_get(:@session)
-          sess = request_obj.session
-          sess.save
-
-          # Probabilistic garbage collection (~1% of requests)
-          if rand(1..100) == 1
-            begin
-              sess.gc
-            rescue StandardError
-              # GC failure is non-critical — silently ignore
-            end
-          end
-
-          sid = sess.id
-          # Read the INCOMING session cookie by the SAME configured name the
-          # write side emits — via the one shared resolver (Session.cookie_name),
-          # exact `name=` prefix. A hardcoded "tina4_session=" here never matches
-          # a cookie renamed through TINA4_SESSION_NAME, so the auto-Set-Cookie
-          # would be needlessly re-emitted on every request that already carries
-          # the renamed session cookie. Parity with Python's
-          # core/server._init_session cookie_prefix.
-          cookie_prefix = "#{Tina4::Session.cookie_name}="
-          cookie_val = (env["HTTP_COOKIE"] || "").split(";").map(&:strip)
-                                                 .find { |part| part.start_with?(cookie_prefix) }
-                                                 &.slice(cookie_prefix.length..)
-          if sid && sid != cookie_val
-            # Route through Session#cookie_header rather than hand-writing the
-            # header, so TINA4_SESSION_SECURE / _SAMESITE / _HTTPONLY / _NAME /
-            # _TTL are all honoured and Secure reflects the request scheme. The
-            # old hand-written literal ignored every attribute except TTL and
-            # hardcoded SameSite=Lax + HttpOnly, making the security env vars
-            # silent no-ops (issue #31).
-            headers["set-cookie"] = sess.cookie_header
-          end
-          rack_response = [status, headers, body_parts]
-        end
-      end
-
-      rack_response
+      response
     rescue => e
       handle_500(e, env)
     end
