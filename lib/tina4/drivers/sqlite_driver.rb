@@ -48,7 +48,15 @@ module Tina4
 
         # Strip the scheme + up to three slashes, preserving a potential fourth
         # slash (absolute) or drive letter.
-        raw = connection_string.sub(/^sqlite:\/\/\//, "").sub(/^sqlite:\/\//, "").sub(/^sqlite:/, "")
+        # `sqlite3:` is a documented alias for `sqlite:`. Normalise it FIRST or
+        # none of the strips below match and `raw` keeps the whole connection
+        # string, so the database file is literally named "sqlite3:app.db".
+        # Not merely ugly: a colon is an illegal filename character on Windows,
+        # so the documented alias is unusable there. DatabaseUrl already
+        # normalises it; this method duplicates the strip instead of calling
+        # it, which is how the two drifted.
+        normalised = connection_string.sub(/^sqlite3:/, "sqlite:")
+        raw = normalised.sub(/^sqlite:\/\/\//, "").sub(/^sqlite:\/\//, "").sub(/^sqlite:/, "")
         return ":memory:" if raw == ":memory:"
 
         is_windows_abs = raw.match?(/^[A-Za-z]:[\/\\]/)
