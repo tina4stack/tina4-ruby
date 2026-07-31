@@ -129,12 +129,18 @@ RSpec.describe Tina4::Session do
       expect(handler_for("  ReDiS  ")).to be_a(Tina4::SessionHandlers::RedisHandler)
     end
 
-    # NEGATIVE: Python falls back to the file handler on an unknown value and
-    # never raises. An app with a typo'd backend must still serve.
-    it "falls back to the file handler on an unknown value without raising" do
-      handler = nil
-      expect { handler = handler_for("not-a-real-backend") }.not_to raise_error
-      expect(handler).to be_a(Tina4::SessionHandlers::FileHandler)
+    # NEGATIVE, INVERTED 2026-07-31 by owner decision. This case used to assert
+    # the opposite - that an unknown value falls back to the file handler and
+    # never raises - on the reasoning that "an app with a typo'd backend must
+    # still serve". It does still serve, on the WRONG storage, which is worse:
+    # sessions go to local disk while the operator believes they are in Redis,
+    # nothing is logged, and the symptom only appears later as users being logged
+    # out whenever a request lands on another instance. All four frameworks now
+    # raise. Full coverage lives in session_backend_validation_spec.rb; this case
+    # stays here so the old contract cannot quietly return through this file.
+    it "raises on an unknown value instead of falling back to the file handler" do
+      expect { handler_for("not-a-real-backend") }
+        .to raise_error(ArgumentError, /Unknown session backend/)
     end
 
     # NEGATIVE: an explicitly passed :handler outranks the environment.

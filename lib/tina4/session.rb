@@ -303,6 +303,37 @@ module Tina4
       warn("Session #{operation} failed: #{error.message}")
     end
 
+    # Every accepted backend name, aliases included. Byte-identical membership in
+    # all four frameworks. Written once here so the case below and the error
+    # message can never disagree.
+    VALID_BACKENDS = %w[
+      file filesystem
+      redis
+      valkey
+      mongodb mongo
+      memcached memcache
+      database db
+    ].freeze
+
+    # Canonical name of each backend, for the error message. Listing every alias
+    # would make it longer without making it clearer.
+    CANONICAL_BACKENDS = %w[file redis valkey mongodb memcached database].freeze
+
+    # Reject a backend name that is not a known backend.
+    #
+    # Never sees a blank name: create_handler normalises blank to "file" first,
+    # in one place. Blank must NOT be an error - an env var set to "" is a SET
+    # variable, so rejecting it would break every deployment that clears the var
+    # to fall back to the default.
+    def validate_backend!(name)
+      return if VALID_BACKENDS.include?(name)
+
+      raise ArgumentError,
+            "Unknown session backend \"#{name}\". " \
+            "Valid backends: #{CANONICAL_BACKENDS.join(', ')}. " \
+            "Leave TINA4_SESSION_BACKEND unset for the file default."
+    end
+
     # The configured TINA4_SESSION_BACKEND name, or nil when unset/blank (so the
     # caller keeps the DEFAULT_OPTIONS handler). The value is normalised at
     # dispatch in #create_handler, not here.
@@ -313,13 +344,23 @@ module Tina4
 
     # Build the storage handler for the resolved backend name.
     #
-    # The accepted names — and the aliases — mirror Python's
+    # The accepted names - and the aliases - mirror Python's
     # Session._resolve_handler exactly: file|filesystem, redis, valkey,
-    # mongodb|mongo, database|db. The name is normalised (downcase + strip) so
-    # "Redis" / " mongodb " from a .env line resolve, and an UNKNOWN value falls
-    # back to the file handler SILENTLY (never raises) — same as Python.
+    # mongodb|mongo, memcached|memcache, database|db. The name is normalised
+    # (downcase + strip) so "Redis" / " mongodb " from a .env line resolve.
+    #
+    # An UNKNOWN value RAISES. It used to fall back to the file handler
+    # silently, and the comment here described that as correct parity with
+    # Python - it was, and both were wrong. A typo in TINA4_SESSION_BACKEND
+    # ("redsi") produced a running app writing sessions to local disk while the
+    # operator believed they were in Redis: nothing logged, nothing failed, and
+    # the symptom surfaced later as users being logged out whenever a request
+    # landed on another instance.
     def create_handler
-      case @options[:handler].to_s.downcase.strip.to_sym
+      name = @options[:handler].to_s.downcase.strip
+      name = "file" if name.empty?
+      validate_backend!(name)
+      case name.to_sym
       when :file, :filesystem
         Tina4::SessionHandlers::FileHandler.new(@options[:handler_options])
       when :redis
@@ -341,7 +382,14 @@ module Tina4
           { db: Tina4::ORM.db }.merge(@options[:handler_options] || {})
         )
       else
-        Tina4::SessionHandlers::FileHandler.new(@options[:handler_options])
+        # Unreachable for a user's typo - validate_backend! already rejected it.
+        # Only a name that IS in VALID_BACKENDS but has no branch above can land
+        # here, which is a bug in this method rather than a configuration error,
+        # so it must not be swallowed into a file handler either.
+        raise ArgumentError,
+              "Session backend #{name.inspect} is listed in VALID_BACKENDS but " \
+              "has no handler branch. This is a framework bug, not a " \
+              "configuration error."
       end
     end
   end

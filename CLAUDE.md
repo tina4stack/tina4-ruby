@@ -192,7 +192,9 @@ db.insert(table, data) -> DatabaseResult   # single row OR list-of-rows batch
 db.update(table, data, filter = {}, params = nil) -> DatabaseResult
 db.delete(table, filter = {}, params = nil) -> DatabaseResult
 db.truncate(table) -> DatabaseResult       # remove every row, explicitly
-db.primary_key(table) -> String | nil      # introspected PK column (cached)
+db.primary_key(table) -> Array<String>     # introspected PK columns (cached); [] if none
+                                           # An ARRAY — a key may span several columns, and
+                                           # EVERY one goes into a keyed write's WHERE.
     # A WRITE WITH NO FILTER IS AN ERROR, not a full-table operation (3.13.94).
     # update(table, data) with no filter takes the primary key out of `data` and
     # uses it as the WHERE clause; with neither a filter nor a PK in `data` it
@@ -422,7 +424,9 @@ session.cookie_header -> String
 session.gc(max_age = nil)
 ```
 
-Backends: file, redis, valkey, mongodb, database.
+Backends: file, redis, valkey, mongodb, memcached, database.
+
+**An unrecognised backend name RAISES at startup**, naming the bad value and the valid ones. It used to fall through to the file backend silently, so a typo in `TINA4_SESSION_BACKEND` produced a running app writing sessions to local disk while the operator believed they were in Redis. The name is normalised (trimmed + lowercased), so ` Redis ` resolves; unset or blank still means file. Aliases: `filesystem`, `mongo`, `memcache`, `db`.
 
 **Backend-failure policy (all 4 frameworks): log-loud + degrade.** A backend (Redis/Valkey/Mongo/DB) that becomes unreachable mid-request is logged via `Tina4::Log.error` and degraded rather than crashing the app or losing data silently: a read failure yields an empty session (the request still serves), and `save` returns `false` (best-effort, the modified flag retained for a later retry). A genuinely empty session (no data yet) is NOT an error and is never logged. Set `TINA4_SESSION_STRICT=true` to re-raise instead. Call `regenerate` right after a successful login or privilege change to defeat session fixation. (`authenticate_request`/`bearer_auth` route the API-key fast-path through the timing-safe `validate_api_key`, and the session no longer carries a guessable default secret.)
 
