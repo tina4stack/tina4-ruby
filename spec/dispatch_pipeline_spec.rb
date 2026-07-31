@@ -17,6 +17,7 @@ RSpec.describe "Dispatch pipeline contract" do
   let(:app) { Tina4::RackApp.new(root_dir: Dir.pwd) }
 
   ALL_STAGES = (Tina4::DispatchPipeline::REQUEST_STAGES +
+                Tina4::DispatchPipeline::ALWAYS_STAGES +
                 Tina4::DispatchPipeline::RESPONSE_STAGES +
                 Tina4::DispatchPipeline::ROUTE_STAGES).freeze
 
@@ -34,8 +35,12 @@ RSpec.describe "Dispatch pipeline contract" do
       method_not_allowed
       not_found
     ])
+    # head_strip is in ALWAYS_STAGES, not RESPONSE_STAGES: RFC 9110 s9.3.2 is
+    # not conditional, so it must also cover the swagger and static branches
+    # that return early. Moving it back would silently reintroduce a HEAD
+    # response carrying a body.
+    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[head_strip])
     expect(Tina4::DispatchPipeline::RESPONSE_STAGES).to eq(%i[
-      head_strip
       dev_inspector_capture
       request_log
       dev_toolbar_inject
@@ -79,7 +84,8 @@ RSpec.describe "Dispatch pipeline contract" do
     Tina4::DispatchPipeline::REQUEST_STAGES.each do |stage|
       expect(app.method(stage).arity).to eq(1), "#{stage} should take (ctx)"
     end
-    Tina4::DispatchPipeline::RESPONSE_STAGES.each do |stage|
+    (Tina4::DispatchPipeline::ALWAYS_STAGES +
+     Tina4::DispatchPipeline::RESPONSE_STAGES).each do |stage|
       expect(app.method(stage).arity).to eq(2), "#{stage} should take (ctx, response)"
     end
     Tina4::DispatchPipeline::ROUTE_STAGES.each do |stage|

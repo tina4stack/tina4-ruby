@@ -27,10 +27,13 @@ module Tina4
     #                    triple is the response; later request stages do not
     #                    run. `match_route` is terminal - it always produces
     #                    one.
+    #   ALWAYS_STAGES    run over the triple no matter how it was produced -
+    #                    including the swagger and static branches, which
+    #                    return early and skip everything else.
     #   RESPONSE_STAGES  run in order over the triple, each returning a new
     #                    triple or nil to leave it unchanged. These are the
-    #                    post-processing steps (HEAD strip, logging, injection,
-    #                    session save).
+    #                    post-processing steps (logging, injection, session
+    #                    save) that only apply to a dispatched response.
     #
     # Contract each stage obeys, asserted by spec/dispatch_pipeline_spec.rb:
     #   * it takes (ctx) or (ctx, response) and nothing else - no stage reads a
@@ -57,8 +60,18 @@ module Tina4
       not_found
     ].freeze
 
-    RESPONSE_STAGES = %i[
+    # Runs on EVERY response, including the ones that bypass the rest.
+    #
+    # RFC 9110 s9.3.2 is not conditional: a HEAD response MUST NOT carry
+    # content, whatever produced it. This used to live in RESPONSE_STAGES, so
+    # the swagger and static branches - which return early - skipped it, and
+    # `HEAD /style.css` shipped the whole file body. Measured 2026-07-31: Ruby
+    # returned 15 bytes where PHP, Python and Node all returned 0.
+    ALWAYS_STAGES = %i[
       head_strip
+    ].freeze
+
+    RESPONSE_STAGES = %i[
       dev_inspector_capture
       request_log
       dev_toolbar_inject

@@ -99,6 +99,13 @@ module Tina4
         break if response
       end
 
+      # RFC 9110 s9.3.2 applies to EVERY response, including the swagger and
+      # static ones that skip the rest of the pipeline.
+      ALWAYS_STAGES.each do |stage|
+        replacement = send(stage, ctx, response)
+        response = replacement if replacement
+      end
+
       return response if ctx.bypass_response_stages
 
       RESPONSE_STAGES.each do |stage|
