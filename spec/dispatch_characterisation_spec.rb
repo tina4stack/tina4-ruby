@@ -247,9 +247,14 @@ RSpec.describe "Dispatch characterisation" do
 
     status, _h, body = call("GET", "/clash.json")
     expect(status).to eq(200)
-    expect(body).to include("route"),
+    # Assert on the PAYLOAD, not a bare substring of the whole body. In dev mode
+    # the framework injects the dev toolbar, whose JavaScript contains the word
+    # "file" - so `not_to include("file")` failed on any host with TINA4_DEBUG
+    # set (the lab) while passing locally without it. A test that only passes
+    # when a framework feature happens to be off is not a gate.
+    expect(body).to include(%q({"from":"route"})),
                     "a file in public/ shadowed a registered route - ADR-0010 is not in effect"
-    expect(body).not_to include("file")
+    expect(body).not_to include(%q({"from":"file"}))
   end
 
   # NEGATIVE: route-first must not stop files being served at all.
@@ -258,7 +263,8 @@ RSpec.describe "Dispatch characterisation" do
 
     status, _h, body = call("GET", "/plain.json")
     expect(status).to eq(200)
-    expect(body).to include("file"),
+    # Payload, not substring - same reason as above.
+    expect(body).to include(%q({"from":"file"})),
                     "moving static after matching stopped files being served"
   end
 
