@@ -275,54 +275,24 @@ module Tina4
   # ---------------------------------------------------------------------------
 
   # CorsClassMiddleware -- sets CORS headers from env vars on every response.
-  # Uses the same config source as CorsMiddleware module.
+  #
+  # A thin adapter over Tina4::CorsMiddleware, which owns the whole policy.
+  # It used to be a SECOND, independent implementation of the same rules and
+  # the two had already drifted: this copy had no wildcard/credentials guard,
+  # fell back to the Referer header (a full URL, not an origin), and on an
+  # allow-list MISS returned `allowed.first` - stamping some OTHER allowed
+  # origin onto the response of an origin that was not allowed at all. One
+  # feature, one implementation.
   class CorsClassMiddleware
     class << self
       def before_cors(request, response)
-        config = load_config
-        origin = resolve_origin(request, config)
+        env = request.respond_to?(:env) && request.env ? request.env : {}
+        origin = request.headers["origin"] if request.respond_to?(:headers)
+        env = env.merge("HTTP_ORIGIN" => origin) if origin
 
-        response.headers["access-control-allow-origin"]  = origin
-        response.headers["access-control-allow-methods"] = config[:methods]
-        response.headers["access-control-allow-headers"] = config[:headers]
-        response.headers["access-control-max-age"]       = config[:max_age]
-        if config[:credentials] == "true"
-          response.headers["access-control-allow-credentials"] = "true"
-        end
+        Tina4::CorsMiddleware.apply_headers(response.headers, env)
 
         [request, response]
-      end
-
-      private
-
-      def load_config
-        {
-          origins:     ENV["TINA4_CORS_ORIGINS"]     || "*",
-          methods:     ENV["TINA4_CORS_METHODS"]     || "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-          headers:     ENV["TINA4_CORS_HEADERS"]     || "Content-Type,Authorization,X-Request-ID",
-          max_age:     ENV["TINA4_CORS_MAX_AGE"]     || "86400",
-          credentials: ENV["TINA4_CORS_CREDENTIALS"] || "false"
-        }
-      end
-
-      def is_preflight(request)
-        request.method&.upcase == "OPTIONS" &&
-          request.headers["origin"] &&
-          request.headers["access-control-request-method"]
-      end
-
-      def resolve_origin(request, config)
-        request_origin = request.headers["origin"] || request.headers["referer"]
-
-        if config[:origins] == "*"
-          "*"
-        elsif request_origin
-          allowed = config[:origins].split(",").map(&:strip)
-          clean = request_origin.chomp("/")
-          allowed.include?(clean) ? clean : allowed.first || "*"
-        else
-          config[:origins].split(",").first&.strip || "*"
-        end
       end
     end
   end

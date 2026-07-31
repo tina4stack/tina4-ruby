@@ -3,12 +3,19 @@
 require "spec_helper"
 
 RSpec.describe Tina4::CorsMiddleware do
-  after { Tina4::CorsMiddleware.reset! }
+  after do
+    ENV.delete("TINA4_CORS_ORIGINS")
+    ENV.delete("TINA4_CORS_CREDENTIALS")
+    Tina4::CorsMiddleware.reset!
+  end
 
   describe ".config" do
     it "returns default config when no env vars set" do
+      # BREAKING (ADR-0014): origins defaulted to "*" (allow every origin).
+      # It is now empty = deny, and "*" has to be asked for explicitly.
       config = Tina4::CorsMiddleware.config
-      expect(config[:origins]).to eq("*")
+      expect(config[:origins]).to eq("")
+      expect(Tina4::CorsMiddleware.configured?).to be false
       expect(config[:methods]).to include("GET")
       expect(config[:methods]).to include("POST")
       expect(config[:headers]).to include("Content-Type")
@@ -63,6 +70,8 @@ RSpec.describe Tina4::CorsMiddleware do
     end
 
     it "includes CORS headers" do
+      ENV["TINA4_CORS_ORIGINS"] = "*"   # was the old default
+      Tina4::CorsMiddleware.reset!
       _status, headers, _body = Tina4::CorsMiddleware.preflight_response
       expect(headers["access-control-allow-origin"]).to eq("*")
       expect(headers["access-control-allow-methods"]).to include("GET")
@@ -72,8 +81,20 @@ RSpec.describe Tina4::CorsMiddleware do
   end
 
   describe ".origin_allowed?" do
+    it "denies every origin when nothing is configured" do
+      # BREAKING (ADR-0014): with no policy, nothing is allowed.
+      # Clear explicitly - RSpec randomises file order, so another spec may
+      # have left TINA4_CORS_ORIGINS set.
+      ENV.delete("TINA4_CORS_ORIGINS")
+      Tina4::CorsMiddleware.reset!
+      expect(Tina4::CorsMiddleware.origin_allowed?("https://anything.com")).to be false
+    end
+
     it "allows all origins with wildcard" do
+      ENV["TINA4_CORS_ORIGINS"] = "*"
+      Tina4::CorsMiddleware.reset!
       expect(Tina4::CorsMiddleware.origin_allowed?("https://anything.com")).to be true
+      ENV.delete("TINA4_CORS_ORIGINS")
     end
 
     it "checks specific origins" do
@@ -90,11 +111,14 @@ RSpec.describe Tina4::CorsMiddleware do
 
   describe ".apply_headers" do
     it "adds CORS headers to a response hash" do
+      ENV["TINA4_CORS_ORIGINS"] = "*"   # was the old default
+      Tina4::CorsMiddleware.reset!
       headers = {}
       Tina4::CorsMiddleware.apply_headers(headers)
 
       expect(headers["access-control-allow-origin"]).to eq("*")
       expect(headers["access-control-allow-methods"]).to include("GET")
+      ENV.delete("TINA4_CORS_ORIGINS")
     end
 
     it "reflects the request origin when specific origins are configured" do
