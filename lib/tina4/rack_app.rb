@@ -99,16 +99,27 @@ module Tina4
         break if response
       end
 
-      # RFC 9110 s9.3.2 applies to EVERY response, including the swagger and
-      # static ones that skip the rest of the pipeline.
-      ALWAYS_STAGES.each do |stage|
-        replacement = send(stage, ctx, response)
-        response = replacement if replacement
+      unless ctx.bypass_response_stages
+        RESPONSE_STAGES.each do |stage|
+          replacement = send(stage, ctx, response)
+          response = replacement if replacement
+        end
       end
 
-      return response if ctx.bypass_response_stages
-
-      RESPONSE_STAGES.each do |stage|
+      # LAST, and unconditionally. RFC 9110 s9.3.2 applies to EVERY response
+      # however it was produced - the swagger and static branches that skip the
+      # stages above, AND anything those stages added.
+      #
+      # Running it FIRST was wrong twice over: the static branches skipped it
+      # (the bug this group was created to fix), and in dev mode
+      # dev_toolbar_inject then put 8.5KB of markup back into an
+      # already-stripped HEAD response. CI caught the second one because it
+      # sets TINA4_DEBUG; a local run without it did not.
+      #
+      # Running it last also makes Content-Length right: it reports the body
+      # AFTER injection, which is exactly what the equivalent GET would send
+      # (s9.3.2 SHOULD - same headers as the GET).
+      ALWAYS_STAGES.each do |stage|
         replacement = send(stage, ctx, response)
         response = replacement if replacement
       end
