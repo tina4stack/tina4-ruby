@@ -66,6 +66,33 @@ module Tina4
       session_save
     ].freeze
 
+    # ── The route pipeline ───────────────────────────────────────────
+    #
+    # #handle_route was cyclomatic complexity 24 in one 118-line function, with
+    # the same two-phase shape as #call. These stages run in order until one
+    # returns a Rack triple (a 401/403 or a short-circuiting middleware); if
+    # none does, the handler is invoked and the result finalised.
+    #
+    # Ordering is BEHAVIOUR, decided and written down (ADR-0012): the post-match
+    # global middleware runs BEFORE the auth gate so a rate limiter can throttle
+    # a brute-force login and an access log records the 401, while the route's
+    # OWN middleware runs AFTER it, so middleware attached to a secured route
+    # never processes an unauthenticated request.
+    ROUTE_STAGES = %i[
+      prepare_route_request
+      global_middleware_post
+      route_auth_handler
+      route_auth_gate
+      route_middleware
+    ].freeze
+
+    # Per-route state shared between route stages.
+    RouteContext = Struct.new(
+      :env, :route, :path_params, :pre_request, :pre_response,
+      :request, :response,
+      keyword_init: true
+    )
+
     # Per-request state shared between stages.
     #
     # This exists so a stage can be called on its own with nothing but a
@@ -381,6 +408,141 @@ module Tina4
     # Milliseconds since the request entered the pipeline.
     def elapsed_ms(ctx)
       ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - ctx.started_at) * 1000).round(3)
+    end
+
+    # ── ROUTE STAGES ─────────────────────────────────────────────────
+    # Each returns a Rack triple to answer the request, or nil to pass.
+
+    # Reuse the pre-match pair when one was built, so anything the pre-match
+    # middleware set (headers, request.user) reaches the handler. Path params
+    # are only known now, so they are attached here.
+    def prepare_route_request(ctx)
+      ctx.request = ctx.pre_request || Tina4::Request.new(ctx.env)
+      ctx.request.path_params = ctx.path_params
+      ctx.env["tina4.request"] = ctx.request # Store for session save after response
+      ctx.response = ctx.pre_response || Tina4::Response.new
+      nil
+    end
+
+    # POST-match global middleware (block-based + class-based before_* methods).
+    # It runs after the route matched, because middleware like CSRF reads the
+    # matched route's metadata to honour no_auth. Pre-match middleware already
+    # ran in #call.
+    #
+    # M2 - AFTER-ON-4xx RULE: when a before_* short-circuits (4xx/skip) or
+    # throws (clean 500), the after-pass STILL runs so after_* can add
+    # headers/logging - consistent across all 4 frameworks.
+    def global_middleware_post(ctx)
+      middleware = Tina4::Middleware.post_match_middleware
+      return nil if Tina4::Middleware.run_before(middleware, ctx.request, ctx.response)
+
+      Tina4::Middleware.run_after(middleware, ctx.request, ctx.response)
+      ctx.response.to_rack
+    end
+
+    # Legacy per-route auth_handler.
+    def route_auth_handler(ctx)
+      return nil unless ctx.route.auth_handler
+      return nil if ctx.route.auth_handler.call(ctx.env)
+
+      handle_403(ctx.env["PATH_INFO"] || "/")
+    end
+
+    # Secure-by-default: enforce bearer-token auth on write routes.
+    #
+    # Extracted onto the class so the in-process TestClient enforces the EXACT
+    # same gate (parity with Python #PY2 - a tokenless write must 401 in tests
+    # too, or a green test hides a live 401 and the verification lies).
+    def route_auth_gate(ctx)
+      unauthorized = self.class.enforce_route_auth(ctx.env, ctx.route)
+
+      if unauthorized
+        # Carry the middleware headers onto the 401. This is the case the
+        # pre/post split exists for: a browser shown a 401 with no CORS headers
+        # reports a CORS error, so the real status never reaches the developer.
+        # enforce_route_auth builds a bare Rack tuple (a class method shared
+        # with TestClient, with no Response object), so the merge happens here.
+        # ctx.response carries BOTH middleware passes, not just pre-match.
+        if ctx.response.respond_to?(:headers) && ctx.response.headers.is_a?(Hash)
+          status, headers, body = unauthorized
+          # The auth tuple wins on a genuine clash - it owns content-type.
+          unauthorized = [status, ctx.response.headers.merge(headers), body]
+        end
+        return unauthorized
+      end
+
+      # The verified JWT payload is only on env once the gate has run.
+      ctx.request.user = ctx.env["tina4.auth_payload"] if ctx.env["tina4.auth_payload"]
+      nil
+    end
+
+    # Per-route class-based middleware.
+    def route_middleware(ctx)
+      return nil unless ctx.route.respond_to?(:run_middleware)
+      return nil if ctx.route.run_middleware(ctx.request, ctx.response)
+
+      [403, { "content-type" => "text/html" }, ["403 Forbidden"]]
+    end
+
+    # Invoke the route handler, wrapped in any function-style middleware.
+    #
+    # The call is built as a lambda so function-style middleware can wrap it.
+    # Path params are still bound by name - the continuation just forwards the
+    # (possibly-mutated) request/response pair the outer middleware passed in.
+    #
+    # Function middleware folds into a Russian-doll chain around the handler:
+    # first declared is the OUTERMOST layer, receiving the request first,
+    # calling next_handler to descend, and running its "after" code on the way
+    # out. Class-based middleware (before_*/after_*) is handled by
+    # #route_middleware above and never comes through here.
+    # tina4-book#141 PY-10-01 (cross-framework parity).
+    def invoke_route_handler(ctx)
+      handler_params = ctx.route.handler.parameters.map(&:last)
+      route_params = ctx.path_params || {}
+
+      invoke = lambda do |req, resp|
+        args = handler_params.map do |name|
+          if route_params.key?(name)
+            route_params[name]
+          elsif name == :request || name == :req
+            req
+          else
+            resp
+          end
+        end
+        args.empty? ? ctx.route.handler.call : ctx.route.handler.call(*args)
+      end
+
+      fn_mws = ctx.route.respond_to?(:function_middleware) ? ctx.route.function_middleware : []
+      return invoke.call(ctx.request, ctx.response) if fn_mws.empty?
+
+      chain = invoke
+      fn_mws.reverse_each do |mw|
+        inner = chain
+        chain = ->(req, resp) { mw.call(req, resp, inner) }
+      end
+      chain.call(ctx.request, ctx.response)
+    end
+
+    # Turn the handler's return value into a Rack triple.
+    def finalise_route_response(ctx, result)
+      # Template rendering: when a template is set and the handler returned a
+      # Hash, render the template with the hash as data and return the HTML.
+      if ctx.route.template && result.is_a?(Hash)
+        ctx.response.html(Tina4::Template.render(ctx.route.template, result))
+        return ctx.response.to_rack
+      end
+
+      # Skip auto_detect if the handler already returned the response object.
+      final = result.equal?(ctx.response) ? result : Tina4::Response.auto_detect(result, ctx.response)
+
+      # Global after middleware (block-based + class-based after_* methods).
+      Tina4::Middleware.run_after(Tina4::Middleware.global_middleware, ctx.request, final)
+
+      # Inject FreshToken when a body formToken was used for auth.
+      final.add_header("FreshToken", ctx.env["tina4.fresh_token"]) if ctx.env["tina4.fresh_token"]
+
+      final.to_rack
     end
   end
 end
