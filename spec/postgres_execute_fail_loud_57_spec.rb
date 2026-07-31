@@ -23,8 +23,8 @@ require "socket"
 
 PG57_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
 PG57_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "5432").to_i
-PG57_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
-PG57_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+PG57_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
+PG57_PASS = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
 PG57_DB   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
 
 def pg57_reachable?

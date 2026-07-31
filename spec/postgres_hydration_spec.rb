@@ -16,8 +16,8 @@ require "socket"
 
 PGH_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
 PGH_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "5432").to_i
-PGH_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
-PGH_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+PGH_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
+PGH_PASS = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
 PGH_DB   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
 
 def pgh_reachable?

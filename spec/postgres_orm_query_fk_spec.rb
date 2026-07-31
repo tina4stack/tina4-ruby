@@ -30,8 +30,8 @@ require "socket"
 
 PGQFK_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
 PGQFK_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "5432").to_i
-PGQFK_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
-PGQFK_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+PGQFK_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
+PGQFK_PASS = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
 PGQFK_DB   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
 
 def pgqfk_reachable?

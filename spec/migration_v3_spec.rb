@@ -239,8 +239,8 @@ end
 
 PGMIG_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
 PGMIG_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "55432").to_i
-PGMIG_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
-PGMIG_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+PGMIG_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
+PGMIG_PASS = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
 PGMIG_DB   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
 
 def pgmig_reachable?

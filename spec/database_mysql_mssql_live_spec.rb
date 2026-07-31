@@ -33,15 +33,15 @@ require "socket"
 # ── MySQL connection config (canonical TINA4_TEST_MYSQL_* convention) ─────────
 MYSQL_LIVE_HOST = ENV.fetch("TINA4_TEST_MYSQL_HOST", "localhost")
 MYSQL_LIVE_PORT = ENV.fetch("TINA4_TEST_MYSQL_PORT", "3306").to_i
-MYSQL_LIVE_USER = ENV.fetch("TINA4_TEST_MYSQL_USER", "tina4")
-MYSQL_LIVE_PASS = ENV.fetch("TINA4_TEST_MYSQL_PASS", "tina4")
+MYSQL_LIVE_USER = ENV.fetch("TINA4_TEST_MYSQL_USERNAME", "tina4")
+MYSQL_LIVE_PASS = ENV.fetch("TINA4_TEST_MYSQL_PASSWORD", "tina4")
 MYSQL_LIVE_DB   = ENV.fetch("TINA4_TEST_MYSQL_DB", "tina4_test")
 
 # ── MSSQL connection config (canonical TINA4_TEST_MSSQL_* convention) ─────────
 MSSQL_LIVE_HOST = ENV.fetch("TINA4_TEST_MSSQL_HOST", "localhost")
 MSSQL_LIVE_PORT = ENV.fetch("TINA4_TEST_MSSQL_PORT", "1433").to_i
-MSSQL_LIVE_USER = ENV.fetch("TINA4_TEST_MSSQL_USER", "sa")
-MSSQL_LIVE_PASS = ENV.fetch("TINA4_TEST_MSSQL_PASS", "TinaSQL123!Secure")
+MSSQL_LIVE_USER = ENV.fetch("TINA4_TEST_MSSQL_USERNAME", "sa")
+MSSQL_LIVE_PASS = ENV.fetch("TINA4_TEST_MSSQL_PASSWORD", "TinaSQL123!Secure")
 MSSQL_LIVE_DB   = ENV.fetch("TINA4_TEST_MSSQL_DB", "tina4_test")
 
 def mysql_live_reachable?

@@ -30,8 +30,8 @@ require "uri"
 require "socket"
 
 FB_ROLLBACK_URL  = ENV["TINA4_TEST_FIREBIRD_URL"].to_s
-FB_ROLLBACK_USER = ENV.fetch("TINA4_TEST_FIREBIRD_USER", "SYSDBA")
-FB_ROLLBACK_PASS = ENV.fetch("TINA4_TEST_FIREBIRD_PASS", "masterkey")
+FB_ROLLBACK_USER = ENV.fetch("TINA4_TEST_FIREBIRD_USERNAME", "SYSDBA")
+FB_ROLLBACK_PASS = ENV.fetch("TINA4_TEST_FIREBIRD_PASSWORD", "masterkey")
 FB_ROLLBACK_TABLE = "rb_fb_rollback_spec"
 
 def fb_rollback_gem_available?

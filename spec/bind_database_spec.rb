@@ -140,8 +140,8 @@ RSpec.describe "Tina4.bind_database + named connection registry" do
   describe "live two-database routing (PostgreSQL)" do
     PGBD_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
     PGBD_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "5432").to_i
-    PGBD_USER = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
-    PGBD_PASS = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+    PGBD_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
+    PGBD_PASS = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
     PGBD_DEFAULT_DB = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
     PGBD_NAMED_DB   = ENV.fetch("TINA4_TEST_PG_DB_2", "tina4_rb2")
 

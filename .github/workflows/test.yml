@@ -132,8 +132,8 @@ jobs:
       # mirror the local docker harness so the same values work locally and here.
       TINA4_TEST_PG_HOST: localhost
       TINA4_TEST_PG_PORT: '55432'
-      TINA4_TEST_PG_USER: tina4
-      TINA4_TEST_PG_PASS: tina4
+      TINA4_TEST_PG_USERNAME: tina4
+      TINA4_TEST_PG_PASSWORD: tina4
       TINA4_TEST_PG_DB: tina4_rb
       # Second Postgres database for the two-DB named-connection test
       # (spec/bind_database_spec.rb). A later step creates it once PG is healthy.
@@ -141,13 +141,13 @@ jobs:
       # MySQL + MSSQL (#262) — match spec/database_mysql_mssql_live_spec.rb defaults.
       TINA4_TEST_MYSQL_HOST: localhost
       TINA4_TEST_MYSQL_PORT: '3306'
-      TINA4_TEST_MYSQL_USER: tina4
-      TINA4_TEST_MYSQL_PASS: tina4
+      TINA4_TEST_MYSQL_USERNAME: tina4
+      TINA4_TEST_MYSQL_PASSWORD: tina4
       TINA4_TEST_MYSQL_DB: tina4_test
       TINA4_TEST_MSSQL_HOST: localhost
       TINA4_TEST_MSSQL_PORT: '1433'
-      TINA4_TEST_MSSQL_USER: sa
-      TINA4_TEST_MSSQL_PASS: 'TinaSQL123!Secure'
+      TINA4_TEST_MSSQL_USERNAME: sa
+      TINA4_TEST_MSSQL_PASSWORD: 'TinaSQL123!Secure'
       TINA4_TEST_MSSQL_DB: tina4_test
       TINA4_TEST_KAFKA_URL: localhost:9092
       TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
@@ -336,8 +336,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TINA4_TEST_FIREBIRD_URL: firebird://SYSDBA:masterkey@localhost:3050//var/lib/firebird/data/test.fdb
-      TINA4_TEST_FIREBIRD_USER: SYSDBA
-      TINA4_TEST_FIREBIRD_PASS: masterkey
+      TINA4_TEST_FIREBIRD_USERNAME: SYSDBA
+      TINA4_TEST_FIREBIRD_PASSWORD: masterkey
       # Install ONLY the firebird group's `fb` gem on top of the base bundle. The
       # :databases group (mysql2/tiny_tds/redis) is intentionally NOT pulled in —
       # those engines aren't exercised here and their native libs aren't installed.

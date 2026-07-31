@@ -33,8 +33,8 @@ require "fileutils"
 
 PG_HOST_BI = ENV.fetch("TINA4_TEST_PG_HOST", "localhost")
 PG_PORT_BI = ENV.fetch("TINA4_TEST_PG_PORT", "55432").to_i
-PG_USER_BI = ENV.fetch("TINA4_TEST_PG_USER", "tina4")
-PG_PASS_BI = ENV.fetch("TINA4_TEST_PG_PASS", "tina4")
+PG_USER_BI = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
+PG_PASS_BI = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
 PG_DB_BI   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
 
 def batch_pg_reachable?
@@ -57,14 +57,14 @@ end
 # Mirrors the reachability + driver-gem gating in database_mysql_mssql_live_spec.
 MYSQL_BI_HOST = ENV.fetch("TINA4_TEST_MYSQL_HOST", "localhost")
 MYSQL_BI_PORT = ENV.fetch("TINA4_TEST_MYSQL_PORT", "3306").to_i
-MYSQL_BI_USER = ENV.fetch("TINA4_TEST_MYSQL_USER", "tina4")
-MYSQL_BI_PASS = ENV.fetch("TINA4_TEST_MYSQL_PASS", "tina4")
+MYSQL_BI_USER = ENV.fetch("TINA4_TEST_MYSQL_USERNAME", "tina4")
+MYSQL_BI_PASS = ENV.fetch("TINA4_TEST_MYSQL_PASSWORD", "tina4")
 MYSQL_BI_DB   = ENV.fetch("TINA4_TEST_MYSQL_DB", "tina4_test")
 
 MSSQL_BI_HOST = ENV.fetch("TINA4_TEST_MSSQL_HOST", "localhost")
 MSSQL_BI_PORT = ENV.fetch("TINA4_TEST_MSSQL_PORT", "1433").to_i
-MSSQL_BI_USER = ENV.fetch("TINA4_TEST_MSSQL_USER", "sa")
-MSSQL_BI_PASS = ENV.fetch("TINA4_TEST_MSSQL_PASS", "TinaSQL123!Secure")
+MSSQL_BI_USER = ENV.fetch("TINA4_TEST_MSSQL_USERNAME", "sa")
+MSSQL_BI_PASS = ENV.fetch("TINA4_TEST_MSSQL_PASSWORD", "TinaSQL123!Secure")
 MSSQL_BI_DB   = ENV.fetch("TINA4_TEST_MSSQL_DB", "tina4_test")
 
 def batch_mysql_reachable?
