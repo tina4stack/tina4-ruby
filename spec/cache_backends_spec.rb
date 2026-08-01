@@ -91,8 +91,18 @@ RSpec.describe Tina4::CacheBackends do
       end
     end
 
-    it "unknown backend falls back to memory" do
-      expect(described_class.create_backend(backend: "bogus").name).to eq("memory")
+    it "cache_backend_unknown_name_raises" do
+      # An unrecognised TINA4_CACHE_BACKEND raises, naming the valid set. It
+      # used to fall through to memory, so a typo (redsi) produced a running
+      # app with a per-process cache while the operator believed it was Redis.
+      expect { described_class.create_backend(backend: "redsi") }
+        .to raise_error(ArgumentError, /redsi/)
+    end
+
+    it "cache_backend_known_names_do_not_raise" do
+      # Negative control: every documented spelling still builds.
+      expect(described_class.create_backend(backend: "memory").name).to eq("memory")
+      expect(described_class.create_backend(backend: "MEMORY").name).to eq("memory")
     end
 
     it "memory backend evicts LRU at max_entries" do

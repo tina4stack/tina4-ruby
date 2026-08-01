@@ -37,7 +37,10 @@ module Tina4
   #   TINA4_CACHE_USERNAME / TINA4_CACHE_PASSWORD — credentials when not in the URL
   #
   class ResponseCache
-    CacheEntry = Struct.new(:body, :content_type, :status_code, :expires_at)
+    # vary / vary_values carry the RFC 9111 s4.1 bookkeeping: the field names
+    # the origin nominated, and the values they had on the request that caused
+    # this response to be stored.
+    CacheEntry = Struct.new(:body, :content_type, :status_code, :expires_at, :vary, :vary_values)
 
     # @param ttl [Integer] default TTL in seconds (0 = disabled)
     # @param max_entries [Integer] maximum cache entries
@@ -82,12 +85,16 @@ module Tina4
       return [request, response] unless method == "GET"
 
       url = request.respond_to?(:url) ? request.url : (request.respond_to?(:path) ? request.path : "/")
-      hit = internal_lookup(method, url)
+      hit = internal_lookup(method, url, request)
       if hit
         if response.respond_to?(:call)
           new_response = response.call(hit.body, hit.status_code, hit.content_type)
           set_cache_headers(new_response, "HIT", remaining_ttl(hit.expires_at))
-          return [request, new_response]
+          # Returning the Response OBJECT is what short-circuits. Returning the
+          # [request, response] pair only REBINDS and continues, so the handler
+          # ran anyway and the cache never saved a single call -- while still
+          # stamping X-Cache: HIT, which made the header a lie.
+          return new_response
         end
       end
 
@@ -138,11 +145,41 @@ module Tina4
                response.to_s
              end
 
-      internal_store(method, url, status.to_i, content_type.to_s, body)
+      # This response came OUT of the cache; re-storing it would also overwrite
+      # its X-Cache: HIT header with MISS.
+      return [request, response] if header_value(response, "X-Cache") == "HIT"
+
+      internal_store(method, url, status.to_i, content_type.to_s, body, request: request, response: response)
       # The handler ran (cache miss) — annotate the response so clients can
       # see this was a fresh response and how long it will be cached.
       set_cache_headers(response, "MISS", @ttl)
       [request, response]
+    end
+
+    # ── Class-level hooks, so `middleware: [Tina4::ResponseCache]` works ──
+
+    class << self
+      # Middleware.discover_methods walks klass.singleton_class and calls
+      # klass.send(name, ...) -- it finds CLASS methods only. before_cache and
+      # after_cache are INSTANCE methods, so attaching the class discovered no
+      # hooks at all and the cache was a SILENT no-op: no warning, no header,
+      # no caching. These two delegate to the module-level singleton (the same
+      # instance Tina4.cache_get uses), which reads TTL and backend from ENV.
+      #
+      # @param request [Object]
+      # @param response [Object]
+      # @return [Tina4::Response, Array] the Response on a HIT (short-circuit),
+      #   otherwise the [request, response] pair
+      def before_response_cache(request, response)
+        Tina4.cache_instance.before_cache(request, response)
+      end
+
+      # @param request [Object]
+      # @param response [Object]
+      # @return [Array] the [request, response] pair
+      def after_response_cache(request, response)
+        Tina4.cache_instance.after_cache(request, response)
+      end
     end
 
     # ── Direct Cache API (same across all 4 languages) ──────────
@@ -305,7 +342,7 @@ module Tina4
     end
 
     # Internal: retrieve a cached response. Used by middleware hooks only.
-    def internal_lookup(method, url)
+    def internal_lookup(method, url, request = nil)
       return nil unless enabled?
       return nil unless method == "GET"
 
@@ -319,8 +356,8 @@ module Tina4
 
       # For memory backend, entry is a CacheEntry; for others, reconstruct
       if entry.is_a?(CacheEntry)
-        if Time.now.to_f > entry.expires_at
-          backend_delete(key)
+        if Time.now.to_f > entry.expires_at || !vary_matches?(entry, request)
+          backend_delete(key) if Time.now.to_f > entry.expires_at
           @mutex.synchronize { @misses += 1 }
           return nil
         end
@@ -328,36 +365,44 @@ module Tina4
         entry
       elsif entry.is_a?(Hash)
         expires_at = entry["expires_at"] || entry[:expires_at] || 0
-        if Time.now.to_f > expires_at
-          backend_delete(key)
+        rebuilt = CacheEntry.new(
+          entry["body"] || entry[:body],
+          entry["content_type"] || entry[:content_type],
+          entry["status_code"] || entry[:status_code],
+          expires_at,
+          entry["vary"] || entry[:vary] || [],
+          entry["vary_values"] || entry[:vary_values] || {}
+        )
+        if Time.now.to_f > expires_at || !vary_matches?(rebuilt, request)
+          backend_delete(key) if Time.now.to_f > expires_at
           @mutex.synchronize { @misses += 1 }
           return nil
         end
         @mutex.synchronize { @hits += 1 }
-        CacheEntry.new(
-          entry["body"] || entry[:body],
-          entry["content_type"] || entry[:content_type],
-          entry["status_code"] || entry[:status_code],
-          expires_at
-        )
+        rebuilt
       end
     end
 
     # Internal: store a response in the cache. Used by middleware hooks only.
-    def internal_store(method, url, status_code, content_type, body, ttl: nil)
+    def internal_store(method, url, status_code, content_type, body, ttl: nil, request: nil, response: nil)
       return unless enabled?
       return unless method == "GET"
       return unless @status_codes.include?(status_code)
+      return unless may_store?(request, response)
 
       effective_ttl = ttl || @ttl
       key = cache_key(method, url)
       expires_at = Time.now.to_f + effective_ttl
+      vary = vary_fields(response)
+      vary_values = vary.each_with_object({}) { |f, h| h[f] = header_value(request, f) }
 
       entry_data = {
         "body" => body,
         "content_type" => content_type,
         "status_code" => status_code,
-        "expires_at" => expires_at
+        "expires_at" => expires_at,
+        "vary" => vary,
+        "vary_values" => vary_values
       }
 
       case @backend_name
@@ -367,11 +412,85 @@ module Tina4
             oldest_key = @store.keys.first
             @store.delete(oldest_key)
           end
-          @store[key] = CacheEntry.new(body, content_type, status_code, expires_at)
+          @store[key] = CacheEntry.new(body, content_type, status_code, expires_at, vary, vary_values)
         end
       else
         backend_set(key, entry_data, effective_ttl)
       end
+    end
+
+    # ── RFC 9111 conformance (shared-cache rules) ──────────────
+
+    # Response directives that let a SHARED cache store a response to a request
+    # carrying Authorization (RFC 9111 s3.5).
+    SHARED_CACHE_DIRECTIVES = %w[public s-maxage must-revalidate].freeze
+
+    # Case-insensitive header lookup on a request or response.
+    #
+    # @param carrier [Object, nil]
+    # @param name [String]
+    # @return [String, nil]
+    def header_value(carrier, name)
+      return nil if carrier.nil?
+      return nil unless carrier.respond_to?(:headers)
+
+      headers = carrier.headers
+      return nil unless headers.respond_to?(:each)
+
+      target = name.downcase
+      headers.each do |key, value|
+        return value.to_s if key.to_s.downcase == target
+      end
+      nil
+    end
+
+    # The lower-cased field names in a response's Vary header.
+    #
+    # @param response [Object, nil]
+    # @return [Array<String>]
+    def vary_fields(response)
+      raw = header_value(response, "Vary")
+      return [] if raw.nil? || raw.strip.empty?
+
+      raw.split(",").map { |f| f.strip.downcase }.reject(&:empty?)
+    end
+
+    # May a SHARED cache store this response? (RFC 9111 s3, s4.1)
+    #
+    # s3 -- "if the cache is shared: the Authorization header field is not
+    # present in the request ... or a response directive is present that
+    # explicitly allows shared caching". The key is method + URL only, so
+    # without this one authenticated caller's body is replayed to the next.
+    #
+    # s4.1 -- a stored response whose Vary contains "*" "always fails to
+    # match", so storing one is pointless.
+    #
+    # @param request [Object, nil]
+    # @param response [Object, nil]
+    # @return [Boolean]
+    def may_store?(request, response)
+      return false if vary_fields(response).include?("*")
+      return true if header_value(request, "Authorization").nil?
+
+      cache_control = header_value(response, "Cache-Control").to_s.downcase
+      SHARED_CACHE_DIRECTIVES.any? { |directive| cache_control.include?(directive) }
+    end
+
+    # Do the nominated request headers match the ones recorded on the entry?
+    #
+    # RFC 9111 s4.1 -- the cache MUST NOT use a stored response unless every
+    # request header field nominated by its Vary value matches. An absent field
+    # only matches an absent field.
+    #
+    # @param entry [CacheEntry]
+    # @param request [Object, nil]
+    # @return [Boolean]
+    def vary_matches?(entry, request)
+      vary = entry.respond_to?(:vary) ? (entry.vary || []) : []
+      return true if vary.empty?
+
+      recorded = entry.vary_values || {}
+      vary.all? { |field| header_value(request, field) == (recorded[field] || recorded[field.to_sym]) }
     end
 
     # ── Backend initialization ─────────────────────────────────

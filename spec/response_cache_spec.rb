@@ -301,10 +301,13 @@ RSpec.describe Tina4::ResponseCache do
       cache.after_cache(req1, res1)
       expect(res1.headers["X-Cache"]).to eq("MISS")
 
-      # Second request — served from cache (HIT).
+      # Second request — served from cache (HIT). A HIT short-circuits by
+      # returning the Response OBJECT, not the [request, response] pair:
+      # returning the pair only rebinds and continues, so the handler would run
+      # anyway and the cache would save nothing.
       req2 = get_request("/api/widgets")
-      res2 = Tina4::Response.new
-      req2, res2 = cache.before_cache(req2, res2)
+      res2 = cache.before_cache(req2, Tina4::Response.new)
+      expect(res2).to be_a(Tina4::Response)
 
       expect(res2.headers["X-Cache"]).to eq("HIT")
       expect(res2.headers["X-Cache-TTL"]).not_to be_nil

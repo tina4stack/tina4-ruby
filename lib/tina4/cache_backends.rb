@@ -69,8 +69,17 @@ module Tina4
         when "file"
           dir = cache_dir || ENV.fetch("TINA4_CACHE_DIR", "data/cache")
           return FileBackend.new(cache_dir: dir, max_entries: max_entries)
-        else
+        when "memory", ""
           return MemoryBackend.new(max_entries: max_entries)
+        else
+          # An UNRECOGNISED name RAISES, naming the bad value and the valid
+          # ones -- the contract the session layer already settled on. Falling
+          # through to memory turned a typo (TINA4_CACHE_BACKEND=redsi) into a
+          # running app with a per-process cache while the operator believed it
+          # was Redis.
+          raise ArgumentError,
+                "Unknown cache backend '#{backend}'. Valid backends: " \
+                "memory, file, redis, valkey, memcached, mongodb, database."
         end
 
       return be if be.available?
