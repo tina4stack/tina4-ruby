@@ -56,6 +56,28 @@ module GracefulShutdownProbe
     lib = ShutdownProbe.worktree_lib
     app_path = File.join(dir, "app.rb")
     File.write(app_path, <<~RUBY)
+      # Restore the DEFAULT disposition for signals a launcher may have set to
+      # SIG_IGN. SIG_IGN is inherited across fork AND preserved across exec, so
+      # this child inherits whatever launched rspec. The lab runner uses
+      # `setsid nohup`, and nohup ignores HUP/INT/QUIT - measured on the running
+      # suite process as `SigIgn: 0000000000000007` (bits 0,1,2).
+      #
+      # Without this, "SIGHUP is not trapped and terminates the process" sent
+      # SIGHUP to a child that had inherited SIG_IGN, nothing happened, and the
+      # spec failed on Linux while passing on macOS, where the suite is not run
+      # under nohup. It looked like a framework difference; it was the harness.
+      #
+      # This runs BEFORE `require "tina4"`, so a real framework trap installed
+      # later still wins and the spec still detects it. Only the inherited
+      # IGNORE is cleared, never a deliberate handler.
+      %w[HUP INT QUIT].each do |sig|
+        begin
+          Signal.trap(sig, "DEFAULT")
+        rescue ArgumentError
+          # signal not available on this platform
+        end
+      end
+
       $LOAD_PATH.unshift(#{lib.inspect})
       require "tina4"
 
