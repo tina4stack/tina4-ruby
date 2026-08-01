@@ -391,7 +391,43 @@ Tina4::Auth.check_password(password, hash) -> Boolean  # timing-safe
 Tina4::Auth.validate_api_key(provided, expected: nil) -> Boolean  # timing-safe, reads TINA4_API_KEY
 Tina4::Auth.authenticate_request(headers) -> Hash | nil  # Bearer JWT, falls back to API key
 Tina4::Auth.ensure_dev_secret(root_dir = Dir.pwd) -> String | nil  # boot-time fail-safe dev secret
+Tina4::Auth.rs256_available? -> Boolean  # always true on a normal Ruby (OpenSSL is a default gem)
 ```
+
+**Algorithms: HMAC is the standard, RS256 is opt-in, both are zero-dependency.**
+
+`HS256` / `HS384` / `HS512` are the algorithm family for Tina4 JWT and are the
+same in all four frameworks. Ruby signs them with stdlib `OpenSSL::HMAC`. Select
+one with `TINA4_JWT_ALGORITHM`, or per call with `get_token(payload,
+algorithm: "HS512")`. An unsupported value raises `ArgumentError` naming the
+supported set rather than silently downgrading.
+
+`RS256` is opt-in and asymmetric. It is selected by KEY PRESENCE, not by
+`TINA4_JWT_ALGORITHM`: when `.keys/private.pem` and `.keys/public.pem` exist and
+`TINA4_SECRET` is blank, `use_hmac?` is false and tokens are RSA-signed.
+`Tina4::Auth.setup` generates that key pair. Ruby needs NO third-party gem for
+this: OpenSSL is a stdlib default gem, so `OpenSSL::PKey::RSA#sign` / `#verify`
+produce and check the real RFC 7515 RS256 signature. A token minted here has
+been verified interoperable with PHP `openssl_verify` and Node
+`crypto.createVerify`, with a tampered payload rejected by both. If a Ruby build
+somehow lacks `OpenSSL::PKey::RSA`, `get_token` / `valid_token` raise
+`NotImplementedError` naming the missing piece and the remedy. They never fall
+back silently and never tell you to install a library, because there is none to
+install.
+
+**Security consequence of HMAC, stated plainly: HMAC is symmetric.** Every
+service that VERIFIES a token must hold the SAME secret that signs it, so any
+verifier can also MINT tokens. That is fine for one app, or for a fleet you
+control end to end. It is the wrong choice when you hand tokens to a third party
+you do not control: that party would be able to issue tokens indistinguishable
+from yours. RS256 exists precisely for that case, because a verifier can hold
+only the public key. Choose RS256 when the verifier is not fully trusted.
+
+**Algorithm pinning.** `valid_token` pins the token header's `alg` to the
+configured algorithm before doing any signature work. A token advertising
+`RS256` is REJECTED under an HMAC configuration, and `alg: "none"` is always
+rejected. Making RS256 opt-in did not weaken this; see
+`spec/auth_rs256_optin_spec.rb`.
 
 **`TINA4_SECRET` and the fail-safe dev secret.** There is **no guessable
 built-in default** for `TINA4_SECRET` — a blank secret is the signal for the
@@ -1132,8 +1168,12 @@ mode and protected for remote callers. Environment variables (read by
 - Templates use ERB and Twig (custom engine)
 - CLI (Thor): `tina4ruby serve` (--dev, --port), `tina4ruby seed` (--clear), `tina4ruby seed_create NAME`, `tina4ruby migrate`, `tina4ruby ai` (--all)
 - SCSS compilation built-in
-- JWT auth via `jwt` gem
-- Password hashing via `bcrypt`
+- JWT auth via stdlib OpenSSL only, NO gem. HS256/HS384/HS512 use `OpenSSL::HMAC`; the opt-in
+  RS256 uses `OpenSSL::PKey::RSA#sign`/`#verify`. The `jwt` gem was a declared runtime
+  dependency purely to wrap the base64url envelope `lib/tina4/auth.rb` already builds itself,
+  so it was removed
+- Password hashing via PBKDF2-SHA256 (`OpenSSL::KDF.pbkdf2_hmac`, 260000 iterations, `$`
+  delimited). There is NO bcrypt dependency and never was one in v3
 - File watching handled by the `tina4` Rust CLI (no framework-side watcher)
 - Event system (observer pattern) for decoupled module communication — listener isolation: a throwing listener is logged (never silent) and the rest of `emit`/`emit_async` still run (N listeners → N results, failed slot = nil); `strict: true` re-raises on the first error
 - DI container with lazy factories and memoization

@@ -41,6 +41,42 @@ over-limit. That is deliberate: over-limiting is a degraded service, while the
 previous behaviour was an open door. Direct-to-internet apps need no change.
 
 See ADR-0019.
+### Auth: the `jwt` gem is gone, RS256 is opt-in stdlib OpenSSL
+
+`tina4ruby` no longer depends on the `jwt` gem. Runtime dependencies drop from 12 to 11.
+Every JWT is now signed and verified with stdlib OpenSSL: `OpenSSL::HMAC` for the standard
+HS256/HS384/HS512 family, and `OpenSSL::PKey::RSA#sign`/`#verify` for the opt-in RS256. The
+gem was only ever wrapping the base64url `header.payload.signature` envelope that
+`lib/tina4/auth.rb` already builds for its HMAC path, so it bought nothing and cost a
+dependency. Tokens are unchanged on the wire: an RS256 token minted by the new code verifies
+under PHP `openssl_verify` and Node `crypto.createVerify`, and a tampered payload is rejected
+by both.
+
+HMAC (HS256/HS384/HS512) is the standard algorithm family across all four frameworks and is
+zero-dependency in each. RS256 stays available in Ruby, opt-in via key presence
+(`.keys/private.pem` + `.keys/public.pem` with a blank `TINA4_SECRET`), and needs no library.
+If a Ruby build somehow lacks `OpenSSL::PKey::RSA`, the RS256 path raises
+`NotImplementedError` naming what is missing and the remedy, instead of failing silently.
+
+Note that HMAC is symmetric: every service that VERIFIES a token holds the secret that SIGNS
+it, so any verifier can also mint tokens. That is fine for one app or a trusted fleet, and
+wrong when handing tokens to a third party you do not control. Use RS256 there, so a verifier
+can hold only the public key.
+
+Algorithm pinning is unchanged and now explicitly covered: under an HMAC configuration a
+token whose header claims `RS256` is rejected, and `alg: "none"` is rejected, even when the
+accompanying signature is a genuinely valid HMAC. See `spec/auth_rs256_optin_spec.rb`.
+
+**Breaking:** `Tina4::Auth.valid_token_detail` (alias `validate_token`) previously reported
+the `jwt` gem's own wording on the RS256 path - `{ valid: false, error: "Token expired" }`
+for an expired token, and the gem's raw decode message for anything else. Both paths now
+report the single HMAC-path wording, `{ valid: false, error: "Invalid or expired token" }`.
+*Migration:* do not branch on the `error` STRING. Test `result[:valid]`, which is unchanged,
+and read `result[:payload]` on success. Applications that matched `error == "Token expired"`
+to distinguish expiry from a bad signature must instead inspect the `exp` claim themselves
+via `Tina4::Auth.get_payload(token)`. This aligns the RS256 detail shape with the HMAC one,
+so the response no longer depends on which algorithm signed.
+
 ### Security: the auth + session contract (ADR-0021)
 
 **Breaking:** the API-key auth result is now `{ "_auth" => "api_key" }` instead of
