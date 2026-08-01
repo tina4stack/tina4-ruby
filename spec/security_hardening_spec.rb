@@ -27,7 +27,7 @@ RSpec.describe "Security hardening" do
       result = Tina4::Auth.authenticate_request(
         { "HTTP_AUTHORIZATION" => "Bearer super-secret-api-key-value" }
       )
-      expect(result).to eq({ "api_key" => true })
+      expect(result).to eq({ "_auth" => "api_key" })
     end
 
     it "rejects a wrong API key via authenticate_request" do
@@ -40,7 +40,7 @@ RSpec.describe "Security hardening" do
     it "accepts a correct API key via the Rack bearer_auth path" do
       env = { "HTTP_AUTHORIZATION" => "Bearer super-secret-api-key-value" }
       expect(Tina4::Auth.bearer_auth.call(env)).to be true
-      expect(env["tina4.auth"]).to eq({ "api_key" => true })
+      expect(env["tina4.auth"]).to eq({ "_auth" => "api_key" })
     end
 
     it "rejects a wrong API key via the Rack bearer_auth path" do

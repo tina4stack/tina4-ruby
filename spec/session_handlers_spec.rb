@@ -82,10 +82,14 @@ RSpec.describe "Session Handlers" do
       short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
       short_handler.write("expired", { "data" => "old" })
       sleep(0.1)
+      # Pin the REAL on-disk name (SHA-256 of the id, ADR-0021) and prove it
+      # existed first — globbing the raw "sess_expired.json" would now be empty
+      # whether or not the expiry delete ever ran.
+      path = File.join(tmpdir, "sess_#{Digest::SHA256.hexdigest('expired')}.json")
+      expect(File.exist?(path)).to be true
       short_handler.read("expired")
       # File should be deleted
-      files = Dir.glob(File.join(tmpdir, "sess_expired.json"))
-      expect(files).to be_empty
+      expect(File.exist?(path)).to be false
     end
 
     it "sanitizes session id to prevent path traversal" do
@@ -120,8 +124,13 @@ RSpec.describe "Session Handlers" do
     end
 
     it "returns nil for corrupted JSON" do
-      path = File.join(tmpdir, "sess_corrupt.json")
+      # Write the corrupt bytes at the id's REAL path (SHA-256, ADR-0021).
+      # Using the raw "sess_corrupt.json" would leave read("corrupt") looking at
+      # a different, non-existent file, so this would pass without ever
+      # exercising the JSON::ParserError branch it names.
+      path = File.join(tmpdir, "sess_#{Digest::SHA256.hexdigest('corrupt')}.json")
       File.write(path, "not valid json{{{")
+      expect(File.exist?(path)).to be true
       expect(handler.read("corrupt")).to be_nil
     end
 

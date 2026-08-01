@@ -202,14 +202,29 @@ module Tina4
 
           payload = JSON.parse(base64url_decode(parts[1]))
 
-          # Check expiry
           now = Time.now.to_i
-          return nil if payload["exp"] && now >= payload["exp"]
+
+          # RFC 7519 s4.1.4: "The processing of the 'exp' claim requires that the
+          # current date/time MUST be before the expiration date/time". now == exp
+          # is therefore ALREADY expired, so the test is >=.
+          #
+          # key? — NOT a truthiness test on the value. A PRESENT but malformed exp
+          # must never read as "no constraint": `payload["exp"] && ...` skipped the
+          # check entirely for exp: null / exp: false, turning a broken token into
+          # one that never expires.
+          if payload.key?("exp")
+            exp = numeric_date(payload["exp"])
+            return nil if exp.nil? || now >= exp
+          end
 
           # "nbf" (not-before): a post-dated token is not valid yet. Tolerate
           # JWT_LEEWAY_SECONDS of clock skew so a token minted on a host a second
-          # ahead is not rejected for nothing.
-          return nil if payload["nbf"] && now + JWT_LEEWAY_SECONDS < payload["nbf"]
+          # ahead is not rejected for nothing. Same malformed-is-rejected rule as
+          # exp; NO nbf key at all stays unconstrained (non-breaking).
+          if payload.key?("nbf")
+            nbf = numeric_date(payload["nbf"])
+            return nil if nbf.nil? || now + JWT_LEEWAY_SECONDS < nbf
+          end
 
           payload
         rescue ArgumentError, JSON::ParserError, OpenSSL::HMACError
@@ -349,23 +364,31 @@ module Tina4
 
         token = Regexp.last_match(1)
 
+        # The JWT is checked FIRST, then the API key — the order Python, PHP and
+        # Node all use. Ruby checked the API key first, so the same request could
+        # authenticate differently depending on the framework.
+        #
+        # A custom secret and/or algorithm validates against those directly rather
+        # than this process's env-resolved defaults.
+        payload = if secret || algorithm
+                    hmac_decode(token, secret || hmac_secret, algorithm: algorithm)
+                  elsif valid_token(token)
+                    get_payload(token)
+                  end
+        return payload if payload
+
         # API_KEY bypass — timing-safe comparison via validate_api_key
         # (OpenSSL.fixed_length_secure_compare). Parity with Python's
         # authenticate_request (validate_api_key), PHP (hash_equals) and
         # Node (timingSafeEqual). Never use a plain `==` here — that leaks the
         # key length/prefix through comparison timing.
-        if validate_api_key(token)
-          return { "api_key" => true }
-        end
+        #
+        # "_auth" is the cross-framework key for a non-JWT auth result; PHP and
+        # Node already used it, Python used "auth_type" and Ruby "api_key", so the
+        # same successful auth read three different ways.
+        return { "_auth" => "api_key" } if validate_api_key(token)
 
-        # If a custom secret and/or algorithm is provided, validate against those
-        # directly rather than this process's env-resolved defaults.
-        if secret || algorithm
-          payload = hmac_decode(token, secret || hmac_secret, algorithm: algorithm)
-          return payload ? payload : nil
-        end
-
-        valid_token(token) ? get_payload(token) : nil
+        nil
       end
 
       def validate_api_key(provided, expected: nil)
@@ -392,22 +415,24 @@ module Tina4
 
           token = Regexp.last_match(1)
 
+          # JWT first, then the API key — same order and same payload shape as
+          # authenticate_request above (and as Python/PHP/Node).
+          if valid_token(token)
+            env["tina4.auth"] = get_payload(token)
+            return true
+          end
+
           # API_KEY bypass — timing-safe comparison via validate_api_key
           # (OpenSSL.fixed_length_secure_compare). Parity with Python's
           # authenticate_request (validate_api_key), PHP (hash_equals) and
           # Node (timingSafeEqual). Never use a plain `==` here — that leaks the
           # key length/prefix through comparison timing.
           if validate_api_key(token)
-            env["tina4.auth"] = { "api_key" => true }
+            env["tina4.auth"] = { "_auth" => "api_key" }
             return true
           end
 
-          if valid_token(token)
-            env["tina4.auth"] = get_payload(token)
-            true
-          else
-            false
-          end
+          false
         end
       end
 
@@ -430,6 +455,23 @@ module Tina4
       end
 
       private
+
+      # Coerce an RFC 7519 NumericDate claim to integer seconds, else nil.
+      #
+      # RFC 7519 s2 defines exp/nbf/iat as a NumericDate — a JSON numeric value.
+      # A claim that is PRESENT but not a number is malformed, and a malformed
+      # constraint must never read as "no constraint": treating a non-numeric exp
+      # as absent turns a broken token into one that never expires. Every
+      # non-numeric JSON type (null, true/false, String, Array, Hash) returns nil
+      # so the caller rejects the token. Mirrors the Python master's
+      # _numeric_date; Ruby needs no bool special-case because TrueClass is not
+      # an Integer (in Python bool IS an int subclass, so exp: true would compare
+      # as 1970).
+      def numeric_date(value)
+        return nil unless value.is_a?(Integer) || value.is_a?(Float)
+
+        value.to_i
+      end
 
       # ── Dev-secret bootstrap helpers (parity with Python master) ──
 
