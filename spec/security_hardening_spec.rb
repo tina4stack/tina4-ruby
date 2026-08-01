@@ -2,6 +2,8 @@
 
 require "spec_helper"
 require "openssl"
+require "tmpdir"
+require "fileutils"
 require_relative "support/real_log_capture"
 require_relative "support/real_env"
 
@@ -112,9 +114,15 @@ RSpec.describe "Security hardening" do
       set_real_env("TINA4_API_KEY" => "rotated-key-0000000000000")
       expect(Tina4::Auth.validate_api_key("rotated-key-0000000000000")).to be true
       expect(Tina4::Auth.validate_api_key("super-secret-api-key-value")).to be false
+      # ADR-0021 renamed the API-key auth result to the cross-framework
+      # {"_auth" => "api_key"} (PHP and Node already used it; Python moved in the
+      # same change). This example was authored on a branch that forked BEFORE
+      # that landed, so it still asserted the old Ruby-only {"api_key" => true}
+      # — the two examples at the top of this block already assert "_auth", so
+      # the file contradicted itself after the merge.
       expect(
         Tina4::Auth.authenticate_request({ "HTTP_AUTHORIZATION" => "Bearer rotated-key-0000000000000" })
-      ).to eq({ "api_key" => true })
+      ).to eq({ "_auth" => "api_key" })
     end
 
     it "never authenticates when the REAL TINA4_API_KEY is blank or unset" do
@@ -159,9 +167,19 @@ RSpec.describe "Security hardening" do
     end
 
     it "both the header and the Rack bearer_auth path route through validate_api_key" do
-      # Exactly two call sites consult it (authenticate_request + bearer_auth);
-      # the definition line is excluded.
-      call_sites = auth_src.scan(/^\s*if validate_api_key\(token\)$/)
+      # Exactly two call sites consult it (authenticate_request + bearer_auth).
+      # The definition does not match (it takes `provided`, not `token`), and
+      # COMMENT lines are stripped first, so prose naming validate_api_key can
+      # never stand in for a real call.
+      #
+      # This used to scan /^\s*if validate_api_key\(token\)$/ — an anchored
+      # leading-`if` STATEMENT. ADR-0021 rewrote authenticate_request's call site
+      # into a trailing modifier-if (`return { "_auth" => "api_key" } if
+      # validate_api_key(token)`), so the anchored form counted 1 and went red
+      # against correct code. The invariant is "both paths route through
+      # validate_api_key", not "both spell their `if` the same way".
+      code = auth_src.lines.reject { |line| line.strip.start_with?("#") }.join
+      call_sites = code.scan(/validate_api_key\(token\)/)
       expect(call_sites.length).to eq(2)
     end
 
@@ -230,12 +248,16 @@ RSpec.describe "Security hardening" do
   #     which the real Redis/Valkey message does not contain. The fake's message
   #     was the only reason those assertions passed.
   #   * Session#gc returns early unless the handler responds to :gc
-  #     (session.rb:208). The REAL RedisHandler and ValkeyHandler expose
+  #     (session.rb:252). The REAL RedisHandler and ValkeyHandler expose
   #     `cleanup`, NOT `gc`, so session.gc against them is a silent no-op that
   #     never reaches the backend. The old fake DID define gc, so the old "gc()
   #     on an unreachable backend logs" example exercised a handler shape that
-  #     no real Redis/Valkey handler has. The gc invariant is therefore proven
-  #     against MemcachedHandler, which really does expose gc.
+  #     no real Redis/Valkey handler has. It was first re-pointed at
+  #     MemcachedHandler, which exposes gc — but exposed a BROKEN one, and that
+  #     bug (arity 0) was the only reason the example went green. The gc
+  #     invariant is now proven against the REAL DatabaseHandler on a REAL
+  #     SQLite database, the one handler whose gc genuinely reaches a backend
+  #     that can genuinely fail. See #with_really_broken_session_table.
   describe "Session backend-failure policy" do
     # A port nothing listens on. Asserted below rather than assumed, so this
     # can never silently become "reachable" and turn the failure specs green.
@@ -295,6 +317,52 @@ RSpec.describe "Security hardening" do
       session.instance_variable_set(:@handler, handler)
       session.instance_variable_set(:@strict, strict)
       session
+    end
+
+    # The REAL error a REAL client raises against a REAL closed port, asserted by
+    # its ROOT CAUSE instead of by one client's wrapper class.
+    #
+    # RedisHandler PREFERS the `redis` gem when it is installed and falls back to
+    # the zero-dependency RespClient when it is not (redis_handler.rb#build_gem_client).
+    # The two raise different classes for the very same closed port — measured on
+    # this host, 2026-08-01, against 127.0.0.1:6399:
+    #
+    #   RespClient (raw socket) → Errno::ECONNREFUSED
+    #                             "Connection refused - connect(2) for 127.0.0.1:6399"
+    #   redis gem 5.4.1         → Redis::CannotConnectError
+    #                             "Connection refused - connect(2) for 127.0.0.1:6399 (redis://…)"
+    #                             cause → RedisClient::CannotConnectError
+    #                             cause → Errno::ECONNREFUSED   ← the real one
+    #
+    # These examples were authored on a host where the OPTIONAL :databases
+    # bundler group was absent, so ONLY the RespClient path was ever measured and
+    # Errno::ECONNREFUSED got written down as if it were the contract. It is not:
+    # whether an optional gem happens to be installed must never decide whether
+    # the strict policy counts as honoured. So assert what IS the contract,
+    # without relaxing it:
+    #
+    #   1. strict mode RE-RAISES (it does not degrade to {} / false),
+    #   2. the failure is a genuine connection REFUSAL, not some other error, and
+    #   3. its ROOT cause is a real Errno::ECONNREFUSED off a real socket.
+    #
+    # (3) is strictly STRONGER than the class assertion it replaces: an
+    # in-process RuntimeError.new("Connection refused") would satisfy a bare
+    # message match, but carries no ECONNREFUSED anywhere in its cause chain.
+    def expect_real_connection_refusal
+      raised = nil
+      expect { yield }.to raise_error(StandardError) { |e| raised = e }
+
+      chain = []
+      err = raised
+      while err && chain.length < 10
+        chain << err
+        err = err.cause
+      end
+
+      expect(raised.message).to match(/Connection refused/i)
+      expect(chain.map(&:class)).to include(Errno::ECONNREFUSED),
+                                   "strict mode must re-raise the REAL socket error; " \
+                                   "cause chain was #{chain.map { |e| "#{e.class}: #{e.message}" }.inspect}"
     end
 
     # Invariant 1: unreachable backend on start() does NOT raise; returns a
@@ -362,29 +430,79 @@ RSpec.describe "Security hardening" do
       expect(text).to include("RedisHandler")
     end
 
-    # gc is proven against Memcached: it is the only one of the three real
-    # handlers that actually exposes #gc (see the MEASURED note above).
-    it "gc() on a really-unreachable memcached logs and does not crash" do
+    # A REAL DatabaseHandler on a REAL SQLite database whose session table has
+    # been REALLY dropped out from under it, so #gc runs its genuine
+    # "DELETE FROM tina4_session ..." against a real engine and gets a real
+    # engine error back. Nothing is substituted: a real Database, a real file, a
+    # real DDL statement, a real SQL failure. (An operator who drops the session
+    # table gets exactly this.)
+    #
+    # WHY NOT MEMCACHED. These gc examples used to point at MemcachedHandler
+    # "because it is the only one of the three real handlers that exposes #gc".
+    # It exposed a BROKEN one: `alias gc cleanup` gave it arity 0 while Session
+    # calls gc(max_lifetime), so every call raised ArgumentError — and THAT is
+    # the only reason the old examples went green. They were observing an
+    # internal arity bug, not a backend outage. With the arity fixed,
+    # MemcachedHandler#gc is what it always meant to be: a purely local no-op
+    # (memcached expires its own keys) that opens no socket and therefore cannot
+    # fail. FileHandler#gc swallows per-file errors by design. DatabaseHandler is
+    # the one handler whose gc genuinely reaches a backend that can genuinely
+    # fail, so the invariant is proven there.
+    def with_really_broken_session_table
+      dir = Dir.mktmpdir("tina4-sess-gc-")
+      db = Tina4::Database.new("sqlite:///#{File.join(dir, "sessions.db")}")
+      handler = Tina4::SessionHandlers::DatabaseHandler.new(db: db, ttl: 3600)
+      handler.write("seed", { "seeded" => true }, 3600) # the table really exists here
+      db.execute("DROP TABLE #{Tina4::SessionHandlers::DatabaseHandler::TABLE_NAME}")
+      yield handler
+    ensure
+      begin
+        db&.close
+      rescue StandardError
+        nil
+      end
+      FileUtils.remove_entry(dir) if dir && Dir.exist?(dir)
+    end
+
+    it "gc() on a really-broken database backend logs and does not crash" do
+      with_really_broken_session_table do |handler|
+        text = capture_real_log do
+          session = build_session(handler)
+          expect { session.gc(3600) }.not_to raise_error
+        end
+        expect(text).to match(/ERROR/i)
+        expect(text).to include("DatabaseHandler")
+        expect(text).to include("tina4_session")
+      end
+    end
+
+    # The truthful memcached control, and the negative half of the arity fix.
+    # MemcachedHandler#gc must ACCEPT the one argument Session#gc passes and must
+    # stay a purely local no-op — so even against a genuinely CLOSED port it
+    # neither raises nor logs, because there is no round trip to fail. Restore
+    # `alias gc cleanup` and this goes red on the ArgumentError log line.
+    it "gc() on memcached is a local no-op: no socket, no error, no log line" do
       handler = unreachable_handler(:memcached)
       expect(handler).to respond_to(:gc) # guard the premise
       text = capture_real_log do
         session = build_session(handler)
         expect { session.gc(3600) }.not_to raise_error
       end
-      expect(text).to match(/ERROR/i)
-      expect(text).to include("MemcachedHandler")
+      expect(text).not_to match(/\[ERROR/i)
+      expect(text).not_to include("wrong number of arguments")
     end
 
     # Invariant 4: a genuinely EMPTY but HEALTHY backend logs ZERO errors.
     # Both halves are now real: a real running server, and a real log file that
     # must contain no ERROR line.
-    # NOTE: the :memcached case of this example is CURRENTLY FAILING and is a
-    # TRUE POSITIVE — same root cause as "strict mode re-raises a real gc
-    # failure" below: session.gc(3600) raises ArgumentError inside
-    # MemcachedHandler (alias gc cleanup, arity 0), which Session logs as an
-    # ERROR, so a genuinely healthy memcached DOES emit an error line today.
-    # That is the bug, faithfully reported. Do not silence it by dropping the
-    # gc() call — that would hide a broken GC path on a real backend.
+    # NOTE: the :memcached case of this example WAS failing, and was a TRUE
+    # POSITIVE — same root cause as "strict mode re-raises a real gc failure"
+    # below: session.gc(3600) raised ArgumentError inside MemcachedHandler
+    # (`alias gc cleanup`, arity 0), which Session logged as an ERROR, so a
+    # genuinely healthy memcached emitted an error line on every sweep. The
+    # PRODUCTION code was fixed (MemcachedHandler#gc(_max_age = nil)); the
+    # example is unchanged. Do not silence it by dropping the gc() call — that
+    # would hide a broken GC path on a real backend.
     %i[redis valkey memcached].each do |kind|
       it "a really-healthy, genuinely-empty #{kind} logs NO errors" do
         require "securerandom"
@@ -434,51 +552,55 @@ RSpec.describe "Security hardening" do
     # closed port — not a hand-written message.
     it "strict mode re-raises a real read failure" do
       session = build_session(unreachable_handler(:redis), strict: true)
-      expect { session.read("x") }.to raise_error(Errno::ECONNREFUSED, /Connection refused/i)
+      expect_real_connection_refusal { session.read("x") }
     end
 
     it "strict mode re-raises a real write failure" do
       session = build_session(unreachable_handler(:redis), strict: true)
       session["user"] = "Bob"
-      expect { session.save }.to raise_error(Errno::ECONNREFUSED, /Connection refused/i)
+      expect_real_connection_refusal { session.save }
     end
 
     it "strict mode re-raises a real destroy failure" do
       session = build_session(unreachable_handler(:redis), strict: true)
-      expect { session.destroy }.to raise_error(Errno::ECONNREFUSED, /Connection refused/i)
+      expect_real_connection_refusal { session.destroy }
     end
 
-    # !! CURRENTLY FAILING — TRUE POSITIVE, NOT A BROKEN TEST. !!
+    # !! WAS FAILING — TRUE POSITIVE, NOT A BROKEN TEST. NOW FIXED IN THE CODE. !!
     #
-    # REAL FRAMEWORK BUG found by this conversion (reported, deliberately NOT
-    # fixed here — framework fixes are out of scope for the no-mock sweep):
+    # REAL FRAMEWORK BUG found by the no-mock conversion, fixed 2026-08-01 in
+    # lib/tina4/session_handlers/memcached_handler.rb:
     #
     #   Tina4::Session#gc calls @handler.gc(max_lifetime) with ONE argument
-    #   (session.rb:210), but MemcachedHandler gets #gc from
-    #   `alias gc cleanup` (memcached_handler.rb:90) and #cleanup takes ZERO
-    #   arguments. Measured: MemcachedHandler#gc.arity == 0, and gc(3600)
-    #   raises ArgumentError "wrong number of arguments (given 1, expected 0)"
-    #   against the real memcached on 127.0.0.1:11211.
+    #   (session.rb:254), but MemcachedHandler got #gc from `alias gc cleanup`
+    #   and #cleanup takes ZERO arguments. Measured: MemcachedHandler#gc.arity
+    #   == 0, and gc(3600) raised ArgumentError "wrong number of arguments
+    #   (given 1, expected 0)" against the real memcached on 127.0.0.1:11211.
     #
-    #   So session GC has NEVER worked on a Memcached session backend: every
-    #   call raises, and Session#gc's rescue reports it as a BACKEND failure —
+    #   So session GC had NEVER worked on a Memcached session backend: every
+    #   call raised, and Session#gc's rescue reported it as a BACKEND failure —
     #   "Session gc failed (…MemcachedHandler): wrong number of arguments" —
     #   misattributing an internal arity bug to the operator's memcached.
-    #   FileHandler#gc(max_age) and DatabaseHandler#gc(max_age) both take 1 arg,
-    #   so Memcached is the odd one out.
+    #   FileHandler#gc(max_age = nil) and DatabaseHandler#gc(max_age) both take
+    #   the argument, so Memcached was the odd one out. The fix gives it
+    #   #gc(_max_age = nil) delegating to #cleanup.
     #
     #   The old RaisingHandler/EmptyHealthyHandler fakes both defined
     #   `gc(_ttl)` with one parameter — matching what Session CALLS rather than
     #   what the real handler ACCEPTS — which is precisely why this shipped.
     #
-    # This example asserts the CORRECT behaviour (a real backend failure should
-    # surface as the backend's own error). It goes green once the arity bug is
-    # fixed; it must NOT be "fixed" by asserting ArgumentError, which would lock
-    # the bug in.
+    # This example asserts the CORRECT behaviour (a real backend failure must
+    # surface as the backend's own error). It must NEVER be "fixed" by asserting
+    # ArgumentError, which would lock the arity bug back in.
     it "strict mode re-raises a real gc failure" do
-      # Memcached again: the only real handler exposing #gc.
-      session = build_session(unreachable_handler(:memcached), strict: true)
-      expect { session.gc(3600) }.to raise_error(RuntimeError, /Memcached session backend .*failed/i)
+      # The REAL DatabaseHandler against a REAL SQLite database whose session
+      # table is really gone — the one handler whose gc genuinely reaches a
+      # backend (see #with_really_broken_session_table). The engine is fixed and
+      # ours here, so its own error text is the precise thing to assert.
+      with_really_broken_session_table do |handler|
+        session = build_session(handler, strict: true)
+        expect { session.gc(3600) }.to raise_error(StandardError, /no such table: tina4_session/i)
+      end
     end
 
     it "honours TINA4_SESSION_STRICT env (true) read from the constructor" do
@@ -486,7 +608,7 @@ RSpec.describe "Security hardening" do
       set_real_env("TINA4_SESSION_STRICT" => "true")
       session = Tina4::Session.new(env, { handler: :file, handler_options: {} })
       session.instance_variable_set(:@handler, handler)
-      expect { session.read("x") }.to raise_error(Errno::ECONNREFUSED, /Connection refused/i)
+      expect_real_connection_refusal { session.read("x") }
     end
   end
 end

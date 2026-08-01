@@ -87,7 +87,27 @@ module Tina4
       def cleanup
         nil
       end
-      alias gc cleanup
+
+      # Garbage-collect expired sessions. Memcached expires its own keys via the
+      # TTL set on write, so there is genuinely nothing to sweep - but the
+      # ARGUMENT still has to be accepted, because Session#gc calls
+      # handler.gc(max_lifetime) with exactly one argument.
+      #
+      # This was `alias gc cleanup`, and #cleanup takes ZERO arguments, so
+      # MemcachedHandler#gc.arity was 0 and EVERY session GC against a memcached
+      # backend raised ArgumentError "wrong number of arguments (given 1,
+      # expected 0)". Session#gc's rescue then reported it as a BACKEND failure -
+      # "Session gc failed (...MemcachedHandler): wrong number of arguments" -
+      # so an internal arity bug was misattributed to the operator's memcached,
+      # and a perfectly healthy server logged an ERROR on every sweep.
+      # FileHandler#gc(max_age = nil) and DatabaseHandler#gc(max_age) both take
+      # the argument; memcached was the odd one out.
+      #
+      # @param max_age [Integer, nil] accepted for interface parity; memcached
+      #   owns its own expiry, so nothing here consults it.
+      def gc(_max_age = nil)
+        cleanup
+      end
 
       private
 

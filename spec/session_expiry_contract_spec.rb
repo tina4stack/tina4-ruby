@@ -32,6 +32,7 @@ require "spec_helper"
 require "tmpdir"
 require "fileutils"
 require "json"
+require "digest"
 
 RSpec.describe "Session expiry contract" do
   let(:tmpdir) { Dir.mktmpdir("tina4-sess-contract") }
@@ -39,35 +40,55 @@ RSpec.describe "Session expiry contract" do
 
   after(:each) { FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir) }
 
-  # Out-of-band existence check - a directory listing, not the code under test.
+  # THE ON-DISK NAME, computed out of band.
+  #
+  # ADR-0021 ("a session id is opaque") made FileHandler name its files
+  # sess_<sha256(id)>.json — the old gsub(/[^a-zA-Z0-9_-]/, "") was traversal-safe
+  # but LOSSY, collapsing "a/b" and "ab" onto one file so one user's data
+  # surfaced under another user's id.
+  #
+  # This spec was authored on a branch that forked BEFORE that landed and still
+  # used the RAW id ("sess_naked.json"). After the merge every seed wrote a file
+  # the handler would never look for, and every existence check globbed a name
+  # that can never exist — so the negative assertions ("must be reaped") were
+  # VACUOUSLY true and the positive ones were simply wrong.
+  #
+  # Digest::SHA256 here is the spec computing the name independently; it is not
+  # the code under test. Deliberately NOT FileHandler#session_path (private, and
+  # asking the subject where it put the file proves nothing).
+  def session_file(session_id)
+    File.join(tmpdir, "sess_#{Digest::SHA256.hexdigest(session_id.to_s)}.json")
+  end
+
+  # Seed a record straight onto disk, under the name the handler really uses.
+  def seed(session_id, payload)
+    File.write(session_file(session_id), JSON.generate(payload))
+  end
+
+  # Out-of-band existence check - a real stat of the real path, not the code
+  # under test.
   def stored?(session_id)
-    !Dir.glob(File.join(tmpdir, "sess_#{session_id}.json")).empty?
+    File.exist?(session_file(session_id))
   end
 
   describe "an absent or zero expiry stamp means never expires" do
     it "session_missing_expiry_stamp_survives_read" do
-      File.write(File.join(tmpdir, "sess_naked.json"), JSON.generate({ "seeded" => true }))
+      seed("naked", { "seeded" => true })
 
       expect(handler.read("naked")).to eq({ "seeded" => true })
       expect(stored?("naked")).to be(true), "an unstamped record must NOT be deleted"
     end
 
     it "session_zero_expiry_stamp_survives_read" do
-      File.write(
-        File.join(tmpdir, "sess_zeroed.json"),
-        JSON.generate({ "_data" => { "seeded" => true }, "_expires" => 0 })
-      )
+      seed("zeroed", { "_data" => { "seeded" => true }, "_expires" => 0 })
 
       expect(handler.read("zeroed")).to eq({ "seeded" => true })
       expect(stored?("zeroed")).to be(true), "a zero stamp must not delete the record"
     end
 
     it "session_missing_expiry_stamp_survives_gc" do
-      File.write(File.join(tmpdir, "sess_naked.json"), JSON.generate({ "seeded" => true }))
-      File.write(
-        File.join(tmpdir, "sess_zeroed.json"),
-        JSON.generate({ "_data" => { "seeded" => true }, "_expires" => 0 })
-      )
+      seed("naked", { "seeded" => true })
+      seed("zeroed", { "_data" => { "seeded" => true }, "_expires" => 0 })
 
       handler.gc(0)
 
@@ -88,20 +109,16 @@ RSpec.describe "Session expiry contract" do
     end
 
     it "session_past_expiry_stamp_is_reaped" do
-      File.write(
-        File.join(tmpdir, "sess_stale.json"),
-        JSON.generate({ "_data" => { "seeded" => true }, "_expires" => Time.now.to_f - 99_999 })
-      )
+      seed("stale", { "_data" => { "seeded" => true }, "_expires" => Time.now.to_f - 99_999 })
+      expect(stored?("stale")).to be(true), "precondition: the record really is on disk"
 
       expect(handler.read("stale")).to be_nil
       expect(stored?("stale")).to be(false), "a past-stamped record must be reaped"
     end
 
     it "session_past_expiry_stamp_is_swept_by_gc" do
-      File.write(
-        File.join(tmpdir, "sess_stale.json"),
-        JSON.generate({ "_data" => { "a" => 1 }, "_expires" => Time.now.to_f - 99_999 })
-      )
+      seed("stale", { "_data" => { "a" => 1 }, "_expires" => Time.now.to_f - 99_999 })
+      expect(stored?("stale")).to be(true), "precondition: the record really is on disk"
 
       handler.gc(0)
 
@@ -117,12 +134,38 @@ RSpec.describe "Session expiry contract" do
         "future" => [{ "_data" => { "v" => 1 }, "_expires" => Time.now.to_f + 3600 }, true],
         "past" => [{ "_data" => { "v" => 1 }, "_expires" => Time.now.to_f - 3600 }, false]
       }
-      cases.each { |name, (payload, _)| File.write(File.join(tmpdir, "sess_#{name}.json"), JSON.generate(payload)) }
+      cases.each { |name, (payload, _)| seed(name, payload) }
+      cases.each_key { |name| expect(stored?(name)).to be(true), "precondition: #{name} really is on disk" }
 
       cases.each do |name, (_, should_survive)|
         returned = handler.read(name)
         expect(stored?(name)).to be(should_survive), "#{name}: survival disagreed with the contract"
         expect(returned == { "v" => 1 }).to be(should_survive), "#{name}: payload disagreed with survival"
+      end
+    end
+  end
+
+  describe "gc(max_age) is accepted by every handler that exposes it" do
+    # THE SAME DEFECT ONE METHOD OVER, and it shipped. Session#gc calls
+    # handler.gc(max_lifetime) with exactly ONE argument (session.rb:254).
+    # MemcachedHandler got its #gc from `alias gc cleanup`, and #cleanup takes
+    # ZERO, so every session GC against a real memcached raised ArgumentError -
+    # which Session#gc's rescue logged as a BACKEND failure, blaming the
+    # operator's memcached for an internal arity bug. A healthy, empty memcached
+    # therefore logged an ERROR on every sweep.
+    #
+    # Redis/Valkey/Mongo expose #cleanup and no #gc at all; Session#gc guards
+    # with respond_to?(:gc) and skips them, which is why they are exempt here
+    # rather than asserted.
+    it "session_gc_accepts_the_max_age_argument_on_every_handler" do
+      %w[FileHandler DatabaseHandler MongoHandler RedisHandler ValkeyHandler MemcachedHandler].each do |name|
+        klass = Tina4::SessionHandlers.const_get(name)
+        next unless klass.method_defined?(:gc)
+
+        arity = klass.instance_method(:gc).arity
+        expect(arity == 1 || arity <= -1).to be(true),
+                                             "#{name}#gc must accept the one argument Session#gc passes " \
+                                             "(max_age); arity was #{arity}"
       end
     end
   end

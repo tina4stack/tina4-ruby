@@ -39,6 +39,28 @@ module Tina4
     DEFAULT_ROTATE_SIZE = 10 * 1024 * 1024 # 10MB
     DEFAULT_ROTATE_KEEP = 5
 
+    # The error classes TINA4_LOG_STRICT must let ESCAPE stdlib ::Logger.
+    #
+    # TINA4_LOG_STRICT is documented as "raise on a log write failure instead of
+    # swallowing", and #write_to_file dutifully rescues IOError/SystemCallError
+    # and re-raises when @strict. It was a NO-OP anyway: ::Logger::LogDevice
+    # wraps every device write in its own `handle_write_errors`, which rescues
+    # and turns the failure into a bare `warn` on stderr. The real error was
+    # swallowed one layer BELOW Tina4 and never reached Tina4's rescue at all.
+    #
+    # MEASURED 2026-08-01 on a genuinely full 1MB HFS+ ram disk (0 KB free),
+    # Ruby 4.0.2: with TINA4_LOG_STRICT=true, Tina4::Log.info(...) printed
+    # "log writing failed. No space left on device @ rb_sys_fail_on_write" to
+    # stderr and returned normally. The operator got a stderr warning and strict
+    # mode did nothing.
+    #
+    # ::Logger has a first-class seam for exactly this — `reraise_write_errors:`
+    # (logger >= 1.5.0), which handle_write_errors re-raises through instead of
+    # warning. Listing the two classes #write_to_file already rescues keeps the
+    # two ends of the strict path in agreement. Note Errno::ENOSPC (and every
+    # other errno) is a SystemCallError, so the real disk-full case is covered.
+    STRICT_WRITE_ERRORS = [IOError, SystemCallError].freeze
+
     class << self
       attr_reader :log_dir, :log_file_path
 
@@ -482,10 +504,15 @@ module Tina4
       end
 
       def build_file_logger(path)
+        # In strict mode ask ::Logger to let a real write error through instead
+        # of warning on stderr and returning (see STRICT_WRITE_ERRORS). Empty
+        # otherwise, which is the stdlib default, so the non-strict path behaves
+        # byte for byte as it always has.
+        reraise = @strict ? STRICT_WRITE_ERRORS : []
         logger = if @rotate_size > 0
-                   ::Logger.new(path, @rotate_keep, @rotate_size)
+                   ::Logger.new(path, @rotate_keep, @rotate_size, reraise_write_errors: reraise)
                  else
-                   ::Logger.new(path)
+                   ::Logger.new(path, reraise_write_errors: reraise)
                  end
         # We do our own formatting — strip Logger's default formatter.
         logger.formatter = proc { |_sev, _t, _p, msg| msg.to_s.end_with?("\n") ? msg : "#{msg}\n" }

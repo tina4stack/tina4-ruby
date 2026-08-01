@@ -383,22 +383,22 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
     end
 
     it "raises on a log-write failure when strict, swallows when not" do
-      # !! CURRENTLY FAILING — TRUE POSITIVE, NOT A BROKEN TEST. !!
+      # !! WAS FAILING — TRUE POSITIVE, NOT A BROKEN TEST. NOW FIXED IN THE CODE. !!
       #
-      # REAL FRAMEWORK BUG found by this conversion (reported, deliberately NOT
-      # fixed here — framework fixes are out of scope for the no-mock sweep):
+      # REAL FRAMEWORK BUG found by the no-mock conversion, fixed 2026-08-01 in
+      # lib/tina4/log.rb:
       #
       #   TINA4_LOG_STRICT=true is documented as "raise on log write failures
-      #   instead of swallowing" (log.rb:133, CLAUDE.md). Against a GENUINELY
-      #   full filesystem it does NOT raise.
+      #   instead of swallowing" (CLAUDE.md). Against a GENUINELY full
+      #   filesystem it did NOT raise.
       #
       #   Why: Tina4::Log#write_to_file rescues IOError/SystemCallError around
-      #   `@file_logger << line` and re-raises when @strict (log.rb:495-505).
-      #   But @file_logger is a stdlib ::Logger, and ::Logger::LogDevice#write
-      #   has its OWN blanket `rescue Exception => ignored; warn("log writing
-      #   failed. #{ignored}")`. So the real Errno::ENOSPC is swallowed one
-      #   layer BELOW Tina4 and never reaches Tina4's rescue at all — the
-      #   operator gets a bare warning on stderr and strict mode is a no-op.
+      #   `@file_logger << line` and re-raises when @strict. But @file_logger is
+      #   a stdlib ::Logger, and ::Logger::LogDevice wraps every device write in
+      #   its own `handle_write_errors`, which rescues and turns the failure into
+      #   a bare `warn` on stderr. So the real Errno::ENOSPC was swallowed one
+      #   layer BELOW Tina4 and never reached Tina4's rescue at all — the
+      #   operator got a stderr warning and strict mode was a no-op.
       #
       #   MEASURED 2026-08-01 on a real 1MB HFS+ ram disk filled to 0 KB free,
       #   Ruby 4.0.2: `Tina4::Log.info(...)` printed "log writing failed. No
@@ -410,11 +410,14 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
       #   entirely. It also asserted IOError, while the real failure is
       #   Errno::ENOSPC — a SystemCallError, not an IOError.
       #
-      # This example asserts the DOCUMENTED behaviour. It goes green once the
-      # strict path handles a real write failure (e.g. by writing through an
-      # IO the framework controls, or checking the device after a write). It
-      # must NOT be "fixed" by asserting that nothing raises — that would lock
-      # the bug in.
+      #   The fix uses ::Logger's own seam: build_file_logger passes
+      #   `reraise_write_errors: [IOError, SystemCallError]` when @strict, so
+      #   handle_write_errors re-raises instead of warning and write_to_file's
+      #   `raise if @strict` finally has something to act on. Non-strict is
+      #   untouched (empty list = the stdlib default).
+      #
+      # This example asserts the DOCUMENTED behaviour. It must NEVER be "fixed"
+      # by asserting that nothing raises — that would lock the bug back in.
       with_real_tiny_filesystem do |dir, fill_it|
         with_env("TINA4_LOG_STRICT" => "true", "TINA4_LOG_OUTPUT" => "file",
                  "TINA4_LOG_LEVEL" => "DEBUG", "TINA4_DEBUG_LEVEL" => "DEBUG") do
