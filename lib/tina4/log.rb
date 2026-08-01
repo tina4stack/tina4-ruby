@@ -61,6 +61,26 @@ module Tina4
     # other errno) is a SystemCallError, so the real disk-full case is covered.
     STRICT_WRITE_ERRORS = [IOError, SystemCallError].freeze
 
+    # A log device that writes ONLY log lines.
+    #
+    # stdlib ::Logger stamps a banner as the FIRST LINE of every file it creates
+    # — and it creates one on every rotation too:
+    #
+    #   # Logfile created on 2026-08-01 21:49:10 +0200 by logger.rb/v1.7.0
+    #
+    # In JSON mode (TINA4_LOG_FORMAT=json) that is not JSON, so any line-oriented
+    # shipper — Filebeat, Fluent Bit, Vector, promtail, `jq -c` — fails on line 1
+    # of every file and every rotated file. It is a Ruby-only artifact: no other
+    # Tina4 framework emits it, so a JSON pipeline that works on Python/PHP/Node
+    # breaks here and nowhere else.
+    #
+    # Suppressing it in the DEVICE (rather than pre-creating the file) covers
+    # rotation as well, and keeps ::Logger's own rotation/locking untouched —
+    # add_log_header is the single method whose whole body is that banner.
+    class HeaderlessLogDevice < ::Logger::LogDevice
+      def add_log_header(file); end
+    end
+
     class << self
       attr_reader :log_dir, :log_file_path
 
@@ -118,9 +138,23 @@ module Tina4
         # TINA4_LOG_ROTATE_KEEP — number of rotated backups to keep.
         @rotate_keep = (ENV["TINA4_LOG_ROTATE_KEEP"] || DEFAULT_ROTATE_KEEP).to_i
 
-        # TINA4_LOG_FORMAT — "text" or "json". Defaults to "json" in production, else "text".
+        # TINA4_LOG_FORMAT — "text" or "json". TEXT IS THE DEFAULT, always.
+        #
+        # Owner decision 2026-08-01: nothing but an explicit TINA4_LOG_FORMAT=json
+        # selects JSON. The implicit "production means JSON" switch is DELETED in
+        # all four frameworks, because MEASURED, "production" meant four different
+        # things and it silently picked your log format:
+        #
+        #   node   !isTruthy(TINA4_DEBUG)                     -> JSON with TINA4_DEBUG unset
+        #   ruby   TINA4_ENV|RACK_ENV|RUBY_ENV == "production"
+        #   python only via configure(production=True)
+        #   php    no switch at all — JSON was the shipped default
+        #
+        # Same machine, same .env, four formats. An OBJECT (Hash/Array) passed as
+        # the message is still JSON-encoded INLINE inside the text line — that is
+        # coerce_message's job and it is unchanged.
         format_env = ENV["TINA4_LOG_FORMAT"]
-        @format = format_env && !format_env.empty? ? format_env.downcase : (production? ? "json" : "text")
+        @format = format_env && !format_env.empty? ? format_env.downcase : "text"
         @json_mode = @format == "json"
 
         # TINA4_LOG_OUTPUT — "stdout", "file", or "both".
@@ -284,11 +318,6 @@ module Tina4
 
       def truthy?(val)
         Tina4::Env.is_truthy(val)
-      end
-
-      def production?
-        env = ENV["TINA4_ENV"] || ENV["RACK_ENV"] || ENV["RUBY_ENV"] || "development"
-        env.downcase == "production"
       end
 
       def log(level, message, context = {})
@@ -509,11 +538,20 @@ module Tina4
         # otherwise, which is the stdlib default, so the non-strict path behaves
         # byte for byte as it always has.
         reraise = @strict ? STRICT_WRITE_ERRORS : []
-        logger = if @rotate_size > 0
-                   ::Logger.new(path, @rotate_keep, @rotate_size, reraise_write_errors: reraise)
+        # HeaderlessLogDevice, not a bare path: ::Logger would otherwise open the
+        # file with a "# Logfile created on ..." banner that is not a log line
+        # (and not JSON). It still does the rotation — shift_age = files kept,
+        # shift_size = bytes before a roll; with @rotate_size 0 both are omitted
+        # so rotation is off. reraise_write_errors is passed to BOTH layers or
+        # the outer one swallows what the inner one raises (see STRICT_WRITE_ERRORS).
+        device = if @rotate_size > 0
+                   HeaderlessLogDevice.new(path, shift_age: @rotate_keep,
+                                           shift_size: @rotate_size,
+                                           reraise_write_errors: reraise)
                  else
-                   ::Logger.new(path, reraise_write_errors: reraise)
+                   HeaderlessLogDevice.new(path, reraise_write_errors: reraise)
                  end
+        logger = ::Logger.new(device, reraise_write_errors: reraise)
         # We do our own formatting — strip Logger's default formatter.
         logger.formatter = proc { |_sev, _t, _p, msg| msg.to_s.end_with?("\n") ? msg : "#{msg}\n" }
         logger

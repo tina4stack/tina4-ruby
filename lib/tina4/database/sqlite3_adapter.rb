@@ -149,8 +149,11 @@ module Tina4
         (["?"] * count).join(", ")
       end
 
+      # NEW LINE, not a space — appended inline the clause lands inside a
+      # trailing `-- comment` and the engine ignores it (see the note on
+      # Drivers::SqliteDriver#apply_limit).
       def apply_limit(sql, limit, offset = 0)
-        "#{sql} LIMIT #{limit} OFFSET #{offset}"
+        "#{sql}\nLIMIT #{limit} OFFSET #{offset}"
       end
 
       private

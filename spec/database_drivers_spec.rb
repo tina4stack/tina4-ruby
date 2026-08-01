@@ -73,7 +73,7 @@ RSpec.describe "Database Driver Registration" do
       # Pure, server-free methods — assert real computed output, not existence.
       expect(driver.placeholder).to eq("?")
       expect(driver.placeholders(2)).to eq("$1, $2")
-      expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t LIMIT 10 OFFSET 5")
+      expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t\nLIMIT 10 OFFSET 5")
       expect(driver.send(:convert_placeholders, "a = ? AND b = ?")).to eq("a = $1 AND b = $2")
     end
 
@@ -81,7 +81,7 @@ RSpec.describe "Database Driver Registration" do
       driver = Tina4::Drivers::MysqlDriver.new
       expect(driver.placeholder).to eq("?")
       expect(driver.placeholders(3)).to eq("?, ?, ?")
-      expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t LIMIT 10 OFFSET 5")
+      expect(driver.apply_limit("SELECT * FROM t", 10, 5)).to eq("SELECT * FROM t\nLIMIT 10 OFFSET 5")
       # #262: last_insert_id now returns the id CAPTURED AT WRITE TIME on the last
       # INSERT (mirroring Python's mysql.py cursor.lastrowid) rather than re-reading
       # @connection.last_id — which a follow-up autocommit COMMIT had clobbered to 0,
@@ -93,7 +93,7 @@ RSpec.describe "Database Driver Registration" do
     it "mssql driver translates LIMIT to OFFSET/FETCH and escapes params" do
       driver = Tina4::Drivers::MssqlDriver.new
       expect(driver.apply_limit("SELECT * FROM users", 10, 5))
-        .to eq("SELECT * FROM users ORDER BY (SELECT NULL) OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
+        .to eq("SELECT * FROM users\nORDER BY (SELECT NULL)\nOFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
       # Real param interpolation: single quotes are doubled (SQL-escaped).
       expect(driver.send(:interpolate_params, "WHERE name = ?", ["O'Brien"]))
         .to eq("WHERE name = 'O''Brien'")
@@ -102,7 +102,7 @@ RSpec.describe "Database Driver Registration" do
     it "firebird driver translates LIMIT to FIRST/SKIP and has nil last id" do
       driver = Tina4::Drivers::FirebirdDriver.new
       expect(driver.apply_limit("SELECT * FROM users", 10, 5))
-        .to eq("SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM users)")
+        .to eq("SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM users\n)")
       expect(driver.placeholders(3)).to eq("?, ?, ?")
       # Firebird has no last-insert-id concept; the driver returns nil literally.
       expect(driver.last_insert_id).to be_nil
@@ -126,12 +126,12 @@ RSpec.describe "Database Driver Registration" do
 
     it "applies LIMIT/OFFSET syntax" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
-      expect(result).to eq("SELECT * FROM users LIMIT 10 OFFSET 5")
+      expect(result).to eq("SELECT * FROM users\nLIMIT 10 OFFSET 5")
     end
 
     it "applies LIMIT with zero offset" do
       result = driver.apply_limit("SELECT * FROM users", 10, 0)
-      expect(result).to eq("SELECT * FROM users LIMIT 10 OFFSET 0")
+      expect(result).to eq("SELECT * FROM users\nLIMIT 10 OFFSET 0")
     end
   end
 
@@ -152,7 +152,7 @@ RSpec.describe "Database Driver Registration" do
 
     it "applies LIMIT/OFFSET syntax" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
-      expect(result).to eq("SELECT * FROM users LIMIT 10 OFFSET 5")
+      expect(result).to eq("SELECT * FROM users\nLIMIT 10 OFFSET 5")
     end
   end
 
@@ -169,12 +169,12 @@ RSpec.describe "Database Driver Registration" do
 
     it "applies OFFSET/FETCH NEXT syntax for MSSQL" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
-      expect(result).to eq("SELECT * FROM users ORDER BY (SELECT NULL) OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
+      expect(result).to eq("SELECT * FROM users\nORDER BY (SELECT NULL)\nOFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
     end
 
     it "applies OFFSET 0 when no offset given" do
       result = driver.apply_limit("SELECT * FROM users", 10, 0)
-      expect(result).to eq("SELECT * FROM users ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY")
+      expect(result).to eq("SELECT * FROM users\nORDER BY (SELECT NULL)\nOFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY")
     end
 
     it "preserves an existing ORDER BY instead of adding the (SELECT NULL) default" do
@@ -182,7 +182,7 @@ RSpec.describe "Database Driver Registration" do
       # driver must NOT append a second (which would be a syntax error) — the
       # default is only for unordered queries (a fetch_one aggregate).
       result = driver.apply_limit("SELECT * FROM users ORDER BY id", 10, 5)
-      expect(result).to eq("SELECT * FROM users ORDER BY id OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
+      expect(result).to eq("SELECT * FROM users ORDER BY id\nOFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")
     end
   end
 
@@ -199,12 +199,12 @@ RSpec.describe "Database Driver Registration" do
 
     it "applies FIRST/SKIP syntax for Firebird" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
-      expect(result).to eq("SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM users)")
+      expect(result).to eq("SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM users\n)")
     end
 
     it "applies FIRST with zero skip" do
       result = driver.apply_limit("SELECT * FROM users", 10, 0)
-      expect(result).to eq("SELECT FIRST 10 SKIP 0 * FROM (SELECT * FROM users)")
+      expect(result).to eq("SELECT FIRST 10 SKIP 0 * FROM (SELECT * FROM users\n)")
     end
 
     it "returns nil for last_insert_id" do
@@ -225,7 +225,7 @@ RSpec.describe "Database Driver Registration" do
 
     it "applies LIMIT/OFFSET syntax" do
       result = driver.apply_limit("SELECT * FROM users", 10, 5)
-      expect(result).to eq("SELECT * FROM users LIMIT 10 OFFSET 5")
+      expect(result).to eq("SELECT * FROM users\nLIMIT 10 OFFSET 5")
     end
 
     # ── SQLite URL path resolution (parity with tina4-python, tina4-php, tina4-nodejs)
@@ -411,12 +411,18 @@ RSpec.describe "Database Driver Registration" do
     # rollback/tables/columns/close) for real against a tmp SQLite database.
 
     # Expected engine-specific output for the pure (server-free) members.
+    #
+    # The pagination clause is on a NEW LINE (and Firebird's closing paren too)
+    # since 2026-08-01: appended inline it lands INSIDE a trailing `-- comment`
+    # in the caller's SQL and is silently swallowed by the engine — MEASURED as
+    # a full-table read with the row cap in force. See
+    # spec/row_cap_detector_spec.rb for that contract end to end.
     {
-      "SqliteDriver"   => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
-      "PostgresDriver" => { placeholders: "$1, $2, $3", limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
-      "MysqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t LIMIT 10 OFFSET 5" },
-      "MssqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t ORDER BY (SELECT NULL) OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY" },
-      "FirebirdDriver" => { placeholders: "?, ?, ?",   limit: "SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM t)" }
+      "SqliteDriver"   => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t\nLIMIT 10 OFFSET 5" },
+      "PostgresDriver" => { placeholders: "$1, $2, $3", limit: "SELECT * FROM t\nLIMIT 10 OFFSET 5" },
+      "MysqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t\nLIMIT 10 OFFSET 5" },
+      "MssqlDriver"    => { placeholders: "?, ?, ?",   limit: "SELECT * FROM t\nORDER BY (SELECT NULL)\nOFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY" },
+      "FirebirdDriver" => { placeholders: "?, ?, ?",   limit: "SELECT FIRST 10 SKIP 5 * FROM (SELECT * FROM t\n)" }
     }.each do |driver_class_name, expected|
       describe driver_class_name do
         let(:driver) { Tina4::Drivers.const_get(driver_class_name).new }

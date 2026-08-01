@@ -8,7 +8,15 @@ module Tina4
     attr_reader :records, :columns, :count, :limit, :offset, :sql,
                 :affected_rows, :last_id, :error
 
-    def initialize(records = [], sql: "", columns: [], count: nil, limit: 10, offset: 0,
+    # `limit` is the row cap ACTUALLY APPLIED to the statement that produced
+    # these records — what Database#fetch appended — and `0` means none was
+    # (an explicit no-limit read, SQL carrying its own trailing LIMIT, or a
+    # write). The default used to be `10`: Database#fetch_direct never passed
+    # limit:/offset:, so that untouched default was reported on EVERY fetch
+    # whatever limit ran — and 10 is the stale v2 documentation number that the
+    # buried PHP row-cap test also asserted as the cap. 0 says "no cap recorded"
+    # instead of quietly naming a number nothing applied.
+    def initialize(records = [], sql: "", columns: [], count: nil, limit: 0, offset: 0,
                    affected_rows: 0, last_id: nil, error: nil, db: nil)
       @records = records || []
       @sql = sql

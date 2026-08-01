@@ -189,7 +189,7 @@ RSpec.describe Tina4::Adapters::Sqlite3Adapter do
   describe "#apply_limit" do
     it "appends LIMIT and OFFSET" do
       sql = adapter.apply_limit("SELECT * FROM items", 10, 20)
-      expect(sql).to eq("SELECT * FROM items LIMIT 10 OFFSET 20")
+      expect(sql).to eq("SELECT * FROM items\nLIMIT 10 OFFSET 20")
     end
   end
 end

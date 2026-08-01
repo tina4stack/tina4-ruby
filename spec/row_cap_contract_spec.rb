@@ -56,20 +56,26 @@
 # than pretending it matches PHP - if SqliteDriver ever grows a real #fetch,
 # that example goes red and the cap question has to be answered for it too.
 #
-# One measured DEFECT is pinned the same way: the "does this SQL already have
-# its own LIMIT" test is a plain substring match, so a query over a column
-# NAMED limit_amount / rate_limit is mistaken for an already-limited statement
-# and gets no cap at all - an unbounded read, which is the exact incident the
-# cap exists to prevent, reachable through an innocuous column name.
+# One measured DEFECT was pinned the same way and is now FIXED (2026-08-01):
+# the "does this SQL already have its own LIMIT" test was a plain substring
+# match, so a query over a column NAMED limit_amount / rate_limit was mistaken
+# for an already-limited statement and got no cap at all - an unbounded read,
+# which is the exact incident the cap exists to prevent, reachable through an
+# innocuous column name. The detector now scrubs literals/identifiers/comments
+# and matches a LIMIT ANCHORED TO THE END, and the clause is appended on a NEW
+# LINE so a trailing comment cannot swallow it. The example below was told to
+# go red and have its expectation changed to `cap` when that happened; that is
+# what it now asserts. The full detector/append-site contract, positive and
+# negative, lives in spec/row_cap_detector_spec.rb.
 #
-# Two more measured divergences are pinned as CHARACTERISATION (a record of
-# what is, not a demand): on a capped fetch Ruby's DatabaseResult reports
-# `count` = 100 (rows returned, NOT the 150 matching), and `limit` = 10 on
-# every fetch regardless of the limit applied - the untouched `limit: 10`
-# default in DatabaseResult#initialize, because Database#fetch_direct never
-# passes limit:/offset:/count:. That 10 is the same stale number out of the v2
-# docs that the buried PHP test asserted as the cap, still sitting one field
-# away from the read path it fails to describe.
+# One measured divergence is still pinned as CHARACTERISATION (a record of what
+# is, not a demand): on a capped fetch Ruby's DatabaseResult reports `count` =
+# 100 (rows returned, NOT the 150 matching). The `limit` field WAS the second
+# such divergence - it read 10 on every fetch regardless of the limit applied,
+# the untouched `limit: 10` default in DatabaseResult#initialize, because
+# Database#fetch_direct never passed limit:/offset:. That 10 was the same stale
+# number out of the v2 docs the buried PHP test asserted as the cap. fetch_direct
+# now passes the limit it actually applied, so the example asserts the real cap.
 #
 # No mocks: a real SQLite file in a temp dir, real rows, real counts.
 
@@ -120,8 +126,11 @@ RSpec.describe "raw fetch row-cap contract" do
       # The cap is text appended to the statement, so look at the statement.
       # This is the direct form of the property the row counts prove
       # indirectly, and it names the number in the failure message.
+      #
+      # The clause is on its OWN LINE since 2026-08-01: appended inline it lands
+      # inside a trailing `-- comment` and the engine ignores it entirely.
       expect(@db.fetch("SELECT * FROM #{table}").sql)
-        .to eq("SELECT * FROM #{table} LIMIT #{cap} OFFSET 0")
+        .to eq("SELECT * FROM #{table}\nLIMIT #{cap} OFFSET 0")
     end
   end
 
@@ -176,56 +185,52 @@ RSpec.describe "raw fetch row-cap contract" do
   end
 
   describe "where the cap lives in THIS framework (measured, not assumed)" do
-    it "reports result metadata that does NOT describe the cap (characterisation)" do
-      # A RECORD of measured behaviour, not a requirement - and two findings.
+    it "reports a count of rows RETURNED, and the limit it actually applied" do
+      # 1. CHARACTERISATION, still. `count` is the number of rows RETURNED, not
+      #    the number of rows MATCHING. It reads 100 here, not 150. The comment
+      #    in the neighbouring spec/orm_row_cap_spec.rb asserts in prose that
+      #    count "stays 150 regardless of truncation" - that prose is wrong,
+      #    and it was never executed as an assertion, which is how it stayed
+      #    wrong. Anything paginating on `count` under a default fetch sees 100
+      #    of 100 and cannot tell that 50 rows were truncated.
       #
-      # 1. `count` is the number of rows RETURNED, not the number of rows
-      #    MATCHING. It reads 100 here, not 150. The comment in the
-      #    neighbouring spec/orm_row_cap_spec.rb asserts in prose that count
-      #    "stays 150 regardless of truncation" - that prose is wrong, and it
-      #    was never executed as an assertion, which is how it stayed wrong.
-      #    Anything paginating on `count` under a default fetch sees 100 of
-      #    100 and cannot tell that 50 rows were truncated.
-      #
-      # 2. `limit` reads 10 - on EVERY fetch, whatever limit was applied. It
-      #    is the untouched default in DatabaseResult#initialize
-      #    (`limit: 10`), because Database#fetch_direct never passes limit:,
-      #    offset: or count: when it builds the result. That is the SAME
-      #    stale 10 out of the v2 docs that the buried PHP test asserted as
-      #    the cap - still resident in this framework, one field away from
-      #    the read path it fails to describe.
-      #
-      # If either number changes, the metadata got wired up: update this
-      # example, it is describing reality rather than demanding it.
+      # 2. FIXED 2026-08-01. `limit` used to read 10 - on EVERY fetch, whatever
+      #    limit was applied - because Database#fetch_direct never passed
+      #    limit:/offset: and DatabaseResult's constructor default leaked
+      #    through. That 10 was the SAME stale number out of the v2 docs the
+      #    buried PHP test asserted as the cap, sitting one field away from the
+      #    read path it failed to describe. fetch_direct now passes the cap it
+      #    applied, so the field describes the read.
       result = @db.fetch("SELECT * FROM #{table}")
       expect(result.records.length).to eq(cap)
       expect(result.count).to eq(cap)
-      expect(result.limit).to eq(10)
+      expect(result.limit).to eq(cap)
       expect(result.offset).to eq(0)
     end
 
-    it "DEFECT: a column whose NAME contains 'limit' defeats the cap entirely" do
-      # MEASURED, and a real bug - recorded here so it cannot be lost again.
-      #
-      # The "already has its own LIMIT" detector is a naive substring test:
+    it "FIXED: a column whose NAME contains 'limit' no longer defeats the cap" do
+      # MEASURED as a real bug, recorded here so it cannot be lost again, and
+      # now fixed. The "already has its own LIMIT" detector used to be a naive
+      # substring test:
       #   has_limit = sql.upcase.split("--")[0].include?("LIMIT")
-      # (lib/tina4/database.rb, Database#fetch). It cannot tell a LIMIT CLAUSE
-      # from the letters l-i-m-i-t inside an identifier, so any query touching
-      # a column called limit_amount / rate_limit / limit_type is treated as
-      # already limited and NO cap is appended at all. The read comes back
-      # completely unbounded - which is the precise incident the cap exists to
+      # (lib/tina4/database.rb, Database#fetch). It could not tell a LIMIT
+      # CLAUSE from the letters l-i-m-i-t inside an identifier, so any query
+      # touching a column called limit_amount / rate_limit / limit_type was
+      # treated as already limited and NO cap was appended at all. The read came
+      # back completely unbounded - the precise incident the cap exists to
       # prevent, reachable through an innocuous column name.
       #
-      # This example pins the CURRENT behaviour, it does not bless it. When the
-      # detector learns to parse a real trailing LIMIT clause, this goes red:
-      # change the expectation to `cap` at that point, do not delete it.
+      # It now scrubs literals/identifiers/comments and matches a LIMIT anchored
+      # to the END of the statement, so the cap is applied. This example was
+      # written to go red on the day that happened, with the instruction to
+      # change the expectation to `cap` rather than delete it - done.
       @db.execute("CREATE TABLE limit_named (id INTEGER PRIMARY KEY AUTOINCREMENT, limit_amount INTEGER)")
       rows.times { |i| @db.execute("INSERT INTO limit_named (limit_amount) VALUES (?)", [i]) }
       @db.commit
 
       result = @db.fetch("SELECT id, limit_amount FROM limit_named")
-      expect(result.sql).to eq("SELECT id, limit_amount FROM limit_named") # no LIMIT appended
-      expect(result.records.length).to eq(rows) # 150 - uncapped, not 100
+      expect(result.sql).to eq("SELECT id, limit_amount FROM limit_named\nLIMIT #{cap} OFFSET 0")
+      expect(result.records.length).to eq(cap) # 100 - capped, not 150
     end
 
     it "applies the cap at the wrapper - the SQLite driver has no fetch of its own" do

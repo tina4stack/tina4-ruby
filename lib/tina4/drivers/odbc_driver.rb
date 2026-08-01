@@ -106,18 +106,23 @@ module Tina4
       # Tries OFFSET/FETCH NEXT (SQL Server, newer ODBC sources) first.
       # Falls back to LIMIT/OFFSET for sources that support it (MySQL, PostgreSQL via ODBC).
       # The caller (Database#fetch) already gates on whether LIMIT is already present.
+      # Every append goes on a NEW LINE: inline it lands inside a trailing
+      # `-- comment` and the source silently ignores it (see the note on
+      # Drivers::SqliteDriver#apply_limit). The ORDER BY probe reads the SCRUBBED
+      # SQL, so an ORDER BY that only appears in a comment or a string literal
+      # no longer counts as one.
       def apply_limit(sql, limit, offset = 0)
         offset ||= 0
         if offset > 0
           # SQL Server / ANSI syntax — requires ORDER BY; add a no-op if absent
-          if sql.upcase.include?("ORDER BY")
-            "#{sql} OFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY"
+          if Tina4::Database.scrub_sql_text(sql).upcase.include?("ORDER BY")
+            "#{sql}\nOFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY"
           else
             # LIMIT/OFFSET fallback (MySQL, PostgreSQL via ODBC, SQLite via ODBC)
-            "#{sql} LIMIT #{limit} OFFSET #{offset}"
+            "#{sql}\nLIMIT #{limit} OFFSET #{offset}"
           end
         else
-          "#{sql} LIMIT #{limit}"
+          "#{sql}\nLIMIT #{limit}"
         end
       end
 

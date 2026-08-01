@@ -119,17 +119,32 @@ RSpec.describe Tina4::Log do
   end
 
   describe "JSON mode" do
+    # Selected EXPLICITLY. Owner decision 2026-08-01: TINA4_LOG_FORMAT is the
+    # only thing that chooses JSON — the implicit "production means JSON" switch
+    # was deleted in all four frameworks because "production" meant four
+    # different things and silently picked the operator's log format. This block
+    # used to reach JSON via TINA4_ENV=production; that no longer selects it,
+    # and spec/logger_contract_spec.rb pins the deletion from the other side.
     before do
-      ENV["TINA4_ENV"] = "production"
+      ENV["TINA4_LOG_FORMAT"] = "json"
       Tina4::Log.configure(File.join(tmpdir, "logs"))
     end
 
     after do
-      ENV.delete("TINA4_ENV")
+      ENV.delete("TINA4_LOG_FORMAT")
     end
 
-    it "activates JSON mode in production" do
+    it "activates JSON mode when TINA4_LOG_FORMAT=json" do
       expect(Tina4::Log.json_mode?).to be true
+    end
+
+    it "does NOT activate JSON mode for TINA4_ENV=production alone" do
+      ENV.delete("TINA4_LOG_FORMAT")
+      ENV["TINA4_ENV"] = "production"
+      Tina4::Log.configure(File.join(tmpdir, "logs"))
+      expect(Tina4::Log.json_mode?).to be false
+    ensure
+      ENV.delete("TINA4_ENV")
     end
 
     it "writes JSON-formatted entries to log file" do
@@ -384,13 +399,15 @@ RSpec.describe Tina4::Log do
     end
 
     context "in JSON mode" do
+      # Explicit TINA4_LOG_FORMAT — TINA4_ENV=production no longer selects JSON
+      # (owner decision 2026-08-01; see the JSON mode block above).
       before do
-        ENV["TINA4_ENV"] = "production"
+        ENV["TINA4_LOG_FORMAT"] = "json"
         Tina4::Log.configure(File.join(tmpdir, "logs"))
       end
 
       after do
-        ENV.delete("TINA4_ENV")
+        ENV.delete("TINA4_LOG_FORMAT")
       end
 
       it "adds a 'function' key to the JSON entry when enabled" do

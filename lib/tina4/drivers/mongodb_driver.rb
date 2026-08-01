@@ -90,11 +90,15 @@ module Tina4
       end
 
       # MongoDB has no LIMIT clause — ignore; already handled in execute_query
+      # Uses the SAME detector as Database#fetch (scrubbed + anchored to the end)
+      # instead of its own naive `sql.upcase.include?("LIMIT")`, which mistook a
+      # column named rate_limit or a `'LIMIT'` literal for a real clause and
+      # returned the statement uncapped. Appends on a NEW LINE so a trailing
+      # `-- comment` cannot swallow the clause.
       def apply_limit(sql, limit, offset = 0)
-        sql_up = sql.upcase
-        return sql if sql_up.include?("LIMIT")
+        return sql if Tina4::Database.has_trailing_limit?(sql)
         modified = sql.dup
-        modified += " LIMIT #{limit}" if limit && limit > 0
+        modified += "\nLIMIT #{limit}" if limit && limit > 0
         modified += " OFFSET #{offset}" if offset && offset > 0
         modified
       end

@@ -145,6 +145,111 @@ module Tina4
       stripped
     end
 
+    # Blank out string literals, quoted identifiers and BOTH comment forms so a
+    # keyword search sees only real SQL.
+    #
+    # Blanks are spaces of the SAME LENGTH (newlines preserved), so offsets and
+    # line structure still line up with the original — the scrubbed copy is only
+    # ever used to LOOK at the SQL, never to execute it.
+    #
+    # MEASURED 2026-08-01 on a real 150-row SQLite table with the 100-row cap in
+    # force. The old detector was
+    #   `sql.upcase.split("--")[0].include?("LIMIT")`
+    # and each of these returned ALL 150 ROWS instead of 100:
+    #
+    #   SELECT * FROM t WHERE label != 'LIMIT' ORDER BY id     literal
+    #   SELECT * FROM t ORDER BY id -- LIMIT 5                 line comment
+    #   SELECT * FROM t ORDER BY id /* LIMIT 5 */              block comment
+    #   SELECT id, label AS rate_limit FROM t                  identifier
+    #
+    # A silently uncapped read of a whole table is the production incident the
+    # cap exists to prevent, and an ordinary column name was enough to cause it.
+    # Ported from the Python/Node master (same design, same answers).
+    def self.scrub_sql_text(sql)
+      return sql if sql.nil? || sql.empty?
+
+      out = +""
+      i = 0
+      n = sql.length
+      while i < n
+        ch = sql[i]
+        nxt = i + 1 < n ? sql[i + 1] : ""
+
+        if ch == "'" || ch == '"'
+          quote = ch
+          out << " "
+          i += 1
+          while i < n
+            if sql[i] == quote
+              # A doubled quote ('' / "") is an ESCAPED quote inside the
+              # literal, not its end — blank both and keep going.
+              if i + 1 < n && sql[i + 1] == quote
+                out << "  "
+                i += 2
+                next
+              end
+              out << " "
+              i += 1
+              break
+            end
+            out << (sql[i] == "\n" ? "\n" : " ")
+            i += 1
+          end
+          next
+        end
+
+        if ch == "-" && nxt == "-"
+          while i < n && sql[i] != "\n"
+            out << " "
+            i += 1
+          end
+          next
+        end
+
+        if ch == "/" && nxt == "*"
+          out << "  "
+          i += 2
+          while i < n && !(sql[i] == "*" && i + 1 < n && sql[i + 1] == "/")
+            out << (sql[i] == "\n" ? "\n" : " ")
+            i += 1
+          end
+          if i < n
+            out << "  "
+            i += 2
+          end
+          next
+        end
+
+        out << ch
+        i += 1
+      end
+      out
+    end
+
+    # True when the statement ENDS with its own LIMIT clause.
+    #
+    # Anchored to the END on purpose: a bare "contains LIMIT" test also matches a
+    # LIMIT inside a SUBQUERY, where the OUTER statement still needs its cap.
+    # This is tina4-php's SqlNormalizerTrait::hasTrailingLimit regex, ported
+    # verbatim so all four frameworks answer identically. It accepts a numeric
+    # value, ?/$1/:name/%s placeholders, MySQL's `LIMIT a, b` comma form, and a
+    # trailing OFFSET.
+    #
+    # Literals, quoted identifiers and comments are scrubbed before matching —
+    # see .scrub_sql_text for the measured failures that motivate it.
+    VALUE_TOKEN = '(?:\d+|\?|\$\d+|:\w+|%s)'
+    TRAILING_LIMIT_RE = /
+      \bLIMIT\s+#{VALUE_TOKEN}
+      (?:\s*,\s*#{VALUE_TOKEN})?
+      (?:\s+OFFSET\s+#{VALUE_TOKEN})?
+      \s*;?\s*\z
+    /ix.freeze
+
+    def self.has_trailing_limit?(sql)
+      return false if sql.nil? || sql.empty?
+      TRAILING_LIMIT_RE.match?(scrub_sql_text(sql))
+    end
+
     # Static factory — cross-framework consistency: Database.create(url)
     def self.create(url, username: "", password: "", pool: nil)
       new(url, username: username.empty? ? nil : username,
@@ -470,10 +575,18 @@ module Tina4
       sql = Tina4::Database.strip_trailing_semicolons(sql)
 
       effective_sql = sql
-      # Skip appending LIMIT if SQL already has one
-      has_limit = sql.upcase.split("--")[0].include?("LIMIT")
+      # Skip appending LIMIT if the statement already ENDS with its own.
+      #
+      # .has_trailing_limit? scrubs literals/identifiers/comments and anchors to
+      # the end. The old test was `sql.upcase.split("--")[0].include?("LIMIT")`,
+      # so `WHERE label != 'LIMIT'`, a `/* LIMIT 5 */` comment, or a column named
+      # rate_limit all read as "the caller supplied their own" and the cap was
+      # silently dropped — a full-table read (MEASURED: 150 of 150 rows).
+      has_limit = Tina4::Database.has_trailing_limit?(sql)
+      applied_limit = 0
       if limit && !has_limit
         effective_sql = drv.apply_limit(effective_sql, limit, offset)
+        applied_limit = limit
       end
 
       if @cache_enabled && !no_cache
@@ -486,13 +599,13 @@ module Tina4
         # fetch_direct RAISES on a SQL error (and captures @last_error), so a
         # failed read never reaches cache_set below — we never cache an empty
         # result produced by a buried failure.
-        result = fetch_direct(drv, effective_sql, params)
+        result = fetch_direct(drv, effective_sql, params, limit: applied_limit, offset: offset)
         cache_set(key, result)
         @cache_mutex.synchronize { @cache_misses += 1 }
         return result
       end
 
-      fetch_direct(drv, effective_sql, params)
+      fetch_direct(drv, effective_sql, params, limit: applied_limit, offset: offset)
     end
 
     # Fetch a single row (or nil).
@@ -1065,10 +1178,18 @@ module Tina4
     # main query propagates (same contract as #execute). The cause is captured on
     # @last_error for #get_error before the re-raise — preferring the driver's own
     # last_error (when it exposes one, e.g. postgres) over the exception message.
-    def fetch_direct(drv, effective_sql, params)
+    # `limit:`/`offset:` are the pagination ACTUALLY APPLIED to this statement —
+    # `limit: 0` means "no cap was appended" (an explicit no-limit read, or SQL
+    # that carries its own trailing LIMIT). They were never passed before, so
+    # DatabaseResult#limit fell through to its constructor default and reported
+    # 10 on EVERY fetch whatever limit ran — the same stale v2 number the buried
+    # PHP row-cap test asserted as the cap, sitting one field away from the read
+    # path it fails to describe.
+    def fetch_direct(drv, effective_sql, params, limit: 0, offset: 0)
       result = drv.execute_query(effective_sql, params)
       @last_error = nil
-      Tina4::DatabaseResult.new(result, sql: effective_sql, db: self)
+      Tina4::DatabaseResult.new(result, sql: effective_sql, db: self,
+                                limit: limit, offset: offset)
     rescue => e
       @last_error = driver_error_message(drv, e)
       raise

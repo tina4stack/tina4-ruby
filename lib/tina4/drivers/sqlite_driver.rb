@@ -125,8 +125,13 @@ module Tina4
         (["?"] * count).join(", ")
       end
 
+      # The clause goes on a NEW LINE. Appended inline it lands INSIDE a trailing
+      # `-- comment` and is silently swallowed by the engine — MEASURED:
+      # "SELECT * FROM t ORDER BY id -- LIMIT 5" returned all 150 rows with the
+      # 100-row cap in force. That is a bug at the APPEND SITE, independent of
+      # the detector (Database.has_trailing_limit?), and it needs its own test.
       def apply_limit(sql, limit, offset = 0)
-        "#{sql} LIMIT #{limit} OFFSET #{offset}"
+        "#{sql}\nLIMIT #{limit} OFFSET #{offset}"
       end
 
       def begin_transaction

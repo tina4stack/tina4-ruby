@@ -211,8 +211,12 @@ module Tina4
         (["?"] * count).join(", ")
       end
 
+      # The closing paren goes on a NEW LINE. Inline, a trailing `-- comment` in
+      # the caller's SQL comments the paren out and the whole wrapped statement
+      # is a syntax error (the same class of bug as the LIMIT append site — see
+      # the note on Drivers::SqliteDriver#apply_limit).
       def apply_limit(sql, limit, offset = 0)
-        "SELECT FIRST #{limit} SKIP #{offset} * FROM (#{sql})"
+        "SELECT FIRST #{limit} SKIP #{offset} * FROM (#{sql}\n)"
       end
 
       # Transaction handling — mirrors the Python master's connection-level

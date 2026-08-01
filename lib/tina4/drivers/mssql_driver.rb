@@ -101,8 +101,15 @@ module Tina4
         # or any unordered SELECT given a limit) otherwise raises "Incorrect
         # syntax near '0'" at the OFFSET. Append a no-op ORDER BY (SELECT NULL)
         # when the SQL has no ORDER BY, mirroring the Python master (mssql.py).
-        ordered = sql =~ /\bORDER\s+BY\b/i ? sql : "#{sql} ORDER BY (SELECT NULL)"
-        "#{ordered} OFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY"
+        #
+        # Both appends go on a NEW LINE: inline they land inside a trailing
+        # `-- comment` and are silently swallowed (see the note on
+        # Drivers::SqliteDriver#apply_limit). The ORDER BY probe reads the
+        # SCRUBBED SQL for the same reason — an ORDER BY that only appears
+        # inside a comment or a string literal is not an ORDER BY.
+        has_order = Tina4::Database.scrub_sql_text(sql) =~ /\bORDER\s+BY\b/i
+        ordered = has_order ? sql : "#{sql}\nORDER BY (SELECT NULL)"
+        "#{ordered}\nOFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY"
       end
 
       def begin_transaction
