@@ -41,23 +41,67 @@ RSpec.describe "Request v3 features" do
     end
   end
 
+  # ADR-0019: forwarding headers are honoured ONLY behind a declared trusted
+  # proxy, and the RIGHTMOST non-trusted hop wins.
+  #
+  # These two examples used to assert "uses X-Forwarded-For when present" and
+  # "uses X-Real-IP as fallback" with NO proxy declared. They pinned the
+  # vulnerable behaviour on both counts: the header was believed from any
+  # caller, and the LEFTMOST hop won. A client can prepend its own hop (the
+  # proxy appends rather than replaces), so the leftmost entry is
+  # attacker-controlled even behind a real proxy.
   describe "#ip with X-Forwarded-For" do
-    it "uses X-Forwarded-For when present" do
+    around do |example|
+      previous = ENV["TINA4_TRUSTED_PROXIES"]
+      ENV.delete("TINA4_TRUSTED_PROXIES")
+      example.run
+      previous.nil? ? ENV.delete("TINA4_TRUSTED_PROXIES") : ENV["TINA4_TRUSTED_PROXIES"] = previous
+    end
+
+    it "ignores X-Forwarded-For from an untrusted peer" do
       env = make_env(
         "HTTP_X_FORWARDED_FOR" => "203.0.113.50, 70.41.3.18",
         "REMOTE_ADDR" => "127.0.0.1"
       )
       req = Tina4::Request.new(env)
-      expect(req.ip).to eq("203.0.113.50")
+      expect(req.ip).to eq("127.0.0.1")
     end
 
-    it "uses X-Real-IP as fallback" do
+    it "uses the rightmost untrusted hop behind a trusted proxy" do
+      ENV["TINA4_TRUSTED_PROXIES"] = "127.0.0.1"
+      env = make_env(
+        "HTTP_X_FORWARDED_FOR" => "203.0.113.50, 70.41.3.18",
+        "REMOTE_ADDR" => "127.0.0.1"
+      )
+      req = Tina4::Request.new(env)
+      expect(req.ip).to eq("70.41.3.18")
+    end
+
+    it "ignores X-Real-IP from an untrusted peer" do
+      env = make_env(
+        "HTTP_X_REAL_IP" => "10.0.0.5",
+        "REMOTE_ADDR" => "127.0.0.1"
+      )
+      req = Tina4::Request.new(env)
+      expect(req.ip).to eq("127.0.0.1")
+    end
+
+    it "uses X-Real-IP as fallback behind a trusted proxy" do
+      ENV["TINA4_TRUSTED_PROXIES"] = "127.0.0.1"
       env = make_env(
         "HTTP_X_REAL_IP" => "10.0.0.5",
         "REMOTE_ADDR" => "127.0.0.1"
       )
       req = Tina4::Request.new(env)
       expect(req.ip).to eq("10.0.0.5")
+    end
+
+    it "remote_ip is always the raw socket peer" do
+      env = make_env(
+        "HTTP_X_FORWARDED_FOR" => "203.0.113.50",
+        "REMOTE_ADDR" => "198.51.100.4"
+      )
+      expect(Tina4::Request.new(env).remote_ip).to eq("198.51.100.4")
     end
 
     it "falls back to REMOTE_ADDR" do
