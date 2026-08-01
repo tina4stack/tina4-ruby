@@ -33,6 +33,28 @@ module Tina4
       "HS512" => OpenSSL::Digest::SHA512
     }.freeze
 
+    # RS256 (RSA-SHA256) is the OPT-IN asymmetric algorithm, and Ruby needs NO gem
+    # for it: OpenSSL is a stdlib DEFAULT GEM, so OpenSSL::PKey::RSA#sign/#verify
+    # emit and check exactly the RFC 7515 signature the other frameworks do
+    # (measured: a token minted here verifies under PHP openssl_verify AND Node
+    # crypto.createVerify, and a tampered payload goes INVALID in both). The `jwt`
+    # gem was declared only to wrap the base64url envelope this file already
+    # builds for HMAC, so it was dropped.
+    #
+    # The contract requires a LOUD, ACTIONABLE failure wherever RS256 is
+    # unavailable. In Ruby that branch is UNREACHABLE in practice: the
+    # `require "openssl"` at the top of this file is what supplies OpenSSL::HMAC
+    # for the HMAC path too, so an interpreter lacking it cannot load Tina4 at
+    # all. The message therefore names the real remedy and deliberately does NOT
+    # suggest installing a library — there is none to install.
+    RS256_UNAVAILABLE_MESSAGE =
+      "RS256 is unavailable: this Ruby has no OpenSSL::PKey::RSA. OpenSSL is a " \
+      "Ruby stdlib DEFAULT GEM, so this interpreter was built without the openssl " \
+      "extension — rebuild Ruby with OpenSSL support, or use a build that ships " \
+      "it. Do NOT install a JWT gem: Tina4 signs and verifies RS256 with stdlib " \
+      "OpenSSL and needs no third-party library. Tina4's standard algorithms are " \
+      "HS256/HS384/HS512, which are stdlib OpenSSL too."
+
     # Seconds of clock skew tolerated on the "nbf" (not-before) claim. Without
     # this a token minted on one host and validated on another a second behind is
     # rejected for no real reason; RFC 7519 explicitly allows "a small leeway".
@@ -155,90 +177,114 @@ module Tina4
         OpenSSL::HMAC.digest(HMAC_ALGORITHMS.fetch(algorithm).new, secret.to_s, signing_input)
       end
 
+      # Write the base64url header.payload.signature envelope. The signature bytes
+      # come from the block, so the HMAC and RS256 paths share ONE envelope writer
+      # — and one place where "alg" is stamped from whatever actually signed.
+      def encode_envelope(algorithm, claims)
+        segments = [
+          base64url_encode(JSON.generate({ "alg" => algorithm, "typ" => "JWT" })),
+          base64url_encode(JSON.generate(claims))
+        ]
+        segments << base64url_encode(yield(segments.join(".")))
+        segments.join(".")
+      end
+
+      # Read the envelope, PIN the header alg, check the signature via the block,
+      # then apply the RFC 7519 claim rules. Returns the payload hash or nil.
+      #
+      # The algorithm is PINNED to our configured one rather than trusted from the
+      # token: a header asking to be verified as anything else — "none", a
+      # different HMAC, or RS256 while we are configured for HMAC — is rejected
+      # before any signature work. Making RS256 opt-in must NOT open algorithm
+      # substitution, so both paths share this one pin.
+      def decode_envelope(token, algorithm)
+        parts = token.to_s.split(".")
+        return nil unless parts.length == 3
+        return nil unless JSON.parse(base64url_decode(parts[0]))["alg"] == algorithm
+        return nil unless yield("#{parts[0]}.#{parts[1]}", base64url_decode(parts[2]))
+
+        payload = JSON.parse(base64url_decode(parts[1]))
+        now = Time.now.to_i
+
+        # RFC 7519 s4.1.4: "The processing of the 'exp' claim requires that the
+        # current date/time MUST be before the expiration date/time". now == exp
+        # is therefore ALREADY expired, so the test is >=.
+        #
+        # key? — NOT a truthiness test on the value. A PRESENT but malformed exp
+        # must never read as "no constraint": `payload["exp"] && ...` skipped the
+        # check entirely for exp: null / exp: false, turning a broken token into
+        # one that never expires.
+        if payload.key?("exp")
+          exp = numeric_date(payload["exp"])
+          return nil if exp.nil? || now >= exp
+        end
+
+        # "nbf" (not-before): a post-dated token is not valid yet. Tolerate
+        # JWT_LEEWAY_SECONDS of clock skew so a token minted on a host a second
+        # ahead is not rejected for nothing. Same malformed-is-rejected rule as
+        # exp; NO nbf key at all stays unconstrained (non-breaking).
+        if payload.key?("nbf")
+          nbf = numeric_date(payload["nbf"])
+          return nil if nbf.nil? || now + JWT_LEEWAY_SECONDS < nbf
+        end
+
+        payload
+      rescue ArgumentError, JSON::ParserError, OpenSSL::OpenSSLError
+        nil
+      end
+
       # Build a JWT with Ruby's OpenSSL::HMAC (no gem needed). The algorithm is the
       # explicit argument, else TINA4_JWT_ALGORITHM, else HS256 — and the header
       # advertises exactly the algorithm that signed.
       def hmac_encode(claims, secret, algorithm: nil)
         alg = resolve_algorithm(algorithm)
-        header = { "alg" => alg, "typ" => "JWT" }
-        segments = [
-          base64url_encode(JSON.generate(header)),
-          base64url_encode(JSON.generate(claims))
-        ]
-        signing_input = segments.join(".")
-        segments << base64url_encode(hmac_signature(alg, secret, signing_input))
-        segments.join(".")
+        encode_envelope(alg, claims) { |input| hmac_signature(alg, secret, input) }
       end
 
       # Decode and verify an HMAC-signed JWT. Returns the payload hash or nil.
-      #
-      # The algorithm is PINNED to our configured one rather than trusted from the
-      # token: a header asking to be verified as anything else — "none", a
-      # different HMAC, or an RSA alg we do not implement here — is rejected before
-      # any signature work.
       def hmac_decode(token, secret, algorithm: nil)
-        # Resolved OUTSIDE the rescue below: an unsupported algorithm is a
+        # Resolved OUTSIDE decode_envelope's rescue: an unsupported algorithm is a
         # configuration error that must surface, not become a nil "invalid token".
         alg = resolve_algorithm(algorithm)
 
-        begin
-          parts = token.split(".")
-          return nil unless parts.length == 3
-
-          header_json = base64url_decode(parts[0])
-          header = JSON.parse(header_json)
-          return nil unless header["alg"] == alg
-
-          # Verify signature
-          signing_input = "#{parts[0]}.#{parts[1]}"
-          expected_sig = hmac_signature(alg, secret, signing_input)
-          actual_sig = base64url_decode(parts[2])
-
+        decode_envelope(token, alg) do |input, signature|
+          expected = hmac_signature(alg, secret, input)
           # Constant-time comparison to prevent timing attacks. Lengths must match
-          # first — fixed_length_secure_compare raises on a length mismatch, which
+          # first — fixed_length_secure_compare RAISES on a length mismatch, which
           # a forged signature of the wrong digest size would trigger.
-          return nil unless expected_sig.bytesize == actual_sig.bytesize
-          return nil unless OpenSSL.fixed_length_secure_compare(expected_sig, actual_sig)
-
-          payload = JSON.parse(base64url_decode(parts[1]))
-
-          now = Time.now.to_i
-
-          # RFC 7519 s4.1.4: "The processing of the 'exp' claim requires that the
-          # current date/time MUST be before the expiration date/time". now == exp
-          # is therefore ALREADY expired, so the test is >=.
-          #
-          # key? — NOT a truthiness test on the value. A PRESENT but malformed exp
-          # must never read as "no constraint": `payload["exp"] && ...` skipped the
-          # check entirely for exp: null / exp: false, turning a broken token into
-          # one that never expires.
-          if payload.key?("exp")
-            exp = numeric_date(payload["exp"])
-            return nil if exp.nil? || now >= exp
-          end
-
-          # "nbf" (not-before): a post-dated token is not valid yet. Tolerate
-          # JWT_LEEWAY_SECONDS of clock skew so a token minted on a host a second
-          # ahead is not rejected for nothing. Same malformed-is-rejected rule as
-          # exp; NO nbf key at all stays unconstrained (non-breaking).
-          if payload.key?("nbf")
-            nbf = numeric_date(payload["nbf"])
-            return nil if nbf.nil? || now + JWT_LEEWAY_SECONDS < nbf
-          end
-
-          payload
-        rescue ArgumentError, JSON::ParserError, OpenSSL::HMACError
-          nil
+          expected.bytesize == signature.bytesize &&
+            OpenSSL.fixed_length_secure_compare(expected, signature)
         end
       end
 
-      # ── Token API (auto-selects HS256 or RS256) ─────────────────
+      # ── RS256: opt-in, stdlib OpenSSL, zero gems ─────────────────
+
+      # Does this runtime provide RSA natively? Ruby ships OpenSSL as a stdlib
+      # DEFAULT GEM, so this is true on every normal build — there is nothing to
+      # install and nothing to opt into at the library level.
+      def rs256_available?
+        defined?(OpenSSL::PKey::RSA) ? true : false
+      end
+
+      # RSA-SHA256, with a FRESH digest instance per call so nothing about the
+      # digest state is shared between calls or threads (same rule as HMAC).
+      def rs256_encode(claims)
+        require_rs256!
+        encode_envelope("RS256", claims) { |input| private_key.sign(OpenSSL::Digest::SHA256.new, input) }
+      end
+
+      def rs256_decode(token)
+        require_rs256!
+        decode_envelope(token, "RS256") { |input, sig| public_key.verify(OpenSSL::Digest::SHA256.new, sig, input) }
+      end
+
+      # ── Token API (HMAC by default; RS256 when RSA keys are present) ──
 
       # Mint a signed JWT.
       #
       # `algorithm:` selects the HMAC algorithm (else TINA4_JWT_ALGORITHM, else
       # HS256); an unsupported one raises ArgumentError rather than quietly
-      # downgrading. It applies to the HMAC path only — the legacy RS256 path
+      # downgrading. It applies to the HMAC path only — the opt-in RS256 path
       # (RSA keys present in .keys/) is unaffected.
       #
       # BREAKING (deliberate): no "nbf" claim is stamped. It duplicated "iat",
@@ -259,17 +305,15 @@ module Tina4
           hmac_encode(claims, hmac_secret, algorithm: algorithm)
         else
           ensure_keys
-          require "jwt"
-          JWT.encode(claims, private_key, "RS256")
+          rs256_encode(claims)
         end
       end
-
 
       # Verify a JWT signature + expiry.
       #
       # 3.13.0: return type changed from `Boolean` to `Hash | nil`. The
       # decoded payload is returned on success, nil on failure. Matches
-      # firebase/jwt-ruby and Python's Auth.valid_token in 3.13.0.
+      # Python's Auth.valid_token in 3.13.0.
       #
       # Legacy `if Tina4::Auth.valid_token(t)` patterns keep working
       # because a non-empty Hash is truthy and nil is falsy.
@@ -278,32 +322,17 @@ module Tina4
           hmac_decode(token, hmac_secret) # returns Hash payload or nil
         else
           ensure_keys
-          require "jwt"
-          decoded = JWT.decode(token, public_key, true, algorithm: "RS256")
-          decoded[0] # firebase/jwt-ruby returns [payload, header]
+          rs256_decode(token)
         end
-      rescue JWT::ExpiredSignature, JWT::DecodeError
-        nil
       end
 
+      # BREAKING (deliberate): the RS256 branch used to surface the jwt gem's own
+      # wording ("Signature has expired", or a raw decode message). Both paths now
+      # report the single HMAC-path wording, so the detail shape no longer depends
+      # on which algorithm signed.
       def valid_token_detail(token)
-        if use_hmac?
-          payload = hmac_decode(token, hmac_secret)
-          if payload
-            { valid: true, payload: payload }
-          else
-            { valid: false, error: "Invalid or expired token" }
-          end
-        else
-          ensure_keys
-          require "jwt"
-          decoded = JWT.decode(token, public_key, true, algorithm: "RS256")
-          { valid: true, payload: decoded[0] }
-        end
-      rescue JWT::ExpiredSignature
-        { valid: false, error: "Token expired" }
-      rescue JWT::DecodeError => e
-        { valid: false, error: e.message }
+        payload = valid_token(token)
+        payload ? { valid: true, payload: payload } : { valid: false, error: "Invalid or expired token" }
       end
 
       def hash_password(password, salt = nil, iterations = 260000)
@@ -455,6 +484,14 @@ module Tina4
       end
 
       private
+
+      # The loud, actionable RS256 gate. NotImplementedError is deliberate: it is
+      # Ruby's "not available on this platform" error AND it is NOT a
+      # StandardError, so a caller's blanket `rescue => e` cannot swallow it into
+      # a mysterious false. Unreachable on any Ruby that can load this file.
+      def require_rs256!
+        raise NotImplementedError, RS256_UNAVAILABLE_MESSAGE unless rs256_available?
+      end
 
       # Coerce an RFC 7519 NumericDate claim to integer seconds, else nil.
       #

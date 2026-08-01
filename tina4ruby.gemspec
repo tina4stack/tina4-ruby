@@ -20,7 +20,13 @@ Gem::Specification.new do |spec|
   spec.add_dependency "rack", "~> 3.0"
   spec.add_dependency "rackup", "~> 2.1"
   spec.add_dependency "puma", "~> 6.0"
-  spec.add_dependency "jwt", "~> 2.7"
+  # NO jwt gem. Tina4 signs and verifies every JWT with stdlib OpenSSL:
+  # OpenSSL::HMAC for the standard HS256/HS384/HS512 family, and
+  # OpenSSL::PKey::RSA#sign/#verify for the opt-in RS256. The gem was declared
+  # only to wrap the base64url header.payload.signature envelope lib/tina4/auth.rb
+  # already builds for the HMAC path, so it bought nothing. (Measured: a token
+  # minted by the stdlib path verifies under PHP openssl_verify AND Node
+  # crypto.createVerify, with a tampered payload INVALID in both.)
 
   spec.add_dependency "net-smtp", "~> 0.5"
   spec.add_dependency "net-imap", "~> 0.5"
@@ -35,11 +41,12 @@ Gem::Specification.new do |spec|
   # dependencies above provides it, so `require "logger"` (lib/tina4/log.rb)
   # raised LoadError on Ruby 4 and `tina4 serve` could not boot at all.
   #
-  # base64 currently resolves transitively through jwt, so it is NOT a live
-  # failure today. It is declared because eight files require it DIRECTLY
-  # (auth, api, websocket, messenger, mcp, frond, realtime, dev_mailbox), and
-  # leaning on someone else's transitive dep for a direct require breaks the
-  # day jwt drops it.
+  # base64 is now LOAD-BEARING. It used to resolve transitively through jwt, so
+  # the declaration was belt-and-braces; dropping jwt removed that transitive
+  # path, and eight files require base64 DIRECTLY (auth, api, websocket,
+  # messenger, mcp, frond, realtime, dev_mailbox). Removing this line now breaks
+  # `require "base64"` on Ruby 3.4+, where base64 is a BUNDLED gem and a bundled
+  # gem nothing declares is not on the load path under Bundler.
   #
   # ostruct is deliberately NOT declared: tina4 never requires it. (A scaffold
   # may still need it if the app pulls in oj, which does declare it.)
