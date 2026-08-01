@@ -89,8 +89,7 @@ across the four frameworks.
 
 Also in this change:
 
-- **Breaking: strict session mode — deploying this logs every existing session out
-  once.** A session id is now adopted only when it is BOTH a well-formed opaque id
+- **Breaking: strict session mode.** A session id is now adopted only when it is BOTH a well-formed opaque id
   (`Tina4::Session.valid_session_id?`, `/\A[A-Za-z0-9_-]{1,128}\z/` — the constraint is
   the alphabet, there is deliberately no entropy floor) AND an id the backend already
   holds a session under. Anything else is DISCARDED and a fresh `SecureRandom.hex(32)`
@@ -99,13 +98,39 @@ Also in this change:
   one, wait for the victim to log in under it, and already hold the authenticated
   session id. A backend OUTAGE is deliberately not treated as "unknown" — it logs and
   still adopts, so one Redis blip cannot rotate every id at once.
+
+  Strict mode on its own logs NOBODY out: an id the backend already holds is still
+  adopted, on every backend. (An earlier draft of this bullet claimed a one-time
+  logout for everyone. That was wrong. The one-time logout is caused by the filename
+  change in the next bullet, and it reaches the FILE backend only.)
 - **Breaking: session filenames are a SHA-256 of the id.** `FileHandler#session_path`
   did `gsub(/[^a-zA-Z0-9_-]/, "")` — traversal-safe but LOSSY, so `a/b` and `ab` both
   became `sess_ab.json` and one user's session data surfaced under another user's id.
   It is now `sess_<sha256(id)>.json`, parity with Python's `FileSessionHandler._file`.
-  Existing session FILES are not found under the new name, which is the other half of
-  the one-time logout above. *Migration:* none required; users simply sign in again.
-  Delete stale `sessions/sess_*.json` at your leisure.
+
+  **This invalidates live sessions on the FILE backend ONLY.** An existing
+  `sess_<id>.json` is not found under the new name, so those users are handed a fresh
+  session and sign in again once. Do not tell operators on the other backends that
+  everyone is logged out - it is not true for them. Verified backend by backend
+  against this release:
+
+  | session backend | live sessions after upgrade | why |
+  | --- | --- | --- |
+  | file | LOST, sign in again once | filename moved from `sess_<stripped-id>.json` to `sess_<sha256(id)>.json` |
+  | redis | survive | key is still `tina4:session:<id>`, the raw id |
+  | valkey | survive | key is still `tina4:session:<id>`, the raw id |
+  | mongodb | survive | `_id` is still the raw id |
+  | database | survive | `tina4_session.session_id` is still the raw id |
+  | memcached | not applicable | new session backend in this release, no prior sessions to lose |
+
+  The memcached handler hashes a key only when the composed key would exceed
+  memcached's 250-byte limit or carry a control character, so a normal id is stored
+  under the raw value there too.
+
+  *Migration:* nothing to run. On the file backend, expect one round of sign-ins on
+  the deploy, so avoid shipping it in the middle of a checkout flow or alongside a
+  change that assumes a warm session. Delete stale `sessions/sess_*.json` at your
+  leisure; they are unreadable, not dangerous.
 - **A malformed `exp`/`nbf` no longer reads as "no constraint".** RFC 7519 s2 defines
   them as NumericDate; the check was `payload["exp"] && ...`, so `exp: null` or
   `exp: false` skipped it entirely and the token never expired. A present-but-non-numeric
@@ -120,6 +145,29 @@ Also in this change:
 
 Locked in by `spec/auth_session_contract_spec.rb`, whose example names are identical in
 all four frameworks.
+
+### Breaking: `Session#get` returns a STORED false instead of the default
+
+`Tina4::Session#get` was `@data[key.to_s] || default`, and `||` hands back the
+caller's default for ANY falsy stored value. A legitimately stored `false` read back
+as `true` whenever the caller passed `true` as the default - so
+`session.get("marketing_opt_in", true)` reported opted-IN for a user who had
+explicitly opted OUT. It is now `value.nil? ? default : value`, which keys off
+PRESENCE, matching Python's `dict.get(key, default)`.
+
+The `nil?` form is deliberate rather than `@data.key?(k) ? @data[k] : default`: both
+fix the `false` case, but the `key?` form would also make a stored `nil` win over the
+default, which is a second behaviour change nobody asked for.
+
+**Migration.** Read the call sites where you pass a TRUTHY default and can store a
+`false` under that key - typically feature flags, consent and opt-out flags. Those
+now return the stored `false` where they used to return your default. A key that was
+never stored still returns the default, unchanged. Python, PHP and Node were already
+correct here; only Ruby moves.
+
+Locked by the cross-framework example `session get returns a stored false instead of
+the default`, whose name is identical in all four repos.
+
 ### Breaking: the response cache obeys RFC 9111 (Authorization and Vary)
 
 The response cache keyed entries on method plus URL, with NO request header in
