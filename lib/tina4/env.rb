@@ -333,21 +333,39 @@ module Tina4
 
       # Rule 5 + 6: quoting decides escapes AND interpolation, in that order.
       def parse_env_value(value, path, line_no, warned_refs)
-        # A fully single-quoted value is verbatim: no escapes, no interpolation.
-        # That is shell semantics, and it is the documented way to keep a literal
-        # ${...} now that interpolation is on.
-        if value.length >= 2 && value.start_with?("'") && value.end_with?("'")
-          return value[1..-2]
-        end
+        # A QUOTED value ends at its CLOSING QUOTE, and anything after it is a
+        # comment. Testing the LAST character instead was wrong: a trailing
+        # comment makes the last character non-quote, so `PW="s3cret" # note`
+        # fell through to the unquoted branch below, which strips only the ` #`
+        # and left the QUOTE CHARACTERS in the value -- a credential handed to a
+        # driver as "\"s3cret\"". PHP already scanned for the terminator; this is
+        # that mechanism, and the scan SKIPS a quote preceded by a backslash so
+        # an escaped \" cannot end the value early.
+        if !value.empty? && (value.start_with?("'") || value.start_with?('"'))
+          quote = value[0]
+          i = 1
+          while i < value.length
+            if value[i] == "\\" && quote == '"' && i + 1 < value.length
+              i += 2
+              next
+            end
+            break if value[i] == quote
+            i += 1
+          end
 
-        if value.length >= 2 && value.start_with?('"') && value.end_with?('"')
-          # A double-quoted value keeps its interior verbatim (a `#` inside stays
-          # a `#`), minus the quotes, with escape processing.
-          inner = value[1..-2]
-                    .gsub("\\n", "\n")
-                    .gsub("\\t", "\t")
-                    .gsub("\\\\", "\\")
-          return interpolate_env(inner, path, line_no, warned_refs)
+          if i < value.length
+            inner = value[1...i]
+            # Single quotes are verbatim: no escapes, no interpolation. Shell
+            # semantics, and the documented way to keep a literal ${...}.
+            return inner if quote == "'"
+
+            inner = inner.gsub("\\n", "\n")
+                         .gsub("\\r", "\r")
+                         .gsub("\\t", "\t")
+                         .gsub('\\"', '"')
+                         .gsub("\\\\", "\\")
+            return interpolate_env(inner, path, line_no, warned_refs)
+          end
         end
 
         # Rule 5: an unquoted value is truncated at the first SPACE-HASH, then
