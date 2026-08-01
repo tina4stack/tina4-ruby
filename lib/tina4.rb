@@ -191,6 +191,71 @@ module Tina4
     Tina4::Env.is_truthy(value)
   end
 
+  # Parsed TINA4_TRUSTED_PROXIES, cached on the raw env string so a change is
+  # picked up but the parse does not run per request. [raw_value, networks]
+  @trusted_proxy_cache = [nil, [].freeze]
+
+  # The configured trusted-proxy networks, from TINA4_TRUSTED_PROXIES.
+  #
+  # Comma-separated exact addresses and/or CIDR ranges, IPv4 and IPv6:
+  # "10.0.0.0/8, 192.168.1.5, ::1, fd00::/8". Empty or unset means trust
+  # NOTHING, which is the secure default: X-Forwarded-For is then ignored
+  # entirely and the raw socket peer identifies the client. See ADR-0019.
+  def self.trusted_proxy_networks
+    raw = ENV["TINA4_TRUSTED_PROXIES"].to_s
+    cached_raw, cached_networks = @trusted_proxy_cache
+    return cached_networks if raw == cached_raw
+
+    networks = []
+    raw.split(",").each do |entry|
+      entry = normalise_ip(entry)
+      next if entry.empty?
+
+      begin
+        networks << IPAddr.new(entry)
+      rescue IPAddr::Error, ArgumentError
+        # Loud, and exactly once per distinct config value (the cache below
+        # means this parse runs once). A silently-skipped entry would leave a
+        # real proxy untrusted, which looks like the app over-limiting every
+        # client - a very expensive typo to debug.
+        Tina4::Log.error(
+          "TINA4_TRUSTED_PROXIES: ignoring invalid entry '#{entry}' - " \
+          "expected an IP address or CIDR range, e.g. 10.0.0.0/8 or 192.168.1.5"
+        )
+      end
+    end
+    @trusted_proxy_cache = [raw, networks.freeze]
+    @trusted_proxy_cache[1]
+  end
+
+  # Is this address a configured trusted proxy?
+  def self.trusted_proxy?(address)
+    networks = trusted_proxy_networks
+    return false if networks.empty?
+
+    address = normalise_ip(address)
+    return false if address.empty?
+
+    begin
+      parsed = IPAddr.new(address)
+    rescue IPAddr::Error, ArgumentError
+      return false
+    end
+    # A peer arriving as ::ffff:10.0.0.1 must match an allow-list entry of
+    # 10.0.0.0/8 - dual-stack listeners hand out the mapped form routinely.
+    parsed = parsed.native if parsed.ipv4_mapped?
+    networks.any? { |network| network.include?(parsed) }
+  end
+
+  # Strip the decorations a peer address can arrive with: the "[::1]" bracket
+  # form and an IPv6 zone id ("fe80::1%eth0").
+  def self.normalise_ip(value)
+    value = value.to_s.strip
+    value = value[1...value.index("]")].to_s if value.start_with?("[") && value.include?("]")
+    value = value.split("%", 2).first.to_s if value.include?("%")
+    value
+  end
+
   def self.env_bool(name, default: false)
     Tina4::Env.bool(name, default: default)
   end
