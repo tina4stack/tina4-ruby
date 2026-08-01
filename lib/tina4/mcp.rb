@@ -199,10 +199,12 @@ module Tina4
     truthy?(ENV["TINA4_MCP_REMOTE"]) && has_valid_token
   end
 
-  # Case-insensitive truthiness for env values: true/1/yes/on.
-  def self.truthy?(val)
-    %w[true 1 yes on].include?(val.to_s.strip.downcase)
-  end
+  # `truthy?` above is Tina4.truthy? (lib/tina4.rb) -> Tina4::Env.is_truthy.
+  # This file used to define its OWN Tina4.truthy? here. Both defined the same
+  # method on the same module, and because mcp.rb is required BEFORE the
+  # definition in tina4.rb, this one was silently overwritten - dead code
+  # sitting on the MCP remote-access gate. It only ever looked correct because
+  # the two copies happened to hold the same table.
 
   # Resolve the dedicated MCP port. Defaults to (server port + 2000) — keeps
   # MCP tooling reachable on a stable, predictable channel separate from the

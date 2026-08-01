@@ -86,13 +86,13 @@ RSpec.describe Tina4::Env do
         expect(Tina4::Env.bool(key, default: true)).to be true
       end
 
-      %w[1 true on yes y t True ON YES Y T  TRUE ].each do |raw|
+      %w[1 true on yes True ON YES TRUE].each do |raw|
         it "treats #{raw.inspect} as truthy" do
           with_env(key, raw) { expect(Tina4::Env.bool(key)).to be true }
         end
       end
 
-      %w[0 false off no n f False OFF NO N F].each do |raw|
+      %w[0 false off no False OFF NO y t n f Y T N F].each do |raw|
         it "treats #{raw.inspect} as falsy" do
           with_env(key, raw) { expect(Tina4::Env.bool(key, default: true)).to be false }
         end
@@ -102,8 +102,13 @@ RSpec.describe Tina4::Env do
         with_env(key, "") { expect(Tina4::Env.bool(key, default: true)).to be false }
       end
 
-      it "falls back to default for unknown tokens" do
-        with_env(key, "maybe") { expect(Tina4::Env.bool(key, default: true)).to be true }
+      # BREAKING (parity): the default applies to an UNSET var only. A value
+      # that IS set is answered by the one truthiness table and is never
+      # quietly replaced by the default. Python, PHP and Node have no
+      # default-for-unknown behaviour, so Ruby keeping it meant the same .env
+      # with TINA4_X=maybe left a feature ON here and OFF everywhere else.
+      it "does not fall back to default for a token that IS set" do
+        with_env(key, "maybe") { expect(Tina4::Env.bool(key, default: true)).to be false }
         with_env(key, "maybe") { expect(Tina4::Env.bool(key, default: false)).to be false }
       end
 

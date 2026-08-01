@@ -364,7 +364,7 @@ RSpec.describe Tina4::Log do
     end
 
     it "accepts the same truthy tokens as Env.bool" do
-      %w[1 on yes y t].each do |token|
+      %w[1 on yes true].each do |token|
         ENV["TINA4_LOG_FUNC"] = token
         File.write(File.join(tmpdir, "logs", "tina4.log"), "")
         emit_info_from_named_method
@@ -374,7 +374,7 @@ RSpec.describe Tina4::Log do
     end
 
     it "skips injection for falsy / unknown values" do
-      %w[false 0 no off banana].each do |token|
+      %w[false 0 no off banana y t n f].each do |token|
         ENV["TINA4_LOG_FUNC"] = token
         File.write(File.join(tmpdir, "logs", "tina4.log"), "")
         emit_info_from_named_method

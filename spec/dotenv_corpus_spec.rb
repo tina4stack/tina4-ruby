@@ -175,4 +175,53 @@ RSpec.describe "Tina4 .env corpus" do
       expect(ENV[real["key"]]).to eq(real["value"])
     end
   end
+
+  # One truthiness table, every subsystem, every framework. The parser is only
+  # half the contract - the other half is what a parsed value MEANS as a
+  # boolean. Ruby is where this broke: Env.bool accepted y/t/n/f while Ruby's
+  # OWN Log and Mcp checks did not, so one .env gave two answers in one process.
+  describe "env truthiness" do
+    let(:table) { dotenv_corpus["truthiness"] }
+
+    # Every entry point that answers an env boolean in this framework. Each must
+    # give the SAME answer - that is the whole finding.
+    def entry_points(value)
+      {
+        "Env.is_truthy" => Tina4::Env.is_truthy(value),
+        "Env.bool"      => (ENV["TINA4_TRUTHINESS_PROBE"] = value
+                            Tina4::Env.bool("TINA4_TRUTHINESS_PROBE")),
+        "Tina4.truthy?" => Tina4.truthy?(value),
+        "Log.truthy?"   => Tina4::Log.send(:truthy?, value)
+      }
+    ensure
+      ENV.delete("TINA4_TRUTHINESS_PROBE")
+    end
+
+    it "treats every corpus truthy value as true, at every entry point" do
+      table["truthy"].each do |value|
+        entry_points(value).each do |name, got|
+          expect(got).to eq(true), "#{name} said #{got.inspect} for #{value.inspect}"
+        end
+      end
+    end
+
+    it "treats every corpus falsy value as false, at every entry point" do
+      table["falsy"].each do |value|
+        entry_points(value).each do |name, got|
+          expect(got).to eq(false), "#{name} said #{got.inspect} for #{value.inspect}"
+        end
+      end
+    end
+
+    # Env.bool's `default` applies to an UNSET var only. A value that IS set is
+    # answered by the table - never quietly replaced by the default.
+    it "applies the default only when the variable is unset" do
+      ENV.delete("TINA4_TRUTHINESS_PROBE")
+      expect(Tina4::Env.bool("TINA4_TRUTHINESS_PROBE", default: true)).to eq(true)
+      ENV["TINA4_TRUTHINESS_PROBE"] = "maybe"
+      expect(Tina4::Env.bool("TINA4_TRUTHINESS_PROBE", default: true)).to eq(false)
+    ensure
+      ENV.delete("TINA4_TRUTHINESS_PROBE")
+    end
+  end
 end

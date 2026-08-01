@@ -92,32 +92,38 @@ module Tina4
       "TINA4_LOG_LEVEL" => "[TINA4_LOG_ALL]"
     }.freeze
 
-    # Typed env-var coercion — parity with tina4_python's Env class,
-    # tina4-php's Tina4\Env, and tina4-nodejs's Env. Truthy values
-    # (case-insensitive after strip): "1", "true", "on", "yes", "y", "t".
-    # Falsy: "0", "false", "off", "no", "n", "f", empty string. Anything
-    # else falls through to default.
-    TRUTHY = %w[1 true on yes y t].freeze
-    FALSY  = %w[0 false off no n f].freeze
+    # The ONE env truthiness table. Every env boolean in every Tina4 framework
+    # answers from this set (case-insensitive after strip):
+    #
+    #   truthy: "true", "1", "yes", "on"     falsy: everything else
+    #
+    # BREAKING (parity): "y", "t", "n" and "f" were accepted here and NOWHERE
+    # ELSE — not by Ruby's own Log/Mcp checks, and not by Python, PHP or Node.
+    # So TINA4_LOG_FUNC=y switched function logging ON while TINA4_DEBUG=y left
+    # debug OFF, in the same process, from the same .env. Single letters are
+    # dropped rather than spread: systemd's boolean set is 1/yes/true/on with no
+    # letters, and YAML 1.2 removed y/n precisely because a bare letter reads as
+    # a value (the Norway problem). Use "true"/"false".
+    # There is deliberately NO falsy table. Falsy is "not in TRUTHY", so there
+    # is exactly one list to keep correct. A second table is a second thing
+    # that can drift, and it is what let `bool` and `is_truthy` disagree.
+    TRUTHY = %w[true 1 yes on].freeze
 
     # Check if a value is truthy for env boolean checks.
     #
     # Accepts: "true", "True", "TRUE", "1", "yes", "Yes", "YES", "on", "On", "ON".
     # Everything else is falsy (including empty string, nil, not set).
     def self.is_truthy(val)
-      %w[true 1 yes on].include?(val.to_s.strip.downcase)
+      TRUTHY.include?(val.to_s.strip.downcase)
     end
 
-    # Read an env var and coerce to Boolean. Returns +default+ when the
-    # var is unset or holds a value outside the TRUTHY/FALSY tables.
-    # Never raises — bad input falls through to default.
+    # Read an env var and coerce to Boolean. Returns +default+ only when the
+    # var is UNSET — a value that IS set is answered by the one truthiness
+    # table, never quietly replaced by the default. Never raises.
     def self.bool(name, default: false)
       raw = ENV[name.to_s]
       return default if raw.nil?
-      token = raw.strip.downcase
-      return true  if TRUTHY.include?(token)
-      return false if FALSY.include?(token) || token.empty?
-      default
+      is_truthy(raw)
     end
 
     # Read an env var and coerce to Integer. Logs a warning via Tina4::Log

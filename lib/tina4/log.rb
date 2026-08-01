@@ -283,7 +283,7 @@ module Tina4
       private
 
       def truthy?(val)
-        %w[true 1 yes on].include?(val.to_s.strip.downcase)
+        Tina4::Env.is_truthy(val)
       end
 
       def production?
