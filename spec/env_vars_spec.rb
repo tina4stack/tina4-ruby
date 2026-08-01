@@ -8,6 +8,7 @@
 # `Logger`-based rotation actually shifts files.
 
 require "spec_helper"
+require_relative "support/real_full_disk"
 require "tmpdir"
 require "fileutils"
 
@@ -40,14 +41,14 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
   describe "TINA4_HOST" do
     it "defaults to 0.0.0.0 when unset" do
       with_env("TINA4_HOST" => nil, "TINA4_PORT" => nil, "PORT" => nil) do
-        ws = Tina4::WebServer.new(double("app"))
+        ws = Tina4::WebServer.new(Tina4::RackApp.new(root_dir: Dir.mktmpdir))
         expect(ws.instance_variable_get(:@host)).to eq("0.0.0.0")
       end
     end
 
     it "uses the env value when set" do
       with_env("TINA4_HOST" => "127.0.0.1", "TINA4_PORT" => nil, "PORT" => nil) do
-        ws = Tina4::WebServer.new(double("app"))
+        ws = Tina4::WebServer.new(Tina4::RackApp.new(root_dir: Dir.mktmpdir))
         expect(ws.instance_variable_get(:@host)).to eq("127.0.0.1")
       end
     end
@@ -382,42 +383,77 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
     end
 
     it "raises on a log-write failure when strict, swallows when not" do
-      Dir.mktmpdir do |dir|
-        # strict ON: a write failure propagates. Force file output ("file")
-        # so a @file_logger exists to mock regardless of the dev-gated default.
-        with_env("TINA4_LOG_STRICT" => "true", "TINA4_LOG_OUTPUT" => "file") do
-          Tina4::Log.configure(dir)
-          allow(Tina4::Log.instance_variable_get(:@file_logger))
-            .to receive(:<<).and_raise(IOError.new("disk full"))
-          expect { Tina4::Log.info("boom") }.to raise_error(IOError)
+      # !! CURRENTLY FAILING — TRUE POSITIVE, NOT A BROKEN TEST. !!
+      #
+      # REAL FRAMEWORK BUG found by this conversion (reported, deliberately NOT
+      # fixed here — framework fixes are out of scope for the no-mock sweep):
+      #
+      #   TINA4_LOG_STRICT=true is documented as "raise on log write failures
+      #   instead of swallowing" (log.rb:133, CLAUDE.md). Against a GENUINELY
+      #   full filesystem it does NOT raise.
+      #
+      #   Why: Tina4::Log#write_to_file rescues IOError/SystemCallError around
+      #   `@file_logger << line` and re-raises when @strict (log.rb:495-505).
+      #   But @file_logger is a stdlib ::Logger, and ::Logger::LogDevice#write
+      #   has its OWN blanket `rescue Exception => ignored; warn("log writing
+      #   failed. #{ignored}")`. So the real Errno::ENOSPC is swallowed one
+      #   layer BELOW Tina4 and never reaches Tina4's rescue at all — the
+      #   operator gets a bare warning on stderr and strict mode is a no-op.
+      #
+      #   MEASURED 2026-08-01 on a real 1MB HFS+ ram disk filled to 0 KB free,
+      #   Ruby 4.0.2: `Tina4::Log.info(...)` printed "log writing failed. No
+      #   space left on device @ rb_sys_fail_on_write" to stderr and returned
+      #   normally, with TINA4_LOG_STRICT=true set.
+      #
+      #   The old test could never see this: it stubbed @file_logger.<< to
+      #   raise IOError directly, which BYPASSES ::Logger's internal rescue
+      #   entirely. It also asserted IOError, while the real failure is
+      #   Errno::ENOSPC — a SystemCallError, not an IOError.
+      #
+      # This example asserts the DOCUMENTED behaviour. It goes green once the
+      # strict path handles a real write failure (e.g. by writing through an
+      # IO the framework controls, or checking the device after a write). It
+      # must NOT be "fixed" by asserting that nothing raises — that would lock
+      # the bug in.
+      with_real_tiny_filesystem do |dir, fill_it|
+        with_env("TINA4_LOG_STRICT" => "true", "TINA4_LOG_OUTPUT" => "file",
+                 "TINA4_LOG_LEVEL" => "DEBUG", "TINA4_DEBUG_LEVEL" => "DEBUG") do
+          Tina4::Log.configure(dir)   # opens the REAL log files while space remains
+          Tina4::Log.info("first line still fits")
+          fill_it.call                # the REAL filesystem is now genuinely full
+          expect { Tina4::Log.info("z" * 20_000) }.to raise_error(SystemCallError)
         end
         Tina4::Log.close_file_logger
       end
 
-      Dir.mktmpdir do |dir|
-        # strict OFF: the same failure is swallowed.
-        with_env("TINA4_LOG_STRICT" => nil, "TINA4_LOG_OUTPUT" => "file") do
+      # strict OFF: a real write failure must be swallowed. (This half passes
+      # today — for the wrong reason: everything is swallowed, strict or not.)
+      with_real_tiny_filesystem do |dir, fill_it|
+        with_env("TINA4_LOG_STRICT" => nil, "TINA4_LOG_OUTPUT" => "file",
+                 "TINA4_LOG_LEVEL" => "DEBUG", "TINA4_DEBUG_LEVEL" => "DEBUG") do
           Tina4::Log.configure(dir)
-          allow(Tina4::Log.instance_variable_get(:@file_logger))
-            .to receive(:<<).and_raise(IOError.new("disk full"))
-          expect { Tina4::Log.info("boom") }.not_to raise_error
+          Tina4::Log.info("first line still fits")
+          fill_it.call
+          expect { Tina4::Log.info("z" * 20_000) }.not_to raise_error
         end
         Tina4::Log.close_file_logger
       end
     end
 
     it "TINA4_LOG_CRITICAL no longer controls strict write behaviour" do
-      Dir.mktmpdir do |dir|
-        # The retired env var must NOT flip @strict — it is now a no-op for
-        # write-failure handling (it no longer exists as a toggle). Force file
-        # output so a @file_logger exists to mock under the dev-gated default.
+      # The retired env var must NOT flip @strict — it is now a no-op for
+      # write-failure handling (it no longer exists as a toggle). Driven with a
+      # REAL full filesystem instead of a stubbed @file_logger.<<, so the write
+      # failure is a genuine Errno::ENOSPC from the kernel.
+      with_real_tiny_filesystem do |dir, fill_it|
         with_env("TINA4_LOG_CRITICAL" => "true", "TINA4_LOG_STRICT" => nil,
-                 "TINA4_LOG_OUTPUT" => "file") do
+                 "TINA4_LOG_OUTPUT" => "file",
+                 "TINA4_LOG_LEVEL" => "DEBUG", "TINA4_DEBUG_LEVEL" => "DEBUG") do
           Tina4::Log.configure(dir)
           expect(Tina4::Log.instance_variable_get(:@strict)).to be false
-          allow(Tina4::Log.instance_variable_get(:@file_logger))
-            .to receive(:<<).and_raise(IOError.new("disk full"))
-          expect { Tina4::Log.info("boom") }.not_to raise_error
+          Tina4::Log.info("first line still fits")
+          fill_it.call
+          expect { Tina4::Log.info("z" * 20_000) }.not_to raise_error
         end
         Tina4::Log.close_file_logger
       end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_env"
 require "json"
 require "stringio"
 
@@ -302,26 +303,22 @@ RSpec.describe Tina4::DevAdmin do
 
   describe ".enabled?" do
     it "returns true when TINA4_DEBUG is true" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
       expect(Tina4::DevAdmin.enabled?).to be true
     end
 
     it "returns true when TINA4_DEBUG is 1" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("1")
+      set_real_env("TINA4_DEBUG" => "1")
       expect(Tina4::DevAdmin.enabled?).to be true
     end
 
     it "returns false when TINA4_DEBUG is false" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("false")
+      set_real_env("TINA4_DEBUG" => "false")
       expect(Tina4::DevAdmin.enabled?).to be false
     end
 
     it "returns false when TINA4_DEBUG is not set" do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
+      set_real_env("TINA4_DEBUG" => nil)
       expect(Tina4::DevAdmin.enabled?).to be false
     end
   end
@@ -388,12 +385,11 @@ RSpec.describe Tina4::DevAdmin do
 
   describe ".handle_request" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
     end
 
     it "returns nil when not enabled" do
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
+      set_real_env("TINA4_DEBUG" => nil)
       env = { "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
       expect(Tina4::DevAdmin.handle_request(env)).to be_nil
     end
@@ -516,8 +512,7 @@ RSpec.describe Tina4::DevAdmin do
   # `branch`. Mirrors tina4-python / tina4-php / tina4-nodejs 1:1.
   describe "file browser" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
     end
 
     def files_get(path)
@@ -602,8 +597,7 @@ RSpec.describe Tina4::DevAdmin do
   # advance when POST /__dev/api/reload is called. No filesystem scan.
   describe "hot reload" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
       Tina4::DevAdmin.instance_variable_set(:@reload_mtime, 0)
       Tina4::DevAdmin.instance_variable_set(:@reload_file, "")
     end
@@ -665,8 +659,7 @@ RSpec.describe Tina4::DevAdmin do
 
   describe "status API" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
     end
 
     it "includes db_tables as an integer" do
@@ -684,8 +677,7 @@ RSpec.describe Tina4::DevAdmin do
     let(:db) { Tina4::Database.new("sqlite:///" + db_path) }
 
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
       Tina4.bind_database(db)
     end
 
@@ -747,8 +739,7 @@ RSpec.describe Tina4::DevAdmin do
 
   describe "SPA shell and JS bundle" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
     end
 
     let(:html) do

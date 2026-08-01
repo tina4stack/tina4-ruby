@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_http"
 
 RSpec.describe Tina4::Router do
   before { Tina4::Router.clear! }
@@ -182,21 +183,31 @@ RSpec.describe Tina4::Router do
       expect(route.middleware.length).to eq(1)
     end
 
-    it "runs multiple middleware in order" do
+    it "runs multiple middleware in order, and really receives the request/response" do
       order = []
-      mw1 = proc { |req, res| order << 1; true }
-      mw2 = proc { |req, res| order << 2; true }
+      seen_paths = []
+      # These middleware TOUCH both arguments. Against the double("req") this
+      # replaced, req.path would have raised — which is why the old test could
+      # only use middleware that ignored both, proving nothing about the
+      # request/response contract the pipeline actually depends on.
+      mw1 = proc { |req, res| order << 1; seen_paths << req.path; true }
+      mw2 = proc { |req, res| order << 2; res.headers["X-Chain"] = "hit"; true }
       Tina4::Router.add("GET", "/chain", proc { "ok" }, middleware: [mw1, mw2])
       route, _ = Tina4::Router.match("GET", "/chain")
-      route.run_middleware(double("req"), double("res"))
+      req = build_request(path: "/chain")
+      res = build_response
+      route.run_middleware(req, res)
+
       expect(order).to eq([1, 2])
+      expect(seen_paths).to eq(["/chain"])          # the REAL request carried a real path
+      expect(res.headers["X-Chain"]).to eq("hit")   # the REAL response was really mutated
     end
 
     it "halts when middleware returns false" do
       deny_mw = proc { |req, res| false }
       Tina4::Router.add("GET", "/blocked", proc { "nope" }, middleware: [deny_mw])
       route, _ = Tina4::Router.match("GET", "/blocked")
-      result = route.run_middleware(double("req"), double("res"))
+      result = route.run_middleware(build_request, build_response)
       expect(result).to be false
     end
   end

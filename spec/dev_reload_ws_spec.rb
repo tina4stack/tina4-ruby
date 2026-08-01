@@ -18,6 +18,7 @@
 #     respawned (same PID, V1 -> V2 in-process).
 
 require "spec_helper"
+require_relative "support/real_env"
 require "json"
 require "stringio"
 require "socket"
@@ -43,8 +44,7 @@ RSpec.describe "DevReload WebSocket" do
   end
 
   before do
-    allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+    set_real_env("TINA4_DEBUG" => "true")
     # Start each spec with an empty dev-reload manager.
     Tina4::DevReload.manager.connections.clear
   end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_env"
 require "fileutils"
 require "tmpdir"
 require "json"
@@ -151,8 +152,7 @@ RSpec.describe "Tina4::Router reload-aware discovery" do
   end
 
   it "hot-reloads a changed file end-to-end via POST /__dev/api/reload" do
-    allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+    set_real_env("TINA4_DEBUG" => "true")
 
     path = write_route("endpoint", <<~RUBY)
       Tina4::Router.get("/endpoint") { |_req, _res| "FIRST" }

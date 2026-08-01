@@ -11,6 +11,7 @@
 # master's tests/test_orm_footguns_doc.py).
 
 require "spec_helper"
+require_relative "support/real_log_capture"
 
 # ── Models (unique table names so nothing collides with sibling specs) ──
 
@@ -53,7 +54,16 @@ RSpec.describe "ORM & auth footguns (doc lock-in)" do
     Tina4.bind_database(db)
     db.execute("CREATE TABLE fdoc_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT)")
     db.commit
-    allow(Tina4::Log).to receive(:error).and_call_original  # let the loud path log; keep it quiet-ish
+  end
+
+  # Keep the console quiet WITHOUT a double. The previous
+  # `allow(Tina4::Log).to receive(:error).and_call_original` installed a mock
+  # proxy on the real logger for EVERY example in this file. This instead points
+  # the REAL logger at a real temp file for the example's duration: the real
+  # formatter, level filter and file sink all still run, and nothing is
+  # substituted.
+  around(:each) do |example|
+    with_real_log_dir { example.run }
   end
 
   after(:each) do

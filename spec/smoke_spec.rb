@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_http"
 require "tmpdir"
 require "fileutils"
 require "json"
@@ -11,6 +12,28 @@ require "base64"
 # Validates all key features work end-to-end using in-memory/temp resources.
 
 RSpec.describe "Tina4 Smoke Test" do
+  # Define a REAL, temporarily-named Tina4::ORM subclass for one example, then
+  # take the constant away again. This replaces rspec-mocks' `stub_const`: the
+  # class was always a genuine ORM subclass talking to a genuine SQLite
+  # database (never a double), but `stub_const` is the mocking library's
+  # constant machinery, and this file is meant to be provably free of it.
+  # Object.const_set / remove_const is the plain-Ruby equivalent with the same
+  # per-example lifecycle, which is what keeps ORM.inherited (lib/tina4/orm.rb:49)
+  # from accumulating stale subclasses across the suite.
+  def define_temp_model(name, &body)
+    Object.send(:remove_const, name) if Object.const_defined?(name, false)
+    Object.const_set(name, Class.new(Tina4::ORM, &body)).tap do
+      (@temp_model_names ||= []) << name
+    end
+  end
+
+  after(:each) do
+    Array(@temp_model_names).each do |name|
+      Object.send(:remove_const, name) if Object.const_defined?(name, false)
+    end
+    @temp_model_names = nil
+  end
+
   # ────────────────────────────────────────────────────────────────────────
   # 1. Router
   # ────────────────────────────────────────────────────────────────────────
@@ -66,12 +89,12 @@ RSpec.describe "Tina4 Smoke Test" do
     before do
       db.execute("CREATE TABLE IF NOT EXISTS smoke_widgets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, weight REAL)")
       # Define a fresh model class each time to avoid cross-test pollution
-      stub_const("SmokeWidget", Class.new(Tina4::ORM) {
+      define_temp_model("SmokeWidget") do
         table_name "smoke_widgets"
         integer_field :id, primary_key: true, auto_increment: true
         string_field :name
         float_field :weight
-      })
+      end
       SmokeWidget.db = db
     end
 
@@ -249,8 +272,8 @@ RSpec.describe "Tina4 Smoke Test" do
       Tina4::Middleware.before { |_req, _res| log << :before; true }
       Tina4::Middleware.after  { |_req, _res| log << :after }
 
-      req = double("request", path: "/test")
-      res = double("response")
+      req = build_request(path: "/test")
+      res = build_response
 
       result = Tina4::Middleware.run_before([], req, res)
       expect(result).to be true
@@ -261,8 +284,8 @@ RSpec.describe "Tina4 Smoke Test" do
 
     it "halts on before returning false" do
       Tina4::Middleware.before { |_req, _res| false }
-      req = double("request", path: "/blocked")
-      res = double("response")
+      req = build_request(path: "/blocked")
+      res = build_response
       expect(Tina4::Middleware.run_before([], req, res)).to be false
     end
   end
@@ -327,11 +350,11 @@ RSpec.describe "Tina4 Smoke Test" do
       db = Tina4::Database.new(":memory:", driver_name: "sqlite")
       db.execute("CREATE TABLE smoke_gql_items (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT)")
 
-      stub_const("SmokeGqlItem", Class.new(Tina4::ORM) {
+      define_temp_model("SmokeGqlItem") do
         table_name "smoke_gql_items"
         integer_field :id, primary_key: true, auto_increment: true
         string_field :title
-      })
+      end
       SmokeGqlItem.db = db
 
       schema = Tina4::GraphQLSchema.new
@@ -434,11 +457,11 @@ RSpec.describe "Tina4 Smoke Test" do
       db = Tina4::Database.new(":memory:", driver_name: "sqlite")
       db.execute("CREATE TABLE smoke_products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
 
-      stub_const("SmokeProduct", Class.new(Tina4::ORM) {
+      define_temp_model("SmokeProduct") do
         table_name "smoke_products"
         integer_field :id, primary_key: true, auto_increment: true
         string_field :name
-      })
+      end
       SmokeProduct.db = db
 
       Tina4::AutoCrud.register(SmokeProduct)
