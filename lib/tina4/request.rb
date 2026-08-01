@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require "uri"
 require "json"
+require "ipaddr"
 
 module Tina4
   # A Hash subclass that supports indifferent access (both string and symbol keys).
@@ -114,7 +115,7 @@ module Tina4
 
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
-                :path_params, :ip
+                :path_params, :ip, :remote_ip
     attr_accessor :user
 
     # Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var.
@@ -137,7 +138,10 @@ module Tina4
           "Request body (#{content_length} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{TINA4_MAX_UPLOAD_SIZE} bytes)"
       end
 
-      # Client IP with X-Forwarded-For support
+      # Raw socket peer — NEVER honours X-Forwarded-For, so it can be trusted
+      # for security decisions. Resolved BEFORE @ip: the peer decides whether
+      # the forwarding headers may be believed at all.
+      @remote_ip = (env["REMOTE_ADDR"] || "").to_s
       @ip = extract_client_ip
 
       # Lazy-initialized fields (nil = not yet computed)
@@ -289,15 +293,29 @@ module Tina4
 
     private
 
+    # Resolve the client IP, honouring forwarding headers ONLY behind a trusted
+    # proxy. X-Forwarded-For is set by whoever sends it, so an unfiltered read
+    # lets any client choose its own rate-limit bucket - and choose SOMEONE
+    # ELSE'S. See ADR-0019.
+    #
+    # Within the chain the RIGHTMOST entry that is not itself a trusted proxy
+    # wins. Taking the leftmost would be no safer than trusting the header
+    # outright: a client can prepend its own hop, and the proxy appends rather
+    # than replaces. This is the algorithm Rack uses (Rack::Request#ip).
     def extract_client_ip
-      # Check X-Forwarded-For first (proxy/load balancer)
+      peer = @remote_ip.to_s
+      return peer.empty? ? "127.0.0.1" : peer unless Tina4.trusted_proxy?(peer)
+
       forwarded = @env["HTTP_X_FORWARDED_FOR"]
       if forwarded && !forwarded.empty?
-        # Take the first (original client) IP
-        forwarded.split(",").first.strip
-      else
-        @env["HTTP_X_REAL_IP"] || @env["REMOTE_ADDR"] || "127.0.0.1"
+        hops = forwarded.split(",").map(&:strip).reject(&:empty?)
+        client = hops.reverse.find { |hop| !Tina4.trusted_proxy?(hop) }
+        # Every hop is itself a trusted proxy - the peer is the best we have.
+        return client || peer
       end
+
+      real_ip = @env["HTTP_X_REAL_IP"].to_s.strip
+      real_ip.empty? ? peer : real_ip
     end
 
     def extract_headers
