@@ -56,6 +56,12 @@ Gem::Specification.new do |spec|
   # it lazily, exactly like pg. It is a development/optional dependency only so
   # it is never force-installed; the backend degrades gracefully if it is absent.
   spec.add_development_dependency "mongo", "~> 2.19"
+  # bigdecimal is REQUIRED for mongo to load at all on Ruby >= 3.4. It stopped
+  # being a default gem there, and bson/decimal128.rb requires it unconditionally,
+  # so without this every MongoDB spec fails at `require "mongo"` with
+  # "cannot load such file -- bigdecimal" and NO Mongo code is ever exercised.
+  # A real-service test that cannot load its client is not verification.
+  spec.add_development_dependency "bigdecimal", "~> 4.0"
   spec.add_development_dependency "pg", "~> 1.5"
   # rdkafka (librdkafka binding) — optional, for the live Kafka queue backend +
   # its integration spec. Like mongo/pg it is a dev-only dependency so it is

@@ -29,13 +29,23 @@ module Tina4
         nil
       end
 
-      def write(session_id, data)
+      # Write session data. A per-call +ttl+ WINS over the handler default, so
+      # asking for a 60s session really gets 60s; 0 uses the default. Every
+      # handler in every Tina4 framework takes this third argument -- Session#write
+      # passes it, and a handler that did not accept it raised ArgumentError,
+      # which safe_write swallowed into a silent STALE write.
+      #
+      # @param session_id [String] the session id
+      # @param data [Hash] the payload to store
+      # @param ttl [Integer] per-call lifetime in seconds; 0 uses the handler default
+      def write(session_id, data, ttl = 0)
         key = "#{@prefix}#{session_id}"
         payload = JSON.generate(data)
+        effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
         if @redis
-          @redis.setex(key, @ttl, payload)
+          @redis.setex(key, effective_ttl, payload)
         else
-          @resp.setex(key, @ttl, payload)
+          @resp.setex(key, effective_ttl, payload)
         end
       end
 

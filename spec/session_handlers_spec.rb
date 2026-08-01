@@ -71,22 +71,59 @@ RSpec.describe "Session Handlers" do
     end
 
     it "returns nil for expired session" do
-      # Create handler with very short TTL
-      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      # A real, short ttl and real wall-clock time. This used to pass ttl: 0,
+      # which relied on the file backend reading 0 as "expire immediately" - the
+      # opposite of what 0 means everywhere else in Tina4 and in every mainstream
+      # implementation, where an absent or zero deadline means NEVER EXPIRES.
+      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 1)
       short_handler.write("expired", { "data" => "old" })
-      sleep(0.1)
+      sleep(1.2)
       expect(short_handler.read("expired")).to be_nil
     end
 
+    it "keeps a session forever when ttl is zero (0 means never expires)" do
+      immortal = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      immortal.write("forever", { "data" => "keep" })
+      sleep(1.2)
+      expect(immortal.read("forever")).to eq({ "data" => "keep" })
+      # SHA-256 on-disk name (ADR-0021) - the raw-id glob would be empty either way.
+      expect(File.exist?(File.join(tmpdir,
+        "sess_#{Digest::SHA256.hexdigest('forever')}.json"))).to be true
+    end
+
+    it "keeps a legacy bare payload that carries no expiry stamp at all" do
+      # Exactly what an older version wrote: the payload, no envelope, no stamp.
+      # It must be READ, not deleted - an absent deadline means never expires.
+      # Written at the name the handler resolves to (SHA-256, ADR-0021). Writing
+      # the raw "sess_legacy.json" would be a file read() never looks for, so the
+      # test would fail for the wrong reason instead of exercising the contract.
+      legacy = File.join(tmpdir, "sess_#{Digest::SHA256.hexdigest('legacy')}.json")
+      File.write(legacy, JSON.generate({ "v" => "old" }))
+      expect(handler.read("legacy")).to eq({ "v" => "old" })
+      expect(File.exist?(legacy)).to be true
+    end
+
+    it "honours a per-call ttl that is shorter than the handler default" do
+      handler.write("shortlived", { "data" => "x" }, 1)
+      sleep(1.2)
+      expect(handler.read("shortlived")).to be_nil
+      # SHA-256 on-disk name (ADR-0021): globbing the RAW id would be empty
+      # whether or not the delete ran, so assert the real path.
+      expect(File.exist?(File.join(tmpdir,
+        "sess_#{Digest::SHA256.hexdigest('shortlived')}.json"))).to be false
+    end
+
     it "deletes expired session file on read" do
-      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 1)
       short_handler.write("expired", { "data" => "old" })
       sleep(0.1)
       # Pin the REAL on-disk name (SHA-256 of the id, ADR-0021) and prove it
-      # existed first — globbing the raw "sess_expired.json" would now be empty
+      # existed first - globbing the raw "sess_expired.json" would now be empty
       # whether or not the expiry delete ever ran.
       path = File.join(tmpdir, "sess_#{Digest::SHA256.hexdigest('expired')}.json")
       expect(File.exist?(path)).to be true
+      # Now wait past the 1s ttl so the read below has something to expire.
+      sleep(1.2)
       short_handler.read("expired")
       # File should be deleted
       expect(File.exist?(path)).to be false
@@ -108,10 +145,10 @@ RSpec.describe "Session Handlers" do
     end
 
     it "handles cleanup of expired files" do
-      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 1)
       short_handler.write("old1", { "a" => 1 })
       short_handler.write("old2", { "b" => 2 })
-      sleep(0.1)
+      sleep(1.2)
       short_handler.cleanup
       files = Dir.glob(File.join(tmpdir, "sess_*.json"))
       expect(files).to be_empty

@@ -11,7 +11,7 @@ module Tina4
         CREATE TABLE IF NOT EXISTS #{TABLE_NAME} (
             session_id VARCHAR(255) PRIMARY KEY,
             data TEXT NOT NULL,
-            expires_at REAL NOT NULL
+            expires_at DOUBLE PRECISION NOT NULL
         )
       SQL
 
@@ -36,8 +36,15 @@ module Tina4
         nil
       end
 
-      def write(session_id, data)
-        expires_at = @ttl > 0 ? Time.now.to_f + @ttl : 0.0
+      # Write session data. A per-call +ttl+ WINS over the handler default; 0 means
+      # never expires and is stored as the 0 that read guards out.
+      #
+      # @param session_id [String] the session id
+      # @param data [Hash] the payload to store
+      # @param ttl [Integer] per-call lifetime in seconds; 0 uses the handler default
+      def write(session_id, data, ttl = 0)
+        effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
+        expires_at = effective_ttl.positive? ? Time.now.to_f + effective_ttl : 0.0
         json_data = JSON.generate(data)
 
         existing = @db.fetch_one("SELECT session_id FROM #{TABLE_NAME} WHERE session_id = ?", [session_id])

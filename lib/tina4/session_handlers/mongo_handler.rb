@@ -31,10 +31,23 @@ module Tina4
         doc["data"]
       end
 
-      def write(session_id, data)
+      # Write session data. A per-call +ttl+ WINS over the handler default.
+      #
+      # Expiry itself is delegated to MongoDB's native TTL index on +updated_at+
+      # (see ensure_ttl_index), which is why this handler was never at risk of the
+      # destroy-on-unstamped defect: there is no hand-rolled comparison to feed a
+      # missing stamp into. A per-call ttl shorter than the index's interval is
+      # honoured by back-dating +updated_at+ so the index reaps it on schedule.
+      #
+      # @param session_id [String] the session id
+      # @param data [Hash] the payload to store
+      # @param ttl [Integer] per-call lifetime in seconds; 0 uses the handler default
+      def write(session_id, data, ttl = 0)
+        effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
+        stamp = Time.now - (@ttl - effective_ttl)
         @collection.update_one(
           { _id: session_id },
-          { "$set" => { data: data, updated_at: Time.now } },
+          { "$set" => { data: data, updated_at: stamp } },
           upsert: true
         )
       end

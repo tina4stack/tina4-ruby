@@ -16,21 +16,40 @@ module Tina4
         path = session_path(session_id)
         return nil unless File.exist?(path)
 
-        # Check expiry
-        if File.mtime(path) + @ttl < Time.now
+        stored = JSON.parse(File.read(path))
+        if expired?(stored, path)
           File.delete(path)
           return nil
         end
 
-        data = File.read(path)
-        JSON.parse(data)
+        unwrap(stored)
       rescue JSON::ParserError
         nil
       end
 
-      def write(session_id, data)
-        path = session_path(session_id)
-        File.write(path, JSON.generate(data))
+      # Write session data.
+      #
+      # The ttl is consumed HERE, at write time, and baked into an ABSOLUTE
+      # deadline stored beside the payload, so nothing at read time needs to know
+      # what the ttl was. That is what makes a per-call ttl durable: a reader with
+      # a different ttl can no longer judge someone else's record.
+      #
+      # A ttl of 0 (or negative) means NEVER EXPIRES, matching the Python master,
+      # Node, and every mainstream implementation measured. It previously fell
+      # through to the mtime comparison, where `mtime + 0 < Time.now` made ttl: 0
+      # mean "expire immediately" - the opposite meaning, and the only backend in
+      # any of the four frameworks that read it that way.
+      #
+      # @param session_id [String] the session id
+      # @param data [Hash] the payload to store
+      # @param ttl [Integer] per-call lifetime in seconds; 0 uses the handler default
+      def write(session_id, data, ttl = 0)
+        effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
+        expires_at = effective_ttl.positive? ? Time.now.to_f + effective_ttl : 0.0
+        File.write(
+          session_path(session_id),
+          JSON.generate({ "_data" => data, "_expires" => expires_at })
+        )
       end
 
       def destroy(session_id)
@@ -39,25 +58,65 @@ module Tina4
       end
 
       def cleanup
-        return unless Dir.exist?(@dir)
-        Dir.glob(File.join(@dir, "sess_*")).each do |file|
-          File.delete(file) if File.mtime(file) + @ttl < Time.now
-        end
+        sweep
       end
 
       # Garbage-collect expired sessions. Matches the Python interface.
-      # @param max_age [Integer] maximum session age in seconds
-      def gc(max_age)
-        return unless Dir.exist?(@dir)
-        now = Time.now
-        Dir.glob(File.join(@dir, "sess_*")).each do |file|
-          File.delete(file) if File.mtime(file) + max_age < now
-        rescue StandardError
-          # Corrupt or locked file — skip
-        end
+      # @param max_age [Integer] accepted for interface parity; expiry is absolute
+      #   and already baked into the stored deadline, so it is used only for legacy
+      #   records that carry no deadline of their own.
+      def gc(max_age = nil)
+        sweep(max_age)
       end
 
       private
+
+      # Delete every genuinely-expired record. An absent or zero deadline means
+      # never expires, so such a record is never a sweep candidate.
+      def sweep(max_age = nil)
+        return unless Dir.exist?(@dir)
+
+        Dir.glob(File.join(@dir, "sess_*")).each do |file|
+          stored = begin
+            JSON.parse(File.read(file))
+          rescue JSON::ParserError
+            nil
+          end
+          File.delete(file) if stored && expired?(stored, file, max_age)
+        rescue StandardError
+          # Corrupt or locked file - skip
+        end
+      end
+
+      # Decide whether a stored record has expired.
+      #
+      # THE CONTRACT: an ABSENT or ZERO deadline means "never expires". It is
+      # guarded OUT of the comparison, never fed INTO it. Verified against real
+      # mainstream implementations - PHP's native files handler, express-session,
+      # Django, Laravel, connect-redis and connect-mongo - none of which deletes a
+      # record carrying no expiry.
+      #
+      # A LEGACY record (a bare payload written before the envelope existed) has no
+      # deadline of its own, so it keeps the original mtime comparison. Without
+      # that fallback every already-stored session would become immortal on
+      # upgrade, which trades data loss for a security bug.
+      def expired?(stored, path, max_age = nil)
+        if stored.is_a?(Hash) && stored.key?("_expires")
+          expires_at = stored["_expires"].to_f
+          return expires_at.positive? && expires_at < Time.now.to_f
+        end
+
+        lifetime = (max_age || @ttl).to_i
+        lifetime.positive? && File.mtime(path) + lifetime < Time.now
+      end
+
+      # Return the caller's payload. A legacy bare payload is returned as-is, so a
+      # record written by an older version still reads correctly.
+      def unwrap(stored)
+        return stored["_data"] if stored.is_a?(Hash) && stored.key?("_expires")
+
+        stored
+      end
 
       # SHA-256 of the id. A session id can therefore never become a path
       # component, AND two distinct ids can never collide.
