@@ -54,8 +54,26 @@ RSpec.describe "Tina4::Response#file path confinement" do
     expect(serve("../../../../../../etc/passwd").status_code).to eq(403)
   end
 
-  it "refuses an absolute path outside the root (no '..' at all)" do
-    expect(serve("/etc/passwd").status_code).to eq(403)
+  it "refuses an absolute path outside a DECLARED root (no '..' at all)" do
+    expect(serve("/etc/passwd", root: @root).status_code).to eq(403)
+  end
+
+  # REGRESSION CONTROL. Confinement once defaulted to Dir.pwd, so every
+  # legitimate absolute path outside the project answered 403 - a missing file
+  # reported Forbidden instead of Not Found. Unrooted, an absolute path is the
+  # caller's business (Express res.sendFile, Rails send_file, ASP.NET
+  # PhysicalFile all serve one), so this must NOT be 403.
+  it "serves an absolute path when NO root is declared" do
+    outside = File.join(Dir.tmpdir, "tina4-outside-#{Process.pid}.txt")
+    File.write(outside, "OUTSIDE\n")
+    begin
+      response = serve(outside)
+      expect(response.status_code).to eq(200)
+      expect(response.body).to eq("OUTSIDE\n")
+    ensure
+      File.unlink(outside)
+    end
+    expect(serve("/nonexistent/path/to/file.css").status_code).to eq(404)
   end
 
   it "honours an explicit root instead of the working directory" do

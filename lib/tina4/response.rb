@@ -169,18 +169,20 @@ module Tina4
       # root is exactly where .env lives. Rejecting ".." on the way in is the
       # check that closes it; containment then catches absolute paths and
       # symlinks, neither of which carries a ".." segment.
-      base = ::File.expand_path(root || Dir.pwd)
+      # Containment ONLY when a root is declared; defaulting to Dir.pwd broke
+      # every legitimate absolute path.
+      base = root ? ::File.expand_path(root) : nil
       forbidden = path.to_s.split(%r{[\\/]}).include?("..")
 
       unless forbidden
-        candidate = ::File.absolute_path?(path.to_s) ? path.to_s : ::File.join(base, path.to_s)
+        candidate = (base.nil? || ::File.absolute_path?(path.to_s)) ? path.to_s : ::File.join(base, path.to_s)
         resolved =
           begin
             ::File.realpath(candidate)
           rescue Errno::ENOENT, Errno::ELOOP, Errno::ENAMETOOLONG, Errno::EACCES
             nil
           end
-        if resolved && base != ::File::SEPARATOR &&
+        if resolved && base && base != ::File::SEPARATOR &&
            resolved != base && !resolved.start_with?(base + ::File::SEPARATOR)
           forbidden = true
         end
