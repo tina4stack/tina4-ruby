@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_log_capture"
 
 # Lock-in regression guards for E1 + M1 + M2 (visible-but-resilient
 # middleware + events). Mirrors tina4-python/tests/test_middleware_events.py
@@ -33,14 +34,20 @@ RSpec.describe "TestEventListenerIsolation (E1)" do
   end
 
   it "error is logged — never silent" do
-    expect(Tina4::Log).to receive(:warning) do |message|
-      expect(message).to include("evt")          # the event name
-      expect(message).to include("RuntimeError") # the error class
-      expect(message).to include("kaboom")       # the error message
+    # NO double. The REAL Tina4::Log writes through its real formatter to a real
+    # file; we assert on the real bytes an operator would grep. A message
+    # expectation here would REPLACE Log.warning, so a regression that formats
+    # the line wrongly, filters it out by level, or never reaches a sink would
+    # still pass.
+    text = capture_real_log do
+      Tina4::Events.on("evt") { raise "kaboom" }
+      Tina4::Events.emit("evt")
     end
 
-    Tina4::Events.on("evt") { raise "kaboom" }
-    Tina4::Events.emit("evt")
+    expect(text).to include("evt")          # the event name
+    expect(text).to include("RuntimeError") # the error class
+    expect(text).to include("kaboom")       # the error message
+    expect(text).to match(/WARNING/i)       # emitted at WARNING, really
   end
 
   it "strict: true re-raises on the first error and stops" do
@@ -207,12 +214,6 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
   end
 
   it "before_* throw yields a clean 500, skips the handler, and is logged" do
-    expect(Tina4::Log).to receive(:error) do |message|
-      expect(message).to include("before_boom") # the method label
-      expect(message).to include("RuntimeError") # the error class
-      expect(message).to include("kaboom")       # the error message
-    end
-
     boom = Class.new do
       class << self
         def before_boom(_req, _resp); raise "kaboom"; end
@@ -223,7 +224,17 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
 
     req  = make_request
     resp = Tina4::Response.new
-    halted = Tina4::Middleware.run_before([BoomMw], req, resp)
+    halted = nil
+
+    # NO double: the REAL logger writes to a real file through its real
+    # formatter, and we grep the real bytes.
+    text = capture_real_log do
+      halted = Tina4::Middleware.run_before([BoomMw], req, resp)
+    end
+
+    expect(text).to include("before_boom")  # the method label
+    expect(text).to include("RuntimeError") # the error class
+    expect(text).to include("kaboom")       # the error message
 
     expect(halted).to be false # handler skipped
     expect(resp.status_code).to eq(500)
@@ -235,8 +246,6 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
 
   it "after_* throw yields a clean 500 but the remaining after_* still run" do
     ran = []
-    logged = []
-    allow(Tina4::Log).to receive(:error) { |message| logged << message }
 
     klass = Class.new do
       define_singleton_method(:trace) { ran }
@@ -248,14 +257,16 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
 
     req  = make_request
     resp = Tina4::Response.new
-    expect { Tina4::Middleware.run_after([klass], req, resp) }.not_to raise_error
+    logged = capture_real_log do
+      expect { Tina4::Middleware.run_after([klass], req, resp) }.not_to raise_error
+    end
 
     # The throwing after_* did NOT abort the pass — BOTH after_* still ran
     # (one throws, the rest continue). Within-class definition order itself is
     # locked separately by TestMiddlewareDefinitionOrder; here we only assert
     # M2's contract: throw is isolated + logged + clean 500.
     expect(ran).to contain_exactly(:boom, :log)
-    expect(logged.join).to include("RuntimeError") # the throw was logged, never silent
+    expect(logged).to include("RuntimeError") # the throw was logged, never silent (real file)
     expect(resp.status_code).to eq(500)            # clean 500 from the throwing after_*
     expect(JSON.parse(resp.body)).to eq({ "error" => "Internal Server Error", "status" => 500 })
   end

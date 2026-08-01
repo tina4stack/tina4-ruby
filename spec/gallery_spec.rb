@@ -176,12 +176,20 @@ RSpec.describe "Gallery" do
   describe "gallery_deploy via DevAdmin" do
     let(:tmp_dir) { Dir.mktmpdir("tina4_gallery_deploy") }
 
+    # NO double. Tina4.root_dir is a REAL attr_accessor (lib/tina4.rb:233), so
+    # the real backing state is simply set and restored. The stub this replaces
+    # only intercepted the READER: any code path resolving the root another way
+    # (Dir.pwd fallback, RackApp's @root_dir) escaped it, so a deploy could
+    # write outside tmp_dir in production with this test still green.
     before(:each) do
-      # Point Tina4 root to a temp directory so deploy writes there
-      allow(Tina4).to receive(:root_dir).and_return(tmp_dir)
+      @saved_root_dir = Tina4.root_dir
+      Tina4.root_dir = tmp_dir
     end
 
-    after(:each) { FileUtils.rm_rf(tmp_dir) }
+    after(:each) do
+      Tina4.root_dir = @saved_root_dir
+      FileUtils.rm_rf(tmp_dir)
+    end
 
     it "returns error for empty name" do
       result = Tina4::DevAdmin.send(:gallery_deploy, "")

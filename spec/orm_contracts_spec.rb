@@ -15,6 +15,7 @@
 # stdout, which is the Ruby-idiomatic equivalent of Python's capsys assertion.
 
 require "spec_helper"
+require_relative "support/real_log_capture"
 
 # ── Test Models ─────────────────────────────────────────────────
 
@@ -82,11 +83,13 @@ RSpec.describe "ORM fail-loud contracts (v3.13.39)" do
       # DB-error path from the validation path.
       ghost = CGhost.new(label: "x")
 
-      expect(Tina4::Log).to receive(:error)
-        .with(/CGhost\.save failed for table 'cghost_missing'/)
-        .and_call_original
-
-      result = ghost.save
+      # NO double. The REAL logger writes to a REAL file and we grep the real
+      # formatted line an operator would actually see. A message expectation
+      # here (even with and_call_original) wraps Log.error in a mock proxy and
+      # asserts a message send rather than a log record reaching a sink.
+      result = nil
+      text = capture_real_log { result = ghost.save }
+      expect(text).to match(/CGhost\.save failed for table 'cghost_missing'/)
 
       expect(result).to be false                 # loud: documented false (not a raise, not self)
       expect(ghost.get_error).to be_truthy        # cause recoverable
@@ -107,11 +110,10 @@ RSpec.describe "ORM fail-loud contracts (v3.13.39)" do
       # Sanity: validate itself reports the error.
       expect(invalid.validate).not_to be_empty
 
-      expect(Tina4::Log).to receive(:error)
-        .with(/CUser\.save refused: validation failed/)
-        .and_call_original
-
-      result = invalid.save
+      # Real logger, real file, real bytes — see above.
+      result = nil
+      text = capture_real_log { result = invalid.save }
+      expect(text).to match(/CUser\.save refused: validation failed/)
 
       expect(result).to be false
       expect(invalid.get_error).to be_truthy       # cause recoverable
@@ -125,13 +127,22 @@ RSpec.describe "ORM fail-loud contracts (v3.13.39)" do
   describe "create propagates save failure" do
     it "returns false when the underlying save fails (driver error)" do
       # CGhost's save always hits a driver error and returns false.
-      allow(Tina4::Log).to receive(:error)
-      expect(CGhost.create(label: "x")).to be false
+      # The logger is NOT silenced with a stub — it is pointed at a real temp
+      # file, so the real loud-failure path still runs and the console stays
+      # quiet. Silencing it with `allow(...)` would mean these examples could
+      # not notice the loud logging disappearing, which is the contract this
+      # file exists to lock in.
+      result = nil
+      text = capture_real_log { result = CGhost.create(label: "x") }
+      expect(result).to be false
+      expect(text).to match(/CGhost\.save failed/) # still loud, for real
     end
 
     it "returns false when the underlying save fails (validation error)" do
-      allow(Tina4::Log).to receive(:error)
-      expect(CUser.create(email: "no-name@example.com")).to be false # name is required
+      result = nil
+      text = capture_real_log { result = CUser.create(email: "no-name@example.com") }
+      expect(result).to be false # name is required
+      expect(text).to match(/CUser\.save refused: validation failed/)
     end
 
     it "returns the saved instance on success (happy path unchanged)" do
@@ -194,9 +205,10 @@ RSpec.describe "ORM fail-loud contracts (v3.13.39)" do
       expect(ok.save).to be_a(CUser)
       expect(ok.save).to be(ok)
 
-      allow(Tina4::Log).to receive(:error)
       bad = CUser.new(email: "x@y.z") # no name → validation fails
-      expect(bad.save).to be false
+      saved = nil
+      capture_real_log { saved = bad.save } # real logger to a real temp file
+      expect(saved).to be false
     end
   end
 

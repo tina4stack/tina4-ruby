@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_env"
 require "json"
 require "tmpdir"
 require "stringio"
@@ -54,8 +55,7 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
 
   context "when debug mode is enabled" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
     end
 
     describe "endpoint registration" do
@@ -193,8 +193,7 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
 
   context "when debug mode is disabled" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return(nil)
+      set_real_env("TINA4_DEBUG" => nil)
     end
 
     it "404s (handle_request returns nil) for POST /__dev/mcp/message" do
@@ -233,12 +232,11 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     end
 
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
-      allow(ENV).to receive(:[]).with("TINA4_MCP").and_return(nil)
-      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return(nil)
-      allow(ENV).to receive(:[]).with("TINA4_MCP_TOKEN").and_return(nil)
-      allow(ENV).to receive(:[]).with("TINA4_API_KEY").and_return(nil)
+      set_real_env("TINA4_DEBUG" => "true")
+      set_real_env("TINA4_MCP" => nil)
+      set_real_env("TINA4_MCP_REMOTE" => nil)
+      set_real_env("TINA4_MCP_TOKEN" => nil)
+      set_real_env("TINA4_API_KEY" => nil)
     end
 
     it "404s a remote caller with no opt-in (POST /__dev/mcp/message)" do
@@ -260,14 +258,14 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     end
 
     it "still denies a remote opt-in WITHOUT a valid token" do
-      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
+      set_real_env("TINA4_MCP_REMOTE" => "true")
       status, = post_remote({ "jsonrpc" => "2.0", "id" => 1, "method" => "ping" }, remote_ip: "8.8.8.8")
       expect(status).to eq(404)
     end
 
     it "allows a remote caller with TINA4_MCP_REMOTE + a valid bearer token" do
-      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
-      allow(ENV).to receive(:[]).with("TINA4_MCP_TOKEN").and_return("s3cr3t-token")
+      set_real_env("TINA4_MCP_REMOTE" => "true")
+      set_real_env("TINA4_MCP_TOKEN" => "s3cr3t-token")
       status, = post_remote(
         { "jsonrpc" => "2.0", "id" => 1, "method" => "ping", "params" => {} },
         remote_ip: "8.8.8.8", headers: { "HTTP_AUTHORIZATION" => "Bearer s3cr3t-token" }
@@ -276,8 +274,8 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
     end
 
     it "denies a remote caller presenting the WRONG token" do
-      allow(ENV).to receive(:[]).with("TINA4_MCP_REMOTE").and_return("true")
-      allow(ENV).to receive(:[]).with("TINA4_MCP_TOKEN").and_return("s3cr3t-token")
+      set_real_env("TINA4_MCP_REMOTE" => "true")
+      set_real_env("TINA4_MCP_TOKEN" => "s3cr3t-token")
       status, = post_remote(
         { "jsonrpc" => "2.0", "id" => 1, "method" => "ping" },
         remote_ip: "8.8.8.8", headers: { "HTTP_AUTHORIZATION" => "Bearer wrong" }
@@ -295,8 +293,7 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
   # broken tools like the route_list subscript bug.
   describe "dev tool coverage" do
     before do
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("TINA4_DEBUG").and_return("true")
+      set_real_env("TINA4_DEBUG" => "true")
     end
 
     CORE_TOOLS = %w[

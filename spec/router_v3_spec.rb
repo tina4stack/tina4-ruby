@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/real_http"
 
 RSpec.describe "Router v3 features" do
   before { Tina4::Router.clear! }
@@ -85,9 +86,11 @@ RSpec.describe "Router v3 features" do
       expect(route).not_to be_nil
       expect(route.middleware.length).to eq(1)
 
-      # Simulate middleware run
-      req = double("request")
-      res = double("response")
+      # A REAL middleware run against a REAL Tina4::Request / Tina4::Response —
+      # not a simulation. The doubles this replaced answered nothing, so any
+      # middleware that actually touched either argument would have blown up.
+      req = build_request
+      res = build_response
       result = route.run_middleware(req, res)
       expect(result).to be true
       expect(called).to be true
@@ -98,8 +101,8 @@ RSpec.describe "Router v3 features" do
       Tina4::Router.get("/blocked", middleware: [deny_mw]) { |req, res| "nope" }
 
       route, _params = Tina4::Router.find_route("GET", "/blocked")
-      req = double("request")
-      res = double("response")
+      req = build_request
+      res = build_response
       result = route.run_middleware(req, res)
       expect(result).to be false
     end
@@ -111,7 +114,7 @@ RSpec.describe "Router v3 features" do
       Tina4::Router.get("/chain", middleware: [mw1, mw2]) { |req, res| "ok" }
 
       route, _params = Tina4::Router.find_route("GET", "/chain")
-      route.run_middleware(double("req"), double("res"))
+      route.run_middleware(build_request, build_response)
       expect(order).to eq([1, 2])
     end
   end
