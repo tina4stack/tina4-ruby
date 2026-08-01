@@ -71,17 +71,43 @@ RSpec.describe "Session Handlers" do
     end
 
     it "returns nil for expired session" do
-      # Create handler with very short TTL
-      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      # A real, short ttl and real wall-clock time. This used to pass ttl: 0,
+      # which relied on the file backend reading 0 as "expire immediately" - the
+      # opposite of what 0 means everywhere else in Tina4 and in every mainstream
+      # implementation, where an absent or zero deadline means NEVER EXPIRES.
+      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 1)
       short_handler.write("expired", { "data" => "old" })
-      sleep(0.1)
+      sleep(1.2)
       expect(short_handler.read("expired")).to be_nil
     end
 
+    it "keeps a session forever when ttl is zero (0 means never expires)" do
+      immortal = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      immortal.write("forever", { "data" => "keep" })
+      sleep(1.2)
+      expect(immortal.read("forever")).to eq({ "data" => "keep" })
+      expect(Dir.glob(File.join(tmpdir, "sess_forever.json"))).not_to be_empty
+    end
+
+    it "keeps a legacy bare payload that carries no expiry stamp at all" do
+      # Exactly what an older version wrote: the payload, no envelope, no stamp.
+      # It must be READ, not deleted - an absent deadline means never expires.
+      File.write(File.join(tmpdir, "sess_legacy.json"), JSON.generate({ "v" => "old" }))
+      expect(handler.read("legacy")).to eq({ "v" => "old" })
+      expect(Dir.glob(File.join(tmpdir, "sess_legacy.json"))).not_to be_empty
+    end
+
+    it "honours a per-call ttl that is shorter than the handler default" do
+      handler.write("shortlived", { "data" => "x" }, 1)
+      sleep(1.2)
+      expect(handler.read("shortlived")).to be_nil
+      expect(Dir.glob(File.join(tmpdir, "sess_shortlived.json"))).to be_empty
+    end
+
     it "deletes expired session file on read" do
-      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 1)
       short_handler.write("expired", { "data" => "old" })
-      sleep(0.1)
+      sleep(1.2)
       short_handler.read("expired")
       # File should be deleted
       files = Dir.glob(File.join(tmpdir, "sess_expired.json"))
@@ -104,10 +130,10 @@ RSpec.describe "Session Handlers" do
     end
 
     it "handles cleanup of expired files" do
-      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 0)
+      short_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir, ttl: 1)
       short_handler.write("old1", { "a" => 1 })
       short_handler.write("old2", { "b" => 2 })
-      sleep(0.1)
+      sleep(1.2)
       short_handler.cleanup
       files = Dir.glob(File.join(tmpdir, "sess_*.json"))
       expect(files).to be_empty
