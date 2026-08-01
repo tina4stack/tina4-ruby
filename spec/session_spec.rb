@@ -316,6 +316,29 @@ RSpec.describe Tina4::Session do
       session = Tina4::Session.new(env, options)
       expect(session.get("missing")).to be_nil
     end
+
+    # A STORED false is a value, not an absence. `@data[key] || default` returned
+    # the caller's default for ANY falsy stored value, so a legitimately stored
+    # false read back as the default — a feature flag stored false read back true.
+    # Python (dict.get), PHP (??) and Node (??) all return the stored false, so
+    # Ruby was the 1-of-4 outlier. Shared contract name across all four repos.
+    #
+    # BOTH halves matter: without the absent-key control, a "fix" that simply
+    # never returned the default would pass while being a worse bug.
+    it "session get returns a stored false instead of the default" do
+      session = Tina4::Session.new(env, options)
+      session.set("flag", false)
+
+      # POSITIVE — the stored false comes back as false, not as the default.
+      expect(session.has?("flag")).to be true
+      expect(session.get("flag", true)).to be false
+      expect(session.get("flag")).to be false
+
+      # NEGATIVE CONTROL — an ABSENT key still returns the default.
+      expect(session.has?("absent")).to be false
+      expect(session.get("absent", "fallback")).to eq("fallback")
+      expect(session.get("absent")).to be_nil
+    end
   end
 
   describe "#has?" do

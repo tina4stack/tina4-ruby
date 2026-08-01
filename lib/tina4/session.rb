@@ -147,9 +147,24 @@ module Tina4
       @data = {}
     end
 
-    # Get a session value with optional default
+    # Get a session value with optional default.
+    #
+    # The default is returned for an ABSENT key, never for a stored FALSE. This
+    # was `@data[key.to_s] || default`, which handed back the caller's default
+    # for any falsy stored value — so a feature flag stored as false read back
+    # as the caller's `true` default. Python (`dict.get`), PHP (`??`) and Node
+    # (`??`) all return the stored false, so Ruby was the 1-of-4 outlier.
+    #
+    # Deliberately the `nil?` form and NOT `@data.key?(k) ? @data[k] : default`:
+    # both fix the false case, but the key? form would ALSO flip a stored nil
+    # from the default to nil. Ruby currently agrees with PHP and Node there
+    # (stored nil -> default) and only Python disagrees (stored None -> None),
+    # so changing it is a cross-framework decision, not a side effect of this
+    # fix. This form is exactly PHP's `??` and Node's `??`. Same idiom as
+    # #get_flash below.
     def get(key, default = nil)
-      @data[key.to_s] || default
+      value = @data[key.to_s]
+      value.nil? ? default : value
     end
 
     # Set a session value
