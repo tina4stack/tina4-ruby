@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require "json"
 require "fileutils"
+require "digest"
 
 module Tina4
   module SessionHandlers
@@ -58,9 +59,19 @@ module Tina4
 
       private
 
+      # SHA-256 of the id. A session id can therefore never become a path
+      # component, AND two distinct ids can never collide.
+      #
+      # The previous gsub(/[^a-zA-Z0-9_-]/, "") was traversal-safe but LOSSY: it
+      # collapsed "a/b" and "ab" onto the same sess_ab.json, so two different
+      # sessions shared one record and one user's data surfaced under another
+      # user's id. Parity with the Python master's FileSessionHandler._file
+      # (hashlib.sha256(session_id.encode()).hexdigest()).
+      #
+      # The sess_ prefix is kept deliberately so #cleanup and #gc keep matching
+      # with their Dir.glob("sess_*").
       def session_path(session_id)
-        safe_id = session_id.gsub(/[^a-zA-Z0-9_-]/, "")
-        File.join(@dir, "sess_#{safe_id}.json")
+        File.join(@dir, "sess_#{Digest::SHA256.hexdigest(session_id.to_s)}.json")
       end
     end
   end

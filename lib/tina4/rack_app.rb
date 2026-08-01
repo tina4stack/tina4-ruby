@@ -1021,10 +1021,14 @@ module Tina4
         end
       end
 
-      # API_KEY bypass — matches tina4_python behavior
-      api_key = ENV["TINA4_API_KEY"]
-      if api_key && !api_key.empty? && token == api_key
-        env["tina4.auth_payload"] = { "api_key" => true }
+      # API_KEY bypass — routed through the timing-safe Tina4::Auth.validate_api_key
+      # (OpenSSL.fixed_length_secure_compare), matching tina4_python's _check_auth.
+      # It used to be a plain `token == api_key`, which returns as soon as two
+      # bytes differ — so response timing leaks the key prefix and the key can be
+      # recovered a character at a time. validate_api_key also covers the unset /
+      # blank / wrong-length cases the old guard spelled out by hand.
+      if Tina4::Auth.validate_api_key(token)
+        env["tina4.auth_payload"] = { "_auth" => "api_key" }
       elsif token
         unless Tina4::Auth.valid_token(token)
           return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]

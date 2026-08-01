@@ -12,6 +12,50 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
 
 ## Unreleased
 
+### Security: the auth + session contract (ADR-0021)
+
+**Breaking:** the API-key auth result is now `{ "_auth" => "api_key" }` instead of
+`{ "api_key" => true }`, in `Tina4::Auth.authenticate_request`, the `env["tina4.auth"]`
+set by `Tina4::Auth.bearer_auth`, and the `env["tina4.auth_payload"]` set by the
+write-route gate. *Migration:* replace `payload["api_key"]` with
+`payload["_auth"] == "api_key"`. PHP and Node already used `_auth`; Python moved to it
+in the same change, so the same successful auth no longer reads three different ways
+across the four frameworks.
+
+Also in this change:
+
+- **Breaking: strict session mode — deploying this logs every existing session out
+  once.** A session id is now adopted only when it is BOTH a well-formed opaque id
+  (`Tina4::Session.valid_session_id?`, `/\A[A-Za-z0-9_-]{1,128}\z/` — the constraint is
+  the alphabet, there is deliberately no entropy floor) AND an id the backend already
+  holds a session under. Anything else is DISCARDED and a fresh `SecureRandom.hex(32)`
+  minted. This is OWASP strict mode / PHP's `session.use_strict_mode=1`, and it closes
+  session fixation: Ruby previously adopted any cookie id, so an attacker could plant
+  one, wait for the victim to log in under it, and already hold the authenticated
+  session id. A backend OUTAGE is deliberately not treated as "unknown" — it logs and
+  still adopts, so one Redis blip cannot rotate every id at once.
+- **Breaking: session filenames are a SHA-256 of the id.** `FileHandler#session_path`
+  did `gsub(/[^a-zA-Z0-9_-]/, "")` — traversal-safe but LOSSY, so `a/b` and `ab` both
+  became `sess_ab.json` and one user's session data surfaced under another user's id.
+  It is now `sess_<sha256(id)>.json`, parity with Python's `FileSessionHandler._file`.
+  Existing session FILES are not found under the new name, which is the other half of
+  the one-time logout above. *Migration:* none required; users simply sign in again.
+  Delete stale `sessions/sess_*.json` at your leisure.
+- **A malformed `exp`/`nbf` no longer reads as "no constraint".** RFC 7519 s2 defines
+  them as NumericDate; the check was `payload["exp"] && ...`, so `exp: null` or
+  `exp: false` skipped it entirely and the token never expired. A present-but-non-numeric
+  claim now rejects the token. A token with no `exp`/`nbf` key at all stays
+  unconstrained (non-breaking).
+- **`authenticate_request` / `bearer_auth` check the JWT BEFORE the API key**, matching
+  Python, PHP and Node.
+- **The write-route gate compares the API key timing-safely.** `RackApp.enforce_route_auth`
+  used a plain `token == api_key`, which returns as soon as two bytes differ and leaks
+  the key prefix through response timing; it now routes through
+  `Tina4::Auth.validate_api_key` (`OpenSSL.fixed_length_secure_compare`).
+
+Locked in by `spec/auth_session_contract_spec.rb`, whose example names are identical in
+all four frameworks.
+
 ### Security: a before hook that refuses without returning the pair no longer runs the handler
 
 A `before_*` middleware hook that set a 4xx status and returned `nil` did NOT

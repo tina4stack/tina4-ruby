@@ -51,6 +51,12 @@ RSpec.describe Tina4::Session do
         writer = Tina4::Session.new({ "HTTP_COOKIE" => "" },
                                     handler: :file, handler_options: { dir: tmp_dir })
         expect(writer.cookie_header).to start_with("renamed_sess=")
+        # Persist it first: strict session mode (ADR-0021) adopts a cookie id
+        # only when the store already holds a session under it, so an unsaved
+        # id would be discarded here for the right reason and mask what this
+        # example is actually about (cookie-NAME resolution).
+        writer["k"] = "v"
+        writer.save
         # The read side resolves the SAME name: a cookie under the configured
         # name is extracted back into the resumed session id.
         reader = Tina4::Session.new({ "HTTP_COOKIE" => "renamed_sess=#{writer.id}" },
@@ -400,7 +406,11 @@ RSpec.describe Tina4::Session do
       # no-op above was the modified-flag gate, not a broken handler/dir.
       session["touched"] = "now"
       expect(session.save).to be true
-      expect(Dir.glob(File.join(tmp_dir, "sess_#{session.id}.json"))).not_to be_empty
+      # The on-disk name is the SHA-256 of the id (ADR-0021), never the id
+      # itself: a raw id would be lossy-sanitised and could collide.
+      expect(
+        Dir.glob(File.join(tmp_dir, "sess_#{Digest::SHA256.hexdigest(session.id)}.json"))
+      ).not_to be_empty
     end
 
     it "persists multiple values" do

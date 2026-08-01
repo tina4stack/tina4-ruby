@@ -13,6 +13,37 @@ module Tina4
 
     attr_reader :id, :data
 
+    # A session id is OPAQUE — an unguessable lookup token and nothing else. It
+    # is never a filename, a path, a SQL fragment or a Redis key fragment, so the
+    # only characters it may contain are the ones every backend treats as inert.
+    #
+    # The alphabet is the RFC 4648 base64url set, which is exactly what all four
+    # frameworks already mint: Ruby SecureRandom.hex(32), Python
+    # secrets.token_urlsafe(32), PHP/Node hex(16). Validation is therefore
+    # non-breaking for every id the family has ever issued, while rejecting the
+    # "." and "/" that turn a cookie into a path traversal.
+    #
+    # The constraint is the ALPHABET, not the length. There is deliberately NO
+    # entropy floor: unguessability comes from the framework MINTING the id
+    # (SecureRandom.hex(32)), never from inspecting one an app passed on purpose,
+    # so a floor would close no attack while breaking trusted callers that manage
+    # their own short programmatic ids (start("my-session-id")). An
+    # attacker-supplied id is stopped by strict mode (see #adopt_or_mint), not by
+    # its length. The 128-character ceiling just bounds what can be pushed
+    # through a backend key.
+    #
+    # \A and \z, NEVER ^ and $: Ruby's ^/$ match LINE boundaries, so a "^...$"
+    # anchor would accept "legitimate_looking_id\n../../etc/passwd".
+    SESSION_ID_PATTERN = /\A[A-Za-z0-9_-]{1,128}\z/
+
+    # True when session_id is a well-formed opaque session identifier.
+    #
+    # Callers pass UNTRUSTED input here (the session cookie is attacker-chosen),
+    # so anything that is not a String of the opaque alphabet is rejected.
+    def self.valid_session_id?(session_id)
+      session_id.is_a?(String) && SESSION_ID_PATTERN.match?(session_id)
+    end
+
     # The session cookie name — the SINGLE source of truth shared by the WRITE
     # side (#cookie_header) and the READ side (#extract_session_id AND RackApp's
     # incoming-cookie parse), so a cookie written under a renamed name is read
@@ -67,9 +98,10 @@ module Tina4
       # Uses the SAME detector as Request#url so the two never disagree (issue #31).
       @request_secure = Tina4::Request.secure_scheme?(env || {})
       @handler = create_handler
-      @id = extract_session_id(env) || SecureRandom.hex(32)
-      @data = load_session
-      @modified = false
+      # The cookie is the live server's session-id source and is fully
+      # attacker-controlled, so it goes through the same strict-mode funnel as
+      # an explicit #start.
+      adopt_or_mint(extract_session_id(env))
     end
 
     def [](key)
@@ -171,18 +203,15 @@ module Tina4
       @id
     end
 
-    # Start or resume a session. If session_id is given, load that session;
-    # otherwise generate a new ID. Returns the session ID string.
+    # Start or resume a session. Returns the session ID string.
+    #
+    # session_id is UNTRUSTED, so it goes through #adopt_or_mint: it is resumed
+    # only when it is a well-formed opaque id AND one the backend already holds a
+    # session under (strict mode). Otherwise a genuinely NEW session is started
+    # under a fresh SecureRandom.hex(32). A session already in flight keeps both
+    # its id and its data.
     def start(session_id = nil)
-      if session_id
-        @id = session_id
-        @data = load_session
-      else
-        @id = SecureRandom.hex(32)
-        @data = {}
-      end
-      @modified = false
-      @id
+      adopt_or_mint(session_id)
     end
 
     # Returns the current session ID string.
@@ -238,6 +267,9 @@ module Tina4
 
     private
 
+    # The session id carried on the incoming cookie, or nil. A pure parser —
+    # every caller funnels through #adopt_or_mint, which is where the value is
+    # judged.
     def extract_session_id(env)
       cookie_str = env["HTTP_COOKIE"] || ""
       cookie_str.split(";").each do |pair|
@@ -247,8 +279,56 @@ module Tina4
       nil
     end
 
-    def load_session
-      safe_read(@id)
+    # Adopt session_id, or mint a fresh one — the SINGLE decision both entry
+    # points (the constructor's cookie path and #start) go through, so neither
+    # can drift from the rule or skip it.
+    #
+    # STRICT SESSION MODE (OWASP; PHP's session.use_strict_mode=1). session_id is
+    # UNTRUSTED: it comes from the session cookie or a caller, both of which the
+    # client controls. It is adopted ONLY when it is BOTH
+    #   (a) a well-formed opaque id (see valid_session_id?), and
+    #   (b) an id the backend already holds a session under.
+    # Anything else — malformed, or well-formed but never issued — is DISCARDED
+    # and a fresh SecureRandom.hex(32) minted. Adopting either one is session
+    # fixation: an attacker plants a cookie, the victim logs in under it, and the
+    # attacker already holds the authenticated session id. A malformed id also
+    # used to steer a filesystem path.
+    #
+    # Sets @id/@data/@modified and returns the resolved id.
+    def adopt_or_mint(session_id)
+      session_id = nil unless self.class.valid_session_id?(session_id)
+      data = session_id.nil? ? nil : existing_session_data(session_id)
+      if data.nil?
+        session_id = SecureRandom.hex(32)
+        data = {}
+      end
+      @id = session_id
+      @data = data
+      @modified = false
+      @id
+    end
+
+    # The stored data for session_id when the backend HOLDS a session under it,
+    # else nil — strict mode's signal to mint a fresh id rather than adopt one
+    # the client chose.
+    #
+    # nil AND empty both count as "no session": the handlers disagree (file,
+    # redis, valkey, mongo and database return nil for a missing session, while
+    # memcached returns {}), and strict mode must not silently no-op on one
+    # backend. An empty STORED session cannot arise anyway — #save is a no-op
+    # until something is actually written.
+    #
+    # A backend FAILURE is deliberately NOT "no session": it logs and returns {},
+    # so the id is still adopted. Reading an outage as "unknown" would rotate
+    # every id and log the entire userbase out on a single Redis blip — the
+    # opposite of the log-loud + degrade policy below.
+    def existing_session_data(session_id)
+      data = @handler.read(session_id)
+      data.nil? || (data.respond_to?(:empty?) && data.empty?) ? nil : data
+    rescue StandardError => e
+      log_backend_error("read", e)
+      raise if @strict
+      {}
     end
 
     # ── Backend-failure policy (parity with Python's Session boundary) ──
