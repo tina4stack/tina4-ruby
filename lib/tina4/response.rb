@@ -156,9 +156,48 @@ module Tina4
       self
     end
 
-    def file(path, content_type: nil, download: false)
+    def file(path, content_type: nil, download: false, root: nil)
+      # SECURITY: confine the read. The natural spelling of a download route,
+      #
+      #     response.file("downloads/" + name)   # name = "../secret.env"
+      #
+      # used to serve any file the process could read - measured at 200 with
+      # the contents of a .env one directory above the intended one.
+      #
+      # TWO checks. Containment ALONE does not close it: that payload lands on
+      # <project>/secret.env, which IS inside the project root, and the project
+      # root is exactly where .env lives. Rejecting ".." on the way in is the
+      # check that closes it; containment then catches absolute paths and
+      # symlinks, neither of which carries a ".." segment.
+      base = ::File.expand_path(root || Dir.pwd)
+      forbidden = path.to_s.split(%r{[\\/]}).include?("..")
+
+      unless forbidden
+        candidate = ::File.absolute_path?(path.to_s) ? path.to_s : ::File.join(base, path.to_s)
+        resolved =
+          begin
+            ::File.realpath(candidate)
+          rescue Errno::ENOENT, Errno::ELOOP, Errno::ENAMETOOLONG, Errno::EACCES
+            nil
+          end
+        if resolved && base != ::File::SEPARATOR &&
+           resolved != base && !resolved.start_with?(base + ::File::SEPARATOR)
+          forbidden = true
+        end
+        path = resolved || candidate
+      end
+
+      if forbidden
+        # Refuse BEFORE reading: never load bytes we will not send.
+        @status_code = 403
+        @headers["content-type"] = "text/plain"
+        @body = "Forbidden"
+        return self
+      end
+
       unless ::File.exist?(path)
         @status_code = 404
+        @headers["content-type"] = "text/plain"
         @body = "File not found"
         return self
       end
