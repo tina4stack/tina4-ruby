@@ -10,6 +10,17 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (a queue method could be a fatal error instead of resolving)
+
+Every public `Queue` method must RESOLVE on every backend the framework offers. A
+method that does not exist cannot even reach a refusal, so the upgrade path is
+severed rather than degraded.
+
+- `queue.size` raised `NoMethodError` on the kafka backend, which simply had no
+  `size` method. It now answers `0` - the value ADR-0022 decision 5 already records,
+  and the one Python and PHP already gave. A log has no queue depth, and computing
+  one means an admin round-trip per call.
+
 ### Fixed (queue priority was ignored on every backend but file)
 
 - `push(..., priority)` is now honoured on the `mongodb` backend: priority is stored

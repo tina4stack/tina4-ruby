@@ -124,6 +124,16 @@ module Tina4
         nil
       end
 
+      # Kafka has no queue depth: a log is a sequence of offsets, not a queue,
+      # and computing a "remaining" count means an admin round-trip per call.
+      # ADR-0022 decision 5 records 0 as the documented answer, which Python and
+      # PHP already return. Ruby had no size method at all, so queue.size raised
+      # NoMethodError on kafka - a method that does not resolve at all, which is
+      # what invariant 1 forbids.
+      def size(_topic)
+        0
+      end
+
       def acknowledge(_message)
         @consumer.commit if @last_message
       end
