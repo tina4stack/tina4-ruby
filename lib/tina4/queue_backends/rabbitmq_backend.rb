@@ -21,6 +21,17 @@ module Tina4
       end
 
       def enqueue(message)
+        if message.available_at
+          raise NotImplementedError,
+                "The rabbitmq queue backend cannot honour push(delay_seconds): " \
+                "RabbitMQ has no per-message delay in core. The " \
+                "rabbitmq_delayed_message_exchange plugin is not part of a standard " \
+                "broker, and the TTL + dead-letter workaround head-of-line blocks (a " \
+                "long-delayed job holds up every shorter one behind it in the same " \
+                "queue). Use the file or mongodb backend for delayed jobs, or " \
+                "schedule the push itself."
+        end
+
         queue = get_queue(message.topic)
         queue.publish(message.to_json, persistent: true)
       end

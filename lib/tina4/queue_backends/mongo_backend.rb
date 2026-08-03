@@ -58,11 +58,17 @@ module Tina4
       end
 
       def enqueue(message)
+        # Queue#push already resolved delay_seconds into an available_at (nil when
+        # undelayed). Persisting it is what makes a delayed job invisible until
+        # its time: dequeue filters on it below. Before 3.13.95 this field was
+        # never written, so a delayed job on Mongo fired immediately while the
+        # same code delayed correctly on the file backend.
         collection.insert_one(
           _id: message.id,
           topic: message.topic,
           payload: message.payload,
           created_at: message.created_at.utc,
+          available_at: message.available_at&.utc,
           attempts: message.attempts,
           status: "pending"
         )
@@ -77,8 +83,17 @@ module Tina4
         # reserved_at so reclaim_expired can return the job if the consumer dies
         # before acknowledge/complete. This is the fix for the "reserved forever"
         # bug — previously available_at was left unchanged.
+        # A job is claimable only once available_at has passed. The $or arm is not
+        # optional: documents enqueued before available_at was written have no
+        # such field, and a bare { "$lte" => now } would strand every one of them
+        # in the collection forever.
         doc = collection.find_one_and_update(
-          { topic: topic, status: "pending" },
+          { topic: topic, status: "pending",
+            "$or" => [
+              { available_at: nil },
+              { available_at: { "$exists" => false } },
+              { available_at: { "$lte" => now } }
+            ] },
           { "$set" => {
             status: "processing",
             reserved_at: now,

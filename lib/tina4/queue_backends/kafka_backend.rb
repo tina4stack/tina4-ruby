@@ -63,6 +63,15 @@ module Tina4
       private_class_method :env_value
 
       def enqueue(message)
+        if message.available_at
+          raise NotImplementedError,
+                "The kafka queue backend cannot honour push(delay_seconds): Kafka " \
+                "has no per-message delay at all. A consumer reads a partition in " \
+                "offset order, so a delayed record would stall every record behind " \
+                "it. Use the file or mongodb backend for delayed jobs, or schedule " \
+                "the push itself."
+        end
+
         @producer.produce(
           topic: message.topic,
           payload: message.to_json,
