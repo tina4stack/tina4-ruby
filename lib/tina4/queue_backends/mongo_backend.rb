@@ -231,6 +231,36 @@ module Tina4
         )
       end
 
+      # Remove every pending job for a topic. Queue#clear used to return 0
+      # silently here, because this backend had no clear at all and the caller
+      # guarded on respond_to?(:clear) - so clearing a mongo-backed queue was a
+      # no-op that looked like success.
+      def clear(topic)
+        result = collection.delete_many(topic: topic, status: "pending")
+        result.deleted_count
+      end
+
+      # Claim ONE specific job by id, the same way dequeue claims the head.
+      # Queue#pop_by_id used to return nil silently for the same reason.
+      def find_by_id(topic, id)
+        now = Time.now.utc
+        doc = collection.find_one_and_update(
+          { _id: id, topic: topic, status: "pending" },
+          { "$set" => { status: "processing", reserved_at: now,
+                        available_at: now + (@visibility_timeout || 0) } },
+          return_document: :after
+        )
+        return nil unless doc
+
+        Tina4::Job.new(
+          topic: doc["topic"],
+          payload: doc["payload"],
+          id: doc["_id"],
+          priority: doc["priority"] || 0,
+          attempts: doc["attempts"] || 0
+        )
+      end
+
       def size(topic)
         collection.count_documents(topic: topic, status: "pending")
       end

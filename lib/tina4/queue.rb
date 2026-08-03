@@ -77,7 +77,14 @@ module Tina4
 
     # Clear all pending jobs from this queue's topic. Returns count removed.
     def clear # -> int
-      return 0 unless @backend.respond_to?(:clear)
+      # Was `return 0` - a SILENT no-op that looked exactly like an empty
+      # queue. A backend that cannot clear says so, naming itself.
+      unless @backend.respond_to?(:clear)
+        raise NotImplementedError,
+              "The #{@backend.class.name.split('::').last} queue backend cannot " \
+              "perform clear(): it cannot remove jobs by topic. Use the file or " \
+              "mongodb backend."
+      end
       @backend.clear(@topic)
     end
 
@@ -210,7 +217,13 @@ module Tina4
     # the given topic (defaults to this queue's topic). Returns the matching
     # Job (claimed/removed from the queue) or nil.
     def pop_by_id(topic = nil, id)
-      return nil unless @backend.respond_to?(:find_by_id)
+      # Was `return nil` - indistinguishable from "no such job".
+      unless @backend.respond_to?(:find_by_id)
+        raise NotImplementedError,
+              "The #{@backend.class.name.split('::').last} queue backend cannot " \
+              "perform pop_by_id(): it cannot address a single message by id. Use " \
+              "the file or mongodb backend."
+      end
       attach(@backend.find_by_id(topic || @topic, id))
     end
 
