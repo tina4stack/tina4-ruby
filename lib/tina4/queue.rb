@@ -290,7 +290,12 @@ module Tina4
 
     # Resolve the default backend from env vars.
     def self.resolve_backend(name = nil, max_retries: 3, retry_backoff: 0, visibility_timeout: nil)
-      chosen = name || ENV.fetch("TINA4_QUEUE_BACKEND", "file").downcase.strip
+      # Normalise BOTH sources, not just the env var. `.downcase.strip` used to
+      # bind only to the ENV.fetch branch, so an explicit
+      # Queue.new(backend: "FILE") fell through to the unknown-backend raise
+      # while the identical spelling in TINA4_QUEUE_BACKEND resolved fine -
+      # and while python, php and nodejs all accepted it. Python is master here.
+      chosen = (name || ENV.fetch("TINA4_QUEUE_BACKEND", "file")).to_s.downcase.strip
       vt = visibility_timeout.nil? ? default_visibility_timeout : visibility_timeout
 
       case chosen.to_s
