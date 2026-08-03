@@ -1,3 +1,4 @@
+require "cgi"
 # frozen_string_literal: true
 
 require "json"
@@ -331,6 +332,80 @@ RSpec.describe "DatabaseUrl credential redaction" do
         ENV.delete("TINA4_DATABASE_PASSWORD")
         saved.each { |key, value| ENV[key] = value }
       end
+    end
+  end
+end
+
+# DISPLAY REDACTS, FIDELITY DOES NOT - and nothing may persist the object.
+#
+# MEASURED 2026-08-03 with two sentinels (one containing a SPACE, one a quote, a
+# double quote, a backslash and a percent): #inspect, #to_s, #to_safe_string,
+# #to_json, the exception message, #inspect on the exception and the backtrace
+# are ALL clean. Marshal.dump still emits the password in full, and that is
+# deliberate - its contract is a faithful round trip, and a masked Marshal would
+# load an object whose password is the literal "***", which is a worse bug than
+# the disclosure.
+#
+# tina4-php reaches the identical boundary with serialize()/var_export(),
+# tina4-python with pickle, tina4-nodejs with structuredClone. All four agree,
+# so this is PARITY rather than a divergence.
+#
+# The rule is only safe while nothing PERSISTS one of these objects - a
+# DatabaseUrl marshalled into a cache, a session or a queue payload puts a
+# cleartext credential on disk. This guard is what keeps that true; it is ported
+# from tina4-php's DatabaseCredentialLeakTest so the PROTECTION exists in every
+# framework, not just the behaviour.
+RSpec.describe "the fidelity boundary" do
+  # Persistence calls that would carry the secret out of the process...
+  PERSIST = /\b(Marshal\.dump|Marshal\.load)\s*\(/
+  # ...applied to something that looks like a connection URL.
+  URLISH  = /\b(db_url|database_url|conn_url|dsn|@url)\b/i
+
+  def offenders
+    root = File.expand_path("../lib", __dir__)
+    Dir.glob(File.join(root, "**", "*.rb")).sort.flat_map do |path|
+      File.readlines(path, chomp: true, encoding: "UTF-8", invalid: :replace, undef: :replace)
+                  .each_with_index.filter_map do |line, i|
+        next unless PERSIST.match?(line) && URLISH.match?(line)
+        "#{path.sub(root + '/', '')}:#{i + 1}  #{line.strip}"
+      end
+    end
+  end
+
+  it "has no framework code that marshals a DatabaseUrl" do
+    expect(offenders).to eq([]),
+      "Marshal.dump on a DatabaseUrl writes the PASSWORD verbatim - Marshal keeps " \
+      "the secret on purpose so the round trip stays faithful. Persisting one puts " \
+      "a credential on disk. Record #to_safe_string instead:\n  - " +
+      offenders.join("\n  - ")
+  end
+
+  # Negative case - proves the guard has TEETH. A regex that silently stopped
+  # matching would leave the example above green and guarding nothing; tina4-php's
+  # ClassCollection guard passed VACUOUSLY this week for exactly that reason.
+  it "detects an offending line and ignores a redacted one" do
+    offending = "    blob = Marshal.dump(db_url)"
+    innocent  = "    blob = JSON.generate(db_url.to_safe_string)"
+
+    matches = ->(line) { PERSIST.match?(line) && URLISH.match?(line) }
+
+    expect(matches.call(offending)).to be(true), "the scanner must flag Marshal.dump(db_url)"
+    expect(matches.call(innocent)).to be(false), "the scanner must not flag a redacted render"
+  end
+
+  # The PREMISE the guard rests on, measured rather than assumed. If a future
+  # change made Marshal redact, this fails and the guard becomes unnecessary -
+  # better to be told than to keep enforcing a rule whose reason has gone.
+  it "confirms Marshal really does still carry the password" do
+    secret = "s3ntinel-Pa55 word"
+    url = Tina4::DatabaseUrl.new("postgres://user:#{CGI.escape(secret)}@h:5432/db")
+
+    expect(Marshal.dump(url)).to include("s3nt"),
+      "Marshal no longer carries the password - re-read the boundary rule, the " \
+      "persistence guard may no longer be needed"
+
+    [url.inspect, url.to_s, url.to_safe_string].each do |rendered|
+      expect(rendered).not_to include("s3nt")
     end
   end
 end

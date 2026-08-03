@@ -21,6 +21,16 @@ module Tina4
   # Core Principle 6 says a connection string must mean literally the same thing
   # in every framework. +spec/fixtures/database_url_corpus.json+ is the answer
   # key, byte-identical in all four.
+  # DISPLAY REDACTS, FIDELITY DOES NOT. #inspect, #to_s and #to_safe_string
+  # replace the password with the redaction marker, so a log line, a backtrace or
+  # a status payload is safe. Marshal deliberately does not: its contract is a
+  # faithful round trip, and a masked Marshal would load an object whose password
+  # is the literal "***".
+  #
+  # The consequence: DO NOT PERSIST THIS OBJECT. A DatabaseUrl marshalled into a
+  # cache, a session or a queue payload puts the password in cleartext on disk.
+  # Record #to_safe_string instead. spec/database_url_redaction_spec.rb fails the
+  # build if framework code ever marshals one.
   class DatabaseUrl
     # URL scheme to CANONICAL engine. Aliases resolve ONCE, here, so nothing
     # downstream ever compares raw schemes.
