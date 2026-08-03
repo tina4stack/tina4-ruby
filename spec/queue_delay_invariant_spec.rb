@@ -114,15 +114,29 @@ RSpec.describe "Queue delay invariant" do
         next
       end
 
-      ENV["TINA4_RABBITMQ_HOST"] = host
-      ENV["TINA4_RABBITMQ_PORT"] = port.to_s
-      ENV["TINA4_KAFKA_BROKERS"] = "#{host}:#{port}" if backend == "kafka"
+      # Set ONLY this backend's vars, and RESTORE them afterwards. Setting the
+      # RabbitMQ host/port unconditionally meant the kafka iteration left
+      # TINA4_RABBITMQ_PORT=9092 behind; under RSpec's randomized order that
+      # leaked into queue_backends_spec, whose RabbitMQ example then dialled the
+      # Kafka port and died with "Empty response received from the server".
+      saved = ENV.slice("TINA4_RABBITMQ_HOST", "TINA4_RABBITMQ_PORT", "TINA4_KAFKA_BROKERS")
+      if backend == "rabbitmq"
+        ENV["TINA4_RABBITMQ_HOST"] = host
+        ENV["TINA4_RABBITMQ_PORT"] = port.to_s
+      else
+        ENV["TINA4_KAFKA_BROKERS"] = "#{host}:#{port}"
+      end
 
       queue = Tina4::Queue.new(topic: "delay_#{SecureRandom.hex(6)}", backend: backend)
 
       expect { queue.push({ "m" => "delayed" }, delay_seconds: DELAY_SECONDS) }
         .to raise_error(NotImplementedError, /#{backend}.*delay/mi),
             "the #{backend} backend must refuse a delayed push, naming itself and the operation"
+    ensure
+      saved.each { |k, v| ENV[k] = v }
+      %w[TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS].each do |k|
+        ENV.delete(k) unless saved.key?(k)
+      end
     end
   end
 end
