@@ -63,6 +63,13 @@ module Tina4
       private_class_method :env_value
 
       def enqueue(message)
+        if message.priority.to_i > 0
+          raise NotImplementedError,
+                "The kafka queue backend cannot honour push(priority): Kafka has no " \
+                "priority concept at all - a consumer reads a partition in offset " \
+                "order. Use the file or mongodb backend for prioritised jobs."
+        end
+
         if message.available_at
           raise NotImplementedError,
                 "The kafka queue backend cannot honour push(delay_seconds): Kafka " \

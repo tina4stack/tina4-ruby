@@ -70,6 +70,10 @@ module Tina4
           created_at: message.created_at.utc,
           available_at: message.available_at&.utc,
           attempts: message.attempts,
+          # Stored so the dequeue sort can order on it. It was read back on the
+          # way out (doc["priority"] || 0) but never written, so every job
+          # scored 0 and the queue was pure FIFO.
+          priority: message.priority,
           status: "pending"
         )
       end
@@ -99,7 +103,11 @@ module Tina4
             reserved_at: now,
             available_at: now + (@visibility_timeout || 0)
           } },
-          sort: { created_at: 1 },
+          # Highest priority first, ties broken oldest-first — the same ordering
+          # policy LiteBackend applies. Sorting on created_at alone made the
+          # backend pure FIFO, so an urgent job queued behind a backlog waited
+          # for all of it.
+          sort: { priority: -1, created_at: 1 },
           return_document: :after
         )
         return nil unless doc

@@ -21,6 +21,16 @@ module Tina4
       end
 
       def enqueue(message)
+        if message.priority.to_i > 0
+          raise NotImplementedError,
+                "The rabbitmq queue backend cannot honour push(priority): RabbitMQ " \
+                "orders a queue FIFO. Native priority needs the queue DECLARED " \
+                "with an x-max-priority argument, and an existing queue cannot " \
+                "be redeclared with one (the broker answers PRECONDITION_FAILED), " \
+                "so enabling it would break every queue already in service. Use " \
+                "the file or mongodb backend for prioritised jobs."
+        end
+
         if message.available_at
           raise NotImplementedError,
                 "The rabbitmq queue backend cannot honour push(delay_seconds): " \
