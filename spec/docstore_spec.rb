@@ -125,11 +125,21 @@ RSpec.describe Tina4::DocStore do
       expect(got.map { |d| d["customer_id"] }).to eq([3])
     end
 
-    it "pushdown uses json_extract" do
+    it "pushes the filter down to json_extract" do
       where, params = Tina4::DocStore.compile_filter({ "customer_id" => { "$in" => [1, 2] } })
       expect(where).to include("json_extract(doc")
       expect(where).to include("IN (?,?)")
-      expect(params).to eq([1, 2])
+      # The operands are bound ONCE PER BRANCH - the scalar-field branch and the
+      # array-element branch each carry their own placeholders. This doubled when
+      # Mongo's array rule landed; the intent the test protects is that the
+      # filter is pushed into SQL, never scanned in memory.
+      expect(params).to eq([1, 2, 1, 2])
+    end
+
+    it "pushes the array rule down too, rather than applying it after the fact" do
+      where, params = Tina4::DocStore.compile_filter({ "tags" => "x" })
+      expect(where).to include("json_each(doc")
+      expect(params).to eq(%w[x x])
     end
   end
 

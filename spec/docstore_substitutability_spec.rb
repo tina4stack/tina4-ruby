@@ -195,29 +195,67 @@ RSpec.describe "DocStore substitutability" do
   describe "query semantics match on both providers" do
     # docstore_contract.json :: query-semantics-match-on-both-providers
     #
-    # OPEN DEFECT. MEASURED in Python against a real MongoDB and reproduced
-    # here: array fields do not match on the SQLite fallback while Mongo answers
-    # them. An array field on the fallback is effectively write-only.
-    it "reports array-query behaviour for each provider" do
-      report = {}
+    # ADR-0025 clause 4, closed 2026-08-03.
+    #
+    # MEASURED against a real MongoDB: EIGHT array-query behaviours diverged
+    # IDENTICALLY in all four frameworks - the signature of a contract nobody had
+    # written down. Three were FALSE POSITIVES, where the fallback returned a
+    # document Mongo excludes: {"nums" => {"$gt" => 9}} matched [1,2,3], because
+    # json_extract of an array returns its JSON TEXT and SQLite sorts any text
+    # above any number.
+    #
+    # MongoDB's rule is one sentence: a condition on an array-valued field
+    # matches when ANY ELEMENT matches it (or the whole array equals the
+    # operand), and a negation matches when NO element does.
+    #
+    # What is asserted is not "the fallback returns N" - it is that BOTH
+    # PROVIDERS RETURN THE SAME THING. That is ADR-0024 stated directly.
+    ARRAY_DOC = { "name" => "w", "tags" => %w[x y], "nums" => [1, 2, 3],
+                  "empty" => [], "scalar" => "x", "obj" => { "city" => "x" } }.freeze
+    ARRAY_CASES = [
+      ["equality containment", { "tags" => "x" }],
+      ["equality no match", { "tags" => "z" }],
+      ["exact array, right order", { "tags" => %w[x y] }],
+      ["exact array, wrong order", { "tags" => %w[y x] }],
+      ["$in hits one element", { "tags" => { "$in" => %w[x q] } }],
+      ["$in hits nothing", { "tags" => { "$in" => %w[q] } }],
+      ["$nin excludes a present element", { "tags" => { "$nin" => %w[x] } }],
+      ["$nin with an absent element", { "tags" => { "$nin" => %w[q] } }],
+      ["$ne a present element", { "tags" => { "$ne" => "x" } }],
+      ["$ne an absent element", { "tags" => { "$ne" => "q" } }],
+      ["numeric containment", { "nums" => 1 }],
+      ["$gt any element", { "nums" => { "$gt" => 2 } }],
+      ["$gt no element", { "nums" => { "$gt" => 9 } }],
+      ["$lt any element", { "nums" => { "$lt" => 2 } }],
+      ["$exists on an array", { "tags" => { "$exists" => true } }],
+      ["empty array exact", { "empty" => [] }],
+      ["$regex on an array element", { "tags" => { "$regex" => "^x$" } }],
+      ["scalar still works", { "scalar" => "x" }],
+      ["object field is not matched by its value", { "obj" => "x" }],
+      ["object field matches the whole object", { "obj" => { "city" => "x" } }]
+    ].freeze
 
-      c = collection_for(nil)
-      c.insert_one({ "name" => "arr", "tags" => %w[x y] })
-      report["fallback"] = { "containment" => c.find({ "tags" => "x" }).to_a.length }
-      expect(c.find({ "name" => "arr" }).to_a.length).to eq(1),
-                                                         "fallback: the control document is unfindable - the fixture itself is wrong"
-      c.delete_many({})
+    it "array queries match identically on both providers" do
+      skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable?
 
-      if self.class.mongo_reachable?
-        m = collection_for(MONGO_URI)
-        m.insert_one({ "name" => "arr", "tags" => %w[x y] })
-        report["mongo"] = { "containment" => m.find({ "tags" => "x" }).to_a.length }
-        m.delete_many({})
-      else
-        report["mongo"] = "skipped (no mongo)"
+      results = {}
+      { "fallback" => nil, "mongo" => MONGO_URI }.each do |provider, uri|
+        c = collection_for(uri)
+        c.delete_many({})
+        c.insert_one(ARRAY_DOC.dup)
+        results[provider] = ARRAY_CASES.to_h { |name, q| [name, c.find(q).to_a.length] }
+        c.delete_many({})
       end
 
-      warn "\n    array queries: #{report.inspect}"
+      mismatched = ARRAY_CASES.filter_map do |name, _|
+        next if results["fallback"][name] == results["mongo"][name]
+
+        [name, [results["fallback"][name], results["mongo"][name]]]
+      end.to_h
+
+      expect(mismatched).to eq({}),
+                            "array-query semantics diverge between the providers " \
+                            "(fallback, mongo): #{mismatched.inspect}"
     end
   end
 

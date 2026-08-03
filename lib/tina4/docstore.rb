@@ -193,6 +193,45 @@ module Tina4
 
     def json_type(field) = "json_type(doc, '#{json_path(field)}')"
 
+    # A rowset over the field: one row per element of an array, one for a scalar.
+    def json_each(field) = "json_each(doc, '#{json_path(field)}')"
+
+    # True when the field is an ARRAY and any element satisfies +condition+.
+    #
+    # MongoDB's rule for an array-valued field is that a condition matches when
+    # ANY ELEMENT matches it. json_each yields one row per element, so EXISTS is
+    # the direct translation.
+    #
+    # The `= 'array'` guard is load-bearing: json_each over an OBJECT iterates
+    # its VALUES, and Mongo never matches an object field against one of its
+    # values - {"obj" => "x"} must NOT match {"obj" => {"city" => "x"}}.
+    def any_element(field, condition)
+      "(#{json_type(field)} = 'array' AND EXISTS (SELECT 1 FROM #{json_each(field)} WHERE #{condition}))"
+    end
+
+    # Compile `field == operand` under Mongo's array rule -> [sql, params].
+    def equality(field, operand)
+      ex = extract(field)
+      return ["#{ex} IS NULL", []] if operand.nil?
+
+      # An Array or Hash operand compares against the WHOLE value, never
+      # element-wise: {"tags" => ["x","y"]} is exact-array equality.
+      return ["#{ex} = ?", [bind(operand)]] if operand.is_a?(Array) || operand.is_a?(Hash)
+
+      ["(#{ex} = ? OR #{any_element(field, "value = ?")})", [bind(operand), bind(operand)]]
+    end
+
+    # Compile `field OP operand` under Mongo's array rule -> [sql, params].
+    #
+    # The `<> 'array'` guard on the scalar branch removes a measured FALSE
+    # POSITIVE: json_extract of an array returns its JSON TEXT, and SQLite sorts
+    # any text above any number, so {"nums" => {"$gt" => 9}} matched [1,2,3].
+    def compare(field, sql_op, operand)
+      ex = extract(field)
+      ["((#{json_type(field)} <> 'array' AND #{ex} #{sql_op} ?) OR #{any_element(field, "value #{sql_op} ?")})",
+       [bind(operand), bind(operand)]]
+    end
+
     # Compile a Mongo-style filter Hash into [sql_fragment, params].
     # Returns ["1=1", []] for an empty filter. Supports implicit AND across keys,
     # $or / $and, and the per-field operator set.
@@ -221,11 +260,12 @@ module Tina4
             clauses << frag
             params.concat(p)
           end
-        elsif value.nil?
-          clauses << "#{extract(key)} IS NULL"
         else
-          clauses << "#{extract(key)} = ?"
-          params << bind(value)
+          # equality - the same helper $eq uses, so the array rule applies
+          # whether the filter reads {"tags" => "x"} or {"tags" => {"$eq" => "x"}}
+          frag, p = equality(key, value)
+          clauses << frag
+          params.concat(p)
         end
       end
 
@@ -234,37 +274,40 @@ module Tina4
 
     def compile_op(field, op, operand)
       ex = extract(field)
-      if COMPARATORS.key?(op)
-        return ["#{ex} #{COMPARATORS[op]} ?", [bind(operand)]]
-      end
+      return compare(field, COMPARATORS[op], operand) if COMPARATORS.key?(op)
 
       case op
       when "$eq"
-        return ["#{ex} IS NULL", []] if operand.nil?
-
-        ["#{ex} = ?", [bind(operand)]]
+        equality(field, operand)
       when "$ne"
         return ["#{ex} IS NOT NULL", []] if operand.nil?
 
-        ["(#{ex} <> ? OR #{ex} IS NULL)", [bind(operand)]]
+        sql, p = equality(field, operand)
+        # A MISSING field satisfies $ne in Mongo, and SQL's NOT(NULL) is NULL
+        # rather than true - so the IS NULL arm is required, not decoration.
+        ["(NOT (#{sql}) OR #{ex} IS NULL)", p]
       when "$in"
         items = Array(operand)
         return ["0", []] if items.empty?
 
         placeholders = (["?"] * items.length).join(",")
-        ["#{ex} IN (#{placeholders})", items.map { |v| bind(v) }]
+        bound = items.map { |v| bind(v) }
+        ["(#{ex} IN (#{placeholders}) OR #{any_element(field, "value IN (#{placeholders})")})", bound + bound]
       when "$nin"
         items = Array(operand)
         return ["1", []] if items.empty?
 
         placeholders = (["?"] * items.length).join(",")
-        ["(#{ex} NOT IN (#{placeholders}) OR #{ex} IS NULL)", items.map { |v| bind(v) }]
+        bound = items.map { |v| bind(v) }
+        ["(NOT (#{ex} IN (#{placeholders}) OR #{any_element(field, "value IN (#{placeholders})")}) OR #{ex} IS NULL)",
+         bound + bound]
       when "$exists"
         # json_type is NULL when the path is absent; present-but-null still has a type.
         [operand ? "#{json_type(field)} IS NOT NULL" : "#{json_type(field)} IS NULL", []]
       when "$regex"
         pattern = operand.is_a?(Hash) ? operand["$regex"].to_s : operand.to_s
-        ["#{ex} REGEXP ?", [pattern]]
+        ["((#{json_type(field)} <> 'array' AND #{ex} REGEXP ?) OR #{any_element(field, "value REGEXP ?")})",
+         [pattern, pattern]]
       else
         raise ArgumentError, "DocStore: unsupported query operator #{op.inspect}"
       end
