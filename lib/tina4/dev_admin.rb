@@ -820,7 +820,16 @@ module Tina4
           platform: RUBY_PLATFORM,
           debug: ENV["TINA4_DEBUG"] || "false",
           log_level: ENV["TINA4_LOG_LEVEL"] || "ERROR",
-          database: ENV["TINA4_DATABASE_URL"] || "not configured",
+          # REDACTED, not raw. Measured 2026-08-02: this served
+          # TINA4_DATABASE_URL verbatim, so GET /__dev/api/status answered any
+          # caller that could reach the debug port with the database password.
+          # It is a display field - nothing round-trips it back - so the safe
+          # form is strictly better here. (The connections EDITOR at
+          # /__dev/api/connections still returns the raw URL on purpose: it
+          # populates a form that is saved back to .env, and redacting it there
+          # would write *** into the file. That one needs an unchanged-sentinel
+          # design, in all four frameworks.)
+          database: (ENV["TINA4_DATABASE_URL"].to_s.empty? ? "not configured" : Tina4::DatabaseUrl.redact(ENV["TINA4_DATABASE_URL"])),
           db_tables: db_table_count,
           uptime: (Time.now - (defined?(@boot_time) && @boot_time ? @boot_time : (@boot_time = Time.now))).round(1),
           route_count: Tina4::Router.routes.size,

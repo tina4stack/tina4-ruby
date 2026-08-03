@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require_relative "support/live_postgres"
 
 # A percent-encoded password in a DATABASE_URL must reach the driver DECODED.
 #
@@ -44,18 +45,23 @@ RSpec.describe "DatabaseUrl credentials" do
 
   # The end-to-end proof: '%61' decodes to 'a', so the encoded form spells the
   # SAME password. It connects only if the credential path decodes.
+  #
+  # This used to gate on TINA4_TEST_PG_URL and skip with "live PostgreSQL not
+  # configured" whenever that was unset - which is always, locally. The skip
+  # reads green and is not caught by the TINA4_REQUIRE_SERVICES gate either
+  # ("not configured" is not one of its unavailability hints), so the one
+  # end-to-end proof in this file has been silently not running. It now selects
+  # a reachable endpoint (see spec/support/live_postgres.rb) and REQUIRES it,
+  # so the claim is either proven or the spec is red. The assertion itself is
+  # unchanged.
   it "an encoded password connects to a live database" do
-    url = ENV["TINA4_TEST_PG_URL"].to_s.strip
-    skip "live PostgreSQL not configured (TINA4_TEST_PG_URL)" if url.empty?
-    raw = (ENV["TINA4_TEST_PG_PASSWORD"] || "tina4").strip
-    skip "password has no 'a' to encode" unless raw.include?("a")
+    expect(LivePostgres.reachable?).to be(true),
+                                       "live PostgreSQL required at #{LivePostgres.host}:#{LivePostgres.port}"
+    raw = LivePostgres.password
+    expect(raw).to include("a"), "the test password must contain an 'a' to percent-encode"
 
-    user = (ENV["TINA4_TEST_PG_USERNAME"] || "tina4").strip
-    scheme, rest = url.split("://", 2)
-    tail = rest.split("@").last
-    encoded = raw.sub("a", "%61")
-
-    db = Tina4::Database.new("#{scheme}://#{user}:#{encoded}@#{tail}")
+    db = Tina4::Database.new(LivePostgres.url(pass: raw.sub("a", "%61")))
     expect([true, false]).to include(db.table_exists?("tina4_write_contract"))
+    db.close
   end
 end

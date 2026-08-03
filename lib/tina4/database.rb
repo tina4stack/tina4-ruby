@@ -475,10 +475,18 @@ module Tina4
 
     # The connection string with any password stripped, so a raised error can name
     # the target without leaking a credential into a log or an HTTP 500 body.
+    #
+    # This used to carry its own regex, which was a SECOND redaction
+    # implementation next to DatabaseUrl#to_safe_string - and it leaked on two
+    # shapes, both measured 2026-08-02:
+    #   postgres://u:p@ss@h:5432/db  ->  postgres://u:***@ss@h:5432/db
+    #     because `([^:/@]+):[^@]*@` stops at the FIRST "@", so the tail of a
+    #     password containing an unencoded "@" survived into the message.
+    #   odbc:///DRIVER=...;PWD=<secret>  ->  returned VERBATIM, straight into
+    #     DatabaseConnectionError.
+    # There is now ONE redaction primitive. Do not add a second.
     def safe_connection_target
-      return '' if @connection_string.nil? || @connection_string.empty?
-
-      @connection_string.sub(%r{://([^:/@]+):[^@]*@}, '://\1:***@')
+      Tina4::DatabaseUrl.redact(@connection_string)
     end
 
     # ── Query Cache ──────────────────────────────────────────────

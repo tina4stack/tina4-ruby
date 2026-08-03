@@ -256,6 +256,18 @@
       "username": "readonly",
       "password": null,
       "safe": "postgres://readonly@localhost:5432/db"
+    },
+    {
+      "name": "odbc_pwd_keyword_is_redacted_in_the_safe_form",
+      "_why": "ADDED 2026-08-02. toSafeString() returned the ODBC connection string VERBATIM, PWD= included, in python, ruby and node - and the negative test 'to_safe_string_never_contains_the_password' was GREEN in all four the whole time, because it iterates this corpus and the corpus had no odbc row. The guard existed, the test passed, and it protected nothing. Same trap as the dotenv corpus. The password here carries a SPACE on purpose: a redaction that stops at the first space (the PHP `password=\\S*` shape) leaves the tail behind and fails this row. UID stays visible - a username is not a secret and it is most of what makes a failed connection diagnosable.",
+      "url": "odbc:///DRIVER={PostgreSQL};SERVER=localhost;DATABASE=db;UID=tina4;PWD=s3ntinel-Pa55 word",
+      "engine": "odbc",
+      "host": null,
+      "port": null,
+      "database": "",
+      "username": null,
+      "password": null,
+      "safe": "odbc:///DRIVER={PostgreSQL};SERVER=localhost;DATABASE=db;UID=tina4;PWD=***"
     }
   ],
   "errors": [
