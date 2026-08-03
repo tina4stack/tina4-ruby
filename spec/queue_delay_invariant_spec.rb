@@ -35,6 +35,26 @@ require "socket"
 require "securerandom"
 
 RSpec.describe "Queue delay invariant" do
+
+  # Every Mongo-backed Queue opens its own Mongo::Client and Tina4::Queue has NO
+  # public close (a real gap - see the note in the changelog). These specs create
+  # many queues, so without this the clients accumulate for the whole run: the
+  # full suite then failed docstore "connections do not grow" (rounds=[99,99,99])
+  # and starved the live-Puma dev-admin specs with EOFError. Track and release.
+  def track(queue)
+    (@tracked ||= []) << queue
+    queue
+  end
+
+  after do
+    (@tracked || []).each do |q|
+      begin
+        q.instance_variable_get(:@backend)&.close
+      rescue StandardError, NotImplementedError # rubocop:disable Lint/SuppressedException
+      end
+    end
+    @tracked = []
+  end
   # Long enough that a dropped delay is unambiguous, short enough to keep the
   # suite quick. A dropped delay shows up instantly, so this is no race.
   DELAY_SECONDS = 3
@@ -60,7 +80,7 @@ RSpec.describe "Queue delay invariant" do
   end
 
   def mongo_queue
-    Tina4::Queue.new(topic: "delay_#{SecureRandom.hex(6)}", backend: "mongodb")
+    track(Tina4::Queue.new(topic: "delay_#{SecureRandom.hex(6)}", backend: "mongodb"))
   end
 
   # NEGATIVE: without this pair, "never return anything" passes both delay
@@ -127,7 +147,7 @@ RSpec.describe "Queue delay invariant" do
         ENV["TINA4_KAFKA_BROKERS"] = "#{host}:#{port}"
       end
 
-      queue = Tina4::Queue.new(topic: "delay_#{SecureRandom.hex(6)}", backend: backend)
+      queue = track(Tina4::Queue.new(topic: "delay_#{SecureRandom.hex(6)}", backend: backend))
 
       expect { queue.push({ "m" => "delayed" }, delay_seconds: DELAY_SECONDS) }
         .to raise_error(NotImplementedError, /#{backend}.*delay/mi),

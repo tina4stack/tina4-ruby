@@ -43,6 +43,26 @@ require "socket"
 require "securerandom"
 
 RSpec.describe "Queue priority invariant" do
+
+  # Every Mongo-backed Queue opens its own Mongo::Client and Tina4::Queue has NO
+  # public close (a real gap - see the note in the changelog). These specs create
+  # many queues, so without this the clients accumulate for the whole run: the
+  # full suite then failed docstore "connections do not grow" (rounds=[99,99,99])
+  # and starved the live-Puma dev-admin specs with EOFError. Track and release.
+  def track(queue)
+    (@tracked ||= []) << queue
+    queue
+  end
+
+  after do
+    (@tracked || []).each do |q|
+      begin
+        q.instance_variable_get(:@backend)&.close
+      rescue StandardError, NotImplementedError # rubocop:disable Lint/SuppressedException
+      end
+    end
+    @tracked = []
+  end
   MONGO_HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
   MONGO_PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
 
@@ -64,7 +84,7 @@ RSpec.describe "Queue priority invariant" do
   end
 
   def mongo_queue
-    Tina4::Queue.new(topic: "prio_#{SecureRandom.hex(6)}", backend: "mongodb")
+    track(Tina4::Queue.new(topic: "prio_#{SecureRandom.hex(6)}", backend: "mongodb"))
   end
 
   def payload_of(job)
@@ -137,7 +157,7 @@ RSpec.describe "Queue priority invariant" do
         ENV["TINA4_KAFKA_BROKERS"] = "#{host}:#{port}"
       end
 
-      queue = Tina4::Queue.new(topic: "prio_#{SecureRandom.hex(6)}", backend: backend)
+      queue = track(Tina4::Queue.new(topic: "prio_#{SecureRandom.hex(6)}", backend: backend))
 
       expect { queue.push({ "m" => "high" }, priority: 9) }
         .to raise_error(NotImplementedError, /#{backend}.*priority/mi),

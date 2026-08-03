@@ -24,6 +24,26 @@ require "socket"
 require "securerandom"
 
 RSpec.describe "Queue reaches the configured backend" do
+
+  # Every Mongo-backed Queue opens its own Mongo::Client and Tina4::Queue has NO
+  # public close (a real gap - see the note in the changelog). These specs create
+  # many queues, so without this the clients accumulate for the whole run: the
+  # full suite then failed docstore "connections do not grow" (rounds=[99,99,99])
+  # and starved the live-Puma dev-admin specs with EOFError. Track and release.
+  def track(queue)
+    (@tracked ||= []) << queue
+    queue
+  end
+
+  after do
+    (@tracked || []).each do |q|
+      begin
+        q.instance_variable_get(:@backend)&.close
+      rescue StandardError, NotImplementedError # rubocop:disable Lint/SuppressedException
+      end
+    end
+    @tracked = []
+  end
   REACH_HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
   REACH_PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
 
@@ -45,7 +65,7 @@ RSpec.describe "Queue reaches the configured backend" do
   end
 
   def mongo_queue
-    Tina4::Queue.new(topic: "reach_#{SecureRandom.hex(6)}", backend: "mongodb")
+    track(Tina4::Queue.new(topic: "reach_#{SecureRandom.hex(6)}", backend: "mongodb"))
   end
 
   # If clear() hits the file store, the mongodb jobs survive and size stays 2.
@@ -83,7 +103,7 @@ RSpec.describe "Queue reaches the configured backend" do
     ENV["TINA4_RABBITMQ_HOST"] = host
     ENV["TINA4_RABBITMQ_PORT"] = port.to_s
 
-    q = Tina4::Queue.new(topic: "reach_#{SecureRandom.hex(6)}", backend: "rabbitmq")
+    q = track(Tina4::Queue.new(topic: "reach_#{SecureRandom.hex(6)}", backend: "rabbitmq"))
 
     expect { q.pop_by_id("whatever") }
       .to raise_error(NotImplementedError, /pop_by_id/i),
