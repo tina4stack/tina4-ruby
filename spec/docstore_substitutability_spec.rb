@@ -220,4 +220,54 @@ RSpec.describe "DocStore substitutability" do
       warn "\n    array queries: #{report.inspect}"
     end
   end
+
+  # ── ADR-0025 / client-lifecycle-is-bounded (ASSERTED) ────────────────────
+
+  describe "client lifecycle is bounded" do
+    # docstore_contract.json :: client-lifecycle-is-bounded
+    #
+    # MEASURED 2026-08-03 against a real MongoDB: get_collection built a NEW
+    # Mongo::Client on every call and never closed it. 20 calls left 60 server
+    # connections open, growing linearly and without bound. Invisible in
+    # development, because the SQLite fallback opens no connections at all - the
+    # leak existed ONLY after the swap to the real provider.
+    #
+    # What is asserted is the SHAPE of the growth, not its size. A pool
+    # legitimately opens several connections and then PLATEAUS; a leak keeps
+    # climbing.
+    def server_connections
+      probe = Mongo::Client.new(MONGO_URI)
+      probe.database.command(serverStatus: 1).first["connections"]["current"]
+    ensure
+      probe&.close
+    end
+
+    it "repeated get collection does not grow connections" do
+      skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable?
+
+      ENV["TINA4_MONGO_URI"] = MONGO_URI
+      ENV["TINA4_DOC_STORE_PATH"] = File.join(Dir.mktmpdir, "ds.db")
+
+      rounds = (1..3).map do
+        20.times { Tina4::DocStore.get_collection("lifecycle_probe").count_documents({}) }
+        server_connections
+      end
+
+      settled = rounds.last
+      100.times { Tina4::DocStore.get_collection("lifecycle_probe").count_documents({}) }
+      after_hundred = server_connections
+
+      # POSITIVE: 100 further calls on a settled pool add nothing. Under the old
+      # one-client-per-call code this was roughly +300.
+      expect(after_hundred).to be <= (settled + 2),
+                               "connections still growing: settled=#{settled} after=#{after_hundred}"
+      expect(rounds[2] - rounds[1]).to be <= 2, "rounds=#{rounds.inspect}"
+      expect(rounds[2]).to be < 60, "rounds=#{rounds.inspect}"
+
+      before = server_connections
+      Tina4::DocStore.close_doc_store
+      sleep 1
+      expect(server_connections).to be < before, "close_doc_store released nothing"
+    end
+  end
 end

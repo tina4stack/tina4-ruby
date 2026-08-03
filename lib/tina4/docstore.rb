@@ -738,10 +738,47 @@ module Tina4
     def get_collection(name)
       return default_db.get_collection(name) if serverless?
 
-      require "mongo"
       db_name = ENV["TINA4_MONGO_DB"] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
-      client = Mongo::Client.new(mongo_uri, database: db_name)
-      client[name]
+      mongo_client(mongo_uri, db_name)[name]
+    end
+
+    @mongo_clients = {}
+
+    # Return the shared Mongo client for this (uri, database), connecting once.
+    #
+    # MEASURED 2026-08-03 against a real MongoDB: get_collection used to build a
+    # new Mongo::Client on EVERY call and never close it, so 20 calls left 60
+    # server connections open and the count grew without bound. It was invisible
+    # in development because the SQLite fallback has no connections at all - a
+    # resource leak that only exists AFTER the swap to the real provider.
+    #
+    # A Mongo::Client is thread-safe and pools internally, so one per
+    # (uri, database) is the shape the driver itself expects. The double-checked
+    # lock matches default_db above: without it two threads racing the first call
+    # both build a client and one is orphaned - the same leak, just rarer.
+    def mongo_client(uri, db_name)
+      require "mongo"
+      key = [uri, db_name]
+      client = @mongo_clients[key]
+      return client if client
+
+      @default_lock.synchronize do
+        @mongo_clients[key] ||= Mongo::Client.new(uri, database: db_name)
+      end
+    end
+
+    # Close every DocStore connection: the SQLite store and all Mongo clients.
+    def close_doc_store
+      @default_lock.synchronize do
+        @mongo_clients.each_value do |client|
+          client.close
+        rescue StandardError
+          nil # a close failure must not mask the caller's work
+        end
+        @mongo_clients.clear
+        @default_db&.close
+        @default_db = nil
+      end
     end
 
     # Drop the cached default SQLite store (test helper).
