@@ -541,7 +541,7 @@ end
 ```ruby
 orders = Tina4::DocStore.get_collection("orders")
 res = orders.insert_one({ "customer_id" => 1, "total" => 9.99, "status" => "new" })
-orders.find_one({ "_id" => res.inserted_id })
+orders.find({ "_id" => res.inserted_id }).first
 orders.update_one({ "_id" => res.inserted_id }, { "$set" => { "status" => "shipped" } })
 orders.find({ "total" => { "$gt" => 5 } }).sort("total", -1).limit(10).each { |doc| }
 orders.count_documents({ "status" => "shipped" })

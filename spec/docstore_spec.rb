@@ -54,7 +54,7 @@ RSpec.describe Tina4::DocStore do
     it "insert_one returns an ObjectId and rehydrates _id on read" do
       res = orders.insert_one({ "customer_id" => 1, "total" => 9.99 })
       expect(res.inserted_id).to be_a(Tina4::DocStore::ObjectId)
-      got = orders.find_one({ "_id" => res.inserted_id })
+      got = orders.find({ "_id" => res.inserted_id }).first
       expect(got["customer_id"]).to eq(1)
       expect(got["total"]).to eq(9.99)
       expect(got["_id"]).to eq(res.inserted_id)
@@ -68,7 +68,7 @@ RSpec.describe Tina4::DocStore do
 
     it "preserves a custom _id" do
       orders.insert_one({ "_id" => "ORD-1", "x" => 1 })
-      expect(orders.find_one({ "_id" => "ORD-1" })["x"]).to eq(1)
+      expect(orders.find({ "_id" => "ORD-1" }).first["x"]).to eq(1)
     end
   end
 
@@ -151,12 +151,12 @@ RSpec.describe Tina4::DocStore do
     end
 
     it "projection include" do
-      d = orders.find_one({ "n" => 5 }, { "n" => 1, "_id" => 0 })
+      d = orders.find({ "n" => 5 }, { "n" => 1, "_id" => 0 }).first
       expect(d).to eq({ "n" => 5 })
     end
 
     it "projection exclude" do
-      d = orders.find_one({ "n" => 5 }, { "grp" => 0 })
+      d = orders.find({ "n" => 5 }, { "grp" => 0 }).first
       expect(d).not_to have_key("grp")
       expect(d["n"]).to eq(5)
       expect(d).to have_key("_id")
@@ -188,7 +188,7 @@ RSpec.describe Tina4::DocStore do
       orders.update_one({ "_id" => oid }, { "$set" => { "status" => "shipped" } })
       orders.update_one({ "_id" => oid }, { "$inc" => { "count" => 5 } })
       orders.update_one({ "_id" => oid }, { "$unset" => { "tmp" => "" } })
-      d = orders.find_one({ "_id" => oid })
+      d = orders.find({ "_id" => oid }).first
       expect(d["status"]).to eq("shipped")
       expect(d["count"]).to eq(6)
       expect(d).not_to have_key("tmp")
@@ -205,7 +205,7 @@ RSpec.describe Tina4::DocStore do
     it "replace_one keeps the _id" do
       oid = orders.insert_one({ "a" => 1 }).inserted_id
       orders.replace_one({ "_id" => oid }, { "b" => 2 })
-      d = orders.find_one({ "_id" => oid })
+      d = orders.find({ "_id" => oid }).first
       expect(d["b"]).to eq(2)
       expect(d).not_to have_key("a")
       expect(d["_id"]).to eq(oid)
@@ -214,20 +214,20 @@ RSpec.describe Tina4::DocStore do
     it "upsert" do
       res = orders.update_one({ "sku" => "X1" }, { "$set" => { "qty" => 3 } }, upsert: true)
       expect(res.upserted_id).not_to be_nil
-      expect(orders.find_one({ "sku" => "X1" })["qty"]).to eq(3)
+      expect(orders.find({ "sku" => "X1" }).first["qty"]).to eq(3)
     end
 
     it "nested $set (dotted)" do
       oid = orders.insert_one({ "a" => { "b" => 1 } }).inserted_id
       orders.update_one({ "_id" => oid }, { "$set" => { "a.c" => 2 } })
-      d = orders.find_one({ "_id" => oid })
+      d = orders.find({ "_id" => oid }).first
       expect(d["a"]).to eq({ "b" => 1, "c" => 2 })
     end
 
     it "full-document replace via update_one with no $ ops" do
       oid = orders.insert_one({ "a" => 1, "b" => 2 }).inserted_id
       orders.update_one({ "_id" => oid }, { "c" => 3 })
-      d = orders.find_one({ "_id" => oid })
+      d = orders.find({ "_id" => oid }).first
       expect(d["c"]).to eq(3)
       expect(d).not_to have_key("a")
       expect(d["_id"]).to eq(oid)
@@ -279,7 +279,7 @@ RSpec.describe Tina4::DocStore do
         col = Tina4::DocStore.get_collection("widgets")
         expect(col).to be_a(Tina4::DocStore::SqliteCollection)
         col.insert_one({ "name" => "bolt" })
-        expect(col.find_one({ "name" => "bolt" })["name"]).to eq("bolt")
+        expect(col.find({ "name" => "bolt" }).first["name"]).to eq("bolt")
         Tina4::DocStore.reset_default_store
       end
     end

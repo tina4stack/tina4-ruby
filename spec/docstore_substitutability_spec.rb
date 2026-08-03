@@ -144,41 +144,51 @@ RSpec.describe "DocStore substitutability" do
   describe "the call-site surface is identical" do
     # docstore_contract.json :: the-call-site-surface-is-identical
     #
-    # OPEN DEFECT, measured 2026-08-03 and reported rather than asserted.
+    # ADR-0025, closed 2026-08-03. This was an OPEN DEFECT reported rather than
+    # asserted; it is now a gate.
     #
-    # find_one is the accessor the fallback offers and the documented Ruby
-    # example uses. On a REAL Mongo::Collection it does not exist:
+    # The defect: find_one was the accessor the fallback offered and the
+    # documented Ruby example used. On a REAL Mongo::Collection it does not
+    # exist:
     #
     #   NoMethodError: undefined method 'find_one' for an instance of Mongo::Collection
     #
-    # so the swap fails LOUDLY here rather than silently - better than PHP,
-    # where the equivalent accessor returns null - but the code still breaks the
-    # moment TINA4_MONGO_URI is set. The driver spelling is find(...).first.
+    # so the swap failed LOUDLY here rather than silently - better than PHP,
+    # where the equivalent accessor returned nil - but the code still broke the
+    # moment TINA4_MONGO_URI was set.
     #
-    # Not asserted, because fixing it is a breaking API change (the fallback
-    # must imitate the DRIVER, which is the half that cannot be changed) and
-    # that needs a decision, not a quiet edit. Reported so this file stays a
-    # live gate for everything that does hold.
-    it "reports which accessors exist on each provider" do
-      report = {}
+    # ADR-0025 settles it: the fallback imitates the DRIVER, because the driver
+    # is the half that cannot be changed. The spelling that works on BOTH is
+    # find(filter).first, and these two examples pin that outcome.
 
-      report["fallback"] = begin
-        c = collection_for(nil)
-        { "find_one" => c.respond_to?(:find_one), "find" => c.respond_to?(:find) }
+    # The case names here match tests/DocStoreSubstitutabilityTest.php exactly,
+    # because scripts/audit-contract-fixtures.py resolves ONE fixture case
+    # against EVERY framework's suite. Renaming one half silently breaks the
+    # shared answer key.
+    it "the driver spelling works on both providers" do
+      providers = { "fallback" => nil }
+      providers["mongo"] = MONGO_URI if self.class.mongo_reachable?
+
+      providers.each do |label, uri|
+        c = collection_for(uri)
+        c.insert_one({ "probe" => "accessor" })
+
+        found = c.find({ "probe" => "accessor" }).first
+        expect(found).not_to be_nil, "#{label}: find(...).first must return the document"
+        expect(found["probe"]).to eq("accessor"), "#{label}: wrong document came back"
+        c.delete_many({})
       end
+    end
 
-      report["mongo"] = if self.class.mongo_reachable?
-                          c = collection_for(MONGO_URI)
-                          { "find_one" => c.respond_to?(:find_one), "find" => c.respond_to?(:find) }
-                        else
-                          "skipped (no mongo)"
-                        end
+    # The NEGATIVE half, and the one that keeps the rule honest. ADR-0025
+    # corollary 1 is "no fallback-only public method": a second spelling that
+    # works ONLY on the fallback is exactly how the original defect shipped,
+    # because it let the documentation settle on a method the real driver had
+    # never heard of.
+    it "the fallback only spelling is gone" do
+      expect(collection_for(nil)).not_to respond_to(:find_one)
 
-      warn "\n    accessor surface: #{report.inspect}"
-
-      # The one thing asserted: find EXISTS on both, so the divergence is
-      # specifically find_one and not a wholesale missing surface.
-      expect(report["fallback"]["find"]).to be(true)
+      expect(collection_for(MONGO_URI)).not_to respond_to(:find_one) if self.class.mongo_reachable?
     end
   end
 

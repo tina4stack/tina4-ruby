@@ -10,6 +10,31 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Breaking (DocStore find_one, ADR-0025)
+
+- `Tina4::DocStore::SqliteCollection#find_one` is REMOVED. Use the driver's
+  spelling, which works on both providers:
+
+      collection.find_one(filter)   ->  collection.find(filter).first
+
+  WHY: `find_one` does not exist on `Mongo::Collection`. It was a fallback-only
+  accessor, and the framework's own documented Ruby example used it, so code
+  written against the local SQLite store raised
+
+      NoMethodError: undefined method 'find_one' for an instance of Mongo::Collection
+
+  the moment `TINA4_MONGO_URI` was set. Loud rather than silent, but still a
+  broken swap at the call site. Measured 2026-08-03 against a real MongoDB.
+
+  ADR-0025 settles the general rule: the fallback imitates the driver, because
+  the driver is the half that cannot be changed. Pinned by
+  `spec/docstore_substitutability_spec.rb`, which reads a document back with
+  `find(...).first` on BOTH providers and asserts `find_one` responds on
+  NEITHER.
+
+  NOT affected: `find_one_and_update` on the Mongo queue backend is a genuine
+  `Mongo::Collection` method and is untouched.
+
 ## Unreleased
 
 ### Breaking: the rate limiter keys on the socket peer, not X-Forwarded-For

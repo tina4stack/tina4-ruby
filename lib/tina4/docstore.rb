@@ -511,9 +511,11 @@ module Tina4
         Cursor.new(self, where, params, projection)
       end
 
-      def find_one(filter = nil, projection = nil)
-        find(filter, projection).limit(1).to_a.first
-      end
+      # NOTE: there is deliberately no find_one here. Mongo::Collection has no
+      # such method, and ADR-0025 makes the driver the shape this fallback
+      # imitates - a fallback-only accessor is how code comes to be written
+      # against a spelling that vanishes the moment TINA4_MONGO_URI is set.
+      # The spelling that works on BOTH providers is find(filter).first.
 
       def count_documents(filter = nil)
         where, params = DocStore.compile_filter(filter || {})
