@@ -337,6 +337,19 @@ module Tina4
 
     # -- Projection / update helpers --------------------------------------------
 
+    # Decode a stored JSON document, rehydrating ObjectId and Time values.
+    #
+    # Module-level because it is a PURE function of its inputs. It was a public
+    # collection method only so the Cursor could reach it, which ADR-0025
+    # corollary 1 forbids.
+    def load_doc(doc_text, projection = nil)
+      doc = decode_value(JSON.parse(doc_text))
+      projection ? project(doc, projection) : doc
+    end
+
+    # Encode a document for storage. Pure, for the same reason as load_doc.
+    def dump_doc(document) = JSON.generate(encode_value(document))
+
     def project(doc, projection)
       return doc if projection.nil? || projection.empty?
 
@@ -435,8 +448,15 @@ module Tina4
     class Cursor
       include Enumerable
 
-      def initialize(collection, where, params, projection = nil)
-        @collection = collection
+      # The cursor receives WHAT IT NEEDS, not the collection it came from.
+      #
+      # It used to hold the collection and reach back into it for quoted_name,
+      # connection and load_doc - which was the ONLY reason those three were
+      # public. ADR-0025 corollary 1: anything the fallback needs internally is
+      # private, and a real Mongo::Collection::View exposes none of them.
+      def initialize(conn, quoted_name, where, params, projection = nil)
+        @conn = conn
+        @quoted_name = quoted_name
         @where = where
         @params = params
         @projection = projection
@@ -465,7 +485,7 @@ module Tina4
       end
 
       def build_sql
-        sql = "SELECT doc FROM #{@collection.quoted_name} WHERE #{@where}"
+        sql = "SELECT doc FROM #{@quoted_name} WHERE #{@where}"
         unless @sort.empty?
           order = @sort.map { |k, d| "#{DocStore.extract(k)} #{d.to_i.negative? ? 'DESC' : 'ASC'}" }.join(", ")
           sql += " ORDER BY #{order}"
@@ -482,9 +502,9 @@ module Tina4
       def each
         return enum_for(:each) unless block_given?
 
-        @collection.connection.execute(build_sql, @params).each do |row|
+        @conn.execute(build_sql, @params).each do |row|
           doc_text = row.is_a?(Hash) ? (row["doc"] || row[:doc] || row.values.first) : row.first
-          yield @collection.load_doc(doc_text, @projection)
+          yield DocStore.load_doc(doc_text, @projection)
         end
       end
 
@@ -493,15 +513,21 @@ module Tina4
         each { |doc| out << doc }
         out
       end
-      alias to_list to_a
+
+      # NOTE: there is deliberately no to_list alias here. Mongo::Collection::View
+      # spells it to_a and has no to_list, so the alias was a fallback-only
+      # spelling - exactly what ADR-0025 corollary 1 forbids.
+
+      # The generated SQL is an implementation detail, not part of the cursor
+      # API. Declared here rather than with a `private` section because build_sql
+      # is defined above and a trailing `private` would not reach it.
+      private :build_sql
     end
 
     # -- Collection -------------------------------------------------------------
 
     # A SQLite-backed collection exposing the everyday Mongo API.
     class SqliteCollection
-      attr_reader :connection
-
       def initialize(conn, name)
         @connection = conn
         @name = name.to_s
@@ -513,23 +539,13 @@ module Tina4
         )
       end
 
-      def quoted_name = @quoted_name
-
-      # -- helpers --
-      def dump(document) = JSON.generate(DocStore.encode_value(document))
-
-      def load_doc(doc_text, projection = nil)
-        doc = DocStore.decode_value(JSON.parse(doc_text))
-        projection ? DocStore.project(doc, projection) : doc
-      end
-
       # -- writes --
       def insert_one(document)
         doc = stringify(document)
         doc["_id"] = ObjectId.new unless doc.key?("_id")
         @connection.execute(
           "INSERT INTO #{@quoted_name} (_id, doc) VALUES (?, ?)",
-          [DocStore.id_key(doc["_id"]), dump(doc)]
+          [DocStore.id_key(doc["_id"]), DocStore.dump_doc(doc)]
         )
         InsertOneResult.new(doc["_id"])
       end
@@ -542,7 +558,7 @@ module Tina4
           ids << doc["_id"]
           @connection.execute(
             "INSERT INTO #{@quoted_name} (_id, doc) VALUES (?, ?)",
-            [DocStore.id_key(doc["_id"]), dump(doc)]
+            [DocStore.id_key(doc["_id"]), DocStore.dump_doc(doc)]
           )
         end
         InsertManyResult.new(ids)
@@ -551,7 +567,7 @@ module Tina4
       # -- reads --
       def find(filter = nil, projection = nil)
         where, params = DocStore.compile_filter(filter || {})
-        Cursor.new(self, where, params, projection)
+        Cursor.new(@connection, @quoted_name, where, params, projection)
       end
 
       # NOTE: there is deliberately no find_one here. Mongo::Collection has no
@@ -671,7 +687,7 @@ module Tina4
         new_key = DocStore.id_key(new_doc["_id"])
         @connection.execute(
           "UPDATE #{@quoted_name} SET _id = ?, doc = ? WHERE _id = ?",
-          [new_key, dump(new_doc), old_id]
+          [new_key, DocStore.dump_doc(new_doc), old_id]
         )
         true
       end
