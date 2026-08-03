@@ -76,6 +76,11 @@ RSpec.describe "Queue surface invariant" do
   end
 
   before(:all) do
+    # Leave ENV exactly as found. These vars are process-global and the
+    # dev-admin specs boot a live Puma that INHERITS them, so a stray
+    # TINA4_MONGO_URI from here changed how that server came up and its
+    # requests died with EOFError. Restored in after(:all) below.
+    @env_snapshot = ENV.slice(*%w[TINA4_MONGO_URI TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS])
     unless self.class.reachable?(SURFACE_MONGO_HOST, SURFACE_MONGO_PORT)
       why = "MongoDB is not reachable at #{SURFACE_MONGO_HOST}:#{SURFACE_MONGO_PORT}"
       raise "TINA4_REQUIRE_SERVICES is set but #{why}" if ENV["TINA4_REQUIRE_SERVICES"]
@@ -83,6 +88,11 @@ RSpec.describe "Queue surface invariant" do
       skip why
     end
     ENV["TINA4_MONGO_URI"] = "mongodb://#{SURFACE_MONGO_HOST}:#{SURFACE_MONGO_PORT}"
+  end
+
+  after(:all) do
+    %w[TINA4_MONGO_URI TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS].each { |k| ENV.delete(k) }
+    (@env_snapshot || {}).each { |k, v| ENV[k] = v }
   end
 
   # Resolve a backend's host/port from the runner env, skipping (or failing

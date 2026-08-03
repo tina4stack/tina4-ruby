@@ -74,6 +74,11 @@ RSpec.describe "Queue priority invariant" do
   end
 
   before(:all) do
+    # Leave ENV exactly as found. These vars are process-global and the
+    # dev-admin specs boot a live Puma that INHERITS them, so a stray
+    # TINA4_MONGO_URI from here changed how that server came up and its
+    # requests died with EOFError. Restored in after(:all) below.
+    @env_snapshot = ENV.slice(*%w[TINA4_MONGO_URI TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS])
     unless self.class.reachable?(MONGO_HOST, MONGO_PORT)
       why = "MongoDB is not reachable at #{MONGO_HOST}:#{MONGO_PORT}"
       raise "TINA4_REQUIRE_SERVICES is set but #{why}" if ENV["TINA4_REQUIRE_SERVICES"]
@@ -81,6 +86,11 @@ RSpec.describe "Queue priority invariant" do
       skip why
     end
     ENV["TINA4_MONGO_URI"] = "mongodb://#{MONGO_HOST}:#{MONGO_PORT}"
+  end
+
+  after(:all) do
+    %w[TINA4_MONGO_URI TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS].each { |k| ENV.delete(k) }
+    (@env_snapshot || {}).each { |k, v| ENV[k] = v }
   end
 
   def mongo_queue
