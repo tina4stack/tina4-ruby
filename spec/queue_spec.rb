@@ -949,7 +949,7 @@ end
 # TINA4_REQUIRE_SERVICES. Uses a THROWAWAY, framework-namespaced database
 # (tina4_test_queue_rb) and DROPS it on teardown — never touching app data.
 RSpec.describe "Tina4::Queue MongoDB dead-letter (live, no mocks)" do
-  mongo_test_uri = ENV["MONGO_TEST_URI"] || ENV["TINA4_MONGO_URI"] || "mongodb://localhost:27017"
+  mongo_test_uri = ENV["TINA4_TEST_MONGO_URI"] || ENV["TINA4_MONGO_URI"] || "mongodb://localhost:27017"
   topic = "tina4_test_dead_letter"
   # Prefix only - the real database name is built per example (see the db_name
   # `let` below) so no two examples or processes ever share one.

@@ -38,10 +38,10 @@ require "securerandom"
 # GLOBAL, and clobbers every other spec file that uses the same name. Everything
 # this file needs therefore lives in a uniquely named module.
 module CacheNullContract
-  REDIS_URL = ENV.fetch("TINA4_TEST_CACHE_REDIS_URL", "redis://127.0.0.1:6379")
-  VALKEY_URL = ENV.fetch("TINA4_TEST_CACHE_VALKEY_URL", "valkey://127.0.0.1:6380")
-  MEMCACHED_URL = ENV.fetch("TINA4_TEST_CACHE_MEMCACHED_URL", "memcached://127.0.0.1:11211")
-  MONGO_URL = ENV.fetch("TINA4_TEST_CACHE_MONGO_URL", "mongodb://127.0.0.1:27017")
+  REDIS_URL = ENV.fetch("TINA4_TEST_REDIS_URL", "redis://127.0.0.1:6379")
+  VALKEY_URL = ENV.fetch("TINA4_TEST_VALKEY_URL", "valkey://127.0.0.1:6380")
+  MEMCACHED_URL = ENV.fetch("TINA4_TEST_MEMCACHED_URL", "memcached://127.0.0.1:11211")
+  MONGO_URL = ENV.fetch("TINA4_TEST_MONGO_URI", "mongodb://127.0.0.1:27017")
 
   module_function
 

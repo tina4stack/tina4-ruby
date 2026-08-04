@@ -31,7 +31,7 @@ require "securerandom"
 # GLOBAL, and clobbers every other spec file that uses the same name. Everything
 # this file needs therefore lives in a uniquely named module.
 module CacheKeyIdentityContract
-  REDIS_URL = ENV.fetch("TINA4_TEST_CACHE_REDIS_URL", "redis://127.0.0.1:6379")
+  REDIS_URL = ENV.fetch("TINA4_TEST_REDIS_URL", "redis://127.0.0.1:6379")
   PG_HOST = ENV.fetch("TINA4_TEST_PG_HOST", "127.0.0.1")
   PG_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "55432")
   PG_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
