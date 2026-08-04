@@ -16,6 +16,9 @@ module Tina4
       # The SHARED namespace generation counter. clear bumps it; every real key
       # carries it, so a bump invalidates every instance at once.
       GENERATION_KEY = "#{PREFIX}generation".freeze
+      # memcached reads the `set` exptime field as RELATIVE seconds at or below
+      # 30 days, and as an ABSOLUTE unix timestamp above it.
+      MAX_RELATIVE_EXPTIME = 2_592_000
 
       def initialize(url: "memcached://localhost:11211", max_entries: 1000)
         cleaned = url.sub(%r{^memcached://}, "").sub(%r{^memcache://}, "")
@@ -49,13 +52,20 @@ module Tina4
 
       def set(key, value, ttl)
         data = JSON.generate(value)
-        exptime = ttl > 0 ? ttl : 0
         k = mc_key(key)
-        payload = "set #{k} 0 #{exptime} #{data.bytesize}\r\n#{data}\r\n"
+        payload = "set #{k} 0 #{exptime(ttl)} #{data.bytesize}\r\n#{data}\r\n"
         command(payload, "\r\n")
         # Keys THIS backend wrote, mapped to the moment each expires (0 = never).
+        #
+        # This uses the RAW ttl, never the converted exptime. exptime(ttl)
+        # returns an ABSOLUTE unix timestamp past the 30-day cliff, and feeding
+        # that to Time.now.to_f + ... computes now + (now + ttl) - roughly twice
+        # the current epoch, a date in 2076. It fails SILENTLY: the shadow map
+        # would never expire anything, so the local bookkeeping stops matching
+        # what the server holds and stats reports expired entries as live
+        # forever.
         @own ||= {}
-        @own[k] = exptime.positive? ? (Time.now.to_f + exptime) : 0.0
+        @own[k] = ttl > 0 ? (Time.now.to_f + ttl) : 0.0
       end
 
       def delete(key)
@@ -158,6 +168,29 @@ module Tina4
       # orphans it for every instance at once.
       def mc_key(key)
         "#{PREFIX}#{generation}:#{Digest::SHA256.hexdigest(key)}"
+      end
+
+      # Translate a Tina4 ttl (always RELATIVE seconds) into memcached's exptime
+      # field, which changes meaning at 30 days.
+      #
+      # Above MAX_RELATIVE_EXPTIME the server reads the field as an ABSOLUTE
+      # unix timestamp, so a raw ttl of, say, 60 days was read as a date in 1970
+      # and the entry vanished the instant it landed. memcached still answers
+      # STORED, so the symptom was a 100% miss rate with nothing logged - a
+      # cache that looks like it is working and never returns a hit.
+      #
+      # CONVERT, never CLAMP. Clamping a too-large ttl down to the cliff also
+      # makes the entry survive, and is ALSO wrong: it silently discards more
+      # than half the lifetime the operator explicitly configured, which is the
+      # same class of silent-wrong-answer as the bug it replaces.
+      #
+      # @param ttl [Integer] relative seconds; <= 0 means no expiry
+      # @return [Integer] the exptime field to send
+      def exptime(ttl)
+        return 0 if ttl <= 0
+        return Time.now.to_i + ttl if ttl > MAX_RELATIVE_EXPTIME
+
+        ttl
       end
 
       def command(payload, terminator)
