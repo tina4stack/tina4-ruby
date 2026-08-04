@@ -134,15 +134,15 @@ module Tina4
         scan_delete_with_raw_resp
       end
 
+      # Report OUR entries, counted with a scoped SCAN.
+      #
+      # size used to be a hardcoded 0 unless the `redis` GEM was loaded, so on
+      # the ZERO-DEPENDENCY raw RESP transport - the default install - stats
+      # reported 0 no matter how many entries were cached. Anything reading that
+      # number (a dashboard, db.cache_stats, an operator checking whether a
+      # clear worked) was reading a constant.
       def stats
-        size = 0
-        if @client
-          begin
-            size = @client.keys("#{PREFIX}*").size
-          rescue StandardError
-          end
-        end
-        { hits: @hits, misses: @misses, size: size, backend: @name }
+        { hits: @hits, misses: @misses, size: scan_count, backend: @name }
       end
 
       def name
@@ -277,21 +277,14 @@ module Tina4
         end
       end
 
-      # SCAN cursor loop over the `redis` gem client. scan() (not keys()) so a
-      # clear on the write path never blocks the server for an O(N) sweep.
-      def scan_delete_with_client
-        cursor = "0"
-        loop do
-          cursor, keys = @client.scan(cursor, match: "#{PREFIX}*", count: 500)
-          @client.del(*keys) if keys && !keys.empty?
-          break if cursor.nil? || cursor.to_s == "0"
-        end
-      rescue StandardError
-        nil
-      end
-
-      # SCAN cursor loop over ONE raw RESP connection.
-      def scan_delete_with_raw_resp
+      # Walk every key under our PREFIX with a scoped SCAN cursor loop over ONE
+      # raw RESP connection, yielding each non-empty batch along with the open
+      # socket so a caller can act on the batch without reconnecting.
+      #
+      # SCAN, not KEYS: clear runs on every write in persistent DB-cache mode,
+      # and KEYS is O(N) and blocks the whole server for its duration. Redis's
+      # own documentation says to prefer SCAN.
+      def each_prefixed_key_batch
         sock = nil
         begin
           sock = resp_session
@@ -302,10 +295,7 @@ module Tina4
             break unless reply.is_a?(Array) && reply.size == 2
 
             cursor, keys = reply
-            if keys.is_a?(Array) && !keys.empty?
-              sock.write(resp_encode("DEL", *keys))
-              resp_read(sock)
-            end
+            yield(sock, keys) if keys.is_a?(Array) && !keys.empty?
             break if cursor.nil? || cursor == "0"
           end
         rescue StandardError
@@ -313,6 +303,45 @@ module Tina4
         ensure
           close_quietly(sock)
         end
+      end
+
+      # The same scoped walk over the `redis` gem client. scan(), not keys(),
+      # for the reason above.
+      def each_prefixed_key_batch_with_client
+        cursor = "0"
+        loop do
+          cursor, keys = @client.scan(cursor, match: "#{PREFIX}*", count: 500)
+          yield(keys) if keys && !keys.empty?
+          break if cursor.nil? || cursor.to_s == "0"
+        end
+      rescue StandardError
+        nil
+      end
+
+      def scan_delete_with_client
+        each_prefixed_key_batch_with_client { |keys| @client.del(*keys) }
+      end
+
+      def scan_delete_with_raw_resp
+        each_prefixed_key_batch do |sock, keys|
+          sock.write(resp_encode("DEL", *keys))
+          resp_read(sock)
+        end
+      end
+
+      def scan_count
+        return scan_count_with_client if @client
+        return 0 unless @use_raw
+
+        total = 0
+        each_prefixed_key_batch { |_sock, keys| total += keys.size }
+        total
+      end
+
+      def scan_count_with_client
+        total = 0
+        each_prefixed_key_batch_with_client { |keys| total += keys.size }
+        total
       end
 
       def close_quietly(sock)
