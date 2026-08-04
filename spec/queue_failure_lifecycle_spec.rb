@@ -144,6 +144,42 @@ RSpec.describe "Queue failure lifecycle (live, no mocks)" do
                                  "a job with retries left must come back for another attempt"
       end
 
+      # SHARED PARITY CASE - this description exists VERBATIM in the Python, PHP
+      # and Node suites, so one fixture case resolves against all four files.
+      #
+      # A job you popped must carry its own lifecycle. PHP was the last
+      # framework where it did not: Queue::pop() returned the backend's raw
+      # array, so `$queue->pop()->fail("boom")` was a fatal there while the
+      # identical line worked here, in Python and in Node.
+      #
+      # The assertions are on the QUEUE's state after each call, never on the
+      # job's own fields: a fail that only set an in-memory status would satisfy
+      # an object-level check while the backend never heard about it.
+      it "a popped job carries its own lifecycle methods" do
+        queue = faillc_queue(backend)
+        queue.push({ "m" => "lifecycle" })
+        sleep 0.4
+
+        job = queue.pop
+        expect(job).not_to be_nil
+        expect(job).to respond_to(:fail), "a popped job must expose fail"
+        expect(job).to respond_to(:complete), "a popped job must expose complete"
+
+        # Called DIRECTLY on what pop returned - no re-wrap, no queue-level call.
+        job.fail("boom-1")
+        sleep 0.4
+
+        expect(queue.failed.length).to eq(1),
+                                       "fail called on a popped job must reach the backend"
+
+        again = queue.pop
+        expect(again).not_to be_nil, "a job with retries left must come back"
+        again.complete
+        sleep 0.4
+        expect(queue.failed).to be_empty,
+                                "complete called on a popped job must reach the backend"
+      end
+
       it "a job past max retries becomes a dead letter" do
         queue = faillc_queue(backend)
         queue.push({ "m" => "poison" })
