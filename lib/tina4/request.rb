@@ -210,8 +210,16 @@ module Tina4
       @cookies ||= parse_cookies
     end
 
+    # The session for THIS request.
+    #
+    # degrade_on_backend_failure: this is the live request path, so a storage
+    # handler that cannot be built (an unreachable database, a refused backend
+    # name) is LOGGED and then degraded to an in-memory-only session rather than
+    # unwinding into RackApp's 500 handler and taking the request down with it
+    # (ADR-0021). TINA4_SESSION_STRICT still re-raises. Direct Session.new
+    # callers keep the loud raise - see the guard in Session#initialize.
     def session
-      @session ||= Tina4::Session.new(@env)
+      @session ||= Tina4::Session.new(@env, degrade_on_backend_failure: true)
     end
 
     # Parsed body (JSON -> Hash, form-urlencoded -> Hash, multipart ->

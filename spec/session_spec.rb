@@ -174,7 +174,19 @@ RSpec.describe Tina4::Session do
       it "reuses the connection the ORM is bound to" do
         Tina4.bind_database(database)
         handler = handler_for("database")
-        expect(handler.instance_variable_get(:@db)).to equal(database)
+
+        # The connection is RESOLVED ON FIRST USE now (ADR-0021 / invariant 4 -
+        # see spec/session_handler_construction_spec.rb), because building one
+        # dials, and a constructor sits outside the failure policy. So drive one
+        # real operation and THEN assert which connection it settled on. That is
+        # a stronger check than reading the stored option would be: it proves the
+        # connection the handler actually WORKS THROUGH is the ORM's, not merely
+        # that the right object was handed in.
+        handler.write("orm-binding-probe", { "seeded" => true })
+
+        expect(handler.instance_variable_get(:@db)).to equal(database),
+                                                       "the database backend opened a second connection of its own instead of " \
+                                                       "reusing the one the ORM is bound to"
       end
 
       # End-to-end through the REAL SQLite database selected purely by env var.
@@ -657,12 +669,13 @@ RSpec.describe Tina4::Session do
     end
 
     describe "MongoHandler" do
-      # The mongo gem is required at construction; the connection is lazy but
-      # ensure_ttl_index does dial the server, so the test URIs carry a short
-      # serverSelectionTimeoutMS — with no live Mongo, construction fails fast
-      # (~200ms), the error is caught + logged, and the resolved config ivars
-      # are still populated (they are set BEFORE the connect). No mock: a REAL
-      # Mongo::Client parses the REAL env-derived URI.
+      # The mongo gem is required at construction; NOTHING else touches the
+      # network there (ADR-0021 / invariant 4 — see
+      # spec/session_handler_construction_spec.rb). The client, the collection
+      # and the TTL index are all built on first use, so these examples resolve
+      # the config with no server anywhere and no waiting. The short
+      # serverSelectionTimeoutMS in the URI is now belt-and-braces: it is carried
+      # through to the lazily-built client rather than being needed here.
       before do
         require "mongo"
       rescue LoadError

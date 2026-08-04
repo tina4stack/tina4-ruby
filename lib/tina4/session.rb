@@ -8,7 +8,12 @@ module Tina4
       secret: nil,
       max_age: 3600,
       handler: :file,
-      handler_options: {}
+      handler_options: {},
+      # Opt-in, and OFF for every direct caller. See the construction guard in
+      # #initialize: only the live REQUEST PATH degrades when the storage
+      # handler cannot be built; boot, the CLI, a spec and app code that call
+      # Session.new themselves still get the loud raise they rely on.
+      degrade_on_backend_failure: false
     }.freeze
 
     attr_reader :id, :data
@@ -80,6 +85,13 @@ module Tina4
         ttl_env = ENV["TINA4_SESSION_TTL"]
         @options[:max_age] = Integer(ttl_env) if ttl_env && !ttl_env.strip.empty?
       end
+      # The BACKEND lifetime, resolved once and forwarded to handler#write on
+      # every save (parity with Python's Session._ttl, which flows the same way).
+      # #save used to call safe_write(@id, @data) with NO ttl, so the cookie said
+      # Max-Age=900 while the stored record lived for the handler's own default -
+      # a silent disagreement between what the browser was told and what the
+      # store actually did. One resolver, both directions.
+      @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
       # TINA4_SESSION_BACKEND — selects the storage handler unless the caller
       # explicitly passed :handler (same precedence as :cookie_name above; an
       # explicit option always wins over the environment). Without this the
@@ -97,7 +109,43 @@ module Tina4
       # session cookie for an encrypted request must never be sent in the clear.
       # Uses the SAME detector as Request#url so the two never disagree (issue #31).
       @request_secure = Tina4::Request.secure_scheme?(env || {})
-      @handler = create_handler
+      # LOG LOUD, THEN DEGRADE (ADR-0021) - for handler CONSTRUCTION too.
+      #
+      # The read/write/destroy/gc policy further down has always been right, but
+      # it sat BELOW this line: create_handler ran bare. A handler whose
+      # constructor touches the network - the database backend opens its
+      # connection and issues DDL in #initialize - raised straight out of
+      # Session.new, out of Request#session, and into RackApp's 500 handler, so
+      # an unreachable backend took the whole REQUEST down instead of degrading
+      # it, and TINA4_SESSION_STRICT was INERT because the non-strict path
+      # already produced the identical 500.
+      #
+      # WHO DEGRADES, AND WHO STILL RAISES. Only the caller that opts in, which
+      # is the live request path (Request#session, RackApp.enforce_route_auth).
+      # Every other caller keeps the loud raise, deliberately: an unknown
+      # TINA4_SESSION_BACKEND is a CONFIGURATION error, not an outage, and the
+      # owner decision of 2026-07-31 (session_backend_validation_spec.rb, all
+      # four frameworks) is that it must fail fast where a human can fix it
+      # rather than serve on the wrong storage. This is the same split the
+      # Python master makes: its Session raises, and core/server.py's request
+      # path is what logs and degrades.
+      #
+      # A DEGRADED SESSION IS AN IN-MEMORY-ONLY SESSION: no handler, so nothing
+      # is read from or written to any store. The route still receives a working
+      # Session object - Ruby cannot hand back Python's `request.session = None`
+      # without turning every `session[...]` into a NoMethodError, which would
+      # 500 the very request this is saving - so reads yield an empty session
+      # and #save returns false, which is exactly the contract. The failure is
+      # logged ONCE, here, where it happened; see #degraded? for why not again.
+      @handler = nil
+      begin
+        @handler = create_handler
+      rescue StandardError => e
+        raise unless @options[:degrade_on_backend_failure]
+
+        log_backend_error("handler construction", e)
+        raise if @strict
+      end
       # The cookie is the live server's session-id source and is fully
       # attacker-controlled, so it goes through the same strict-mode funnel as
       # an explicit #start.
@@ -132,7 +180,7 @@ module Tina4
     # a later save can retry. Returns true on a successful (or no-op) write.
     def save
       return true unless @modified
-      if safe_write(@id, @data)
+      if safe_write(@id, @data, @ttl)
         @modified = false
         true
       else
@@ -338,6 +386,8 @@ module Tina4
     # every id and log the entire userbase out on a single Redis blip — the
     # opposite of the log-loud + degrade policy below.
     def existing_session_data(session_id)
+      return nil if degraded?
+
       data = @handler.read(session_id)
       data.nil? || (data.respond_to?(:empty?) && data.empty?) ? nil : data
     rescue StandardError => e
@@ -358,7 +408,19 @@ module Tina4
     # raising) is NOT a failure and logs nothing. TINA4_SESSION_STRICT=true
     # re-raises instead of degrading.
 
+    # True when handler construction failed and this session is in-memory only
+    # (see #initialize). Every store operation below short-circuits to its
+    # degraded answer WITHOUT logging: the outage was already logged once, at
+    # the point it actually happened, and re-logging the same fact on every
+    # read/write would multiply one dead backend into a line per operation and
+    # bury it - the same blindness this whole policy exists to cure.
+    def degraded?
+      @handler.nil?
+    end
+
     def safe_read(session_id)
+      return {} if degraded?
+
       existing = @handler.read(session_id)
       existing || {}
     rescue StandardError => e
@@ -368,6 +430,8 @@ module Tina4
     end
 
     def safe_write(session_id, data, ttl = nil)
+      return false if degraded?
+
       if ttl
         @handler.write(session_id, data, ttl)
       else
@@ -381,6 +445,8 @@ module Tina4
     end
 
     def safe_destroy(session_id)
+      return false if degraded?
+
       @handler.destroy(session_id)
       true
     rescue StandardError => e
@@ -390,9 +456,12 @@ module Tina4
     end
 
     # Single source of the backend-failure log line. Names the operation and
-    # the concrete handler class so ops can see WHICH backend failed.
+    # the concrete handler class so ops can see WHICH backend failed. When
+    # CONSTRUCTION is what failed there is no handler yet, so it falls back to
+    # the CONFIGURED backend name - which is the thing the operator has to fix
+    # ("redsi", "database"), and strictly more useful than "NilClass".
     def log_backend_error(operation, error)
-      handler_class = @handler.class.name
+      handler_class = @handler ? @handler.class.name : @options[:handler].to_s
       Tina4::Log.error("Session #{operation} failed (#{handler_class}): #{error.message}")
     rescue StandardError
       warn("Session #{operation} failed: #{error.message}")

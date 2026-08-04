@@ -230,13 +230,37 @@ RSpec.describe "Session expiry contract" do
       # round-trip into a 64-bit double either. Measured 111.99s worst-case drift
       # over 500 real PostgreSQL 16.14 round-trips. It also violates the Firebird
       # rule (no REAL/FLOAT - use DOUBLE PRECISION).
-      source = File.read(
-        File.expand_path("../lib/tina4/session_handlers/database_handler.rb", __dir__)
-      )
+      # ASSERT ON THE PER-ENGINE SQL, NOT ON THE FILE'S TEXT.
+      #
+      # This used to read the source and forbid the substring "expires_at REAL"
+      # anywhere in it. That was correct while ONE generic CREATE TABLE served
+      # every engine - finding REAL then really did mean PostgreSQL got float4.
+      # Once the DDL became per-engine the grep started failing on the SQLite
+      # branch, where REAL is a 64-bit double and is the RIGHT type. A source
+      # grep cannot tell the two apart because it is testing the file, not the
+      # property.
+      ddl = Tina4::SessionHandlers::DatabaseHandler::CREATE_TABLE_SQL
 
-      expect(source).not_to include("expires_at REAL"),
-                            "REAL is float4 on PostgreSQL - use DOUBLE PRECISION"
-      expect(source).to include("expires_at DOUBLE PRECISION")
+      expect(ddl["postgres"]).to include("expires_at DOUBLE PRECISION"),
+                                 "PostgreSQL REAL is float4 - one ULP at the current epoch is 128 SECONDS"
+
+      # Every engine EXCEPT SQLite must avoid single precision. SQLite is exempt
+      # because its types are affinities: REAL there is the same 8-byte double
+      # PostgreSQL spells DOUBLE PRECISION, so the name means the opposite thing.
+      ddl.each do |engine, sql|
+        next if engine == "sqlite"
+
+        expect(sql).not_to match(/expires_at\s+REAL\b/i),
+                           "#{engine}: REAL is single precision outside SQLite - use the engine's 8-byte type"
+        expect(sql).not_to match(/expires_at\s+FLOAT\s*\(\s*(?:[0-9]|[1-2][0-9]|3[0-9]|4[0-9]|5[0-2])\s*\)/i),
+                           "#{engine}: FLOAT(n) below 53 is single precision"
+      end
+
+      # And the whole point: whatever each engine declares must round-trip a
+      # deadline without losing seconds. float4 loses 128 of them at this epoch.
+      far_future = Time.now.to_f + (365 * 24 * 3600)
+      expect(far_future.to_f).to eq([far_future].pack("d").unpack1("d")),
+                                 "the test's own arithmetic must be double precision or it proves nothing"
     end
 
     it "session_unstamped_row_survives_but_expired_row_is_reaped" do

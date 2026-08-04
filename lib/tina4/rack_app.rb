@@ -1013,7 +1013,11 @@ module Tina4
 
       # Priority 3: Session token (for secured GET routes after login)
       if token.nil?
-        session = Tina4::Session.new(env)
+        # Request path, so the same log-loud-then-degrade policy as
+        # Request#session (ADR-0021): an unreachable session store must not turn
+        # the auth gate into a 500. It degrades to an empty session, which means
+        # no token, which means the ordinary 401 below - a SERVED request.
+        session = Tina4::Session.new(env, degrade_on_backend_failure: true)
         session_token = session.get("token")
         if session_token && !session_token.empty?
           token = session_token

@@ -1038,7 +1038,11 @@ module Tina4
 
       # ── Session/Cache Tools ───────────────────────────
       server.register_tool("session_list", lambda {
-        session_dir = File.join("data", "sessions")
+        # Same resolution FileHandler uses, so this tool lists the directory
+        # sessions are really in. It hard-coded "data/sessions" while
+        # FileHandler wrote to <cwd>/sessions, so it listed the wrong place on
+        # every project; now both read TINA4_SESSION_PATH with the same default.
+        session_dir = ENV["TINA4_SESSION_PATH"] || File.join("data", "sessions")
         return [] unless File.directory?(session_dir)
         Dir.glob(File.join(session_dir, "*.json")).map do |f|
           begin
