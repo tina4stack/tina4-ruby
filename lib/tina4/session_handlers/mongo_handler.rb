@@ -10,6 +10,20 @@ module Tina4
       # TINA4_SESSION_MONGO_URL is a legacy alias. The database default is
       # "tina4" (Python's default — Ruby previously drifted to "tina4_sessions").
       # An explicit constructor option always wins over the environment.
+      # NO NETWORK I/O IN A CONSTRUCTOR (ADR-0021, session_contract.json #4).
+      # `require "mongo"` is a pure load and costs nothing on the wire;
+      # Mongo::Client.new is NOT - it starts SDAM topology monitoring and
+      # handshakes the server immediately, and ensure_ttl_index then issues a
+      # createIndexes round trip (dropping and recreating the index on an
+      # IndexOptionsConflict).
+      #
+      # MEASURED against a REAL counting TCP listener before this change:
+      # constructing this handler accepted THREE connections. That traffic sat
+      # OUTSIDE the log-loud-and-degrade policy, so an unreachable MongoDB took
+      # the app down at construction instead of degrading per request - the one
+      # place the policy cannot protect being the FIRST thing that runs.
+      #
+      # The client, the collection and the TTL index are all built on FIRST USE.
       def initialize(options = {})
         require "mongo"
         # TINA4_SESSION_TTL reaches every backend (ADR-0024); was a hard-coded
@@ -18,13 +32,30 @@ module Tina4
         @uri = options[:uri] || ENV["TINA4_SESSION_MONGO_URI"] || ENV["TINA4_SESSION_MONGO_URL"] || "mongodb://localhost:27017"
         @database = options[:database] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
         @collection_name = options[:collection] || ENV["TINA4_SESSION_MONGO_COLLECTION"] || "sessions"
-        client = Mongo::Client.new(@uri, database: @database)
-        @collection = client[@collection_name]
-        ensure_ttl_index
+        @client = nil
+        @collection = nil
+        @index_ready = false
       rescue LoadError
         raise "MongoDB session handler requires the 'mongo' gem. Install with: gem install mongo"
-      rescue Mongo::Error => e
-        Tina4::Log.error("MongoDB session setup failed: #{e.message}")
+      end
+
+      # Release the driver's connection pool.
+      #
+      # Mongo::Client owns a pool of REAL sockets. Before the client was lazy it
+      # was a local variable in #initialize, reachable only through the
+      # collection, so every construction leaked a pool and nothing could give it
+      # back. Now the handler holds the client, so the handler can close it -
+      # parity with the Python master's MongoDBSessionHandler.close() and with
+      # Tina4::DocStore.close_doc_store, which already closes its Mongo clients
+      # the same way. Safe to call on a handler that never connected.
+      def close
+        @client&.close
+      rescue StandardError
+        nil # a close failure must not mask the caller's work
+      ensure
+        @client = nil
+        @collection = nil
+        @index_ready = false
       end
 
       # Decide whether a stored document has expired, FROM THE DOCUMENT ALONE.
@@ -39,7 +70,7 @@ module Tina4
       end
 
       def read(session_id)
-        doc = @collection.find(_id: session_id).first
+        doc = collection.find(_id: session_id).first
         return nil unless doc
 
         # Expiry is checked HERE, at read time, against the document's own
@@ -72,7 +103,7 @@ module Tina4
         effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
         now = Time.now
         expires_at = effective_ttl.positive? ? now.to_f + effective_ttl : 0.0
-        @collection.update_one(
+        collection.update_one(
           { _id: session_id },
           { "$set" => { data: data, expires_at: expires_at,
                         updated_at: now - (@ttl - effective_ttl) } },
@@ -81,7 +112,7 @@ module Tina4
       end
 
       def destroy(session_id)
-        @collection.delete_one(_id: session_id)
+        collection.delete_one(_id: session_id)
       end
 
       def cleanup
@@ -90,17 +121,43 @@ module Tina4
 
       private
 
+      # The collection, built on FIRST USE rather than at construction, so every
+      # byte this handler puts on the wire happens inside the log-loud-and-degrade
+      # policy (see #initialize). Called by read/write/destroy.
+      def collection
+        return @collection if @collection
+
+        @client = Mongo::Client.new(@uri, database: @database)
+        @collection = @client[@collection_name]
+        ensure_ttl_index
+        @collection
+      end
+
       # Create the updated_at TTL index. An existing updated_at index with a
       # DIFFERENT expireAfterSeconds raises IndexOptionsConflict (code 85) — a
       # TTL index cannot be modified in place — so drop and recreate it with the
       # requested TTL. This makes re-init idempotent (no per-run error log) and
       # lets a changed session TTL take effect.
+      #
+      # Runs ONCE per handler (@index_ready), on the first operation. The flag is
+      # set BEFORE the round trip so an unreachable server is not re-probed on
+      # every read - the same ordering the Python master uses for _table_ready.
       def ensure_ttl_index
+        return if @index_ready
+
+        @index_ready = true
         @collection.indexes.create_one({ updated_at: 1 }, expire_after_seconds: @ttl)
       rescue Mongo::Error::OperationFailure => e
         raise unless e.code == 85 || e.message.include?("IndexOptionsConflict")
         @collection.indexes.drop_one("updated_at_1")
         @collection.indexes.create_one({ updated_at: 1 }, expire_after_seconds: @ttl)
+      rescue Mongo::Error => e
+        # The index is the background REAPER, not the expiry authority - #read
+        # checks expires_at on the document itself - so failing to create it must
+        # not break sessions. The constructor swallowed this the same way; the
+        # only change is WHERE it is swallowed. A genuinely unreachable server
+        # still surfaces on the read/write that follows, inside the policy.
+        Tina4::Log.error("MongoDB session setup failed: #{e.message}")
       end
     end
   end

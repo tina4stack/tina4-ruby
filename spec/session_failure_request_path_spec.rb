@@ -54,11 +54,23 @@
 # a "was logged" assertion can never be vacuous and a "logged nothing"
 # assertion can never be trivially true.
 #
-# NOTE ON HANDLER CHOICE: this file never constructs a MongoHandler. Ruby's
-# MongoHandler has no #close and leaks a connection pool per construction, which
-# would break docstore_substitutability_spec's connection-count gate. The
-# database backend at a closed port fails in its CONSTRUCTOR (which is the gap
-# under test) and opens nothing, so there is nothing to leak.
+# NOTE ON HANDLER CHOICE: this file never constructs a MongoHandler, because it
+# does not need one - the database backend at a closed port exercises the same
+# gap. (Historically there was a second reason: MongoHandler had no #close and
+# leaked a connection pool per construction, which broke
+# docstore_substitutability_spec's connection-count gate. Invariant 4 made the
+# Mongo client lazy and added MongoHandler#close, so a construction that never
+# operates now opens nothing at all.)
+#
+# WHAT INVARIANT 4 CHANGED HERE. This file was written when handler CONSTRUCTION
+# was where an unreachable backend blew up, so the backtrace above is history,
+# not current behaviour: DatabaseHandler#initialize no longer builds a Database
+# and no longer issues DDL (see spec/session_handler_construction_spec.rb). The
+# guard on session.rb:142 stays - it is what makes a construction-time
+# CONFIGURATION error (example 1's unknown backend) degrade instead of 500 - but
+# the network failures in examples 2 and 4 now surface on the first READ, inside
+# the same policy. The contract each example asserts is unchanged; only the log
+# record they match moved from "handler construction" to "read".
 
 require_relative "spec_helper"
 require_relative "support/real_log_capture"
@@ -248,8 +260,17 @@ RSpec.describe "Session backend failure on the REAL request path" do
                                    "the route handler never finished, so the request did not really serve"
     expect(result.json["data"]).to eq({}),
                                    "a degraded session must read as EMPTY, not carry stale or partial data"
+    # WHERE the failure surfaces moved, and that is the point of invariant 4
+    # (session_contract.json #4, spec/session_handler_construction_spec.rb).
+    # DatabaseHandler#initialize used to build a Tina4::Database (which DIALS)
+    # and issue CREATE TABLE, so an unreachable backend failed at CONSTRUCTION
+    # and was logged as "Session handler construction failed (database)". Both
+    # are now deferred to first use, so the SAME outage surfaces on the first
+    # READ instead - from the REAL handler, which is why the record now names
+    # the handler class rather than the configured backend name. The contract
+    # asserted here is unchanged: served, empty, and LOUD.
     expect(session_error_records(log_text).join)
-      .to match(/Session handler construction failed \(database\)/),
+      .to match(/Session read failed \(Tina4::SessionHandlers::DatabaseHandler\)/),
           "the request served, but the unreachable backend was not logged - degrading " \
           "SILENTLY is the defect, not the fix"
     expect(session_error_records(log_text).join).to match(/refused|connect/i),
@@ -346,7 +367,11 @@ RSpec.describe "Session backend failure on the REAL request path" do
     # Loud must mean logged AND raised. A strict mode that raises without logging
     # first leaves a hole in the log exactly where the outage is.
     records = error_records(log_text)
-    session_index = records.index { |record| record.match?(/Session handler construction failed/) }
+    # Same move as example 2: with the constructor no longer touching the
+    # network (invariant 4), the unreachable database surfaces on the first READ
+    # and strict mode re-raises from safe_read/existing_session_data instead of
+    # from the construction rescue. Loud-then-raise is unchanged.
+    session_index = records.index { |record| record.match?(/Session read failed/) }
     crash_index   = records.index { |record| record.include?("500 Internal Server Error") }
     expect(session_index).not_to be_nil,
                                  "strict mode raised without the session layer logging first"

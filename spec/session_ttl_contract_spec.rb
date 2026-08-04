@@ -81,17 +81,22 @@ RSpec.describe "Session TTL contract" do
   let(:tmp_dir) { Dir.mktmpdir("tina4-ttl-contract") }
   let(:db_file) { File.join(tmp_dir, "ttl_contract.db") }
 
-  # MongoHandler opens a Mongo::Client in its constructor and never closes it
-  # (it has no #close at all), so every handler this file builds would hold a
-  # connection pool open for the rest of the process. That is not theoretical:
-  # leaving them open pushed the server's connection count high enough to fail
-  # docstore_substitutability_spec's "does not grow connections" gate, which is
-  # order-dependent and therefore passes or fails on the RSpec seed. Build each
-  # backend's handler at most once per example, and close what we opened.
+  # MongoHandler holds a Mongo::Client with a real connection pool, so every
+  # handler this file builds would hold one open for the rest of the process.
+  # That is not theoretical: leaving them open pushed the server's connection
+  # count high enough to fail docstore_substitutability_spec's "does not grow
+  # connections" gate, which is order-dependent and therefore passes or fails on
+  # the RSpec seed. Build each backend's handler at most once per example, and
+  # close what we opened.
+  #
+  # The client is now built ON FIRST USE and MongoHandler exposes #close (ADR-0021
+  # / invariant 4 - see spec/session_handler_construction_spec.rb), so releasing
+  # it no longer means reaching through @collection for the client: ask the
+  # handler. #close is a safe no-op on a handler that never connected, and on
+  # every other backend there is simply nothing to close.
   after(:each) do
     (@built_handlers || {}).each_value do |handler|
-      collection = handler.instance_variable_get(:@collection)
-      collection.client.close if collection.respond_to?(:client)
+      handler.close if handler.respond_to?(:close)
     rescue StandardError
       nil # closing a handler we are throwing away must never fail an example
     end
