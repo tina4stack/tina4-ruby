@@ -95,6 +95,140 @@ RSpec.describe "DocStore substitutability" do
     end
   end
 
+  # ── the driverless environment (ADR-0033) ────────────────────────────────
+  #
+  # NO MOCKS, and this is the case where that rule bites hardest: stubbing
+  # `require` is exactly the forbidden thing, because the bug being pinned IS
+  # how the LoadError is handled. A double would test the double.
+  #
+  # So the gem is made GENUINELY absent: a child ruby with GEM_HOME and
+  # GEM_PATH pointed at an EMPTY directory, and BUNDLE_GEMFILE / RUBYOPT
+  # scrubbed so bundler cannot put the bundle's gems back. `require "mongo"`
+  # really raises LoadError there. Nothing needs installing, because the raise
+  # must happen BEFORE the SQLite store is ever reached - so if sqlite3 is
+  # missing too, and the code is correct, we never notice.
+  #
+  # The child reports whether it really was driverless, so a leaky environment
+  # FAILS the spec instead of quietly proving nothing.
+  describe "a missing driver has one outcome in all four" do
+    # docstore_contract.json :: a-missing-driver-has-one-outcome-in-all-four
+    #
+    # MEASURED 2026-08-01 and re-measured 2026-08-04 at v3 HEAD: serverless?
+    # answered true and get_collection returned a SqliteCollection. Production
+    # writes went to a container-local file nobody reads, which vanishes on the
+    # next deploy, with no error at any point.
+    #
+    # ADR-0024 rule 3, settled for DocStore by ADR-0033: a provider that cannot
+    # honour an operation must RAISE, naming the provider and what is missing.
+    # A method, not a bare constant: a constant declared inside an RSpec
+    # example group lands on Object and is visible to every other spec file.
+    def driver_absence_probe
+      <<~RUBY
+        require "json"
+        report = {}
+        begin
+          require "mongo"
+          report["driverless"] = false
+        rescue LoadError
+          report["driverless"] = true
+        end
+        $LOAD_PATH.unshift(ARGV[0])
+        require "tina4/docstore"
+        report["serverless"] = Tina4::DocStore.serverless?
+        begin
+          collection = Tina4::DocStore.get_collection("driver_absence_probe")
+          report["outcome"] = "returned"
+          report["returned_type"] = collection.class.name
+        rescue Exception => e
+          report["outcome"] = "raised"
+          report["error_type"] = e.class.name.split("::").last
+          report["error_ancestors"] = e.class.ancestors.map(&:to_s)
+          report["message"] = e.message
+        end
+        report["store_file_exists"] = File.exist?(ENV.fetch("TINA4_DOC_STORE_PATH"))
+        print "__PROBE__" + JSON.generate(report)
+      RUBY
+    end
+
+    def run_driver_absence_probe(uri)
+      require "tmpdir"
+      require "json"
+      Dir.mktmpdir do |scratch|
+        empty_gem_home = File.join(scratch, "gems")
+        Dir.mkdir(empty_gem_home)
+        probe_path = File.join(scratch, "probe.rb")
+        File.write(probe_path, driver_absence_probe)
+        store_path = File.join(scratch, "must_not_be_created.db")
+        lib_dir = File.expand_path("../lib", __dir__)
+
+        # A CLEAN env. Every BUNDLE*/BUNDLER* key plus RUBYLIB and RUBYOPT is
+        # removed, not just BUNDLE_GEMFILE: `bundle exec` also exports RUBYLIB
+        # pointing at bundler's own lib, which re-runs bundler/setup in the
+        # child and dies resolving the bundle against the empty GEM_HOME.
+        child_env = ENV.keys.grep(/\ABUNDLER?_/).to_h { |key| [key, nil] }
+        child_env.merge!(
+          "RUBYLIB" => nil,
+          "RUBYOPT" => nil,
+          "GEM_HOME" => empty_gem_home,
+          "GEM_PATH" => empty_gem_home,
+          "TINA4_MONGO_URI" => uri,
+          "TINA4_DOC_STORE_PATH" => store_path
+        )
+        output = IO.popen(child_env, [RbConfig.ruby, probe_path, lib_dir], err: [:child, :out], &:read)
+        expect(output).to include("__PROBE__"), "probe did not report: #{output}"
+        JSON.parse(output.split("__PROBE__", 2).last)
+      end
+    end
+
+    it "raises instead of using the local file when the driver is absent" do
+      # A password in the URI, so the credential-leak expectation has something
+      # real to catch.
+      report = run_driver_absence_probe("mongodb://docstore_user:s3cr3t-p4ssw0rd@192.0.2.1:27017")
+
+      # The environment must really be driverless, or nothing below means
+      # anything. This FAILS rather than skipping, on purpose.
+      expect(report["driverless"]).to be(true),
+                                      "the probe ruby could require 'mongo', so this spec would have proved nothing"
+
+      # Configuration says Mongo, so serverless? must say Mongo. When it
+      # answered true here, get_collection took the local branch and that WAS
+      # the silent degradation.
+      expect(report["serverless"]).to be(false)
+
+      expect(report["outcome"]).to eq("raised"),
+                                   "expected a raise, got #{report['returned_type']}"
+      expect(report["error_type"]).to eq("DocStoreDriverMissing")
+
+      message = report["message"]
+      expect(message).to include("mongo")
+      expect(message).to include("gem install mongo")
+      expect(message).to include("TINA4_MONGO_URI")
+
+      # NEGATIVE: naming the variable must not mean printing its value. A Mongo
+      # URI routinely carries credentials and an error string is the most-logged
+      # text a framework emits.
+      expect(message).not_to include("s3cr3t-p4ssw0rd"),
+                             "the error message leaked the URI credentials: #{message}"
+
+      # NEGATIVE, and the one that matters most: nothing was written to the
+      # local store.
+      expect(report["store_file_exists"]).to be(false),
+                                             "the local SQLite store was created even though a Mongo URI was configured"
+    end
+
+    it "still selects mongo when the same uri has the driver present" do
+      # POSITIVE half: the raise must be about the DRIVER, not the URI. Without
+      # this, deleting the whole real-Mongo path would satisfy the case above.
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
+
+      collection = collection_for(DOCSTORE_MONGO_URI)
+      expect(Tina4::DocStore.serverless?).to be(false)
+      expect(collection).not_to be_a(Tina4::DocStore::SqliteCollection)
+      collection.insert_one({ "proof" => "driver-present" })
+      collection.delete_many({})
+    end
+  end
+
   # ── the shared round trip, on BOTH providers ─────────────────────────────
 
   shared_examples "an interchangeable document store" do |provider|

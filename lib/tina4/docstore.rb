@@ -52,6 +52,14 @@ module Tina4
     # Raised when a value cannot be parsed as an ObjectId.
     class InvalidId < ArgumentError; end
 
+    # A Mongo URI is configured but the MongoDB driver is not installed.
+    #
+    # ADR-0024 rule 3, settled for DocStore by ADR-0033: a provider that cannot
+    # honour an operation must RAISE, naming the provider and what is missing.
+    # Falling back to the local SQLite store here would send production writes
+    # to a container-local file nobody reads.
+    class DocStoreDriverMissing < StandardError; end
+
     OID_RE = /\A[0-9a-fA-F]{24}\z/.freeze
     ISO_RE = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\z/.freeze
 
@@ -755,27 +763,35 @@ module Tina4
 
     module_function
 
+    # The env var that supplied the URI, or nil when none did.
+    #
+    # Named separately so an error can tell the operator WHICH variable to
+    # unset without ever printing its value - a Mongo URI routinely carries
+    # `user:password@`.
+    #
+    # Canonical TINA4_MONGO_URI, then the session-layer TINA4_SESSION_MONGO_URI;
+    # TINA4_SESSION_MONGO_URL is a legacy alias.
+    def mongo_uri_source
+      %w[TINA4_MONGO_URI TINA4_SESSION_MONGO_URI TINA4_SESSION_MONGO_URL]
+        .find { |name| !(ENV[name] || "").strip.empty? }
+    end
+
     # The configured Mongo URI, reusing the app-wide queue/session env vars.
-    # Canonical TINA4_SESSION_MONGO_URI; TINA4_SESSION_MONGO_URL is a legacy alias.
     def mongo_uri
-      (ENV["TINA4_MONGO_URI"] ||
-       ENV["TINA4_SESSION_MONGO_URI"] ||
-       ENV["TINA4_SESSION_MONGO_URL"] ||
-       "").strip
+      source = mongo_uri_source
+      source ? ENV[source].strip : ""
     end
 
     # True when no Mongo is configured, so the SQLite fallback is in effect.
+    #
+    # CONFIGURATION ONLY. Before 3.13.95 this also returned true when a URI was
+    # set but the mongo gem was absent, and that is precisely what made
+    # get_collection hand back the local SQLite store while the operator
+    # believed they were on Mongo. A missing driver is now an error (ADR-0033),
+    # not a second way to be serverless - otherwise an app branching on this
+    # would take the local path and never reach the raise.
     def serverless?
-      return true if mongo_uri.empty?
-
-      begin
-        require "mongo"
-        false
-      rescue LoadError
-        # A URI is set but the driver is absent: degrade to the local store
-        # rather than crash.
-        true
-      end
+      mongo_uri.empty?
     end
 
     @default_db = nil
@@ -815,8 +831,19 @@ module Tina4
     # (uri, database) is the shape the driver itself expects. The double-checked
     # lock matches default_db above: without it two threads racing the first call
     # both build a client and one is orphaned - the same leak, just rarer.
+    #
+    # A missing gem raises here, at provider RESOLUTION, before any socket is
+    # opened: it is a static fact and needs no network to establish.
     def mongo_client(uri, db_name)
-      require "mongo"
+      begin
+        require "mongo"
+      rescue LoadError
+        source = mongo_uri_source || "TINA4_MONGO_URI"
+        raise DocStoreDriverMissing,
+              "Tina4 DocStore: #{source} is set, so the MongoDB provider is selected, but " \
+              "its driver is not installed (gem 'mongo'). Install it with `gem install mongo`, " \
+              "or unset #{source} to use the local SQLite store."
+      end
       key = [uri, db_name]
       client = @mongo_clients[key]
       return client if client
