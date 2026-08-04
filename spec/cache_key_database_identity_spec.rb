@@ -86,6 +86,33 @@ module CacheKeyIdentityContract
   def pg_url(database)
     "postgres://#{PG_HOST}:#{PG_PORT}/#{database}"
   end
+
+  # Create the contract's databases if they are absent.
+  #
+  # This spec used to just USE tina4_cache_contract_a/_b and assume they
+  # existed. They did - because somebody had created them BY HAND. That is a
+  # false green of the worst shape: passing on a developer machine and RED on a
+  # clean CI runner with "database ... does not exist", which is the same
+  # environment-dependent failure this whole contract exists to stamp out.
+  #
+  # CREATE DATABASE cannot run inside a transaction block, so this runs on a
+  # plain autocommit connection to the `postgres` admin database. It is a REAL
+  # connection to the REAL server, not a stand-in.
+  #
+  # Create-if-absent only. The databases are deliberately NOT dropped
+  # afterwards: it is idempotent and cheap, and dropping would make concurrent
+  # runs fight each other.
+  def ensure_postgres_database(name)
+    admin = Tina4::Database.new(pg_url("postgres"), username: PG_USER, password: PG_PASS)
+    return if admin.fetch_one("SELECT 1 AS present FROM pg_database WHERE datname = ?", [name])
+
+    # The name is a constant this file owns, and CREATE DATABASE takes no
+    # placeholder, so it is interpolated deliberately.
+    admin.execute("CREATE DATABASE #{name}")
+  rescue StandardError => error
+    # Two concurrent runs can both see it absent and both try to create it.
+    raise unless error.message.include?("already exists")
+  end
 end
 
 RSpec.describe "cache key database identity" do
@@ -168,6 +195,7 @@ RSpec.describe "cache key database identity" do
     begin
       { "database-a" => CacheKeyIdentityContract::PG_DB_A,
         "database-b" => CacheKeyIdentityContract::PG_DB_B }.each do |marker, database|
+        CacheKeyIdentityContract.ensure_postgres_database(database)
         db = Tina4::Database.new(CacheKeyIdentityContract.pg_url(database),
                                  username: CacheKeyIdentityContract::PG_USER,
                                  password: CacheKeyIdentityContract::PG_PASS)
