@@ -493,21 +493,20 @@ RSpec.describe "Session Handlers" do
       sleep(1.3)
       handlers.each do |label, h|
         h.cleanup
-        if label == "MongoHandler"
-          # MongoHandler#cleanup is a no-op (the server-side TTL index reaps
-          # expired docs on its own ~60s monitor cycle, which cannot be awaited
-          # in a unit test). Prove the interface still works: cleanup runs
-          # without error and destroy removes the records.
-          h.destroy("iface_c1")
-          h.destroy("iface_c2")
-          expect(h.read("iface_c1")).to be_nil, "#{label}: destroy after cleanup failed"
-          expect(h.read("iface_c2")).to be_nil, "#{label}: destroy after cleanup failed"
-        else
-          # File / Database actively delete on cleanup; Redis / Valkey expire
-          # server-side via setex once the ttl elapses.
-          expect(h.read("iface_c1")).to be_nil, "#{label}: expired session survived cleanup"
-          expect(h.read("iface_c2")).to be_nil, "#{label}: expired session survived cleanup"
-        end
+        # File / Database actively delete on cleanup; Redis / Valkey expire
+        # server-side via setex once the ttl elapses; MongoHandler#cleanup now
+        # sweeps expired documents itself.
+        #
+        # MongoHandler USED to be a special case here, exempted because cleanup
+        # was a no-op that delegated entirely to the server-side TTL index -
+        # whose monitor sweeps once every ~60 SECONDS and cannot be awaited in a
+        # test. It is no longer exempt: the handler has a real #gc (parity with
+        # Python's MongoDBSessionHandler.gc), and cleanup calls it. That reaper
+        # is not optional now that the ZERO-DEPENDENCY wire transport exists,
+        # because no TTL index is created on that path at all - without this
+        # sweep a gem-free deployment would keep every expired document forever.
+        expect(h.read("iface_c1")).to be_nil, "#{label}: expired session survived cleanup"
+        expect(h.read("iface_c2")).to be_nil, "#{label}: expired session survived cleanup"
       end
     end
   end

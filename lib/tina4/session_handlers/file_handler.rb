@@ -6,8 +6,25 @@ require "digest"
 module Tina4
   module SessionHandlers
     class FileHandler
+      # TINA4_SESSION_PATH selects the session directory, with the SAME
+      # precedence the other three frameworks use: an explicit option wins, then
+      # the environment, then "data/sessions".
+      #
+      # Ruby read NO env var here and hard-defaulted to <cwd>/sessions, so it
+      # drifted on BOTH halves of ADR-0024: the documented variable did nothing
+      # (example/.env.example has advertised "TINA4_SESSION_PATH=data/sessions"
+      # the whole time), and the default location differed from Python
+      # (session/__init__.py FileSessionHandler), PHP (Session.php:128) and Node
+      # (session.ts:184) - all three of which resolve
+      # `path || TINA4_SESSION_PATH || "data/sessions"`. Pointing the file
+      # backend at a mounted volume worked in three frameworks and was silently
+      # ignored in the fourth, which is the exact "one env var and nothing else"
+      # promise ADR-0024 makes.
+      #
+      # The default stays RELATIVE, exactly as the other three leave it, so all
+      # four resolve the same path against the same working directory.
       def initialize(options = {})
-        @dir = options[:dir] || File.join(Dir.pwd, "sessions")
+        @dir = options[:dir] || ENV["TINA4_SESSION_PATH"] || File.join("data", "sessions")
         # TINA4_SESSION_TTL is the ONE session-lifetime variable, and it must
         # reach EVERY backend (ADR-0024). This used to be a hard-coded 86400,
         # so an operator setting a 15-minute session got 24 hours here and got

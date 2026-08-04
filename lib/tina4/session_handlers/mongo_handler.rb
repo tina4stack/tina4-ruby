@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 require "json"
+require_relative "mongo_wire_client"
 
 module Tina4
   module SessionHandlers
@@ -24,22 +25,39 @@ module Tina4
       # place the policy cannot protect being the FIRST thing that runs.
       #
       # The client, the collection and the TTL index are all built on FIRST USE.
+      #
+      # TWO TRANSPORTS, ONE RESOLUTION POINT (session_contract.json #6,
+      # ADR-0024). The `mongo` gem is used when it is installed; when it is NOT,
+      # this handler speaks the MongoDB wire protocol directly over a socket via
+      # MongoWireClient - zero dependencies, exactly as Python, PHP and Node have
+      # always done. This line USED to be a bare `require "mongo"` whose
+      # `rescue LoadError` re-raised "MongoDB session handler requires the
+      # 'mongo' gem", so TINA4_SESSION_BACKEND=mongodb worked in three
+      # frameworks and blew up in the fourth on identical configuration.
+      # MEASURED at v3 HEAD in a real subprocess with no gems resolvable at all:
+      # file, redis, valkey and memcached all round-tripped a session and
+      # mongodb raised at Session construction.
+      #
+      # The probe stays a PURE LOAD - `require` opens no socket - so ADR-0021
+      # (no network I/O in a constructor) still holds. Guarding on
+      # ::Mongo::VERSION rather than on `require` alone is the same defence
+      # RedisHandler#build_gem_client uses: a bare `Mongo` constant defined by
+      # something else must not be mistaken for the real driver.
       def initialize(options = {})
-        require "mongo"
         # TINA4_SESSION_TTL reaches every backend (ADR-0024); was a hard-coded
         # 86400. 3600 matches Python (the master), PHP and Node.
         @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
         @uri = options[:uri] || ENV["TINA4_SESSION_MONGO_URI"] || ENV["TINA4_SESSION_MONGO_URL"] || "mongodb://localhost:27017"
         @database = options[:database] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
         @collection_name = options[:collection] || ENV["TINA4_SESSION_MONGO_COLLECTION"] || "sessions"
+        @gem_available = gem_available?
         @client = nil
+        @wire_client = nil
         @collection = nil
         @index_ready = false
-      rescue LoadError
-        raise "MongoDB session handler requires the 'mongo' gem. Install with: gem install mongo"
       end
 
-      # Release the driver's connection pool.
+      # Release whichever transport was opened.
       #
       # Mongo::Client owns a pool of REAL sockets. Before the client was lazy it
       # was a local variable in #initialize, reachable only through the
@@ -47,13 +65,20 @@ module Tina4
       # back. Now the handler holds the client, so the handler can close it -
       # parity with the Python master's MongoDBSessionHandler.close() and with
       # Tina4::DocStore.close_doc_store, which already closes its Mongo clients
-      # the same way. Safe to call on a handler that never connected.
+      # the same way. The zero-dependency transport owns ONE raw socket and is
+      # closed the same way, so neither path leaks. Safe to call on a handler
+      # that never connected.
       def close
-        @client&.close
-      rescue StandardError
-        nil # a close failure must not mask the caller's work
+        # Each close is guarded on its own: a failure on one transport must not
+        # skip the other, and neither may mask the caller's work.
+        [@client, @wire_client].each do |transport|
+          transport&.close
+        rescue StandardError
+          nil
+        end
       ensure
         @client = nil
+        @wire_client = nil
         @collection = nil
         @index_ready = false
       end
@@ -116,21 +141,107 @@ module Tina4
       end
 
       def cleanup
-        # MongoDB TTL index handles cleanup
+        gc
+      end
+
+      # Garbage-collect expired sessions. Matches the Python master's
+      # MongoDBSessionHandler.gc and the FileHandler interface, and it is what
+      # Session#gc calls when a handler responds to it.
+      #
+      # THE REAPER IS NOT OPTIONAL ON THE ZERO-DEPENDENCY TRANSPORT. The TTL
+      # index below is created on the gem path only (creating it needs the gem's
+      # own index API), so without this sweep a wire-protocol deployment would
+      # keep every expired document forever. Expiry itself is unaffected either
+      # way - #read checks the document's own absolute deadline.
+      #
+      # Same contract as #read: only a stamp that is genuinely PRESENT and in
+      # the PAST makes a document a deletion candidate. `$gt: 0` is explicit so
+      # a document with a zero stamp is never swept, and one with no stamp at
+      # all cannot match the range predicate either.
+      #
+      # @param max_lifetime [Integer] accepted for interface parity; expiry is
+      #   absolute and already baked into expires_at at write time.
+      def gc(max_lifetime = nil)
+        _ = max_lifetime
+        collection.delete_many("expires_at" => { "$gt" => 0, "$lt" => Time.now.to_f })
       end
 
       private
 
+      # Whether the REAL `mongo` gem is loadable. A pure load - it opens no
+      # socket - so this is safe in a constructor (ADR-0021). Returns false when
+      # the gem is absent, which selects the zero-dependency wire transport.
+      def gem_available?
+        require "mongo"
+        defined?(::Mongo::VERSION) ? true : false
+      rescue LoadError
+        false
+      end
+
       # The collection, built on FIRST USE rather than at construction, so every
       # byte this handler puts on the wire happens inside the log-loud-and-degrade
-      # policy (see #initialize). Called by read/write/destroy.
+      # policy (see #initialize). Called by read/write/destroy/gc.
+      #
+      # THIS IS THE ONE PLACE THE TRANSPORT IS CHOSEN. read, write, destroy and
+      # gc have no branch of their own: whichever transport this returns answers
+      # find/update_one/delete_one/delete_many with the same shape, so the
+      # request path cannot take one transport while a directly-constructed
+      # handler takes the other. A per-operation branch is a branch that can be
+      # wrong on one path only - which is exactly how a fallback ships untested.
       def collection
         return @collection if @collection
 
-        @client = Mongo::Client.new(@uri, database: @database)
-        @collection = @client[@collection_name]
-        ensure_ttl_index
+        if @gem_available
+          @client = Mongo::Client.new(@uri, database: @database)
+          @collection = @client[@collection_name]
+          ensure_ttl_index
+        else
+          @wire_client = build_wire_client
+          @collection = @wire_client
+        end
         @collection
+      end
+
+      # The zero-dependency transport, pointed at the host and port parsed out of
+      # the configured URI. Opens nothing here - MongoWireClient connects on its
+      # first command.
+      #
+      # mongodb+srv:// is REFUSED here rather than half-supported. That scheme is
+      # not a host at all: it is a DNS SRV lookup that yields the real seed list,
+      # plus mandatory TLS. Parsing it as a hostname would dial
+      # "cluster0.example.mongodb.net:27017" in the clear, which does not exist,
+      # and the operator would get a bare connection-refused with nothing
+      # pointing at the cause. Before this fallback existed they got a clear
+      # "requires the 'mongo' gem"; they still get a clear message. Naming the
+      # remedy at the point of use is the framework's rule for a genuinely
+      # missing capability.
+      def build_wire_client
+        if @uri.to_s.start_with?("mongodb+srv://")
+          raise "mongodb+srv:// needs a DNS SRV lookup and TLS, which the zero-dependency " \
+                "MongoDB transport does not do. Install the 'mongo' gem (gem install mongo), " \
+                "or point TINA4_SESSION_MONGO_URI at an explicit mongodb://host:port."
+        end
+
+        host, port = parse_host_port(@uri)
+        MongoWireClient.new(host: host, port: port, database: @database, collection: @collection_name)
+      end
+
+      # Extract host and port from a MongoDB URI, mirroring the Python master's
+      # _parse_url: strip the scheme, strip any credentials, strip the path and
+      # query, then take the FIRST host of a seed list.
+      #
+      # URI.parse is deliberately not used: a perfectly ordinary replica-set URI
+      # ("mongodb://a:27017,b:27017/db") is not a valid RFC 3986 authority, so it
+      # raises - and defaulting to localhost there would silently dial the WRONG
+      # server, which is far worse than any parse error.
+      def parse_host_port(uri)
+        remainder = uri.to_s.sub(%r{\Amongodb://}, "")
+        remainder = remainder.split("@", 2).last.to_s   # credentials
+        remainder = remainder.split("/", 2).first.to_s  # path + query
+        remainder = remainder.split(",", 2).first.to_s  # first seed host
+        host, port = remainder.split(":", 2)
+        host = "localhost" if host.nil? || host.empty?
+        [host, port.nil? || port.empty? ? 27_017 : port.to_i]
       end
 
       # Create the updated_at TTL index. An existing updated_at index with a
@@ -138,6 +249,14 @@ module Tina4
       # TTL index cannot be modified in place — so drop and recreate it with the
       # requested TTL. This makes re-init idempotent (no per-run error log) and
       # lets a changed session TTL take effect.
+      #
+      # GEM PATH ONLY - #collection calls it in that branch and nowhere else.
+      # Python, PHP and Node create no TTL index on any transport, so the
+      # zero-dependency path reaps with #gc instead and expiry itself is
+      # unchanged either way (#read checks the document's own deadline). It also
+      # could not run here: the rescues below name Mongo::Error, a constant that
+      # does not exist when the gem is absent, so evaluating them would raise
+      # NameError rather than the LoadError anyone would expect.
       #
       # Runs ONCE per handler (@index_ready), on the first operation. The flag is
       # set BEFORE the round trip so an unreachable server is not re-probed on
