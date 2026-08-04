@@ -88,37 +88,76 @@ module Tina4
       @backend.clear(@topic)
     end
 
+    # Release the backend's connection and free its resources.
+    #
+    # A queue on RabbitMQ, Kafka or MongoDB holds a REAL client and socket.
+    # Until 3.13.95 there was no way to hand it back: close existed on the
+    # rabbitmq/mongo/kafka backends but was surfaced on NOTHING, and the lite
+    # backend had none at all - so every `backend.close if respond_to?(:close)`
+    # guard in the tree silently skipped the default backend. An app that built
+    # a Queue per request leaked one client per request, invisibly, until the
+    # broker refused new connections. Same class of leak as ADR-0025 corollary 4
+    # (client-lifecycle-is-bounded).
+    #
+    # Safe on EVERY backend: the lite backend holds no connection and closes as
+    # a documented no-op, so a TINA4_QUEUE_BACKEND change never turns a working
+    # shutdown path into an error. Idempotent - each backend drops its handles
+    # on the first call, so a second call finds nothing to close and returns.
+    #
+    # Treat the queue as spent afterwards and build a new one to keep working.
+    def close
+      @backend.close
+    end
+
     # Get jobs that failed but are still eligible for retry (under max_retries).
     def failed # -> list[dict]
-      return [] unless @backend.respond_to?(:failed)
+      refuse_operation!("failed()") unless @backend.respond_to?(:failed)
       @backend.failed(@topic, max_retries: @max_retries)
     end
 
     # Retry a specific failed job by ID, or all dead-letter jobs if no id given.
     # Returns true if re-queued.
     def retry(job_id = nil, delay_seconds: 0) # -> bool
-      return false unless @backend.respond_to?(:retry_job)
+      refuse_operation!("retry()") unless @backend.respond_to?(:retry_job)
       @backend.retry_job(@topic, job_id: job_id, delay_seconds: delay_seconds)
     end
 
     # Get dead letter jobs — messages that exceeded max retries.
     # Pass max_retries to override the queue's default.
     def dead_letters(max_retries: nil) # -> list[dict]
-      return [] unless @backend.respond_to?(:dead_letters)
+      refuse_operation!("dead_letters()") unless @backend.respond_to?(:dead_letters)
       @backend.dead_letters(@topic, max_retries: max_retries || @max_retries)
     end
 
     # Delete messages by status (completed, failed, dead).
     def purge(status, max_retries: nil) # -> int
-      return 0 unless @backend.respond_to?(:purge)
+      refuse_operation!("purge()") unless @backend.respond_to?(:purge)
       @backend.purge(@topic, status)
     end
 
     # Re-queue failed messages (under max_retries) back to pending.
     # Returns the number of jobs re-queued.
     def retry_failed(max_retries: nil) # -> int
-      return 0 unless @backend.respond_to?(:retry_failed)
+      refuse_operation!("retry_failed()") unless @backend.respond_to?(:retry_failed)
       @backend.retry_failed(@topic, max_retries: max_retries || @max_retries)
+    end
+
+    # A backend that does not implement an operation must SAY SO, naming itself
+    # and the operation (invariant 6).
+    #
+    # These five methods used to `return [] / false / 0 unless
+    # @backend.respond_to?(...)`. That turned "this backend cannot do this" into
+    # "nothing has failed" / "nothing needed retrying" / "nothing was purged" --
+    # answers indistinguishable from a genuine empty success (ADR-0022
+    # decision 7). It is the silent-no-op class this invariant exists to remove,
+    # and it hid every missing broker method behind a plausible-looking result.
+    def refuse_operation!(operation)
+      name = @backend.class.name.to_s.split("::").last.sub(/Backend\z/, "").downcase
+      raise NotImplementedError,
+            "The #{name} queue backend cannot perform #{operation}: it does not " \
+            "implement that operation. Returning an empty result would be " \
+            "indistinguishable from a successful empty answer. Use the file or " \
+            "mongodb backend, which implement the full failure lifecycle."
     end
 
     # Produce a message onto a topic. Convenience wrapper around push().
@@ -319,11 +358,19 @@ module Tina4
       when "rabbitmq"
         # Broker manages visibility/redelivery (unacked messages requeue on
         # channel close) — the framework timeout is accepted but not used.
+        # max_retries IS used: fail() counts attempts itself and dead-letters
+        # past the limit. Without threading it through, the backend fell back to
+        # its own default of 3, so Queue.new(max_retries: 2) gave a job THREE
+        # attempts on rabbitmq and two on file — the dead-letter threshold
+        # silently changed with the provider.
         config = resolve_rabbitmq_config
+        config[:max_retries] = max_retries
         Tina4::QueueBackends::RabbitmqBackend.new(config)
       when "kafka"
         # Consumer-group offsets manage redelivery — framework timeout N/A.
+        # max_retries threaded through for the same reason as rabbitmq.
         config = resolve_kafka_config
+        config[:max_retries] = max_retries
         Tina4::QueueBackends::KafkaBackend.new(config)
       when "mongodb", "mongo"
         config = resolve_mongo_config

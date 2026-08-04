@@ -733,6 +733,7 @@ queue.retry_failed(max_retries: nil) -> Integer
 queue.produce(topic, payload, priority: 0, delay_seconds: 0)
 queue.consume(topic = nil, id: nil, poll_interval: 1.0, iterations: 0, batch_size: 1) { |job| ... }
 queue.process(topic: nil, max_jobs: nil, batch_size: 1) { |job| ... }
+queue.close  # Release the backend connection. No-op on the lite backend, idempotent, discard the queue afterwards.
 
 # Job methods
 job.complete                       # mark as completed

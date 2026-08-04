@@ -86,14 +86,24 @@ module Tina4
     # queue.dead_letters returns it. No manual retry_failed is required.
     def fail(reason = "")
       @error = reason
-      if @queue && @queue.backend.respond_to?(:fail)
-        @queue.backend.fail(self, reason)
-        @status = @attempts >= @queue.max_retries ? :dead : :pending
-      else
-        # No backend reference — degrade to in-memory bookkeeping only.
+      # A job with no queue is a detached value object (built by hand, or read
+      # out of a serialised payload) — in-memory bookkeeping is all there is.
+      unless @queue
         @attempts += 1
         @status = :failed
+        return self
       end
+
+      # NO respond_to?(:fail) GUARD. It used to fall through to the same
+      # in-memory branch when the backend had no fail method, which is exactly
+      # what rabbitmq and kafka were: job.fail() bumped a counter in this
+      # process and the BROKER WAS NEVER TOLD. No dead letter was written, the
+      # delivery stayed unacked, and failed()/dead_letters() both reported
+      # nothing — the job was lost as far as the application could see. A
+      # backend that cannot record a failure must say so (invariant 6), and a
+      # backend missing the method must fail loudly here rather than pretend.
+      @queue.backend.fail(self, reason)
+      @status = @attempts >= @queue.max_retries ? :dead : :pending
       self
     end
 
