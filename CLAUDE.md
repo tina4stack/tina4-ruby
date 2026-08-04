@@ -541,14 +541,19 @@ end
 ```ruby
 orders = Tina4::DocStore.get_collection("orders")
 res = orders.insert_one({ "customer_id" => 1, "total" => 9.99, "status" => "new" })
-orders.find({ "_id" => res.inserted_id }).first
+orders.find({ "_id" => res.inserted_id }).first   # the driver's spelling
+orders.find_one({ "_id" => res.inserted_id })     # the uniform Tina4 spelling - same answer
 orders.update_one({ "_id" => res.inserted_id }, { "$set" => { "status" => "shipped" } })
 orders.find({ "total" => { "$gt" => 5 } }).sort("total", -1).limit(10).each { |doc| }
 orders.count_documents({ "status" => "shipped" })
 Tina4::DocStore.serverless?   # true when running on the SQLite fallback
 ```
 
-Filter operators: equality, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$exists`, `$regex`, implicit AND, `$or`, `$and`, and dotted nested keys (`addr.city`). Updates: `$set`, `$unset`, `$inc`, replace, upsert. Cursors: `sort`, `limit`, `skip`, projection. Values round-trip (Time to/from ISO-8601, `ObjectId` to/from 24-hex) and stay queryable via `json_extract`. Non-goals: aggregation pipelines, `$elemMatch`, geo queries.
+Filter operators: equality, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$exists`, `$regex`, implicit AND, `$or`, `$and`, and dotted nested keys (`addr.city`). Updates: `$set`, `$unset`, `$inc`, replace, upsert. Cursors: `sort`, `limit`, `skip`, projection, `to_a` and `to_list`. Values round-trip (Time to/from ISO-8601, `ObjectId` to/from 24-hex) and stay queryable via `json_extract`. Non-goals: aggregation pipelines, `$elemMatch`, geo queries.
+
+**One spelling, both providers (ADR-0035).** `find_one(filter)` and `cursor.to_list` are the uniform Tina4 spellings and work on the SQLite fallback AND on a real MongoDB. `Mongo::Collection` has neither, so on the Mongo path `get_collection` returns `Tina4::DocStore::MongoCollection`, a `SimpleDelegator` that adds them and forwards the entire driver surface untouched (`aggregate`, `bulk_write`, `indexes`, `watch`, sessions and transactions all stay reachable). The driver spellings `find(filter).first` and `to_a` are unchanged and equally valid - this is additive.
+
+**Sort takes the HASH spelling when you want it portable.** `cursor.sort({ "total" => -1 })` works on both providers. The fallback also accepts `sort("total", -1)`, but `Mongo::Collection::View#sort` takes one spec and raises `ArgumentError` on two arguments - a divergence ADR-0035 records and does not close.
 
 Selection and configuration:
 - `TINA4_MONGO_URI` — app-wide Mongo URI. Falls back to `TINA4_SESSION_MONGO_URI`, then the legacy `TINA4_SESSION_MONGO_URL`. When one is set and the gem is present, `get_collection` returns a real Mongo collection.

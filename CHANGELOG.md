@@ -10,6 +10,36 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (the uniform DocStore spellings now work on the real provider, ADR-0035)
+
+- `collection.find_one(filter)` and `cursor.to_list` worked on the SQLite
+  fallback and did not exist on `Mongo::Collection`, so code that used them
+  raised `NoMethodError` the moment `TINA4_MONGO_URI` was set. They now work on
+  BOTH providers.
+
+  `get_collection` returns `Tina4::DocStore::MongoCollection` on the Mongo path -
+  a `SimpleDelegator` that adds the two methods and forwards the entire driver
+  surface untouched. `aggregate`, `bulk_write`, `indexes`, `watch`, sessions and
+  transactions are all still reachable; measured 2026-08-04 against a real
+  MongoDB 7.x, with 0 fallback-only collection methods and 0 fallback-only
+  cursor methods.
+
+  ADDITIVE, not a replacement. `find(filter).first` and `to_a` are the driver's
+  spellings, they are unchanged, and both forms return the same answer.
+
+  ADR-0025 corollary 1 said to DELETE a method the driver lacks. ADR-0035
+  supersedes that corollary only: a method may exist on the fallback when it
+  also exists on what `get_collection` RETURNS, and Tina4 may supply it on both
+  sides. The core rule and corollaries 2, 3 and 4 stand.
+
+  Pinned by `spec/docstore_substitutability_spec.rb`, which reads a document
+  back through every spelling on BOTH providers and measures the fallback's
+  public methods against the wrapped driver rather than a hand-kept list.
+
+  KNOWN and NOT fixed here: the fallback `Cursor#sort(key, direction)` takes two
+  arguments and `Mongo::Collection::View#sort` takes one. Use the hash spelling
+  `sort({ "total" => -1 })`, which both providers accept.
+
 ### Breaking (DocStore: a missing MongoDB driver now raises)
 
 `TINA4_MONGO_URI` set with the `mongo` gem NOT installed used to return the local SQLite collection. It now
@@ -199,31 +229,6 @@ severed rather than degraded.
   many Client objects sharing a URI share one pool - measured 0 growth over 60
   calls. It gets the same named test anyway, because correct-for-a-reason-we-did-
   not-choose is exactly what regresses silently.
-
-### Breaking (DocStore find_one, ADR-0025)
-
-- `Tina4::DocStore::SqliteCollection#find_one` is REMOVED. Use the driver's
-  spelling, which works on both providers:
-
-      collection.find_one(filter)   ->  collection.find(filter).first
-
-  WHY: `find_one` does not exist on `Mongo::Collection`. It was a fallback-only
-  accessor, and the framework's own documented Ruby example used it, so code
-  written against the local SQLite store raised
-
-      NoMethodError: undefined method 'find_one' for an instance of Mongo::Collection
-
-  the moment `TINA4_MONGO_URI` was set. Loud rather than silent, but still a
-  broken swap at the call site. Measured 2026-08-03 against a real MongoDB.
-
-  ADR-0025 settles the general rule: the fallback imitates the driver, because
-  the driver is the half that cannot be changed. Pinned by
-  `spec/docstore_substitutability_spec.rb`, which reads a document back with
-  `find(...).first` on BOTH providers and asserts `find_one` responds on
-  NEITHER.
-
-  NOT affected: `find_one_and_update` on the Mongo queue backend is a genuine
-  `Mongo::Collection` method and is untouched.
 
 ## Unreleased
 
