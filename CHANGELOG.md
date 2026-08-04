@@ -10,6 +10,82 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (the documented sort spelling raised on real MongoDB, ADR-0036)
+
+`cursor.sort("total", -1)` - the spelling this file documents - raised
+`ArgumentError: wrong number of arguments (given 2, expected 0..1)` on a real
+MongoDB, because `Mongo::Collection::View#sort` takes ONE spec document. The
+list-of-pairs form was worse: it reached the server as an ARRAY and came back
+
+```
+[14:TypeMismatch]: Expected field sort to be of type object
+```
+
+so of the three spellings the fallback accepted, only the hash form survived the
+swap - and it was not the documented one.
+
+`sort` now normalises all three to the driver's single spec document, so
+`sort("total", -1)`, `sort({ "total" => -1 })` and `sort([["total", -1]])` are
+equivalent on both providers. Ruby's fallback `Cursor` already accepted all
+three; it is the DRIVER side that was narrow, and `MongoView` now bridges it.
+
+  NOT affected: Ruby's chain was already lazy on both providers, because a
+  `Mongo::Collection::View` is lazy and immutable. PHP's was not, and ADR-0036
+  fixes that separately.
+
+  MEASURED 2026-08-04 against a real MongoDB 7.0.39: 4 chain cases x 2 providers
+  x 4 frameworks = 32 combinations, of which **10 failed** before this change and
+  0 fail after. Pinned by the substitutability suite in all four frameworks,
+  which asserts every spelling on BOTH providers, that `skip` composes, that an
+  ASCENDING sort actually ascends (a direction ignored outright would pass a
+  descending-only test), and that the chain is LAZY - a document inserted after
+  the chain is built but before it is iterated must appear.
+
+### Fixed (the uniform DocStore spellings now work on the real provider, ADR-0035)
+
+- `collection.find_one(filter)` and `cursor.to_list` worked on the SQLite
+  fallback and did not exist on `Mongo::Collection`, so code that used them
+  raised `NoMethodError` the moment `TINA4_MONGO_URI` was set. They now work on
+  BOTH providers.
+
+  `get_collection` returns `Tina4::DocStore::MongoCollection` on the Mongo path -
+  a `SimpleDelegator` that adds the two methods and forwards the entire driver
+  surface untouched. `aggregate`, `bulk_write`, `indexes`, `watch`, sessions and
+  transactions are all still reachable; measured 2026-08-04 against a real
+  MongoDB 7.0.39, with 0 fallback-only collection methods and 0 fallback-only
+  cursor methods.
+
+  ADDITIVE, not a replacement. `find(filter).first` and `to_a` are the driver's
+  spellings, they are unchanged, and both forms return the same answer.
+
+  ADR-0025 corollary 1 said to DELETE a method the driver lacks. ADR-0035
+  supersedes that corollary only: a method may exist on the fallback when it
+  also exists on what `get_collection` RETURNS, and Tina4 may supply it on both
+  sides. The core rule and corollaries 2, 3 and 4 stand.
+
+  Pinned by `spec/docstore_substitutability_spec.rb`, which reads a document
+  back through every spelling on BOTH providers and measures the fallback's
+  public methods against the wrapped driver rather than a hand-kept list.
+
+  **Breaking: on the Mongo path `get_collection` now returns a delegator, so a
+  CLASS check answers differently.** Every method call, `==` against the raw
+  collection, and the whole driver surface behave exactly as before, but
+
+      Tina4::DocStore.get_collection("x").is_a?(Mongo::Collection)   # was true, now false
+      Tina4::DocStore.get_collection("x").class                      # was Mongo::Collection
+
+  **Migration:** stop type-checking the return, or reach the real object with
+  `__getobj__`:
+
+      collection.__getobj__.is_a?(Mongo::Collection)   # true
+
+  Nothing in the framework type-checks it; this is stated because a user
+  application might.
+
+  KNOWN and NOT fixed here: the fallback `Cursor#sort(key, direction)` takes two
+  arguments and `Mongo::Collection::View#sort` takes one. Use the hash spelling
+  `sort({ "total" => -1 })`, which both providers accept.
+
 ### Breaking (DocStore: a missing MongoDB driver now raises)
 
 `TINA4_MONGO_URI` set with the `mongo` gem NOT installed used to return the local SQLite collection. It now
@@ -199,31 +275,6 @@ severed rather than degraded.
   many Client objects sharing a URI share one pool - measured 0 growth over 60
   calls. It gets the same named test anyway, because correct-for-a-reason-we-did-
   not-choose is exactly what regresses silently.
-
-### Breaking (DocStore find_one, ADR-0025)
-
-- `Tina4::DocStore::SqliteCollection#find_one` is REMOVED. Use the driver's
-  spelling, which works on both providers:
-
-      collection.find_one(filter)   ->  collection.find(filter).first
-
-  WHY: `find_one` does not exist on `Mongo::Collection`. It was a fallback-only
-  accessor, and the framework's own documented Ruby example used it, so code
-  written against the local SQLite store raised
-
-      NoMethodError: undefined method 'find_one' for an instance of Mongo::Collection
-
-  the moment `TINA4_MONGO_URI` was set. Loud rather than silent, but still a
-  broken swap at the call site. Measured 2026-08-03 against a real MongoDB.
-
-  ADR-0025 settles the general rule: the fallback imitates the driver, because
-  the driver is the half that cannot be changed. Pinned by
-  `spec/docstore_substitutability_spec.rb`, which reads a document back with
-  `find(...).first` on BOTH providers and asserts `find_one` responds on
-  NEITHER.
-
-  NOT affected: `find_one_and_update` on the Mongo queue backend is a genuine
-  `Mongo::Collection` method and is untouched.
 
 ## Unreleased
 

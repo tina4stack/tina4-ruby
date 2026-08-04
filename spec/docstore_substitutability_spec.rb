@@ -281,8 +281,7 @@ RSpec.describe "DocStore substitutability" do
   describe "the call-site surface is identical" do
     # docstore_contract.json :: the-call-site-surface-is-identical
     #
-    # ADR-0025, closed 2026-08-03. This was an OPEN DEFECT reported rather than
-    # asserted; it is now a gate.
+    # ADR-0025, closed 2026-08-03. AMENDED by ADR-0035 on 2026-08-04.
     #
     # The defect: find_one was the accessor the fallback offered and the
     # documented Ruby example used. On a REAL Mongo::Collection it does not
@@ -294,14 +293,29 @@ RSpec.describe "DocStore substitutability" do
     # where the equivalent accessor returned nil - but the code still broke the
     # moment TINA4_MONGO_URI was set.
     #
-    # ADR-0025 settles it: the fallback imitates the DRIVER, because the driver
-    # is the half that cannot be changed. The spelling that works on BOTH is
-    # find(filter).first, and these two examples pin that outcome.
-
+    # ADR-0025 kept the right goal - no method that works on the fallback and
+    # breaks on the driver - and reached it by DELETING find_one. ADR-0035
+    # amends the means: Tina4 SUPPLIES the method on both sides through
+    # MongoCollection, a SimpleDelegator that forwards the entire driver surface
+    # untouched. So the comparison below is against WHAT get_collection RETURNS,
+    # not against the raw driver: the returned object is the only surface a call
+    # site ever touches.
+    #
     # The case names here match tests/DocStoreSubstitutabilityTest.php exactly,
     # because scripts/audit-contract-fixtures.py resolves ONE fixture case
     # against EVERY framework's suite. Renaming one half silently breaks the
     # shared answer key.
+
+    # Every public method the fallback COLLECTION offers, as measured rather
+    # than listed - a hand-kept list is the thing that drifts.
+    def fallback_collection_methods
+      Tina4::DocStore::SqliteCollection.instance_methods(false).sort
+    end
+
+    def fallback_cursor_methods
+      Tina4::DocStore::Cursor.instance_methods(false).sort
+    end
+
     it "the driver spelling works on both providers" do
       providers = { "fallback" => nil }
       providers["mongo"] = DOCSTORE_MONGO_URI if self.class.mongo_reachable?
@@ -317,15 +331,118 @@ RSpec.describe "DocStore substitutability" do
       end
     end
 
-    # The NEGATIVE half, and the one that keeps the rule honest. ADR-0025
-    # corollary 1 is "no fallback-only public method": a second spelling that
-    # works ONLY on the fallback is exactly how the original defect shipped,
-    # because it let the documentation settle on a method the real driver had
-    # never heard of.
-    it "the fallback only spelling is gone" do
-      expect(collection_for(nil)).not_to respond_to(:find_one)
+    # ADR-0035: the uniform Tina4 spelling must ANSWER on both providers, not
+    # just on the fallback. This is the half ADR-0025 got backwards - it deleted
+    # the method rather than supplying it - and it is asserted by USE (a real
+    # document read back) rather than by respond_to?, because a delegator that
+    # answers respond_to? and then raises would pass a reflection check.
+    it "the uniform spelling works on both providers" do
+      providers = { "fallback" => nil }
+      providers["mongo"] = DOCSTORE_MONGO_URI if self.class.mongo_reachable?
 
-      expect(collection_for(DOCSTORE_MONGO_URI)).not_to respond_to(:find_one) if self.class.mongo_reachable?
+      providers.each do |label, uri|
+        c = collection_for(uri)
+        c.insert_one({ "probe" => "uniform" })
+
+        one = c.find_one({ "probe" => "uniform" })
+        expect(one).not_to be_nil, "#{label}: find_one must return the document"
+        expect(one["probe"]).to eq("uniform"), "#{label}: find_one returned the wrong document"
+
+        listed = c.find({ "probe" => "uniform" }).to_list
+        expect(listed.length).to eq(1), "#{label}: cursor.to_list must materialise the documents"
+        expect(listed.first["probe"]).to eq("uniform"), "#{label}: to_list returned the wrong document"
+
+        # NEGATIVE: a name that exists on NEITHER half must still fail loudly.
+        # Without this the delegator could be swallowing everything.
+        expect { c.find_one_upside_down({}) }.to raise_error(NoMethodError),
+                                                "#{label}: an unknown method must still raise"
+
+        # The driver's own spellings are untouched - this is ADDITIVE.
+        expect(c.find({ "probe" => "uniform" }).to_a.length).to eq(1),
+               "#{label}: to_a must keep working alongside to_list"
+
+        c.delete_many({})
+      end
+    end
+
+    # The measurement ADR-0025 made by hand, now a gate - and pointed at the
+    # WRAPPED surface (ADR-0035) rather than the raw driver.
+    it "the fallback surface resolves on the wrapped driver" do
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
+
+      wrapped = collection_for(DOCSTORE_MONGO_URI)
+      missing = fallback_collection_methods.reject { |m| wrapped.respond_to?(m) }
+      expect(missing).to eq([]),
+                         "fallback-only collection methods (they break the swap): #{missing.inspect}"
+
+      wrapped_cursor = wrapped.find({})
+      missing_cursor = fallback_cursor_methods.reject { |m| wrapped_cursor.respond_to?(m) }
+      expect(missing_cursor).to eq([]),
+                                "fallback-only cursor methods (they break the swap): #{missing_cursor.inspect}"
+
+      # A View is immutable, so every chaining call returns a NEW one. The
+      # uniform spelling has to survive that or it works only until you sort.
+      # ADR-0036 made the two-argument spelling work on the driver too, so this
+      # uses the form the framework DOCUMENTS rather than the one form that
+      # happened to survive.
+      expect(wrapped.find({}).sort("n", -1).limit(2)).to respond_to(:to_list)
+
+      wrapped.delete_many({})
+    end
+
+    # ADR-0036. The chain the framework DOCUMENTS must run on both providers.
+    #
+    # MEASURED 2026-08-04 against a real MongoDB, before the fix:
+    # sort("total", -1) raised ArgumentError on Mongo::Collection::View#sort
+    # (which takes ONE spec), and sort([["total", -1]]) reached the server as an
+    # ARRAY and came back "[14:TypeMismatch]: Expected field sort to be of type
+    # object". Only the hash form worked, so the framework's own documented
+    # spelling was the broken one.
+    #
+    # All three spellings are asserted because fixing only the documented one
+    # would MOVE the incompatibility rather than remove it.
+    it "the cursor chain works on both providers" do
+      providers = { "fallback" => nil }
+      providers["mongo"] = DOCSTORE_MONGO_URI if self.class.mongo_reachable?
+
+      providers.each do |label, uri|
+        c = collection_for(uri)
+        # Inserted OUT of the expected order on purpose: with [9, 7, 3] a sort
+        # that silently did NOTHING still returned [9, 7], so the assertion
+        # passed on a broken sort.
+        [3, 9, 7].each { |total| c.insert_one({ "total" => total, "grp" => "chain" }) }
+
+        spellings = {
+          "sort(field, direction)" => -> { c.find({ "grp" => "chain" }).sort("total", -1).limit(2) },
+          "sort(hash)"             => -> { c.find({ "grp" => "chain" }).sort({ "total" => -1 }).limit(2) },
+          "sort(pairs)"            => -> { c.find({ "grp" => "chain" }).sort([["total", -1]]).limit(2) },
+        }
+
+        spellings.each do |spelling, chain|
+          expect(chain.call.to_a.map { |d| d["total"] }).to eq([9, 7]),
+                                                            "#{label} #{spelling}: to_a over the chain must order and cap"
+          expect(chain.call.to_list.map { |d| d["total"] }).to eq([9, 7]),
+                                                               "#{label} #{spelling}: to_list over the chain must order and cap"
+          collected = []
+          chain.call.each { |d| collected << d["total"] }
+          expect(collected).to eq([9, 7]), "#{label} #{spelling}: each over the chain must order and cap"
+        end
+
+        # skip composes, and ascending is not merely the absence of descending -
+        # a direction that is ignored would pass a descending-only test.
+        expect(c.find({ "grp" => "chain" }).sort("total", -1).skip(1).limit(1).to_a.map { |d| d["total"] }).to eq([7]),
+               "#{label}: skip must compose with sort and limit"
+        expect(c.find({ "grp" => "chain" }).sort("total", 1).limit(2).to_a.map { |d| d["total"] }).to eq([3, 7]),
+               "#{label}: an ascending sort must actually ascend"
+
+        # LAZY: building the chain must not execute it.
+        pending_chain = c.find({ "grp" => "chain" }).sort("total", -1)
+        c.insert_one({ "total" => 99, "grp" => "chain" })
+        expect(pending_chain.to_a.first["total"]).to eq(99),
+                                                    "#{label}: the chain must run at materialisation, not at find()"
+
+        c.delete_many({})
+      end
     end
   end
 

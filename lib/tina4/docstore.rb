@@ -46,6 +46,7 @@
 require "json"
 require "time"
 require "securerandom"
+require "delegate"
 
 module Tina4
   module DocStore
@@ -343,6 +344,22 @@ module Tina4
       end
     end
 
+    # Normalise the driver's three sort spellings to an array of [key, direction].
+    #
+    # ADR-0036. Mongo::Collection::View#sort takes ONE spec document; the
+    # framework documents sort(key, direction); and a list of pairs is the third
+    # form pymongo and the Node driver both take. Measured 2026-08-04 against a
+    # real MongoDB, ALL THREE had to work on both providers before one spelling
+    # could be called portable: the two-argument form raised ArgumentError on
+    # the Ruby driver, and the pairs form reached the server as an ARRAY and
+    # came back "[14:TypeMismatch]: Expected field sort to be of type object".
+    def sort_spec(key_or_list, direction = 1)
+      case key_or_list
+      when String, Symbol then [[key_or_list.to_s, direction]]
+      else key_or_list.map { |key, sort_direction| [key.to_s, sort_direction] }
+      end
+    end
+
     # -- Projection / update helpers --------------------------------------------
 
     # Decode a stored JSON document, rehydrating ObjectId and Time values.
@@ -474,11 +491,7 @@ module Tina4
       end
 
       def sort(key_or_list, direction = 1)
-        if key_or_list.is_a?(String) || key_or_list.is_a?(Symbol)
-          @sort << [key_or_list.to_s, direction]
-        else
-          key_or_list.each { |k, d| @sort << [k.to_s, d] }
-        end
+        @sort.concat(DocStore.sort_spec(key_or_list, direction))
         self
       end
 
@@ -522,9 +535,14 @@ module Tina4
         out
       end
 
-      # NOTE: there is deliberately no to_list alias here. Mongo::Collection::View
-      # spells it to_a and has no to_list, so the alias was a fallback-only
-      # spelling - exactly what ADR-0025 corollary 1 forbids.
+      # The uniform Tina4 spelling, ADDITIVE to to_a (ADR-0035).
+      #
+      # ADR-0025 corollary 1 removed this because Mongo::Collection::View has no
+      # to_list. ADR-0035 amends that corollary: a method may exist here when it
+      # also exists on WHAT get_collection RETURNS for the real provider, and
+      # MongoView supplies it there. to_a stays - it is the driver's spelling
+      # and the Ruby idiom - so both work on both providers.
+      def to_list = to_a
 
       # The generated SQL is an implementation detail, not part of the cursor
       # API. Declared here rather than with a `private` section because build_sql
@@ -578,11 +596,16 @@ module Tina4
         Cursor.new(@connection, @quoted_name, where, params, projection)
       end
 
-      # NOTE: there is deliberately no find_one here. Mongo::Collection has no
-      # such method, and ADR-0025 makes the driver the shape this fallback
-      # imitates - a fallback-only accessor is how code comes to be written
-      # against a spelling that vanishes the moment TINA4_MONGO_URI is set.
-      # The spelling that works on BOTH providers is find(filter).first.
+      # The uniform Tina4 spelling, ADDITIVE to find(filter).first (ADR-0035).
+      #
+      # Mongo::Collection has no find_one, which is why ADR-0025 corollary 1
+      # deleted this. ADR-0035 amends the means, not the goal: MongoCollection
+      # supplies find_one on the driver side, so the method now exists with the
+      # same meaning on BOTH halves of the swap. The signature is pymongo's,
+      # which is what the Python master already ships.
+      def find_one(filter = nil, projection = nil)
+        find(filter, projection).first
+      end
 
       def count_documents(filter = nil)
         where, params = DocStore.compile_filter(filter || {})
@@ -721,6 +744,67 @@ module Tina4
       end
     end
 
+    # -- The driver delegators (ADR-0035) -----------------------------------------
+    #
+    # ADR-0025 costed "wrap the driver" as a hand-written FACADE over 12-14
+    # methods, and rejected it because that makes aggregate, bulk_write,
+    # indexes, watch, sessions and transactions unreachable. That objection is
+    # fatal to a facade and irrelevant to a DELEGATOR: SimpleDelegator forwards
+    # EVERYTHING untouched, so the entire driver surface stays reachable and we
+    # add exactly one method per class.
+    #
+    # These exist so the uniform Tina4 spelling works on BOTH providers rather
+    # than on the fallback alone - which is the thing ADR-0025 corollary 1 was
+    # right to forbid, and ADR-0035 supplies instead of deleting.
+
+    # A Mongo::Collection::View that also answers to_list, and accepts every
+    # sort spelling the fallback Cursor accepts.
+    class MongoView < SimpleDelegator
+      # to_a is the driver's spelling and stays authoritative; to_list is the
+      # uniform Tina4 spelling the SQLite Cursor also answers.
+      def to_list = __getobj__.to_a
+
+      # ADR-0036: ONE sort contract on both providers.
+      #
+      # Mongo::Collection::View#sort takes a single spec document, so
+      # sort("total", -1) raised ArgumentError and sort([["total", -1]]) reached
+      # the server as an array and came back TypeMismatch. Normalising here means
+      # all three spellings work on the driver exactly as they do on the
+      # fallback - which is the point of the swap.
+      def sort(key_or_list, direction = 1)
+        MongoView.new(__getobj__.sort(DocStore.sort_spec(key_or_list, direction).to_h))
+      end
+
+      # A View is IMMUTABLE - sort/limit/skip/projection each return a NEW View.
+      # Without re-wrapping, the first chained call would hand back a bare View
+      # and to_list would vanish mid-chain: exactly the "works until you sort
+      # it" surprise this ADR exists to stop.
+      def method_missing(name, *args, &block)
+        result = super
+        result.is_a?(::Mongo::Collection::View) ? MongoView.new(result) : result
+      end
+      ruby2_keywords :method_missing
+    end
+
+    # A Mongo::Collection that also answers find_one, and whose find returns a
+    # cursor answering to_list.
+    class MongoCollection < SimpleDelegator
+      # Pure pass-through plus wrapping. The argument list is NOT re-declared,
+      # so the driver keeps deciding what find accepts.
+      def find(*args, &block)
+        MongoView.new(__getobj__.find(*args, &block))
+      end
+      ruby2_keywords :find
+
+      # pymongo's signature, which the Python master already ships. On the
+      # driver a projection is an OPTION rather than a positional, so it is
+      # spelled the driver's way here; the meaning is identical.
+      def find_one(filter = nil, projection = nil)
+        view = projection ? __getobj__.find(filter || {}, projection: projection) : __getobj__.find(filter || {})
+        view.first
+      end
+    end
+
     # -- Database + selection -----------------------------------------------------
 
     # A SQLite-backed document database (a file of collection tables).
@@ -810,11 +894,16 @@ module Tina4
     # A real Mongo driver Collection when a Mongo URI is configured (and the
     # mongo gem is installed); otherwise a SqliteCollection backed by the local
     # SQLite file. Same call sites either way - only the backend differs.
+    #
+    # The Mongo collection is handed back through MongoCollection, a
+    # SimpleDelegator that adds the uniform Tina4 spellings and forwards
+    # everything else untouched (ADR-0035). What this method RETURNS is the
+    # surface a call site sees, so it is the surface the contract compares.
     def get_collection(name)
       return default_db.get_collection(name) if serverless?
 
       db_name = ENV["TINA4_MONGO_DB"] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
-      mongo_client(mongo_uri, db_name)[name]
+      MongoCollection.new(mongo_client(mongo_uri, db_name)[name])
     end
 
     @mongo_clients = {}
