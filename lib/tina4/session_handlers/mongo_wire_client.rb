@@ -125,21 +125,30 @@ module Tina4
       # Session boundary can log loud and degrade. A genuine MISS is not a
       # failure and comes back as an empty firstBatch, never as an exception -
       # collapsing the two is how a dead backend silently logs everyone out.
+      #
+      # The `ok` check lives HERE, outside the transport, on purpose. Folding it
+      # into #exchange would need a `rescue MongoWireError; raise` guard to stop
+      # a command error being relabelled as a transport failure, and that guard
+      # would also skip the socket drop for a genuine half-read reply - leaving
+      # a poisoned socket for the next caller to trip over.
       def command(document)
+        reply = exchange(document)
+        return reply if reply["ok"].to_f == 1.0
+
+        raise MongoWireError, "MongoDB command failed: #{reply["errmsg"] || reply.inspect}"
+      end
+
+      # One request, one reply, on the shared socket. ANY failure in here is a
+      # transport failure, so the socket is dropped and the next command
+      # reconnects rather than inheriting the damage.
+      def exchange(document)
         socket = connection
         @request_id += 1
         body = "\x00\x00\x00\x00".b + "\x00".b + encode_document(document) # flagBits(4) + section kind 0
         header = [16 + body.bytesize, @request_id, 0, OP_MSG].pack("V4")
         socket.write(header + body)
-        reply = read_reply(socket)
-        return reply if reply["ok"].to_f == 1.0
-
-        raise MongoWireError, "MongoDB command failed: #{reply["errmsg"] || reply.inspect}"
-      rescue MongoWireError
-        raise
+        read_reply(socket)
       rescue StandardError => e
-        # A broken pipe or a half-read reply leaves the socket unusable; drop it
-        # so the NEXT command reconnects instead of inheriting the damage.
         close
         raise MongoWireError, "MongoDB transport failed: #{e.message}"
       end
@@ -191,8 +200,6 @@ module Tina4
         when Time         then TYPE_DATETIME.chr + ckey + [(value.to_f * 1000).round].pack("q<")
         when Hash         then TYPE_DOCUMENT.chr + ckey + encode_document(value)
         when Array        then TYPE_ARRAY.chr + ckey + encode_document(indexed(value))
-        when Symbol       then encode_string(ckey, value.to_s)
-        when String       then encode_string(ckey, value)
         else                   encode_string(ckey, value.to_s)
         end
       end
@@ -206,6 +213,10 @@ module Tina4
       # A BSON string is a BYTE count followed by the bytes and a terminator, so
       # the length must be bytesize - a UTF-8 payload counted in characters
       # under-reports and the server rejects the document.
+      #
+      # This is also the catch-all for the encoder: a String, a Symbol and
+      # anything else this codec has no BSON type for all become strings, which
+      # is what Python, PHP and Node all do at the same point.
       def encode_string(ckey, value)
         bytes = value.b
         TYPE_STRING.chr + ckey + [bytes.bytesize + 1].pack("V") + bytes + "\x00".b
