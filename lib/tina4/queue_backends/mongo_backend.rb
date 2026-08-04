@@ -185,7 +185,12 @@ module Tina4
         if job.attempts >= @max_retries
           collection.find_one_and_update(
             { _id: job.id },
+            # attempts MUST be persisted here. fail() increments the in-memory
+            # counter only; without writing it the dead-letter document keeps
+            # the value it held BEFORE the final attempt, so dead_letters()
+            # under-reported by one on every Mongo dead letter.
             { "$set" => { status: "dead", topic: "#{job.topic}.dead_letter",
+                          attempts: job.attempts,
                           error: error, reserved_at: nil } },
             upsert: true
           )
@@ -265,14 +270,24 @@ module Tina4
         collection.count_documents(topic: topic, status: "pending")
       end
 
+      # Jobs that failed but are still eligible for retry (under max_retries).
+      #
+      # Found by the ATTEMPTS COUNTER, not by a "failed" status. fail() under
+      # max_retries re-queues the job as "pending" (that is what makes the next
+      # dequeue redeliver it), so no document ever carries status="failed" on
+      # the normal path. This method did not exist at all, and Queue#failed
+      # silently returned [] for it — indistinguishable from "nothing has
+      # failed" (ADR-0022 decision 7).
+      def failed(topic, max_retries: 3)
+        collection.find(
+          topic: topic, status: "pending",
+          attempts: { "$gt" => 0, "$lt" => max_retries }
+        ).map { |doc| job_from_doc(doc) }
+      end
+
       def dead_letters(topic, max_retries: 3)
-        collection.find(topic: "#{topic}.dead_letter", status: "dead").map do |doc|
-          Tina4::Job.new(
-            topic: doc["topic"],
-            payload: doc["payload"],
-            id: doc["_id"]
-          )
-        end
+        collection.find(topic: "#{topic}.dead_letter", status: "dead")
+                  .map { |doc| job_from_doc(doc) }
       end
 
       def purge(topic, status)
@@ -280,16 +295,40 @@ module Tina4
         result.deleted_count
       end
 
+      # Re-queue failed-but-retryable jobs back to pending. Returns the count.
+      #
+      # Matched on the ATTEMPTS COUNTER for the same reason failed() is: the
+      # old query was status="failed", which requeue_with_error never writes,
+      # so this matched nothing and always returned 0 — silently reporting that
+      # there was nothing to retry.
       def retry_failed(topic, max_retries: 3)
         result = collection.update_many(
-          { topic: topic, status: "failed", attempts: { "$lt" => max_retries } },
+          { topic: topic, status: "pending",
+            attempts: { "$gt" => 0, "$lt" => max_retries } },
           # Reset available_at so re-queued failed jobs are visible again — they
           # were reserved with available_at in the future at dequeue. Clear
           # reserved_at too. (Same Bug B reason as requeue/fail.)
-          { "$set" => { status: "pending", error: nil, reserved_at: nil,
+          { "$set" => { error: nil, reserved_at: nil,
                         available_at: requeue_available_at(@retry_backoff) } }
         )
         result.modified_count
+      end
+
+      # Move ONE dead-lettered job back to its main topic as pending.
+      # Returns true when a job was revived, false when the id was not found.
+      def retry_job(topic, job_id: nil, delay_seconds: 0)
+        filter = { topic: "#{topic}.dead_letter", status: "dead" }
+        filter[:_id] = job_id if job_id
+        doc = collection.find(filter).first
+        return false unless doc
+
+        available = delay_seconds.to_f > 0 ? (Time.now.utc + delay_seconds.to_f) : Time.now.utc
+        collection.update_one(
+          { _id: doc["_id"] },
+          { "$set" => { topic: topic, status: "pending", error: nil,
+                        reserved_at: nil, available_at: available } }
+        )
+        true
       end
 
       def close
@@ -297,6 +336,29 @@ module Tina4
       end
 
       private
+
+      # A stored document as a plain Hash with string keys, CARRYING attempts
+      # and error.
+      #
+      # Hash, not Job: the lite backend returns plain hashes from failed() and
+      # dead_letters(), so returning Job objects here would make the same
+      # caller need two different accessors depending on the backend — the very
+      # divergence this invariant exists to remove.
+      #
+      # The old dead_letters() mapped only topic/payload/id, so every Mongo dead
+      # letter read back as attempts=0 with no error text while the file backend
+      # reported the real values — a handler logging "died after N attempts:
+      # <reason>" printed "died after 0 attempts:" on Mongo only.
+      def job_from_doc(doc)
+        {
+          "id" => doc["_id"],
+          "topic" => doc["topic"],
+          "payload" => doc["payload"],
+          "attempts" => doc["attempts"] || 0,
+          "status" => doc["status"],
+          "error" => doc["error"]
+        }
+      end
 
       # Re-queue a failed job to pending, carrying the failure reason and
       # resetting available_at (now, or now + retry_backoff) + clearing
