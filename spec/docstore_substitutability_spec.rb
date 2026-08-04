@@ -407,7 +407,10 @@ RSpec.describe "DocStore substitutability" do
 
       providers.each do |label, uri|
         c = collection_for(uri)
-        [9, 7, 3].each { |total| c.insert_one({ "total" => total, "grp" => "chain" }) }
+        # Inserted OUT of the expected order on purpose: with [9, 7, 3] a sort
+        # that silently did NOTHING still returned [9, 7], so the assertion
+        # passed on a broken sort.
+        [3, 9, 7].each { |total| c.insert_one({ "total" => total, "grp" => "chain" }) }
 
         spellings = {
           "sort(field, direction)" => -> { c.find({ "grp" => "chain" }).sort("total", -1).limit(2) },
