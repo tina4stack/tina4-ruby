@@ -40,7 +40,7 @@ require "securerandom"
 # GLOBAL, and clobbers every other spec file that uses the same name. Everything
 # this file needs therefore lives in a uniquely named module.
 module CacheMemcachedExptimeContract
-  MEMCACHED_URL = ENV.fetch("TINA4_TEST_CACHE_MEMCACHED_URL", "memcached://127.0.0.1:11211")
+  MEMCACHED_URL = ENV.fetch("TINA4_TEST_MEMCACHED_URL", "memcached://127.0.0.1:11211")
   # memcached's own cliff: at or below this many seconds the field is relative,
   # above it the field is an absolute unix timestamp.
   CLIFF = 2_592_000

@@ -27,17 +27,17 @@ require "securerandom"
 # SERVICE ADDRESSES
 #   Default to localhost; override per service so a developer (or a second
 #   agent) can point at their own isolated containers:
-#       TINA4_TEST_CACHE_REDIS_URL      (default redis://127.0.0.1:6379)
-#       TINA4_TEST_CACHE_VALKEY_URL     (default valkey://127.0.0.1:6380)
-#       TINA4_TEST_CACHE_MEMCACHED_URL  (default memcached://127.0.0.1:11211)
+#       TINA4_TEST_REDIS_URL      (default redis://127.0.0.1:6379)
+#       TINA4_TEST_VALKEY_URL     (default valkey://127.0.0.1:6380)
+#       TINA4_TEST_MEMCACHED_URL  (default memcached://127.0.0.1:11211)
 #
 # A constant assigned inside an RSpec.describe block is defined on Object, i.e.
 # GLOBAL, and clobbers every other spec file that uses the same name. Everything
 # this file needs therefore lives in a uniquely named module.
 module CacheClearContract
-  REDIS_URL = ENV.fetch("TINA4_TEST_CACHE_REDIS_URL", "redis://127.0.0.1:6379")
-  VALKEY_URL = ENV.fetch("TINA4_TEST_CACHE_VALKEY_URL", "valkey://127.0.0.1:6380")
-  MEMCACHED_URL = ENV.fetch("TINA4_TEST_CACHE_MEMCACHED_URL", "memcached://127.0.0.1:11211")
+  REDIS_URL = ENV.fetch("TINA4_TEST_REDIS_URL", "redis://127.0.0.1:6379")
+  VALKEY_URL = ENV.fetch("TINA4_TEST_VALKEY_URL", "valkey://127.0.0.1:6380")
+  MEMCACHED_URL = ENV.fetch("TINA4_TEST_MEMCACHED_URL", "memcached://127.0.0.1:11211")
 
   module_function
 

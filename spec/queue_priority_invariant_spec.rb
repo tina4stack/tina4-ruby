@@ -70,6 +70,16 @@ RSpec.describe "Queue priority invariant" do
   PRIORITY_MONGO_HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
   PRIORITY_MONGO_PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
 
+  # Every TINA4_TEST_* name spelled out literally, as a QUOTED string so the
+  # contract gate can see it. These were built by interpolation, which no static
+  # scan can resolve, so test_env_contract_spec could not check them - a hole in
+  # the gate. An unknown backend now raises KeyError rather than quietly reading
+  # a name nobody declared. See spec/fixtures/test_env_contract.json (ADR-0038).
+  PRIORITY_BROKER_ENV = {
+    "rabbitmq" => ["TINA4_TEST_RABBITMQ_HOST", "TINA4_TEST_RABBITMQ_PORT"],
+    "kafka"    => ["TINA4_TEST_KAFKA_HOST", "TINA4_TEST_KAFKA_PORT"]
+  }.freeze
+
   def self.reachable?(host, port)
     Socket.tcp(host, port, connect_timeout: 2, &:close)
     true
@@ -148,8 +158,9 @@ RSpec.describe "Queue priority invariant" do
   # rather than a double.
   it "a backend that cannot prioritise refuses instead of dropping the priority" do
     { "rabbitmq" => 5672, "kafka" => 9092 }.each do |backend, default_port|
-      host = ENV["TINA4_TEST_#{backend.upcase}_HOST"] || "127.0.0.1"
-      port = (ENV["TINA4_TEST_#{backend.upcase}_PORT"] || default_port.to_s).to_i
+      host_var, port_var = PRIORITY_BROKER_ENV.fetch(backend)
+      host = ENV[host_var] || "127.0.0.1"
+      port = (ENV[port_var] || default_port.to_s).to_i
 
       # Snapshot BEFORE the guard below: `next` skips the rest of the block but
       # STILL runs the ensure, so assigning this after the guard left `saved`

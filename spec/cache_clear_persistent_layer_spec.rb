@@ -31,7 +31,7 @@ require "tmpdir"
 # GLOBAL, and clobbers every other spec file that uses the same name. Everything
 # this file needs therefore lives in a uniquely named module.
 module CacheClearPersistentContract
-  REDIS_URL = ENV.fetch("TINA4_TEST_CACHE_REDIS_URL", "redis://127.0.0.1:6379")
+  REDIS_URL = ENV.fetch("TINA4_TEST_REDIS_URL", "redis://127.0.0.1:6379")
   SQL = "SELECT owner FROM widget WHERE id = ?"
 
   KEYS = %w[

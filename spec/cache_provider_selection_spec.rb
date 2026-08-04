@@ -45,7 +45,7 @@ require "stringio"
 # GLOBAL, and clobbers every other spec file that uses the same name. Everything
 # this file needs therefore lives in a uniquely named module.
 module CacheProviderContract
-  REDIS_URL = ENV.fetch("TINA4_TEST_CACHE_REDIS_URL", "redis://127.0.0.1:6379")
+  REDIS_URL = ENV.fetch("TINA4_TEST_REDIS_URL", "redis://127.0.0.1:6379")
 
   KEYS = %w[
     TINA4_CACHE_BACKEND TINA4_CACHE_URL TINA4_CACHE_TTL TINA4_CACHE_MAX_ENTRIES
