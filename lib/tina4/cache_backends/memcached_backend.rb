@@ -13,6 +13,9 @@ module Tina4
     # auth, so credentials are ignored.
     class MemcachedBackend < BaseBackend
       PREFIX = "tina4:cache:"
+      # The SHARED namespace generation counter. clear bumps it; every real key
+      # carries it, so a bump invalidates every instance at once.
+      GENERATION_KEY = "#{PREFIX}generation".freeze
 
       def initialize(url: "memcached://localhost:11211", max_entries: 1000)
         cleaned = url.sub(%r{^memcached://}, "").sub(%r{^memcache://}, "")
@@ -62,20 +65,35 @@ module Tina4
         result
       end
 
-      # Remove OUR entries, not the whole server's.
+      # Invalidate EVERY entry this cache can serve, on EVERY instance.
       #
-      # This used to send +flush_all+, which wipes EVERY key on the memcached
-      # instance - including every other application sharing it. cache_clear is
-      # public API, so calling it destroyed other tenants' data. No other
-      # backend does that: they each clear only what they own.
+      # Two wrong answers were shipped before this one. +flush_all+ wipes EVERY
+      # key on the instance including every other application's - cache_clear is
+      # public API, so calling it destroyed other tenants' data. Deleting only
+      # the keys THIS process wrote fixed that but broke the contract the other
+      # way: a second instance kept serving rows the first had just invalidated,
+      # because it had never seen those keys.
       #
-      # Now that the backend tracks the keys it wrote, it deletes exactly those.
-      # A key it never wrote is not its to remove.
+      # The namespace generation does both. Bumping the shared counter orphans
+      # every previously-written entry for every instance at once, and touches
+      # nothing outside our own prefix. The orphans are reclaimed by memcached's
+      # own TTL and LRU - unreachable is what "removed" means for a cache.
+      #
+      # The local write log is still cleared so stats reports honestly, and its
+      # keys are deleted eagerly so the space comes back immediately rather than
+      # waiting for eviction.
       def clear
         @hits = 0
         @misses = 0
         (@own || {}).each_key { |k| command("delete #{k}\r\n", "\r\n") }
         @own = {}
+        # incr is atomic, so two instances clearing at once still both advance.
+        return if command("incr #{GENERATION_KEY} 1\r\n", "\r\n").strip.match?(/\A\d+\z/)
+
+        # No counter yet: create it. `add` fails harmlessly if another instance
+        # created it in the gap, and the incr then applies.
+        command("add #{GENERATION_KEY} 0 0 1\r\n1\r\n", "\r\n")
+        command("incr #{GENERATION_KEY} 1\r\n", "\r\n")
       end
 
       # Report OUR entries, not the whole server's.
@@ -107,8 +125,39 @@ module Tina4
 
       private
 
+      # Read the SHARED namespace generation from the server.
+      #
+      # memcached has no KEYS scan and no prefix delete, so the only way to
+      # invalidate globally without destroying other tenants is the documented
+      # namespace idiom: every real key carries a generation, and clear bumps
+      # it. Every instance then computes a different key and the old entries
+      # become unreachable at once, expiring under the server's own TTL/LRU.
+      #
+      # The generation is read from the server on every operation, deliberately.
+      # Caching it in-process would reintroduce exactly the bug this fixes: an
+      # instance holding a stale generation keeps computing the OLD key, and the
+      # old key still holds the old value, so it serves a stale hit after
+      # another instance cleared. One extra round trip on a sub-millisecond
+      # local service is the price of cross-instance invalidation.
+      def generation
+        resp = command("get #{GENERATION_KEY}\r\n", "END\r\n")
+        if resp.start_with?("VALUE")
+          begin
+            header, rest = resp.split("\r\n", 2)
+            nbytes = header.split[3].to_i
+            return rest[0, nbytes] if rest
+          rescue StandardError
+            nil
+          end
+        end
+        "0"
+      end
+
+      # Hash to a safe, bounded key (memcached keys: no spaces/control, <= 250
+      # chars). The generation sits IN the key so a clear on ANY instance
+      # orphans it for every instance at once.
       def mc_key(key)
-        PREFIX + Digest::SHA256.hexdigest(key)
+        "#{PREFIX}#{generation}:#{Digest::SHA256.hexdigest(key)}"
       end
 
       def command(payload, terminator)
