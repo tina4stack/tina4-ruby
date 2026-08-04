@@ -382,16 +382,64 @@ RSpec.describe "DocStore substitutability" do
 
       # A View is immutable, so every chaining call returns a NEW one. The
       # uniform spelling has to survive that or it works only until you sort.
-      #
-      # sort takes the HASH spelling here on purpose: that is the one form
-      # BOTH providers accept. The fallback Cursor's two-argument
-      # sort(key, direction) is rejected by Mongo::Collection::View#sort, which
-      # takes a single spec - a divergence this fixture's own "why" text names
-      # and no case has ever asserted. Out of scope for ADR-0035; recorded so
-      # the next reader does not mistake it for something this file covers.
-      expect(wrapped.find({}).sort({ "n" => -1 }).limit(2)).to respond_to(:to_list)
+      # ADR-0036 made the two-argument spelling work on the driver too, so this
+      # uses the form the framework DOCUMENTS rather than the one form that
+      # happened to survive.
+      expect(wrapped.find({}).sort("n", -1).limit(2)).to respond_to(:to_list)
 
       wrapped.delete_many({})
+    end
+
+    # ADR-0036. The chain the framework DOCUMENTS must run on both providers.
+    #
+    # MEASURED 2026-08-04 against a real MongoDB, before the fix:
+    # sort("total", -1) raised ArgumentError on Mongo::Collection::View#sort
+    # (which takes ONE spec), and sort([["total", -1]]) reached the server as an
+    # ARRAY and came back "[14:TypeMismatch]: Expected field sort to be of type
+    # object". Only the hash form worked, so the framework's own documented
+    # spelling was the broken one.
+    #
+    # All three spellings are asserted because fixing only the documented one
+    # would MOVE the incompatibility rather than remove it.
+    it "the cursor chain works on both providers" do
+      providers = { "fallback" => nil }
+      providers["mongo"] = DOCSTORE_MONGO_URI if self.class.mongo_reachable?
+
+      providers.each do |label, uri|
+        c = collection_for(uri)
+        [9, 7, 3].each { |total| c.insert_one({ "total" => total, "grp" => "chain" }) }
+
+        spellings = {
+          "sort(field, direction)" => -> { c.find({ "grp" => "chain" }).sort("total", -1).limit(2) },
+          "sort(hash)"             => -> { c.find({ "grp" => "chain" }).sort({ "total" => -1 }).limit(2) },
+          "sort(pairs)"            => -> { c.find({ "grp" => "chain" }).sort([["total", -1]]).limit(2) },
+        }
+
+        spellings.each do |spelling, chain|
+          expect(chain.call.to_a.map { |d| d["total"] }).to eq([9, 7]),
+                                                            "#{label} #{spelling}: to_a over the chain must order and cap"
+          expect(chain.call.to_list.map { |d| d["total"] }).to eq([9, 7]),
+                                                               "#{label} #{spelling}: to_list over the chain must order and cap"
+          collected = []
+          chain.call.each { |d| collected << d["total"] }
+          expect(collected).to eq([9, 7]), "#{label} #{spelling}: each over the chain must order and cap"
+        end
+
+        # skip composes, and ascending is not merely the absence of descending -
+        # a direction that is ignored would pass a descending-only test.
+        expect(c.find({ "grp" => "chain" }).sort("total", -1).skip(1).limit(1).to_a.map { |d| d["total"] }).to eq([7]),
+               "#{label}: skip must compose with sort and limit"
+        expect(c.find({ "grp" => "chain" }).sort("total", 1).limit(2).to_a.map { |d| d["total"] }).to eq([3, 7]),
+               "#{label}: an ascending sort must actually ascend"
+
+        # LAZY: building the chain must not execute it.
+        pending_chain = c.find({ "grp" => "chain" }).sort("total", -1)
+        c.insert_one({ "total" => 99, "grp" => "chain" })
+        expect(pending_chain.to_a.first["total"]).to eq(99),
+                                                    "#{label}: the chain must run at materialisation, not at find()"
+
+        c.delete_many({})
+      end
     end
   end
 

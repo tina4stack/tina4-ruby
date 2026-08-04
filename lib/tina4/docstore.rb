@@ -344,6 +344,22 @@ module Tina4
       end
     end
 
+    # Normalise the driver's three sort spellings to an array of [key, direction].
+    #
+    # ADR-0036. Mongo::Collection::View#sort takes ONE spec document; the
+    # framework documents sort(key, direction); and a list of pairs is the third
+    # form pymongo and the Node driver both take. Measured 2026-08-04 against a
+    # real MongoDB, ALL THREE had to work on both providers before one spelling
+    # could be called portable: the two-argument form raised ArgumentError on
+    # the Ruby driver, and the pairs form reached the server as an ARRAY and
+    # came back "[14:TypeMismatch]: Expected field sort to be of type object".
+    def sort_spec(key_or_list, direction = 1)
+      case key_or_list
+      when String, Symbol then [[key_or_list.to_s, direction]]
+      else key_or_list.map { |key, sort_direction| [key.to_s, sort_direction] }
+      end
+    end
+
     # -- Projection / update helpers --------------------------------------------
 
     # Decode a stored JSON document, rehydrating ObjectId and Time values.
@@ -475,11 +491,7 @@ module Tina4
       end
 
       def sort(key_or_list, direction = 1)
-        if key_or_list.is_a?(String) || key_or_list.is_a?(Symbol)
-          @sort << [key_or_list.to_s, direction]
-        else
-          key_or_list.each { |k, d| @sort << [k.to_s, d] }
-        end
+        @sort.concat(DocStore.sort_spec(key_or_list, direction))
         self
       end
 
@@ -745,11 +757,23 @@ module Tina4
     # than on the fallback alone - which is the thing ADR-0025 corollary 1 was
     # right to forbid, and ADR-0035 supplies instead of deleting.
 
-    # A Mongo::Collection::View that also answers to_list.
+    # A Mongo::Collection::View that also answers to_list, and accepts every
+    # sort spelling the fallback Cursor accepts.
     class MongoView < SimpleDelegator
       # to_a is the driver's spelling and stays authoritative; to_list is the
       # uniform Tina4 spelling the SQLite Cursor also answers.
       def to_list = __getobj__.to_a
+
+      # ADR-0036: ONE sort contract on both providers.
+      #
+      # Mongo::Collection::View#sort takes a single spec document, so
+      # sort("total", -1) raised ArgumentError and sort([["total", -1]]) reached
+      # the server as an array and came back TypeMismatch. Normalising here means
+      # all three spellings work on the driver exactly as they do on the
+      # fallback - which is the point of the swap.
+      def sort(key_or_list, direction = 1)
+        MongoView.new(__getobj__.sort(DocStore.sort_spec(key_or_list, direction).to_h))
+      end
 
       # A View is IMMUTABLE - sort/limit/skip/projection each return a NEW View.
       # Without re-wrapping, the first chained call would hand back a bare View
