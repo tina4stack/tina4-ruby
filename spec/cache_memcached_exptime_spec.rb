@@ -108,11 +108,29 @@ RSpec.describe "cache memcached exptime" do
     key = CacheMemcachedExptimeContract.unique_key("boundary")
     asked = CacheMemcachedExptimeContract::CLIFF
 
+    # ASSERT ON THE COMPUTED EXPTIME, not only on the round trip.
+    #
+    # A RELATIVE 2592000 and an ABSOLUTE Time.now.to_i + 2592000 produce the
+    # SAME deadline, so memcached reports an identical t2592000 for both. Any
+    # boundary assertion built only on the server's reported remaining lifetime
+    # is blind to this off-by-one BY CONSTRUCTION - MEASURED: mutating
+    # `ttl > MAX_RELATIVE_EXPTIME` to `ttl >= MAX_RELATIVE_EXPTIME` applied
+    # cleanly and left this whole file GREEN until these three lines existed.
+    #
+    # exptime is a pure function over its inputs, so this needs no service and
+    # uses no stand-in.
+    expect(backend.send(:exptime, asked)).to eq(asked),
+                                             "exptime(#{asked}) returned #{backend.send(:exptime, asked)} - " \
+                                             "exactly 2592000 is still RELATIVE to memcached, so converting AT " \
+                                             "the boundary instead of ABOVE it is an off-by-one"
+    expect(backend.send(:exptime, asked - 1)).to eq(asked - 1), "just below the cliff must stay relative"
+    expect(backend.send(:exptime, asked + 1)).to be > Time.now.to_i,
+                                                  "just above the cliff must become an absolute unix timestamp"
+
+    # And the real round trip still has to work.
     backend.set(key, { "row" => "exactly thirty days" }, asked)
 
-    expect(backend.get(key)).to eq({ "row" => "exactly thirty days" }),
-                                "exactly 2592000 is still RELATIVE to memcached - converting at the boundary " \
-                                "instead of above it is an off-by-one"
+    expect(backend.get(key)).to eq({ "row" => "exactly thirty days" })
     remaining = CacheMemcachedExptimeContract.server_remaining_ttl(backend, key)
     expect(remaining).to be_within(60).of(asked),
                          "the boundary value lost lifetime: asked #{asked}s, server reports #{remaining}s"
