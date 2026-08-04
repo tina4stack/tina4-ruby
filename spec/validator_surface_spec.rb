@@ -24,8 +24,6 @@ require "open3"
 require "rbconfig"
 
 RSpec.describe "Tina4::Validator on the main require surface (D5)" do
-  REPO_LIB = File.expand_path("../lib", __dir__)
-  RUBY_BIN = RbConfig.ruby
 
   # Boot a clean child ruby with -I<working tree lib> and no bundler/RubyGems
   # tina4ruby on the path taking precedence. Returns [stdout+stderr, status].

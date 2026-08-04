@@ -26,9 +26,13 @@ RSpec.describe "Session Handlers" do
   REDIS_PORT  = ENV.fetch("TINA4_REDIS_PORT", "6379").to_i
   VALKEY_HOST = ENV.fetch("TINA4_SESSION_VALKEY_HOST", "localhost")
   VALKEY_PORT = ENV.fetch("TINA4_SESSION_VALKEY_PORT", "6380").to_i
-  MONGO_URI   = ENV.fetch("TINA4_MONGO_URI", "mongodb://localhost:27017")
-  MONGO_HOST  = MONGO_URI[%r{//([^:/]+)}, 1] || "localhost"
-  MONGO_PORT  = (MONGO_URI[%r{//[^:/]+:(\d+)}, 1] || "27017").to_i
+  # PREFIXED: a constant inside RSpec.describe is defined on Object (GLOBAL).
+  # Bare SESSION_MONGO_URI/HOST/PORT collided with docstore_substitutability_spec and
+  # queue_backends_spec, which use DIFFERENT env vars and defaults - so whichever
+  # file loaded last silently decided which Mongo all three talked to.
+  SESSION_MONGO_URI  = ENV.fetch("TINA4_MONGO_URI", "mongodb://localhost:27017")
+  SESSION_MONGO_HOST = SESSION_MONGO_URI[%r{//([^:/]+)}, 1] || "localhost"
+  SESSION_MONGO_PORT = (SESSION_MONGO_URI[%r{//[^:/]+:(\d+)}, 1] || "27017").to_i
 
   describe Tina4::SessionHandlers::FileHandler do
     let(:tmpdir) { Dir.mktmpdir }
@@ -212,12 +216,12 @@ RSpec.describe "Session Handlers" do
 
   describe Tina4::SessionHandlers::MongoHandler do
     before(:each) do
-      skip "mongo not running" unless self.class.service_reachable?(MONGO_HOST, MONGO_PORT)
+      skip "mongo not running" unless self.class.service_reachable?(SESSION_MONGO_HOST, SESSION_MONGO_PORT)
     end
 
     let(:handler) do
       Tina4::SessionHandlers::MongoHandler.new(
-        uri: MONGO_URI,
+        uri: SESSION_MONGO_URI,
         database: "tina4_sessions_spec",
         collection: "session_handlers_spec"
       )
@@ -434,9 +438,9 @@ RSpec.describe "Session Handlers" do
       if self.class.service_reachable?(VALKEY_HOST, VALKEY_PORT)
         list << ["ValkeyHandler", Tina4::SessionHandlers::ValkeyHandler.new(host: VALKEY_HOST, port: VALKEY_PORT, ttl: ttl)]
       end
-      if self.class.service_reachable?(MONGO_HOST, MONGO_PORT)
+      if self.class.service_reachable?(SESSION_MONGO_HOST, SESSION_MONGO_PORT)
         list << ["MongoHandler", Tina4::SessionHandlers::MongoHandler.new(
-          uri: MONGO_URI, database: "tina4_sessions_spec", collection: "iface_consistency", ttl: ttl
+          uri: SESSION_MONGO_URI, database: "tina4_sessions_spec", collection: "iface_consistency", ttl: ttl
         )]
       end
       list

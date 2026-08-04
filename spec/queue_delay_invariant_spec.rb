@@ -143,6 +143,11 @@ RSpec.describe "Queue delay invariant" do
       host = ENV["TINA4_TEST_#{backend.upcase}_HOST"] || "127.0.0.1"
       port = (ENV["TINA4_TEST_#{backend.upcase}_PORT"] || default_port.to_s).to_i
 
+      # Snapshot BEFORE the guard below: `next` skips the rest of the block but
+      # STILL runs the ensure, so assigning this after the guard left `saved`
+      # nil and the ensure died with NoMethodError on a machine with no broker.
+      saved = ENV.slice("TINA4_RABBITMQ_HOST", "TINA4_RABBITMQ_PORT", "TINA4_KAFKA_BROKERS")
+
       unless self.class.reachable?(host, port)
         why = "#{backend} is not reachable at #{host}:#{port}"
         raise "TINA4_REQUIRE_SERVICES is set but #{why}" if ENV["TINA4_REQUIRE_SERVICES"]
@@ -155,7 +160,6 @@ RSpec.describe "Queue delay invariant" do
       # TINA4_RABBITMQ_PORT=9092 behind; under RSpec's randomized order that
       # leaked into queue_backends_spec, whose RabbitMQ example then dialled the
       # Kafka port and died with "Empty response received from the server".
-      saved = ENV.slice("TINA4_RABBITMQ_HOST", "TINA4_RABBITMQ_PORT", "TINA4_KAFKA_BROKERS")
       if backend == "rabbitmq"
         ENV["TINA4_RABBITMQ_HOST"] = host
         ENV["TINA4_RABBITMQ_PORT"] = port.to_s

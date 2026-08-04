@@ -20,8 +20,6 @@ require "fileutils"
 require "rbconfig"
 
 RSpec.describe "CLI generators co-emit a real green spec" do
-  REPO_ROOT   = File.expand_path("..", __dir__)
-  REPO_LIB    = File.join(REPO_ROOT, "lib")
   TINA4_EXE   = File.join(REPO_ROOT, "exe", "tina4ruby")
   REPO_GEMFILE = File.join(REPO_ROOT, "Gemfile")
 

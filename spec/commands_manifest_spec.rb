@@ -23,8 +23,6 @@ require "stringio"
 require "rbconfig"
 
 RSpec.describe "tina4ruby commands manifest" do
-  REPO_ROOT = File.expand_path("..", __dir__)
-  EXE = File.join(REPO_ROOT, "exe", "tina4ruby")
 
   let(:cli) { Tina4::CLI.new }
 

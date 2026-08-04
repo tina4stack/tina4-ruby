@@ -443,8 +443,6 @@ end
 require "stringio"
 
 RSpec.describe "CLI scaffolding-first generators" do
-  REPO_ROOT = File.expand_path("..", __dir__)
-  REPO_LIB  = File.join(REPO_ROOT, "lib")
 
   let(:cli) { Tina4::CLI.new }
 

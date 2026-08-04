@@ -30,7 +30,10 @@ require "securerandom"
 require "tmpdir"
 
 RSpec.describe "DocStore substitutability" do
-  MONGO_URI = ENV.fetch("TINA4_TEST_MONGO_URI", "mongodb://192.168.88.99:27017")
+  # PREFIXED - see the note in session_handlers_spec.rb. This one reads a
+  # DIFFERENT env var and default from that spec, so the collision decided
+  # which Mongo each of them used based purely on file load order.
+  DOCSTORE_MONGO_URI = ENV.fetch("TINA4_TEST_MONGO_URI", "mongodb://192.168.88.99:27017")
 
   # A real connect, not a port probe. A port that merely accepts is not a usable
   # Mongo - the same distinction that turned an intended skip into a hard
@@ -41,7 +44,7 @@ RSpec.describe "DocStore substitutability" do
     @mongo_reachable = begin
       require "mongo"
       Mongo::Logger.logger.level = Logger::FATAL
-      client = Mongo::Client.new(MONGO_URI, server_selection_timeout: 3)
+      client = Mongo::Client.new(DOCSTORE_MONGO_URI, server_selection_timeout: 3)
       client.database.command(ping: 1)
       client.close
       true
@@ -70,9 +73,9 @@ RSpec.describe "DocStore substitutability" do
     # Listed last in the fixture because it EXPLAINS the other seven: with no
     # real-provider coverage, every other rule could drift unnoticed.
     it "reaches a real mongo collection and round-trips through it" do
-      skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable?
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
-      collection = collection_for(MONGO_URI)
+      collection = collection_for(DOCSTORE_MONGO_URI)
 
       # NEGATIVE: not the fallback masquerading as Mongo.
       expect(collection).not_to be_a(Tina4::DocStore::SqliteCollection)
@@ -83,9 +86,9 @@ RSpec.describe "DocStore substitutability" do
     end
 
     it "agrees with serverless? about which provider is in use" do
-      skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable?
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
-      collection = collection_for(MONGO_URI)
+      collection = collection_for(DOCSTORE_MONGO_URI)
 
       expect(Tina4::DocStore.serverless?).to be(false)
       expect(collection).not_to be_a(Tina4::DocStore::SqliteCollection)
@@ -134,8 +137,8 @@ RSpec.describe "DocStore substitutability" do
   end
 
   context "on a real mongo" do
-    before { skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable? }
-    let(:collection) { collection_for(MONGO_URI) }
+    before { skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable? }
+    let(:collection) { collection_for(DOCSTORE_MONGO_URI) }
     include_examples "an interchangeable document store", "mongo"
   end
 
@@ -167,7 +170,7 @@ RSpec.describe "DocStore substitutability" do
     # shared answer key.
     it "the driver spelling works on both providers" do
       providers = { "fallback" => nil }
-      providers["mongo"] = MONGO_URI if self.class.mongo_reachable?
+      providers["mongo"] = DOCSTORE_MONGO_URI if self.class.mongo_reachable?
 
       providers.each do |label, uri|
         c = collection_for(uri)
@@ -188,7 +191,7 @@ RSpec.describe "DocStore substitutability" do
     it "the fallback only spelling is gone" do
       expect(collection_for(nil)).not_to respond_to(:find_one)
 
-      expect(collection_for(MONGO_URI)).not_to respond_to(:find_one) if self.class.mongo_reachable?
+      expect(collection_for(DOCSTORE_MONGO_URI)).not_to respond_to(:find_one) if self.class.mongo_reachable?
     end
   end
 
@@ -236,10 +239,10 @@ RSpec.describe "DocStore substitutability" do
     ].freeze
 
     it "array queries match identically on both providers" do
-      skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable?
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
       results = {}
-      { "fallback" => nil, "mongo" => MONGO_URI }.each do |provider, uri|
+      { "fallback" => nil, "mongo" => DOCSTORE_MONGO_URI }.each do |provider, uri|
         c = collection_for(uri)
         c.delete_many({})
         c.insert_one(ARRAY_DOC.dup)
@@ -274,16 +277,16 @@ RSpec.describe "DocStore substitutability" do
     # legitimately opens several connections and then PLATEAUS; a leak keeps
     # climbing.
     def server_connections
-      probe = Mongo::Client.new(MONGO_URI)
+      probe = Mongo::Client.new(DOCSTORE_MONGO_URI)
       probe.database.command(serverStatus: 1).first["connections"]["current"]
     ensure
       probe&.close
     end
 
     it "repeated get collection does not grow connections" do
-      skip "no reachable MongoDB at #{MONGO_URI}" unless self.class.mongo_reachable?
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
-      ENV["TINA4_MONGO_URI"] = MONGO_URI
+      ENV["TINA4_MONGO_URI"] = DOCSTORE_MONGO_URI
       ENV["TINA4_DOC_STORE_PATH"] = File.join(Dir.mktmpdir, "ds.db")
 
       rounds = (1..3).map do

@@ -24,8 +24,6 @@ require "fileutils"
 require "rbconfig"
 
 RSpec.describe "tina4ruby test exit code" do
-  REPO_ROOT = File.expand_path("..", __dir__)
-  EXE = File.join(REPO_ROOT, "exe", "tina4ruby")
 
   # A single real Tina4::Testing test whose assertion FAILS.
   FAILING_TEST = <<~RUBY

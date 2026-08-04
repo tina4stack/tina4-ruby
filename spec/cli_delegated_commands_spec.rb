@@ -23,7 +23,6 @@ require "rbconfig"
 RSpec.describe "tina4ruby delegated client commands" do
   DELEGATED_REPO_ROOT = File.expand_path("..", __dir__)
   DELEGATED_EXE = File.join(DELEGATED_REPO_ROOT, "exe", "tina4ruby")
-  RUBY_BIN = RbConfig.ruby
 
   around do |example|
     Dir.mktmpdir("tina4-delegated") do |dir|

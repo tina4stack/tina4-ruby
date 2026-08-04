@@ -14,6 +14,26 @@ $LOAD_PATH.unshift File.join(File.dirname(__FILE__), "..", "lib")
 require "tina4"
 require "tina4/dev"
 
+# ── Canonical repo paths, defined ONCE ────────────────────────────────────────
+#
+# A constant assigned inside an RSpec.describe block is defined on Object, i.e.
+# GLOBAL - it is not scoped to the block. Five spec files each declared their own
+# REPO_ROOT / REPO_LIB / EXE / RUBY_BIN, so every run printed
+# "warning: already initialized constant ..." and whichever file loaded last won.
+#
+# That is not cosmetic. The identical mistake with a DIFFERENT value took a whole
+# afternoon: queue_delay_invariant_spec declared a bare PORT, overwrote
+# dev_admin_run_chips_spec's `PORT = free_port` with MongoDB's 27017, and eight
+# dev-admin examples died with EOFError because they were speaking HTTP to mongod.
+#
+# These four values were IDENTICAL in every file, so defining them once here and
+# deleting the copies changes no behaviour and removes the collision class. The
+# names are unchanged, so no usage site needed touching.
+REPO_ROOT = File.expand_path("..", __dir__)
+REPO_LIB  = File.join(REPO_ROOT, "lib")
+EXE       = File.join(REPO_ROOT, "exe", "tina4ruby")
+RUBY_BIN  = RbConfig.ruby
+
 # ── Real-service test gate (TINA4_REQUIRE_SERVICES) ───────────────────────────
 #
 # Mirror of tests/conftest.py in tina4-python (the master). CI provisions

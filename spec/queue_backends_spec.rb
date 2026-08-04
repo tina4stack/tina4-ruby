@@ -472,14 +472,15 @@ RSpec.describe "Queue Backends" do
   # TCP reachability of localhost:27017 + the mongo gem — and is SKIPPED, never
   # mocked, when Mongo is unreachable. Uses only a tina4_test_* db and drops it.
   describe "MongoBackend db selection (live)" do
-    MONGO_HOST = "localhost"
-    MONGO_PORT = 27_017
-    MONGO_TEST_URI = "mongodb://#{MONGO_HOST}:#{MONGO_PORT}"
+    # PREFIXED - see the note in session_handlers_spec.rb.
+    QUEUE_MONGO_HOST = "localhost"
+    QUEUE_MONGO_PORT = 27_017
+    MONGO_TEST_URI = "mongodb://#{QUEUE_MONGO_HOST}:#{QUEUE_MONGO_PORT}"
     MONGO_TEST_DB = "tina4_test_queue_db_select"
 
     def self.mongo_available?
       require "mongo"
-      s = Socket.tcp(MONGO_HOST, MONGO_PORT, connect_timeout: 1)
+      s = Socket.tcp(QUEUE_MONGO_HOST, QUEUE_MONGO_PORT, connect_timeout: 1)
       s.close
       true
     rescue LoadError, StandardError
