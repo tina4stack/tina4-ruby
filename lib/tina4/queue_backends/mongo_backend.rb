@@ -280,7 +280,8 @@ module Tina4
       # failed" (ADR-0022 decision 7).
       def failed(topic, max_retries: 3)
         collection.find(
-          topic: topic, status: "pending",
+          topic: topic,
+          status: { "$in" => %w[pending failed] },
           attempts: { "$gt" => 0, "$lt" => max_retries }
         ).map { |doc| job_from_doc(doc) }
       end
@@ -303,12 +304,23 @@ module Tina4
       # there was nothing to retry.
       def retry_failed(topic, max_retries: 3)
         result = collection.update_many(
-          { topic: topic, status: "pending",
+          { topic: topic,
+            # BOTH statuses. "pending" is where the auto-retry fail() path
+            # leaves a still-retryable job (it re-queues rather than marking
+            # it failed), and matching only "failed" is why this used to
+            # return 0 on every real failure. "failed" is still matched
+            # because reject(requeue: false) writes it, so a job explicitly
+            # parked as failed is retryable too.
+            status: { "$in" => %w[pending failed] },
             attempts: { "$gt" => 0, "$lt" => max_retries } },
           # Reset available_at so re-queued failed jobs are visible again — they
           # were reserved with available_at in the future at dequeue. Clear
           # reserved_at too. (Same Bug B reason as requeue/fail.)
-          { "$set" => { error: nil, reserved_at: nil,
+          # status MUST be set back to "pending". The match now also picks up
+          # docs explicitly parked as "failed" (reject(requeue: false)), and
+          # those have to be flipped back or retry_failed reports a re-queue it
+          # never performed. A doc already pending is unaffected.
+          { "$set" => { status: "pending", error: nil, reserved_at: nil,
                         available_at: requeue_available_at(@retry_backoff) } }
         )
         result.modified_count
