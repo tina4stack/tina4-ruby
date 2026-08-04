@@ -16,7 +16,9 @@ module Tina4
       SQL
 
       def initialize(options = {})
-        @ttl = options[:ttl] || 86400
+        # TINA4_SESSION_TTL reaches every backend (ADR-0024); was a hard-coded
+        # 86400. 3600 matches Python (the master), PHP and Node.
+        @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
         @db = options[:db] || Tina4::Database.new(ENV["TINA4_DATABASE_URL"])
         ensure_table
       end

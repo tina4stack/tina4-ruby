@@ -175,7 +175,12 @@ RSpec.describe "Session Handlers" do
       expect(handler.read("corrupt")).to be_nil
     end
 
-    it "uses default TTL of 86400" do
+    # Renamed 2026-08-04: this never asserted 86400 - it writes with no ttl and
+    # reads the value back, which passes under ANY positive default. The name
+    # was the only thing claiming 86400, and that default is now 3600 (every
+    # backend honours TINA4_SESSION_TTL, ADR-0024). The behaviour it really
+    # pins is that a write with no explicit ttl round-trips.
+    it "round-trips a write that passes no explicit ttl" do
       default_handler = Tina4::SessionHandlers::FileHandler.new(dir: tmpdir)
       default_handler.write("test", { "key" => "val" })
       expect(default_handler.read("test")).to eq({ "key" => "val" })

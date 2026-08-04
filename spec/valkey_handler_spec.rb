@@ -131,11 +131,17 @@ RSpec.describe Tina4::SessionHandlers::ValkeyHandler do
       # actual connection target off the real Redis::Client, not a fake's stored
       # kwargs hash.
       ENV.delete("TINA4_SESSION_VALKEY_PREFIX")
+      ENV.delete("TINA4_SESSION_VALKEY_TTL")
+      ENV.delete("TINA4_SESSION_TTL")
       handler = Tina4::SessionHandlers::ValkeyHandler.new
       client = handler.instance_variable_get(:@redis)._client
 
       expect(handler.instance_variable_get(:@prefix)).to eq("tina4:session:")
-      expect(handler.instance_variable_get(:@ttl)).to eq(86400)
+      # BREAKING, deliberate (2026-08-04): the default was a hard-coded 86400
+      # that ignored TINA4_SESSION_TTL entirely. Every backend now honours that
+      # one variable (ADR-0024), and the default is 3600 - the same default
+      # Python (the master), PHP and Node have always used. Ruby was the outlier.
+      expect(handler.instance_variable_get(:@ttl)).to eq(3600)
       expect(client.host).to eq("localhost")
       expect(client.db).to eq(0)
     end

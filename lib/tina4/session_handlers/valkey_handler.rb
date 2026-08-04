@@ -11,7 +11,11 @@ module Tina4
     class ValkeyHandler
       def initialize(options = {})
         @prefix = options[:prefix] || ENV["TINA4_SESSION_VALKEY_PREFIX"] || "tina4:session:"
-        @ttl = options[:ttl] || (ENV["TINA4_SESSION_VALKEY_TTL"] ? ENV["TINA4_SESSION_VALKEY_TTL"].to_i : 86400)
+        # TINA4_SESSION_VALKEY_TTL stays as the valkey-specific override, but it
+        # now falls back to TINA4_SESSION_TTL - the ONE session-lifetime variable
+        # every backend must honour (ADR-0024) - instead of a hard-coded 86400.
+        # 3600 matches Python (the master), PHP and Node.
+        @ttl = (options[:ttl] || ENV["TINA4_SESSION_VALKEY_TTL"] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
         @host = options[:host] || ENV["TINA4_SESSION_VALKEY_HOST"] || "localhost"
         @port = options[:port] || (ENV["TINA4_SESSION_VALKEY_PORT"] ? ENV["TINA4_SESSION_VALKEY_PORT"].to_i : 6379)
         @db = options[:db] || (ENV["TINA4_SESSION_VALKEY_DB"] ? ENV["TINA4_SESSION_VALKEY_DB"].to_i : 0)

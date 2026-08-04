@@ -17,7 +17,9 @@ module Tina4
       # An explicit constructor option always wins over the environment.
       def initialize(options = {})
         @prefix = options[:prefix] || "tina4:session:"
-        @ttl = options[:ttl] || 86400
+        # TINA4_SESSION_TTL reaches every backend (ADR-0024); was a hard-coded
+        # 86400. 3600 matches Python (the master), PHP and Node.
+        @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
         @host = options[:host] || ENV["TINA4_SESSION_REDIS_HOST"] || "localhost"
         @port = options[:port] || (ENV["TINA4_SESSION_REDIS_PORT"] ? ENV["TINA4_SESSION_REDIS_PORT"].to_i : 6379)
         @db = options[:db] || (ENV["TINA4_SESSION_REDIS_DB"] ? ENV["TINA4_SESSION_REDIS_DB"].to_i : 0)

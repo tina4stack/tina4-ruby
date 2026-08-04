@@ -8,7 +8,12 @@ module Tina4
     class FileHandler
       def initialize(options = {})
         @dir = options[:dir] || File.join(Dir.pwd, "sessions")
-        @ttl = options[:ttl] || 86400
+        # TINA4_SESSION_TTL is the ONE session-lifetime variable, and it must
+        # reach EVERY backend (ADR-0024). This used to be a hard-coded 86400,
+        # so an operator setting a 15-minute session got 24 hours here and got
+        # it right only on memcached - the one handler that read the variable.
+        # 3600 is the default in Python (the master), PHP and Node.
+        @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
         FileUtils.mkdir_p(@dir)
       end
 

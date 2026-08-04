@@ -80,6 +80,13 @@ module Tina4
         ttl_env = ENV["TINA4_SESSION_TTL"]
         @options[:max_age] = Integer(ttl_env) if ttl_env && !ttl_env.strip.empty?
       end
+      # The BACKEND lifetime, resolved once and forwarded to handler#write on
+      # every save (parity with Python's Session._ttl, which flows the same way).
+      # #save used to call safe_write(@id, @data) with NO ttl, so the cookie said
+      # Max-Age=900 while the stored record lived for the handler's own default -
+      # a silent disagreement between what the browser was told and what the
+      # store actually did. One resolver, both directions.
+      @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
       # TINA4_SESSION_BACKEND — selects the storage handler unless the caller
       # explicitly passed :handler (same precedence as :cookie_name above; an
       # explicit option always wins over the environment). Without this the
@@ -132,7 +139,7 @@ module Tina4
     # a later save can retry. Returns true on a successful (or no-op) write.
     def save
       return true unless @modified
-      if safe_write(@id, @data)
+      if safe_write(@id, @data, @ttl)
         @modified = false
         true
       else

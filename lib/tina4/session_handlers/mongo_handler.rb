@@ -12,7 +12,9 @@ module Tina4
       # An explicit constructor option always wins over the environment.
       def initialize(options = {})
         require "mongo"
-        @ttl = options[:ttl] || 86400
+        # TINA4_SESSION_TTL reaches every backend (ADR-0024); was a hard-coded
+        # 86400. 3600 matches Python (the master), PHP and Node.
+        @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
         @uri = options[:uri] || ENV["TINA4_SESSION_MONGO_URI"] || ENV["TINA4_SESSION_MONGO_URL"] || "mongodb://localhost:27017"
         @database = options[:database] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
         @collection_name = options[:collection] || ENV["TINA4_SESSION_MONGO_COLLECTION"] || "sessions"
@@ -25,29 +27,55 @@ module Tina4
         Tina4::Log.error("MongoDB session setup failed: #{e.message}")
       end
 
+      # Decide whether a stored document has expired, FROM THE DOCUMENT ALONE.
+      #
+      # THE CONTRACT: an ABSENT or ZERO expiry stamp means "never expires". It is
+      # guarded OUT of the comparison, never fed INTO it - so a document written
+      # by another framework, an older version, or a direct insert is returned
+      # rather than destroyed. Identical to the Python master's _has_expired.
+      def self.expired?(doc)
+        expires_at = doc["expires_at"].to_f
+        expires_at.positive? && expires_at < Time.now.to_f
+      end
+
       def read(session_id)
         doc = @collection.find(_id: session_id).first
         return nil unless doc
+
+        # Expiry is checked HERE, at read time, against the document's own
+        # absolute deadline. Relying on the TTL index alone (as this handler used
+        # to) cannot honour a short TTL at all: mongod's TTL monitor sweeps once
+        # every 60 SECONDS, so a 2-second session stayed readable for up to a
+        # minute after it expired. The index is still created, but purely as the
+        # background reaper that keeps the collection from growing forever.
+        if self.class.expired?(doc)
+          destroy(session_id)
+          return nil
+        end
+
         doc["data"]
       end
 
       # Write session data. A per-call +ttl+ WINS over the handler default.
       #
-      # Expiry itself is delegated to MongoDB's native TTL index on +updated_at+
-      # (see ensure_ttl_index), which is why this handler was never at risk of the
-      # destroy-on-unstamped defect: there is no hand-rolled comparison to feed a
-      # missing stamp into. A per-call ttl shorter than the index's interval is
-      # honoured by back-dating +updated_at+ so the index reaps it on schedule.
+      # The ttl is consumed HERE, at write time, and baked into an ABSOLUTE
+      # deadline (+expires_at+), so nothing at read time needs to know what the
+      # ttl was. That field name and meaning are the shape Python (the master),
+      # PHP and Node all store, so a session store SHARED between two frameworks
+      # carries one shape instead of four. +updated_at+ is still written to feed
+      # the TTL index.
       #
       # @param session_id [String] the session id
       # @param data [Hash] the payload to store
       # @param ttl [Integer] per-call lifetime in seconds; 0 uses the handler default
       def write(session_id, data, ttl = 0)
         effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
-        stamp = Time.now - (@ttl - effective_ttl)
+        now = Time.now
+        expires_at = effective_ttl.positive? ? now.to_f + effective_ttl : 0.0
         @collection.update_one(
           { _id: session_id },
-          { "$set" => { data: data, updated_at: stamp } },
+          { "$set" => { data: data, expires_at: expires_at,
+                        updated_at: now - (@ttl - effective_ttl) } },
           upsert: true
         )
       end
