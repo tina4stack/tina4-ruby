@@ -229,9 +229,20 @@ module Tina4
         queue.message_count
       end
 
+      # Close the AMQP channel and connection and release the socket.
+      #
+      # IDEMPOTENT by construction: the handles are dropped in an ensure, so a
+      # second close finds nothing and returns. Before 3.13.95 they were left
+      # set, and Bunny raises on closing an already-closed channel - so a
+      # shutdown path that ran twice crashed on the second pass.
       def close
         @channel&.close
         @connection&.close
+      ensure
+        @channel = nil
+        @connection = nil
+        @queues = {}
+        @exchanges = {}
       end
 
       private

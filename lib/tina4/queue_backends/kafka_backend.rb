@@ -304,9 +304,19 @@ module Tina4
               "mongodb backend."
       end
 
+      # Close the rdkafka producer and consumer (leaving the consumer group).
+      #
+      # IDEMPOTENT by construction: the handles are dropped in an ensure, so a
+      # second close finds nothing and returns. Before 3.13.95 they were left
+      # set, and rdkafka raises on closing an already-closed consumer - so a
+      # shutdown path that ran twice crashed on the second pass.
       def close
         @producer&.close
         @consumer&.close
+      ensure
+        @producer = nil
+        @consumer = nil
+        @subscribed_topics = []
       end
     end
   end

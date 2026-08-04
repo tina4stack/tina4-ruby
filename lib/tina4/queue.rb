@@ -88,6 +88,27 @@ module Tina4
       @backend.clear(@topic)
     end
 
+    # Release the backend's connection and free its resources.
+    #
+    # A queue on RabbitMQ, Kafka or MongoDB holds a REAL client and socket.
+    # Until 3.13.95 there was no way to hand it back: close existed on the
+    # rabbitmq/mongo/kafka backends but was surfaced on NOTHING, and the lite
+    # backend had none at all - so every `backend.close if respond_to?(:close)`
+    # guard in the tree silently skipped the default backend. An app that built
+    # a Queue per request leaked one client per request, invisibly, until the
+    # broker refused new connections. Same class of leak as ADR-0025 corollary 4
+    # (client-lifecycle-is-bounded).
+    #
+    # Safe on EVERY backend: the lite backend holds no connection and closes as
+    # a documented no-op, so a TINA4_QUEUE_BACKEND change never turns a working
+    # shutdown path into an error. Idempotent - each backend drops its handles
+    # on the first call, so a second call finds nothing to close and returns.
+    #
+    # Treat the queue as spent afterwards and build a new one to keep working.
+    def close
+      @backend.close
+    end
+
     # Get jobs that failed but are still eligible for retry (under max_retries).
     def failed # -> list[dict]
       refuse_operation!("failed()") unless @backend.respond_to?(:failed)

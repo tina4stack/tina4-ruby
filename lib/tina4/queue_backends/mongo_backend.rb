@@ -343,8 +343,17 @@ module Tina4
         true
       end
 
+      # Close the MongoClient and release its connection pool.
+      #
+      # IDEMPOTENT by construction: the handles are dropped in an ensure, so a
+      # second close finds nothing and returns. Before 3.13.95 the ivars were
+      # left set, so a shutdown path that ran twice (an explicit close plus an
+      # at_exit / ensure) closed an already-closed client.
       def close
         @client&.close
+      ensure
+        @client = nil
+        @db = nil
       end
 
       private
