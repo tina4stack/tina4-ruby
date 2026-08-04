@@ -38,6 +38,11 @@ module Tina4
       # key, handing one user another user's session.
       MAX_KEY_BYTES = 250
 
+      # memcached's exptime field changes meaning at 30 days: at or below this
+      # it is RELATIVE seconds, above it the server reads an ABSOLUTE UNIX
+      # TIMESTAMP. See #exptime for why we convert instead of clamping.
+      MAX_RELATIVE_EXPTIME = 2_592_000
+
       def initialize(options = {})
         options ||= {}
         @host = options[:host] || ENV["TINA4_SESSION_MEMCACHED_HOST"] || "localhost"
@@ -67,7 +72,7 @@ module Tina4
 
       # Write a session with a TTL (0 falls back to the configured default).
       def write(session_id, data, ttl = 0)
-        effective_ttl = ttl.to_i.positive? ? ttl.to_i : @ttl
+        effective_ttl = exptime(ttl.to_i.positive? ? ttl.to_i : @ttl)
         payload = JSON.generate(data)
         cmd = "set #{key(session_id)} 0 #{effective_ttl} #{payload.bytesize}\r\n"
         resp = command("#{cmd}#{payload}\r\n",
@@ -110,6 +115,27 @@ module Tina4
       end
 
       private
+
+      # Convert a ttl in SECONDS to memcached's dual-meaning exptime field.
+      #
+      # memcached documents exptime as RELATIVE seconds up to 2592000 (30 days),
+      # and as an ABSOLUTE UNIX TIMESTAMP for anything larger. Sending a raw ttl
+      # of 2592001 therefore does not mean "30 days and one second" - it means
+      # 1970-01-31, which is already past, so the item expires the instant it is
+      # stored. memcached still replies STORED, so the write looks fine and the
+      # very next read is a miss: a silent logout on every request.
+      #
+      # Measured against real memcached 1.6.45: ttl=2592000 survives, ttl=2592001
+      # vanishes instantly.
+      #
+      # We CONVERT rather than CLAMP. Clamping a 60-day session down to 30 days
+      # would silently shorten a lifetime the operator explicitly asked to be
+      # longer, which is the same class of lie in the other direction.
+      def exptime(ttl)
+        return Time.now.to_i + ttl if ttl > MAX_RELATIVE_EXPTIME
+
+        ttl
+      end
 
       def key(session_id)
         candidate = "#{@prefix}#{session_id}"
