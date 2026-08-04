@@ -10,6 +10,31 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (the query-cache key carried no database identity)
+
+**Breaking: every existing persistent query-cache entry becomes a miss on upgrade.**
+
+`Database#cache_key` was `sha256(sql + params)` with nothing naming the connection, so
+on ANY shared cache backend two databases cross-served each other's rows. Two apps
+pointed at one Redis, or one app with a primary and an analytics connection, silently
+read each other's data. Identical SQL text across tenants is the COMMON case in a
+multi-tenant deployment, not an edge case, so the collision was the normal outcome.
+This is a data-isolation failure, not a caching inefficiency.
+
+The key is now `sha256(engine://host:port/database \0 sql \0 params)`. Credentials are
+deliberately excluded: a password in the key would cold-start the cache on every
+rotation, and a shared backend's key namespace is readable by every tenant of that
+backend. Nothing per-process is included either (no pid, no object_id, no salt) - that
+would isolate the databases by accident and destroy the point of a shared cache, since
+no instance would ever hit another instance's entry.
+
+**Migration:** the key format changed, so entries written by an earlier version are
+unreachable and simply miss. A cold cache is safe - it costs one repopulating read per
+key. Cross-served rows are not safe, which is why this ships as a break rather than a
+compatibility shim. Nothing needs to be run: no config change, no manual flush. If you
+would rather not carry the dead entries until their TTL expires, call `db.cache_clear`
+once after deploying.
+
 ### Fixed (queue operations acted on the local file store, not the configured backend)
 
 Every operation must act on the CONFIGURED backend. These calls appeared to succeed
