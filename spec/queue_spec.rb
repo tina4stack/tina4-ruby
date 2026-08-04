@@ -1065,10 +1065,20 @@ RSpec.describe "Tina4::Queue MongoDB dead-letter (live, no mocks)" do
 
         dead = queue.dead_letters
         expect(dead.length).to eq(1)
-        expect(dead.first.topic).to eq("#{topic}.dead_letter")
-        # The failure reason survives to the DLQ document (assert on the real
-        # stored doc, since the Queue facade's dead_letters Job does not re-expose
-        # error — the persisted record is the source of truth).
+        # HASH access, not .topic. dead_letters returns plain hashes with string
+        # keys on EVERY backend now. This spec used to read .topic because the
+        # mongo backend alone returned Job objects while the lite backend
+        # returned hashes (see the lite spec above, which reads
+        # dead_letters.first["error"]) — the two backends genuinely disagreed,
+        # and each spec had locked in its own backend's shape. The assertion is
+        # unchanged; only the accessor is.
+        expect(dead.first["topic"]).to eq("#{topic}.dead_letter")
+        # attempts and error now survive to the returned hash too, not just to
+        # the stored document.
+        expect(dead.first["attempts"]).to eq(2)
+        expect(dead.first["error"]).to eq("smtp 550")
+        # The failure reason also survives to the DLQ document itself — the
+        # persisted record is the source of truth.
         dead_doc = coll.find(topic: "#{topic}.dead_letter", status: "dead").first
         expect(dead_doc["error"]).to eq("smtp 550")
         # The original is no longer pending.

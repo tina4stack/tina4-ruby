@@ -10,6 +10,57 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Breaking (DocStore: a missing MongoDB driver now raises)
+
+`TINA4_MONGO_URI` set with the `mongo` gem NOT installed used to return the local SQLite collection. It now
+raises `Tina4::DocStore::DocStoreDriverMissing`, naming the provider and what is missing (ADR-0033,
+applying ADR-0024 rule 3).
+
+Re-measured 2026-08-04 at `v3` HEAD in a REAL driverless environment - no mock, no
+faked import - one env produced two shapes and four messages across the family:
+Python, PHP and Ruby silently returned the local SQLite store, Node threw a bare
+`ERR_MODULE_NOT_FOUND`. Silent degradation here means production writes landing in a
+container-local file nobody reads, which vanishes on the next deploy, with no error at
+any point.
+
+**Migration - one of two lines:**
+
+```
+gem install mongo            # use the real provider
+unset TINA4_MONGO_URI        # or use the local SQLite store, explicitly
+```
+
+Also changed: `serverless?` is now CONFIGURATION ONLY. It used to also return true when the gem was absent, which is
+what routed the call into the local branch; without this an app branching on it would
+take the local path and never reach the raise. The error message names the env var that
+supplied the URI and never its VALUE, because a Mongo URI routinely carries
+`user:password@` and an error string is the most-logged text a framework emits.
+
+### Fixed (the query-cache key carried no database identity)
+
+**Breaking: every existing persistent query-cache entry becomes a miss on upgrade.**
+
+`Database#cache_key` was `sha256(sql + params)` with nothing naming the connection, so
+on ANY shared cache backend two databases cross-served each other's rows. Two apps
+pointed at one Redis, or one app with a primary and an analytics connection, silently
+read each other's data. Identical SQL text across tenants is the COMMON case in a
+multi-tenant deployment, not an edge case, so the collision was the normal outcome.
+This is a data-isolation failure, not a caching inefficiency.
+
+The key is now `sha256(engine://host:port/database \0 sql \0 params)`. Credentials are
+deliberately excluded: a password in the key would cold-start the cache on every
+rotation, and a shared backend's key namespace is readable by every tenant of that
+backend. Nothing per-process is included either (no pid, no object_id, no salt) - that
+would isolate the databases by accident and destroy the point of a shared cache, since
+no instance would ever hit another instance's entry.
+
+**Migration:** the key format changed, so entries written by an earlier version are
+unreachable and simply miss. A cold cache is safe - it costs one repopulating read per
+key. Cross-served rows are not safe, which is why this ships as a break rather than a
+compatibility shim. Nothing needs to be run: no config change, no manual flush. If you
+would rather not carry the dead entries until their TTL expires, call `db.cache_clear`
+once after deploying.
+
 ### Fixed (queue operations acted on the local file store, not the configured backend)
 
 Every operation must act on the CONFIGURED backend. These calls appeared to succeed

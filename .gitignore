@@ -49,3 +49,6 @@ benchmark/
 # macOS $TMPDIR leak guard: a spec mis-resolving an absolute tmp path relative
 # to cwd would create these under the repo. Never commit them.
 /var/folders/
+
+# rspec JSON summary written by the zero-dependency CI leg (.github/workflows/test.yml)
+zero-dep-results.json

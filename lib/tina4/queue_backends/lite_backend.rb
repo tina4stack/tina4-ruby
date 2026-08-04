@@ -167,6 +167,15 @@ module Tina4
         Dir.glob(File.join(dir, "*.json")).length
       end
 
+      # No-op: the file backend holds no connection to release.
+      #
+      # It exists so Queue#close can call ONE method on every backend instead of
+      # testing for it, and so switching TINA4_QUEUE_BACKEND to "lite" never
+      # turns a working close into a NoMethodError. It was the ONLY backend
+      # without one, so every `close if respond_to?(:close)` guard in the tree
+      # silently did nothing here. Idempotent by construction - nothing to drop.
+      def close; end
+
       # Count currently-reserved (in-flight) jobs for a topic.
       def reserved_count(topic)
         dir = reserved_path(topic)
