@@ -754,12 +754,36 @@ module Tina4
 
       if where_sql.empty?
         pk_columns = primary_key(table)
-        # Resolve each key column to whichever form the caller used (String or
-        # Symbol); nil marks one that is absent from the data.
+        # Resolve each key column to whichever form the caller used - String or
+        # Symbol, and in whatever CASE they typed; nil marks one that is absent.
+        #
+        # The engines disagree about identifier case BY DESIGN and always will:
+        # Firebird folds an unquoted identifier to UPPER, PostgreSQL folds it to
+        # LOWER, MySQL and SQLite preserve what was typed. Introspection hands
+        # back the ENGINE's spelling while `data` carries the caller's, so an
+        # exact match failed on whichever engine folds the other way. That is a
+        # case-sensitivity bug, not a Firebird quirk - Firebird merely made it
+        # visible first, because the shared write-path contract writes lower-case
+        # keys and Firebird reports upper-case ones.
+        #
+        # Deliberately does NOT downcase what introspection returns: that would
+        # special-case one engine and break a genuinely quoted mixed-case table.
+        # The WHERE below is still built from the ENGINE's column name (pk_columns);
+        # only the VALUE is looked up by the caller's key.
         pk_keys = pk_columns.map do |col|
-          if data.key?(col) then col
-          elsif data.key?(col.to_sym) then col.to_sym
+          folded = col.to_s.downcase
+          matches = data.keys.select { |k| k.to_s.downcase == folded }
+          if matches.length > 1
+            # Ambiguity is refused, never guessed - choosing wrong here writes
+            # the WHERE clause of an UPDATE.
+            raise ArgumentError,
+                  "update was given more than one key for the primary-key column " \
+                  "#{col.inspect}: #{matches.map(&:to_s).sort.inspect} " \
+                  "(table=#{table.inspect}). These differ only by case, so which one " \
+                  "identifies the row is ambiguous - pass exactly one, or pass an " \
+                  "explicit filter."
           end
+          matches.first
         end
         missing = pk_columns.each_with_index.reject { |_, i| pk_keys[i] }.map(&:first)
 
