@@ -10,6 +10,37 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Fixed (the documented sort spelling raised on real MongoDB, ADR-0036)
+
+`cursor.sort("total", -1)` - the spelling this file documents - raised
+`ArgumentError: wrong number of arguments (given 2, expected 0..1)` on a real
+MongoDB, because `Mongo::Collection::View#sort` takes ONE spec document. The
+list-of-pairs form was worse: it reached the server as an ARRAY and came back
+
+```
+[14:TypeMismatch]: Expected field sort to be of type object
+```
+
+so of the three spellings the fallback accepted, only the hash form survived the
+swap - and it was not the documented one.
+
+`sort` now normalises all three to the driver's single spec document, so
+`sort("total", -1)`, `sort({ "total" => -1 })` and `sort([["total", -1]])` are
+equivalent on both providers. Ruby's fallback `Cursor` already accepted all
+three; it is the DRIVER side that was narrow, and `MongoView` now bridges it.
+
+  NOT affected: Ruby's chain was already lazy on both providers, because a
+  `Mongo::Collection::View` is lazy and immutable. PHP's was not, and ADR-0036
+  fixes that separately.
+
+  MEASURED 2026-08-04 against a real MongoDB 7.0.39: 4 chain cases x 2 providers
+  x 4 frameworks = 32 combinations, of which **10 failed** before this change and
+  0 fail after. Pinned by the substitutability suite in all four frameworks,
+  which asserts every spelling on BOTH providers, that `skip` composes, that an
+  ASCENDING sort actually ascends (a direction ignored outright would pass a
+  descending-only test), and that the chain is LAZY - a document inserted after
+  the chain is built but before it is iterated must appear.
+
 ### Fixed (the uniform DocStore spellings now work on the real provider, ADR-0035)
 
 - `collection.find_one(filter)` and `cursor.to_list` worked on the SQLite
