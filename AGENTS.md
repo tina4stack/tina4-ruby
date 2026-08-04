@@ -3,6 +3,10 @@
 You are working in a **Tina4 Ruby** project — a zero-dependency, batteries-included web framework.
 Documentation: https://tina4.com
 
+## AI Skills
+
+Codex discovers the project skills in `.agents/skills`; each is a tracked entrypoint to the canonical `.claude/skills` instructions also used by Claude. Use the maintainer, Ruby developer, and Tina4-js skills that apply to the task.
+
 ## Project Structure
 
 ```
