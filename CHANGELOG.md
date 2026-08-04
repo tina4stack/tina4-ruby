@@ -36,7 +36,7 @@ take the local path and never reach the raise. The error message names the env v
 supplied the URI and never its VALUE, because a Mongo URI routinely carries
 `user:password@` and an error string is the most-logged text a framework emits.
 
-### Fixed (the query-cache key carried no database identity)
+### Breaking (the query-cache key carried no database identity)
 
 **Breaking: every existing persistent query-cache entry becomes a miss on upgrade.**
 
@@ -445,7 +445,7 @@ STATE, not on what the filter returned).
 Regression test: `a before hook that sets 4xx and returns nothing skips the
 handler` in `spec/middleware_pipeline_characterisation_spec.rb`.
 
-### Breaking: per-route class middleware now runs its before_*/after_* hooks
+### Fixed: per-route class middleware now runs its before_*/after_* hooks
 
 `Route#run_middleware` called `mw.call(request, response)` on every attached
 middleware. A class declaring `def self.before_auth` does not respond to
