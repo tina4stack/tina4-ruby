@@ -21,7 +21,7 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
   a `SimpleDelegator` that adds the two methods and forwards the entire driver
   surface untouched. `aggregate`, `bulk_write`, `indexes`, `watch`, sessions and
   transactions are all still reachable; measured 2026-08-04 against a real
-  MongoDB 7.x, with 0 fallback-only collection methods and 0 fallback-only
+  MongoDB 7.0.39, with 0 fallback-only collection methods and 0 fallback-only
   cursor methods.
 
   ADDITIVE, not a replacement. `find(filter).first` and `to_a` are the driver's
@@ -35,6 +35,21 @@ UNRELEASED work. When a version ships, its notes go to the release notes above.
   Pinned by `spec/docstore_substitutability_spec.rb`, which reads a document
   back through every spelling on BOTH providers and measures the fallback's
   public methods against the wrapped driver rather than a hand-kept list.
+
+  **Breaking: on the Mongo path `get_collection` now returns a delegator, so a
+  CLASS check answers differently.** Every method call, `==` against the raw
+  collection, and the whole driver surface behave exactly as before, but
+
+      Tina4::DocStore.get_collection("x").is_a?(Mongo::Collection)   # was true, now false
+      Tina4::DocStore.get_collection("x").class                      # was Mongo::Collection
+
+  **Migration:** stop type-checking the return, or reach the real object with
+  `__getobj__`:
+
+      collection.__getobj__.is_a?(Mongo::Collection)   # true
+
+  Nothing in the framework type-checks it; this is stated because a user
+  application might.
 
   KNOWN and NOT fixed here: the fallback `Cursor#sort(key, direction)` takes two
   arguments and `Mongo::Collection::View#sort` takes one. Use the hash spelling
