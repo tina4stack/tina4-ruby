@@ -71,6 +71,21 @@ module Tina4
         "memory"
       end
 
+      # Evict expired entries and return how many went.
+      #
+      # An entry stored with ttl <= 0 has expires_at nil - the no-expiry
+      # sentinel - and the nil check is what keeps a permanent entry off the
+      # eviction list. Dropping it would evict every permanent entry on the
+      # first sweep, silently, and report it as a successful reclaim.
+      def sweep
+        @mutex.synchronize do
+          now = monotonic
+          before = @store.size
+          @store.reject! { |_k, (_value, expires_at)| expires_at && now > expires_at }
+          before - @store.size
+        end
+      end
+
       private
 
       def monotonic

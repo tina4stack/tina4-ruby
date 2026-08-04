@@ -281,13 +281,12 @@ module Tina4
           keys_to_remove.each { |k| @store.delete(k) }
           keys_to_remove.size
         end
-      elsif @backend.respond_to?(:sweep)
-        # The file backend supports an explicit sweep that returns a count.
-        @backend.sweep
       else
-        # Network/db backends expire entries lazily (TTL) — parity with
-        # Python, whose non-memory backends return 0 from sweep.
-        0
+        # Every backend answers sweep now - the base class returns 0 for the
+        # providers that expire server-side, and memory/file/database return a
+        # real count. The respond_to?(:sweep) guard that used to be here could
+        # not tell "not supported" from "evicted nothing".
+        @backend.sweep
       end
     end
 

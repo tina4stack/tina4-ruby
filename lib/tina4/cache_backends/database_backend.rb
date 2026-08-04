@@ -102,6 +102,35 @@ module Tina4
         "database"
       end
 
+      # Evict expired rows and return how many were deleted.
+      #
+      # A SQL table expires NOTHING by itself. Unlike redis/valkey/memcached/
+      # mongodb, which reclaim server-side, an expired row here sits in
+      # tina4_cache until something removes it - and the only thing that did was
+      # get(), which deletes a single row when someone happens to re-read that
+      # exact key. A key never read again was never reclaimed, so the table grew
+      # without bound while sweep, the one API whose job is reclaiming it,
+      # returned 0 and did nothing.
+      #
+      # expires_at > 0 is the guard that matters: this backend stores 0 for "no
+      # expiry" (get() uses the same guard), so a sweep comparing only
+      # expires_at < now would delete every permanent entry on its first run.
+      #
+      # COUNT then DELETE, against one captured timestamp, so the number
+      # returned is exactly the number of rows the DELETE removes on every
+      # engine - affected-row counts are best-effort outside SQLite.
+      def sweep
+        now = Time.now.to_f
+        row = @db.fetch_one(
+          "SELECT COUNT(*) AS c FROM tina4_cache WHERE expires_at > 0 AND expires_at < ?", [now]
+        )
+        expired = row ? (row["c"] || row[:c]).to_i : 0
+        return 0 if expired.zero?
+
+        @db.execute("DELETE FROM tina4_cache WHERE expires_at > 0 AND expires_at < ?", [now])
+        expired
+      end
+
       private
 
       def env_nonempty(key)

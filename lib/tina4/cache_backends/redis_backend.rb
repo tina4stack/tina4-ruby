@@ -109,29 +109,40 @@ module Tina4
         end
       end
 
+      # Remove EVERY entry this cache can serve - on BOTH transports.
+      #
+      # The raw RESP path used to be an empty branch with a comment: "no easy
+      # pattern delete, rely on TTL". That made clear() a no-op on the
+      # ZERO-DEPENDENCY default install, so a write never invalidated the
+      # persistent DB query cache and every instance kept serving pre-write rows
+      # until the TTL ran out (ADR-0024 rule 4: the default provider counts
+      # double).
+      #
+      # SCAN, not KEYS: clear() runs on every write in persistent DB-cache mode,
+      # and KEYS is O(N) and blocks the whole server for its duration. Redis's
+      # own documentation says to prefer SCAN in production.
+      #
+      # The scan is scoped to our prefix, so another application sharing the
+      # server is untouched. FLUSHALL/FLUSHDB would take their data with it and
+      # is never used here.
       def clear
         @hits = 0
         @misses = 0
-        if @client
-          begin
-            keys = @client.keys("#{PREFIX}*")
-            @client.del(*keys) unless keys.empty?
-          rescue StandardError
-          end
-        elsif @use_raw
-          # Raw RESP doesn't support pattern delete easily; rely on TTL.
-        end
+        return scan_delete_with_client if @client
+        return unless @use_raw
+
+        scan_delete_with_raw_resp
       end
 
+      # Report OUR entries, counted with a scoped SCAN.
+      #
+      # size used to be a hardcoded 0 unless the `redis` GEM was loaded, so on
+      # the ZERO-DEPENDENCY raw RESP transport - the default install - stats
+      # reported 0 no matter how many entries were cached. Anything reading that
+      # number (a dashboard, db.cache_stats, an operator checking whether a
+      # clear worked) was reading a constant.
       def stats
-        size = 0
-        if @client
-          begin
-            size = @client.keys("#{PREFIX}*").size
-          rescue StandardError
-          end
-        end
-        { hits: @hits, misses: @misses, size: size, backend: @name }
+        { hits: @hits, misses: @misses, size: scan_count, backend: @name }
       end
 
       def name
@@ -173,58 +184,168 @@ module Tina4
         false
       end
 
-      # Send a command using the raw RESP protocol over TCP. Returns the simple
-      # string / bulk string / integer as a String, or nil on miss/error.
-      def resp_command(*args)
-        cmd = +"*#{args.size}\r\n"
+      # Encode one command as a RESP array of bulk strings.
+      def resp_encode(*args)
+        out = +"*#{args.size}\r\n"
         args.each do |arg|
-          s = arg.to_s
-          cmd << "$#{s.bytesize}\r\n#{s}\r\n"
+          value = arg.to_s
+          out << "$#{value.bytesize}\r\n#{value}\r\n"
         end
+        out
+      end
 
+      # Read ONE complete RESP reply and return String | nil | Array.
+      #
+      # Reads through the socket's BUFFERED gets/read so a reply larger than one
+      # socket read is assembled in full. The previous implementation did a
+      # single recv(65536) and string-split the result, which silently truncated
+      # any bulk value or multi-bulk reply bigger than that buffer - so a large
+      # cached entry came back corrupt and a key scan came back short.
+      def resp_read(sock)
+        line = sock.gets("\r\n")
+        return nil if line.nil?
+
+        prefix = line[0]
+        body = line[1..].to_s.chomp
+        case prefix
+        when "+", ":" then body
+        when "-" then nil
+        when "$" then resp_read_bulk(sock, body.to_i)
+        when "*" then resp_read_array(sock, body.to_i)
+        else body
+        end
+      end
+
+      # A bulk string: exactly `length` bytes, then the trailing CRLF.
+      def resp_read_bulk(sock, length)
+        return nil if length.negative?
+
+        payload = sock.read(length + 2)
+        return nil if payload.nil?
+
+        payload[0, length].to_s.force_encoding(Encoding::UTF_8)
+      end
+
+      # A multi-bulk array: `count` complete replies, read recursively.
+      def resp_read_array(sock, count)
+        return nil if count.negative?
+
+        Array.new(count) { resp_read(sock) }
+      end
+
+      # Open an authenticated RESP socket. The caller closes it.
+      #
+      # Kept separate from resp_command so a multi-step conversation (the SCAN
+      # cursor loop in clear) runs over ONE connection instead of reconnecting
+      # per command.
+      def resp_session
         sock = TCPSocket.new(@host, @port)
+        # SO_RCVTIMEO bounds the raw syscalls; IO#timeout (Ruby 3.2+) is the one
+        # that bounds the BUFFERED gets/read this class now uses, so a server
+        # that accepts the connection and never replies cannot hang a request.
         sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, [5, 0].pack("l_2"))
+        sock.timeout = 5 if sock.respond_to?(:timeout=)
 
         if @password
-          auth = if @username
-                   "*3\r\n$4\r\nAUTH\r\n$#{@username.bytesize}\r\n#{@username}\r\n" \
-                   "$#{@password.bytesize}\r\n#{@password}\r\n"
-                 else
-                   "*2\r\n$4\r\nAUTH\r\n$#{@password.bytesize}\r\n#{@password}\r\n"
-                 end
-          sock.write(auth)
-          unless sock.recv(1024).start_with?("+")
+          sock.write(@username ? resp_encode("AUTH", @username, @password) : resp_encode("AUTH", @password))
+          unless resp_read(sock) == "OK"
             sock.close
-            return nil
+            raise IOError, "redis AUTH rejected"
           end
         end
 
         if @db != 0
-          select_cmd = "*2\r\n$6\r\nSELECT\r\n$#{@db.to_s.bytesize}\r\n#{@db}\r\n"
-          sock.write(select_cmd)
-          sock.recv(1024)
+          sock.write(resp_encode("SELECT", @db))
+          resp_read(sock)
         end
+        sock
+      end
 
-        sock.write(cmd)
-        response = sock.recv(65_536)
-        sock.close
-
-        if response.nil? || response.empty?
+      # Send one command using the raw RESP protocol over TCP. Returns the
+      # decoded reply: a String for simple/bulk/integer replies, nil for a nil
+      # reply or an error, and an Array for a multi-bulk reply.
+      def resp_command(*args)
+        sock = nil
+        begin
+          sock = resp_session
+          sock.write(resp_encode(*args))
+          resp_read(sock)
+        rescue StandardError
           nil
-        elsif response.start_with?("+")
-          response[1..].strip
-        elsif response.start_with?("$-1")
-          nil
-        elsif response.start_with?("$")
-          lines = response.split("\r\n")
-          lines[1]
-        elsif response.start_with?(":")
-          response[1..].strip
-        elsif response.start_with?("-")
-          nil
-        else
-          response.strip
+        ensure
+          close_quietly(sock)
         end
+      end
+
+      # Walk every key under our PREFIX with a scoped SCAN cursor loop over ONE
+      # raw RESP connection, yielding each non-empty batch along with the open
+      # socket so a caller can act on the batch without reconnecting.
+      #
+      # SCAN, not KEYS: clear runs on every write in persistent DB-cache mode,
+      # and KEYS is O(N) and blocks the whole server for its duration. Redis's
+      # own documentation says to prefer SCAN.
+      def each_prefixed_key_batch
+        sock = nil
+        begin
+          sock = resp_session
+          cursor = "0"
+          loop do
+            sock.write(resp_encode("SCAN", cursor, "MATCH", "#{PREFIX}*", "COUNT", "500"))
+            reply = resp_read(sock)
+            break unless reply.is_a?(Array) && reply.size == 2
+
+            cursor, keys = reply
+            yield(sock, keys) if keys.is_a?(Array) && !keys.empty?
+            break if cursor.nil? || cursor == "0"
+          end
+        rescue StandardError
+          nil
+        ensure
+          close_quietly(sock)
+        end
+      end
+
+      # The same scoped walk over the `redis` gem client. scan(), not keys(),
+      # for the reason above.
+      def each_prefixed_key_batch_with_client
+        cursor = "0"
+        loop do
+          cursor, keys = @client.scan(cursor, match: "#{PREFIX}*", count: 500)
+          yield(keys) if keys && !keys.empty?
+          break if cursor.nil? || cursor.to_s == "0"
+        end
+      rescue StandardError
+        nil
+      end
+
+      def scan_delete_with_client
+        each_prefixed_key_batch_with_client { |keys| @client.del(*keys) }
+      end
+
+      def scan_delete_with_raw_resp
+        each_prefixed_key_batch do |sock, keys|
+          sock.write(resp_encode("DEL", *keys))
+          resp_read(sock)
+        end
+      end
+
+      def scan_count
+        return scan_count_with_client if @client
+        return 0 unless @use_raw
+
+        total = 0
+        each_prefixed_key_batch { |_sock, keys| total += keys.size }
+        total
+      end
+
+      def scan_count_with_client
+        total = 0
+        each_prefixed_key_batch_with_client { |keys| total += keys.size }
+        total
+      end
+
+      def close_quietly(sock)
+        sock&.close
       rescue StandardError
         nil
       end
