@@ -125,7 +125,11 @@ RSpec.describe "cache memcached exptime" do
     backend.set(key, { "row" => "brief" }, 1)
     expect(backend.get(key)).to eq({ "row" => "brief" }), "precondition: the entry was stored"
 
-    sleep 2.2
+    # 3.0s, not 2.2s. memcached compares against its own `current_time`, which a
+    # clock event advances once a SECOND, so an item written with exptime=1 can
+    # legitimately survive nearly 2s of wall clock. A 2.2s sleep leaves 0.2s of
+    # margin and FAILED once in three runs here; 3.0s leaves a full second.
+    sleep 3.0
 
     expect(backend.get(key)).to be_nil,
                                 "NEGATIVE CONTROL: a 1 second ttl must really expire. A fix that converted every " \

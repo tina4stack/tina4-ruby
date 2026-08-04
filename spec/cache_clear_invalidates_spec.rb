@@ -198,6 +198,34 @@ RSpec.describe "cache clear invalidates" do
                          "stopped after the first page instead of walking the whole keyspace"
   end
 
+  # Regression test for a parity fix, NOT one of the eight declared invariants -
+  # deliberately not in the contract fixture.
+  #
+  # RedisBackend#stats hardcoded `size = 0` unless the `redis` GEM was loaded, so
+  # on the ZERO-DEPENDENCY raw RESP transport - the default install - it reported
+  # 0 no matter how many entries were cached. That is the same root cause as the
+  # clear() no-op above: the persistent-layer assertions built on stats[:size]
+  # could never have been true on a zero-dependency install, and were only ever
+  # green because a driver happened to be present. Found in Ruby, present
+  # identically in Python.
+  it "stats reports a real size on both transports" do
+    backend = CacheClearContract.raw(Tina4::CacheBackends::RedisBackend.new(url: CacheClearContract::REDIS_URL))
+    backend.clear
+
+    expect(backend.stats[:size]).to eq(0), "a cleared cache must report 0 entries, not a hardcoded constant"
+
+    3.times { |index| backend.set("#{CacheClearContract.unique_key}-#{index}", { "i" => index }, 300) }
+
+    expect(backend.stats[:size]).to eq(3),
+                                    "three entries were written and stats reports #{backend.stats[:size]} - the " \
+                                    "size is a hardcoded 0 on the raw RESP transport, so every dashboard, " \
+                                    "db.cache_stats and operator check reading it is reading a constant"
+
+    backend.clear
+
+    expect(backend.stats[:size]).to eq(0), "stats did not return to 0 after a clear"
+  end
+
   it "clear invalidates on valkey too" do
     backend = CacheClearContract.raw(Tina4::CacheBackends::ValkeyBackend.new(url: CacheClearContract::VALKEY_URL))
     key = CacheClearContract.unique_key
