@@ -316,6 +316,40 @@ jobs:
       - name: Run tests
         run: bundle exec rspec --exclude-pattern "**/metrics*_spec.rb"
 
+      # ADR-0024 rule 4: the ZERO-DEPENDENCY default counts double.
+      #
+      # This job sets BUNDLE_WITH=databases, and that group carries
+      # `gem "redis"`, so every run above takes the redis GEM transport.
+      # RedisBackend ships TWO transports and the raw RESP socket is what a
+      # zero-dependency install actually runs - and nothing gated it. That is
+      # exactly how clear() shipped as a literal no-op on the raw path, and how
+      # stats reported a hardcoded size of 0 there: both were invisible to CI
+      # because a driver happened to be present.
+      #
+      # The :databases group is optional, so leaving BUNDLE_WITH empty is enough
+      # to drop the gem and force the raw path. The abort() is the load-bearing
+      # line: without it this leg silently proves nothing the day that group
+      # stops being optional.
+      - name: Run cache specs on the ZERO-DEPENDENCY transport
+        env:
+          BUNDLE_WITH: ""
+        run: |
+          bundle install --quiet
+          # `bundle exec ruby`, NOT plain `ruby`. A bare `ruby -e` searches the
+          # whole system gem path, so it finds a redis installed anywhere on the
+          # runner and reports "still loadable" even when the BUNDLE correctly
+          # excludes it. Verified locally: plain ruby said loadable, bundle exec
+          # ruby raised LoadError, in the same working tree. The check has to run
+          # in the same resolution context as the rspec call below or it is
+          # answering a different question.
+          bundle exec ruby -e 'begin; require "redis"; abort("redis gem still loadable in the bundle - this leg would prove nothing"); rescue LoadError; puts "confirmed: redis gem absent from the bundle, raw RESP is the only transport"; end'
+          bundle exec rspec \
+            spec/cache_clear_invalidates_spec.rb spec/cache_key_database_identity_spec.rb \
+            spec/cache_provider_selection_spec.rb spec/cache_null_round_trip_spec.rb \
+            spec/cache_sweep_counts_spec.rb spec/cache_clear_persistent_layer_spec.rb \
+            spec/cache_memcached_exptime_spec.rb spec/cache_backends_spec.rb \
+            spec/cache_spec.rb spec/db_query_cache_spec.rb
+
       - name: Report results
         if: always()
         run: echo "Test run completed with exit code $?"
