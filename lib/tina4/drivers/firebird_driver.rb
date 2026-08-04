@@ -243,6 +243,20 @@ module Tina4
         @in_transaction = true
       end
 
+      # Guarded on the CONNECTION only, deliberately - no active-transaction check
+      # is needed here.
+      #
+      # Python's adapter has the same shape and it IS a bug there: firebird-driver
+      # delegates Connection#commit to main_transaction, whose handle is nil until
+      # a statement opens one, so committing with nothing open raises
+      # "AttributeError: 'NoneType' object has no attribute 'commit'". Measured
+      # 2026-08-04 against the lab's real Firebird 5.0.4, the `fb` gem does NOT
+      # behave that way: both #commit and #rollback on a fresh connection with no
+      # open transaction return cleanly, because the driver opens one implicitly.
+      #
+      # So do not "port" Python's is_active? guard here on the strength of the
+      # shape matching - it would be dead code guarding a condition this driver
+      # cannot reach.
       def commit
         @connection&.commit
         @in_transaction = false
