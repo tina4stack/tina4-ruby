@@ -49,6 +49,16 @@
 #      "delete the guard and let anything through" passes case 1 and ships; and
 #      without the by-name assertion an operator cannot tell a typo from an
 #      unsupported engine.
+#   3. the CONCURRENT FIRST-USE RACE is covered on every engine - two workers
+#      booting together both reach ensure_table and both issue the CREATE, and
+#      the loser must not take down the subsystem that decides who is logged in.
+#      This is the case that pins the PER-ENGINE DDL as well, because the DDL a
+#      worker issues has to be legal on its engine before the race is even
+#      reachable: the single generic string this replaced opened with CREATE
+#      TABLE IF NOT EXISTS, which is not T-SQL, so the backend did not work on
+#      MSSQL AT ALL, and Firebird rejected it twice over (no IF NOT EXISTS
+#      clause, no TEXT type). Case 3 therefore drives FIVE engines, two more
+#      than case 1: sqlite, postgres, mysql, mssql AND firebird.
 
 require "spec_helper"
 require "tina4"
@@ -74,6 +84,23 @@ RSpec.describe "Session database backend across engines" do
   mysql_user = ENV.fetch("TINA4_TEST_MYSQL_USERNAME", "root")
   mysql_pass = ENV.fetch("TINA4_TEST_MYSQL_PASSWORD", "tina4")
   mysql_db   = ENV.fetch("TINA4_TEST_MYSQL_DB", "tina4")
+
+  # Case 3 only. The canonical TINA4_TEST_MSSQL_* spelling the rest of the suite
+  # uses (database_mysql_mssql_live_spec, batch_insert_spec); the lab exports the
+  # credentials, the defaults cover a local container.
+  mssql_host = ENV.fetch("TINA4_TEST_MSSQL_HOST", "127.0.0.1")
+  mssql_port = ENV.fetch("TINA4_TEST_MSSQL_PORT", "1433").to_i
+  mssql_user = ENV.fetch("TINA4_TEST_MSSQL_USERNAME", "sa")
+  mssql_pass = ENV.fetch("TINA4_TEST_MSSQL_PASSWORD", "TinaSQL123!Secure")
+  mssql_db   = ENV.fetch("TINA4_TEST_MSSQL_DB", "tina4_test")
+
+  # Firebird follows the repo's established gate: it is exercised when
+  # TINA4_TEST_FIREBIRD_URL is configured (the lab exports it), and is simply
+  # absent from the roster when it is not, rather than skipping an example. The
+  # credentials are the spelling the other firebird specs hardcode.
+  firebird_url  = ENV["TINA4_TEST_FIREBIRD_URL"].to_s
+  firebird_user = ENV.fetch("TINA4_TEST_FIREBIRD_USERNAME", "SYSDBA")
+  firebird_pass = ENV.fetch("TINA4_TEST_FIREBIRD_PASSWORD", "masterkey")
 
   session_table = Tina4::SessionHandlers::DatabaseHandler::TABLE_NAME
 
@@ -360,5 +387,151 @@ RSpec.describe "Session database backend across engines" do
     expect(raised.message).not_to include("tina4secret"),
                                   "the refusal named the scheme but leaked the password with it: " \
                                   "#{raised.message}"
+  end
+
+  it "the_concurrent_first_use_race_is_covered_on_every_engine" do
+    sqlite_path = File.join(work_dir, "race.db")
+
+    # Every engine the DatabaseHandler can be pointed at. sqlite/postgres/mysql
+    # settle the race ENGINE-SIDE with IF NOT EXISTS; mssql and firebird have no
+    # such clause and are carried entirely by the rescue in ensure_table. All
+    # five are driven the same way, so the case cannot pass by covering only the
+    # engines that were already safe.
+    engines = [
+      { name: "sqlite", url: "sqlite:#{sqlite_path}", username: nil, password: nil },
+      { name: "postgres",
+        url: "postgres://#{pg_host}:#{pg_port}/#{pg_db}",
+        username: pg_user, password: pg_pass },
+      { name: "mysql",
+        url: "mysql://#{mysql_host}:#{mysql_port}/#{mysql_db}",
+        username: mysql_user, password: mysql_pass },
+      # Credentials go in the KWARGS and the env, never inside the URL: the
+      # lab's sa password contains a '!', which a URL would have to
+      # percent-encode, and a mis-encoded password reads as an engine failure.
+      { name: "mssql",
+        url: "mssql://#{mssql_host}:#{mssql_port}/#{mssql_db}",
+        username: mssql_user, password: mssql_pass }
+    ]
+    unless firebird_url.empty?
+      engines << { name: "firebird", url: firebird_url,
+                   username: firebird_user, password: firebird_pass }
+    end
+
+    ran = []
+    broken = []
+
+    engines.each do |engine|
+      sentinel_id = "race-#{engine[:name]}-#{SecureRandom.hex(4)}"
+      # The spec's OWN connection, independent of both handlers. It sets the
+      # table up, plants the sentinel, and answers "is the table intact" - so
+      # intactness is never asserted through the connection under test.
+      probe = nil
+      first_use = nil
+      second_use = nil
+      created_here = false
+
+      begin
+        probe = Tina4::Database.new(engine[:url],
+                                    username: engine[:username], password: engine[:password])
+        had_table = probe.table_exists?(session_table)
+
+        set_real_env("TINA4_DATABASE_URL" => engine[:url],
+                     "TINA4_DATABASE_USERNAME" => engine[:username],
+                     "TINA4_DATABASE_PASSWORD" => engine[:password])
+
+        # WORKER A. The first boot creates the table. ensure_table is private
+        # because nothing outside the handler should call it, but it is the
+        # first thing read/write/destroy/cleanup/gc each do, so driving it
+        # directly exercises the real path with nothing else in the way.
+        first_use = Tina4::SessionHandlers::DatabaseHandler.new
+        first_use.send(:ensure_table)
+        created_here = !had_table
+
+        unless probe.table_exists?(session_table)
+          broken << "#{engine[:name]} (first use did not create #{session_table})"
+          next
+        end
+
+        # A row planted BEFORE the second creation. If the second CREATE were
+        # allowed to replace the table rather than being absorbed, this row
+        # would be gone afterwards - which is how "intact" is proved rather
+        # than assumed.
+        probe.execute(
+          "INSERT INTO #{session_table} (session_id, data, expires_at) VALUES (?, ?, ?)",
+          [sentinel_id, '{"sentinel":true}', 0.0]
+        )
+        begin
+          probe.commit
+        rescue StandardError
+          nil # autocommit engines have nothing to commit
+        end
+
+        # WORKER B. A FRESH handler, so @table_ready is unset and the CREATE is
+        # really issued against a table that is already there - the losing side
+        # of the concurrent first-use race, made deterministic.
+        second_use = Tina4::SessionHandlers::DatabaseHandler.new
+        begin
+          second_use.send(:ensure_table)
+        rescue StandardError => e
+          broken << "#{engine[:name]} (second first-use RAISED #{e.class}: #{e.message.to_s[0, 200]})"
+          next
+        end
+
+        if !probe.table_exists?(session_table)
+          broken << "#{engine[:name]} (#{session_table} is GONE after the second first-use)"
+        elsif probe.fetch_one("SELECT session_id FROM #{session_table} WHERE session_id = ?",
+                              [sentinel_id]).nil?
+          broken << "#{engine[:name]} (the row planted before the second first-use was lost - " \
+                    "the table was replaced, not left alone)"
+        else
+          ran << engine[:name]
+        end
+      # LoadError too, and deliberately: a missing driver gem is a ScriptError,
+      # not a StandardError, so without it the FIRST engine whose gem is absent
+      # aborts the whole example and the engines after it are never reached.
+      # An engine that cannot be driven is a broken engine, reported by name
+      # alongside the rest, not an exception that hides the other four.
+      rescue StandardError, LoadError => e
+        broken << "#{engine[:name]} (#{e.class}: #{e.message.to_s[0, 200]})"
+      ensure
+        close_handler.call(first_use)
+        close_handler.call(second_use)
+        if probe
+          begin
+            if created_here
+              probe.execute("DROP TABLE #{session_table}")
+            else
+              probe.execute("DELETE FROM #{session_table} WHERE session_id = ?", [sentinel_id])
+            end
+            begin
+              probe.commit
+            rescue StandardError
+              nil
+            end
+          rescue StandardError
+            nil
+          end
+          begin
+            probe.close
+          rescue StandardError
+            nil
+          end
+        end
+      end
+    end
+
+    expect(broken).to be_empty,
+                      "the concurrent first-use race is NOT covered on: #{broken.join('; ')}. " \
+                      "Two workers booting together both issue the CREATE; the loser must be " \
+                      "absorbed, because the alternative is the session backend refusing to " \
+                      "start and nobody being able to log in."
+    expect(ran.length).to(
+      be >= engines.length,
+      "only #{ran.length} of #{engines.length} engine(s) ran (#{ran.join(', ')}). The race guard " \
+      "has to hold on EVERY engine - IF NOT EXISTS covers sqlite/postgres/mysql engine-side, so a " \
+      "run that skipped mssql or firebird has proved nothing about the engines that need the rescue."
+    )
+
+    RSpec.configuration.reporter.message("     race covered on: #{ran.join(', ')}")
   end
 end
