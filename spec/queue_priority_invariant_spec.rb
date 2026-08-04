@@ -63,8 +63,12 @@ RSpec.describe "Queue priority invariant" do
     end
     @tracked = []
   end
-  MONGO_HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
-  MONGO_PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
+  # PREFIXED: a constant inside RSpec.describe is defined on Object (GLOBAL).
+  # Bare MONGO_HOST/MONGO_PORT collided with queue_backends_spec.rb's. Both
+  # happen to be 27017 today, so nothing broke - but that is luck, not design,
+  # and it is the same landmine that made the delay spec hijack dev-admin's port.
+  PRIORITY_MONGO_HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
+  PRIORITY_MONGO_PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
 
   def self.reachable?(host, port)
     Socket.tcp(host, port, connect_timeout: 2, &:close)
@@ -79,13 +83,13 @@ RSpec.describe "Queue priority invariant" do
     # TINA4_MONGO_URI from here changed how that server came up and its
     # requests died with EOFError. Restored in after(:all) below.
     @env_snapshot = ENV.slice(*%w[TINA4_MONGO_URI TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS])
-    unless self.class.reachable?(MONGO_HOST, MONGO_PORT)
-      why = "MongoDB is not reachable at #{MONGO_HOST}:#{MONGO_PORT}"
+    unless self.class.reachable?(PRIORITY_MONGO_HOST, PRIORITY_MONGO_PORT)
+      why = "MongoDB is not reachable at #{PRIORITY_MONGO_HOST}:#{PRIORITY_MONGO_PORT}"
       raise "TINA4_REQUIRE_SERVICES is set but #{why}" if ENV["TINA4_REQUIRE_SERVICES"]
 
       skip why
     end
-    ENV["TINA4_MONGO_URI"] = "mongodb://#{MONGO_HOST}:#{MONGO_PORT}"
+    ENV["TINA4_MONGO_URI"] = "mongodb://#{PRIORITY_MONGO_HOST}:#{PRIORITY_MONGO_PORT}"
   end
 
   after(:all) do
