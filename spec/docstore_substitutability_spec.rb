@@ -276,9 +276,40 @@ RSpec.describe "DocStore substitutability" do
     # What is asserted is the SHAPE of the growth, not its size. A pool
     # legitimately opens several connections and then PLATEAUS; a leak keeps
     # climbing.
-    def server_connections
+    #
+    # EVERY COUNT HERE IS SCOPED TO THE CONNECTIONS THIS TEST OWNS.
+    # serverStatus.connections.current, which this spec used to read, is a
+    # SERVER-GLOBAL counter across every client on that mongod, so any other
+    # process moves it and the assertion becomes a coin flip rather than a
+    # gate. Measured 2026-08-04 against the shared lab MongoDB 7.0.39 with the
+    # docstore code UNCHANGED and correct, the global count read [88, 89, 90]
+    # with one other agent connected and [193, 194, 195] with 45 further real
+    # clients held open, against an idle baseline near 6.
+    #
+    # $currentOp with idleConnections is the per-client view: an appName in the
+    # connection string tags every socket this test's client opens, and nobody
+    # else's carry it. That also lets close_doc_store be asserted at its real
+    # strength - OUR connections must reach exactly ZERO, not merely "fewer
+    # than before", which another tenant disconnecting could satisfy alone.
+    # A `let`, not a bare constant: a constant declared inside an RSpec
+    # example group lands on Object and is visible to every other spec file.
+    let(:lifecycle_app_name) { "tina4_docstore_lifecycle_#{SecureRandom.hex(5)}" }
+
+    def tagged_uri
+      separator = DOCSTORE_MONGO_URI.include?("?") ? "&" : "/?"
+      "#{DOCSTORE_MONGO_URI}#{separator}appName=#{lifecycle_app_name}"
+    end
+
+    def own_connections
       probe = Mongo::Client.new(DOCSTORE_MONGO_URI)
-      probe.database.command(serverStatus: 1).first["connections"]["current"]
+      rows = probe.database.aggregate([
+                                        { "$currentOp" => { "allUsers" => true, "idleConnections" => true,
+                                                            "localOps" => true } },
+                                        { "$match" => { "appName" => lifecycle_app_name } },
+                                        { "$count" => "n" }
+                                      ]).to_a
+      # $count emits NO document when nothing matched, which is 0.
+      rows.empty? ? 0 : rows.first["n"]
     ensure
       probe&.close
     end
@@ -286,29 +317,37 @@ RSpec.describe "DocStore substitutability" do
     it "repeated get collection does not grow connections" do
       skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
-      ENV["TINA4_MONGO_URI"] = DOCSTORE_MONGO_URI
+      ENV["TINA4_MONGO_URI"] = tagged_uri
       ENV["TINA4_DOC_STORE_PATH"] = File.join(Dir.mktmpdir, "ds.db")
+
+      # The measurement must be able to SEE this client, or every expectation
+      # below is vacuously true and proves nothing.
+      Tina4::DocStore.get_collection("lifecycle_probe").count_documents({})
+      expect(own_connections).to be > 0,
+                                 "appName scoping saw none of our own connections - the probe is blind"
 
       rounds = (1..3).map do
         20.times { Tina4::DocStore.get_collection("lifecycle_probe").count_documents({}) }
-        server_connections
+        own_connections
       end
 
       settled = rounds.last
       100.times { Tina4::DocStore.get_collection("lifecycle_probe").count_documents({}) }
-      after_hundred = server_connections
+      after_hundred = own_connections
 
       # POSITIVE: 100 further calls on a settled pool add nothing. Under the old
       # one-client-per-call code this was roughly +300.
-      expect(after_hundred).to be <= (settled + 2),
+      expect(after_hundred).to be <= settled,
                                "connections still growing: settled=#{settled} after=#{after_hundred}"
+      # And the growth flattened rather than tracking the call count. Both
+      # halves are scoped, so the ceiling measures OUR pool.
       expect(rounds[2] - rounds[1]).to be <= 2, "rounds=#{rounds.inspect}"
-      expect(rounds[2]).to be < 60, "rounds=#{rounds.inspect}"
+      expect(rounds[2]).to be <= 10, "our own pool is not bounded: rounds=#{rounds.inspect}"
 
-      before = server_connections
+      # NEGATIVE: after close there must be NONE of ours left, not merely fewer.
       Tina4::DocStore.close_doc_store
       sleep 1
-      expect(server_connections).to be < before, "close_doc_store released nothing"
+      expect(own_connections).to eq(0), "close_doc_store released nothing"
     end
   end
 end
