@@ -180,7 +180,7 @@ RSpec.describe "DocStore substitutability" do
       end
     end
 
-    it "raises instead of using the local file when the driver is absent" do
+    it "a missing driver raises instead of using the local file" do
       # A password in the URI, so the credential-leak expectation has something
       # real to catch.
       report = run_driver_absence_probe("mongodb://docstore_user:s3cr3t-p4ssw0rd@192.0.2.1:27017")
@@ -208,7 +208,7 @@ RSpec.describe "DocStore substitutability" do
       # URI routinely carries credentials and an error string is the most-logged
       # text a framework emits.
       expect(message).not_to include("s3cr3t-p4ssw0rd"),
-                             "the error message leaked the URI credentials: #{message}"
+                             "the message does not leak the uri credentials, but it did: #{message}"
 
       # NEGATIVE, and the one that matters most: nothing was written to the
       # local store.
@@ -216,7 +216,7 @@ RSpec.describe "DocStore substitutability" do
                                              "the local SQLite store was created even though a Mongo URI was configured"
     end
 
-    it "still selects mongo when the same uri has the driver present" do
+    it "the same uri with the driver present still selects mongo" do
       # POSITIVE half: the raise must be about the DRIVER, not the URI. Without
       # this, deleting the whole real-Mongo path would satisfy the case above.
       skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
