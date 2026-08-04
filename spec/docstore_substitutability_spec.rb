@@ -95,6 +95,140 @@ RSpec.describe "DocStore substitutability" do
     end
   end
 
+  # ── the driverless environment (ADR-0033) ────────────────────────────────
+  #
+  # NO MOCKS, and this is the case where that rule bites hardest: stubbing
+  # `require` is exactly the forbidden thing, because the bug being pinned IS
+  # how the LoadError is handled. A double would test the double.
+  #
+  # So the gem is made GENUINELY absent: a child ruby with GEM_HOME and
+  # GEM_PATH pointed at an EMPTY directory, and BUNDLE_GEMFILE / RUBYOPT
+  # scrubbed so bundler cannot put the bundle's gems back. `require "mongo"`
+  # really raises LoadError there. Nothing needs installing, because the raise
+  # must happen BEFORE the SQLite store is ever reached - so if sqlite3 is
+  # missing too, and the code is correct, we never notice.
+  #
+  # The child reports whether it really was driverless, so a leaky environment
+  # FAILS the spec instead of quietly proving nothing.
+  describe "a missing driver has one outcome in all four" do
+    # docstore_contract.json :: a-missing-driver-has-one-outcome-in-all-four
+    #
+    # MEASURED 2026-08-01 and re-measured 2026-08-04 at v3 HEAD: serverless?
+    # answered true and get_collection returned a SqliteCollection. Production
+    # writes went to a container-local file nobody reads, which vanishes on the
+    # next deploy, with no error at any point.
+    #
+    # ADR-0024 rule 3, settled for DocStore by ADR-0033: a provider that cannot
+    # honour an operation must RAISE, naming the provider and what is missing.
+    # A method, not a bare constant: a constant declared inside an RSpec
+    # example group lands on Object and is visible to every other spec file.
+    def driver_absence_probe
+      <<~RUBY
+        require "json"
+        report = {}
+        begin
+          require "mongo"
+          report["driverless"] = false
+        rescue LoadError
+          report["driverless"] = true
+        end
+        $LOAD_PATH.unshift(ARGV[0])
+        require "tina4/docstore"
+        report["serverless"] = Tina4::DocStore.serverless?
+        begin
+          collection = Tina4::DocStore.get_collection("driver_absence_probe")
+          report["outcome"] = "returned"
+          report["returned_type"] = collection.class.name
+        rescue Exception => e
+          report["outcome"] = "raised"
+          report["error_type"] = e.class.name.split("::").last
+          report["error_ancestors"] = e.class.ancestors.map(&:to_s)
+          report["message"] = e.message
+        end
+        report["store_file_exists"] = File.exist?(ENV.fetch("TINA4_DOC_STORE_PATH"))
+        print "__PROBE__" + JSON.generate(report)
+      RUBY
+    end
+
+    def run_driver_absence_probe(uri)
+      require "tmpdir"
+      require "json"
+      Dir.mktmpdir do |scratch|
+        empty_gem_home = File.join(scratch, "gems")
+        Dir.mkdir(empty_gem_home)
+        probe_path = File.join(scratch, "probe.rb")
+        File.write(probe_path, driver_absence_probe)
+        store_path = File.join(scratch, "must_not_be_created.db")
+        lib_dir = File.expand_path("../lib", __dir__)
+
+        # A CLEAN env. Every BUNDLE*/BUNDLER* key plus RUBYLIB and RUBYOPT is
+        # removed, not just BUNDLE_GEMFILE: `bundle exec` also exports RUBYLIB
+        # pointing at bundler's own lib, which re-runs bundler/setup in the
+        # child and dies resolving the bundle against the empty GEM_HOME.
+        child_env = ENV.keys.grep(/\ABUNDLER?_/).to_h { |key| [key, nil] }
+        child_env.merge!(
+          "RUBYLIB" => nil,
+          "RUBYOPT" => nil,
+          "GEM_HOME" => empty_gem_home,
+          "GEM_PATH" => empty_gem_home,
+          "TINA4_MONGO_URI" => uri,
+          "TINA4_DOC_STORE_PATH" => store_path
+        )
+        output = IO.popen(child_env, [RbConfig.ruby, probe_path, lib_dir], err: [:child, :out], &:read)
+        expect(output).to include("__PROBE__"), "probe did not report: #{output}"
+        JSON.parse(output.split("__PROBE__", 2).last)
+      end
+    end
+
+    it "a missing driver raises instead of using the local file" do
+      # A password in the URI, so the credential-leak expectation has something
+      # real to catch.
+      report = run_driver_absence_probe("mongodb://docstore_user:s3cr3t-p4ssw0rd@192.0.2.1:27017")
+
+      # The environment must really be driverless, or nothing below means
+      # anything. This FAILS rather than skipping, on purpose.
+      expect(report["driverless"]).to be(true),
+                                      "the probe ruby could require 'mongo', so this spec would have proved nothing"
+
+      # Configuration says Mongo, so serverless? must say Mongo. When it
+      # answered true here, get_collection took the local branch and that WAS
+      # the silent degradation.
+      expect(report["serverless"]).to be(false)
+
+      expect(report["outcome"]).to eq("raised"),
+                                   "expected a raise, got #{report['returned_type']}"
+      expect(report["error_type"]).to eq("DocStoreDriverMissing")
+
+      message = report["message"]
+      expect(message).to include("mongo")
+      expect(message).to include("gem install mongo")
+      expect(message).to include("TINA4_MONGO_URI")
+
+      # NEGATIVE: naming the variable must not mean printing its value. A Mongo
+      # URI routinely carries credentials and an error string is the most-logged
+      # text a framework emits.
+      expect(message).not_to include("s3cr3t-p4ssw0rd"),
+                             "the message does not leak the uri credentials, but it did: #{message}"
+
+      # NEGATIVE, and the one that matters most: nothing was written to the
+      # local store.
+      expect(report["store_file_exists"]).to be(false),
+                                             "the local SQLite store was created even though a Mongo URI was configured"
+    end
+
+    it "the same uri with the driver present still selects mongo" do
+      # POSITIVE half: the raise must be about the DRIVER, not the URI. Without
+      # this, deleting the whole real-Mongo path would satisfy the case above.
+      skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
+
+      collection = collection_for(DOCSTORE_MONGO_URI)
+      expect(Tina4::DocStore.serverless?).to be(false)
+      expect(collection).not_to be_a(Tina4::DocStore::SqliteCollection)
+      collection.insert_one({ "proof" => "driver-present" })
+      collection.delete_many({})
+    end
+  end
+
   # ── the shared round trip, on BOTH providers ─────────────────────────────
 
   shared_examples "an interchangeable document store" do |provider|
@@ -276,9 +410,40 @@ RSpec.describe "DocStore substitutability" do
     # What is asserted is the SHAPE of the growth, not its size. A pool
     # legitimately opens several connections and then PLATEAUS; a leak keeps
     # climbing.
-    def server_connections
+    #
+    # EVERY COUNT HERE IS SCOPED TO THE CONNECTIONS THIS TEST OWNS.
+    # serverStatus.connections.current, which this spec used to read, is a
+    # SERVER-GLOBAL counter across every client on that mongod, so any other
+    # process moves it and the assertion becomes a coin flip rather than a
+    # gate. Measured 2026-08-04 against the shared lab MongoDB 7.0.39 with the
+    # docstore code UNCHANGED and correct, the global count read [88, 89, 90]
+    # with one other agent connected and [193, 194, 195] with 45 further real
+    # clients held open, against an idle baseline near 6.
+    #
+    # $currentOp with idleConnections is the per-client view: an appName in the
+    # connection string tags every socket this test's client opens, and nobody
+    # else's carry it. That also lets close_doc_store be asserted at its real
+    # strength - OUR connections must reach exactly ZERO, not merely "fewer
+    # than before", which another tenant disconnecting could satisfy alone.
+    # A `let`, not a bare constant: a constant declared inside an RSpec
+    # example group lands on Object and is visible to every other spec file.
+    let(:lifecycle_app_name) { "tina4_docstore_lifecycle_#{SecureRandom.hex(5)}" }
+
+    def tagged_uri
+      separator = DOCSTORE_MONGO_URI.include?("?") ? "&" : "/?"
+      "#{DOCSTORE_MONGO_URI}#{separator}appName=#{lifecycle_app_name}"
+    end
+
+    def own_connections
       probe = Mongo::Client.new(DOCSTORE_MONGO_URI)
-      probe.database.command(serverStatus: 1).first["connections"]["current"]
+      rows = probe.database.aggregate([
+                                        { "$currentOp" => { "allUsers" => true, "idleConnections" => true,
+                                                            "localOps" => true } },
+                                        { "$match" => { "appName" => lifecycle_app_name } },
+                                        { "$count" => "n" }
+                                      ]).to_a
+      # $count emits NO document when nothing matched, which is 0.
+      rows.empty? ? 0 : rows.first["n"]
     ensure
       probe&.close
     end
@@ -286,29 +451,37 @@ RSpec.describe "DocStore substitutability" do
     it "repeated get collection does not grow connections" do
       skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
-      ENV["TINA4_MONGO_URI"] = DOCSTORE_MONGO_URI
+      ENV["TINA4_MONGO_URI"] = tagged_uri
       ENV["TINA4_DOC_STORE_PATH"] = File.join(Dir.mktmpdir, "ds.db")
+
+      # The measurement must be able to SEE this client, or every expectation
+      # below is vacuously true and proves nothing.
+      Tina4::DocStore.get_collection("lifecycle_probe").count_documents({})
+      expect(own_connections).to be > 0,
+                                 "appName scoping saw none of our own connections - the probe is blind"
 
       rounds = (1..3).map do
         20.times { Tina4::DocStore.get_collection("lifecycle_probe").count_documents({}) }
-        server_connections
+        own_connections
       end
 
       settled = rounds.last
       100.times { Tina4::DocStore.get_collection("lifecycle_probe").count_documents({}) }
-      after_hundred = server_connections
+      after_hundred = own_connections
 
       # POSITIVE: 100 further calls on a settled pool add nothing. Under the old
       # one-client-per-call code this was roughly +300.
-      expect(after_hundred).to be <= (settled + 2),
+      expect(after_hundred).to be <= settled,
                                "connections still growing: settled=#{settled} after=#{after_hundred}"
+      # And the growth flattened rather than tracking the call count. Both
+      # halves are scoped, so the ceiling measures OUR pool.
       expect(rounds[2] - rounds[1]).to be <= 2, "rounds=#{rounds.inspect}"
-      expect(rounds[2]).to be < 60, "rounds=#{rounds.inspect}"
+      expect(rounds[2]).to be <= 10, "our own pool is not bounded: rounds=#{rounds.inspect}"
 
-      before = server_connections
+      # NEGATIVE: after close there must be NONE of ours left, not merely fewer.
       Tina4::DocStore.close_doc_store
       sleep 1
-      expect(server_connections).to be < before, "close_doc_store released nothing"
+      expect(own_connections).to eq(0), "close_doc_store released nothing"
     end
   end
 end
