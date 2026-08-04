@@ -36,9 +36,24 @@ module CacheKeyIdentityContract
   PG_PORT = ENV.fetch("TINA4_TEST_PG_PORT", "55432")
   PG_USER = ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4")
   PG_PASS = ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4")
-  # Databases this contract OWNS. Never touch one we did not create.
-  PG_DB_A = "tina4_cache_contract_a"
-  PG_DB_B = "tina4_cache_contract_b"
+  # Databases this contract OWNS, NAMED PER LANGUAGE. Never touch one we did not
+  # create, and never drop these.
+  #
+  # They used to be tina4_cache_contract_a/_b - one shared pair for all four
+  # frameworks against one PostgreSQL server. Creating them if absent fixed the
+  # hard "database does not exist" failure but made a worse one: the PHP port
+  # measured a run that errored with `database "tina4_cache_contract_a" does not
+  # exist` SECONDS AFTER it had listed both as present, because a sibling
+  # framework's suite dropped the shared pair mid-run. Self-provisioning alone
+  # turns an obvious, reproducible failure into an INTERMITTENT one - it passes
+  # on a quiet machine, fails on a loaded runner, and an intermittent red is the
+  # kind people re-run until it goes green.
+  #
+  # Per-language names remove the shared object entirely, which is the same call
+  # already made for the service containers. Python uses _python_a/_b, PHP
+  # _php_a/_b, Node _node_a/_b.
+  PG_DB_A = "tina4_cache_ident_ruby_a"
+  PG_DB_B = "tina4_cache_ident_ruby_b"
 
   SQL = "SELECT owner FROM widget WHERE id = ?"
 

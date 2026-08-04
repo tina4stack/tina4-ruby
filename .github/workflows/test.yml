@@ -348,7 +348,37 @@ jobs:
             spec/cache_provider_selection_spec.rb spec/cache_null_round_trip_spec.rb \
             spec/cache_sweep_counts_spec.rb spec/cache_clear_persistent_layer_spec.rb \
             spec/cache_memcached_exptime_spec.rb spec/cache_backends_spec.rb \
-            spec/cache_spec.rb spec/db_query_cache_spec.rb
+            spec/cache_spec.rb spec/db_query_cache_spec.rb \
+            --format progress --format json --out zero-dep-results.json
+
+          # THE FALLBACK TELL. rspec exits 0 when it runs ZERO examples, so a
+          # green step is not evidence this leg exercised anything. If the redis
+          # service were unreachable, or the file list silently matched nothing,
+          # this step would "pass" having proven nothing at all - the mirror
+          # image of the gem check above, and just as quiet.
+          #
+          # example_count is STATIC: `rspec --dry-run` reports 137 with the cache
+          # env unset, so no example here is defined conditionally and the floor
+          # is exact rather than a guess. Raise it deliberately when examples are
+          # added; a DROP below it should fail the build, because a vanished test
+          # is exactly what this gate is for.
+          #
+          # pending must be EXACTLY 0. The job sets TINA4_REQUIRE_SERVICES=1, so
+          # a skipped example means a provisioned service was unreachable and the
+          # coverage this leg claims did not happen.
+          bundle exec ruby -e '
+            require "json"
+            summary = JSON.parse(File.read("zero-dep-results.json"))["summary"]
+            examples = summary["example_count"]
+            failures = summary["failure_count"]
+            pending  = summary["pending_count"]
+            floor    = 137
+            puts "zero-dependency leg: examples=#{examples} failures=#{failures} pending=#{pending}"
+            abort("FAILED: #{failures} failing examples") unless failures.zero?
+            abort("FAILED: #{pending} pending/skipped, expected 0 - a skip means a provisioned service was unreachable, so this leg proved nothing") unless pending.zero?
+            abort("FAILED: only #{examples} examples ran, expected at least #{floor} - the raw RESP transport was barely exercised") if examples < floor
+            puts "confirmed: the zero-dependency transport was genuinely exercised"
+          '
 
       - name: Report results
         if: always()
