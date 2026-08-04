@@ -59,8 +59,14 @@ RSpec.describe "Queue delay invariant" do
   # suite quick. A dropped delay shows up instantly, so this is no race.
   DELAY_SECONDS = 3
 
-  HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
-  PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
+  # PREFIXED on purpose. A constant assigned inside an RSpec.describe block is
+  # defined on Object, i.e. GLOBAL. Bare HOST/PORT here collided with
+  # dev_admin_run_chips_spec.rb's `PORT = free_port`: whichever file loaded last
+  # won, so that spec spawned its Puma on 27017 and then spoke HTTP to MongoDB,
+  # and all 8 of its examples died with EOFError. Ruby said so out loud -
+  # "warning: already initialized constant PORT" - and nobody read the warning.
+  DELAY_MONGO_HOST = ENV["TINA4_TEST_MONGO_HOST"] || "127.0.0.1"
+  DELAY_MONGO_PORT = (ENV["TINA4_TEST_MONGO_PORT"] || "27017").to_i
 
   def self.reachable?(host, port)
     Socket.tcp(host, port, connect_timeout: 2, &:close)
@@ -75,13 +81,13 @@ RSpec.describe "Queue delay invariant" do
     # TINA4_MONGO_URI from here changed how that server came up and its
     # requests died with EOFError. Restored in after(:all) below.
     @env_snapshot = ENV.slice(*%w[TINA4_MONGO_URI TINA4_RABBITMQ_HOST TINA4_RABBITMQ_PORT TINA4_KAFKA_BROKERS])
-    unless self.class.reachable?(HOST, PORT)
-      why = "MongoDB is not reachable at #{HOST}:#{PORT}"
+    unless self.class.reachable?(DELAY_MONGO_HOST, DELAY_MONGO_PORT)
+      why = "MongoDB is not reachable at #{DELAY_MONGO_HOST}:#{DELAY_MONGO_PORT}"
       raise "TINA4_REQUIRE_SERVICES is set but #{why}" if ENV["TINA4_REQUIRE_SERVICES"]
 
       skip why
     end
-    ENV["TINA4_MONGO_URI"] = "mongodb://#{HOST}:#{PORT}"
+    ENV["TINA4_MONGO_URI"] = "mongodb://#{DELAY_MONGO_HOST}:#{DELAY_MONGO_PORT}"
   end
 
   after(:all) do
