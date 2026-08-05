@@ -16,7 +16,7 @@ module Tina4
       # TINA4_SESSION_BACKEND=redis can actually be pointed at a server by env.
       # An explicit constructor option always wins over the environment.
       def initialize(options = {})
-        @prefix = options[:prefix] || "tina4:session:"
+        @prefix = options[:prefix] || ENV["TINA4_SESSION_REDIS_PREFIX"] || "tina4:session:"
         # TINA4_SESSION_TTL reaches every backend (ADR-0024); was a hard-coded
         # 86400. 3600 matches Python (the master), PHP and Node.
         @ttl = (options[:ttl] || ENV["TINA4_SESSION_TTL"] || 3600).to_i
