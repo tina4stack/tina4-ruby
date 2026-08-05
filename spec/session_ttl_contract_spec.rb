@@ -246,7 +246,17 @@ RSpec.describe "Session TTL contract" do
       id = "ttloob-#{name}-#{SecureRandom.hex(6)}"
       handler_for(name, tmp_dir, db_file).write(id, { "seeded" => true })
       client = Tina4::SessionHandlers::RespClient.new(host: host, port: port)
-      observed[name] = client.command("TTL", "tina4:session:#{id}").to_f
+      # SELECT the SAME db the handler wrote to. A fresh connection is always
+      # db 0, so probing db 0 while the handler honoured TINA4_SESSION_REDIS_DB
+      # found nothing; redis answers TTL on a missing key with -2 and the
+      # assertion then blamed TINA4_SESSION_TTL. A config mismatch reported as
+      # a TTL bug - it failed in three frameworks at once and looked real.
+      db = ENV.fetch(name == "valkey" ? "TINA4_SESSION_VALKEY_DB" : "TINA4_SESSION_REDIS_DB", "0").to_i
+      client.command("SELECT", db.to_s) if db.positive?
+      ttl = client.command("TTL", "tina4:session:#{id}").to_f
+      raise "tina4:session:#{id} is absent from #{name} db #{db} - probe and handler disagree" if ttl == -2
+
+      observed[name] = ttl
     end
 
     # mongodb - read the document's own deadline with an independent client.
