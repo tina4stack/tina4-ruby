@@ -341,7 +341,31 @@ module Tina4
       end
 
       def stringify_keys(hash)
-        hash.each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+        hash.each_with_object({}) { |(k, v), h| h[column_name(k.to_s)] = v }
+      end
+
+      # Firebird's stored column name, folded back only when it was folded.
+      #
+      # Firebird's identifier folding is ASYMMETRIC. An unquoted `AS x` is
+      # stored UPPERCASE, so the driver hands back "X" where every other engine
+      # Tina4 supports gives "x" -- PostgreSQL folds to lower, and MySQL, SQLite
+      # and MSSQL preserve what you wrote. Portable code reading row["x"] broke
+      # on Firebird alone; the live URL examples in this repo asserted row["x"]
+      # and could never have passed once they actually reached a server.
+      #
+      # A QUOTED `AS "MyCol"` is stored exactly as written, and that case is
+      # deliberate -- the caller asked for it -- so it is left alone. Folding
+      # unconditionally makes a mixed-case key unreachable, the same asymmetric
+      # trap that made table_exists? miss quoted tables.
+      #
+      # So: fold back only a name carrying no lowercase letter, the only thing
+      # unquoted folding can produce. A quoted ALL-CAPS name is genuinely
+      # indistinguishable from a folded one and is lowercased too; that
+      # ambiguity is Firebird's, and it is the one spelling this cannot
+      # round-trip.
+      def column_name(raw)
+        name = raw.strip
+        name == name.upcase ? name.downcase : name
       end
 
       # Ensure Firebird BLOB columns are proper byte strings.

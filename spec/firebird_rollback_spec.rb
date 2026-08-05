@@ -87,7 +87,9 @@ RSpec.describe "Firebird explicit-transaction rollback undoes writes (real FB)" 
   end
 
   def count(db, id)
-    db.fetch_one("SELECT COUNT(*) AS C FROM #{FB_ROLLBACK_TABLE} WHERE id = ?", [id])["C"].to_i
+    # Lowercase: an unquoted alias now reads back folded, like every other
+    # engine (see FirebirdDriver#column_name).
+    db.fetch_one("SELECT COUNT(*) AS C FROM #{FB_ROLLBACK_TABLE} WHERE id = ?", [id])["c"].to_i
   end
 
   it "rolls back an insert made inside an explicit transaction (NEGATIVE — fails on old code)" do

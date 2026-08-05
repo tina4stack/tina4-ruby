@@ -16,6 +16,7 @@
 
 require "spec_helper"
 require "socket"
+require "uri"
 require "tina4/drivers/firebird_driver"
 
 RSpec.describe Tina4::Drivers::FirebirdDriver do
@@ -72,9 +73,35 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
 
   # ── End-to-end against a live Firebird container ─────────────────────────
 
-  FIREBIRD_HOST = "localhost"
-  FIREBIRD_PORT = 53050
-  LIVE_DB_PATH = "/firebird/data/tina4.fdb"
+  # Where the live Firebird actually is: TINA4_TEST_FIREBIRD_URL when set -- the
+  # SAME variable the Python and PHP suites already read, so one export points
+  # every framework at the same container.
+  #
+  # These three were hard-coded to localhost:53050 and /firebird/data/tina4.fdb,
+  # one particular container layout. Nothing publishes 53050 on the lab (Firebird
+  # is on 3050), so the reachability gate below could NEVER open: the live
+  # examples were excluded on every machine, which looks exactly like "the
+  # environment is not set up" and is how a permanently dead test stays invisible.
+  # The literals remain the fallback, so a host that really does publish 53050
+  # with that database path behaves precisely as before.
+  def self.live_firebird_target
+    url = ENV["TINA4_TEST_FIREBIRD_URL"].to_s.strip
+    return ["localhost", 53050, "/firebird/data/tina4.fdb"] if url.empty?
+
+    parsed = URI.parse(url)
+    path = parsed.path.to_s
+    # `@host:port//abs/path` is the absolute-path spelling; collapse the doubled
+    # leading slash so this is a plain absolute path again. The examples below
+    # re-add it for the double-slash form and strip it for the single-slash one.
+    path = path[1..] if path.start_with?("//")
+    [
+      parsed.host || "localhost",
+      parsed.port || 3050,
+      path.empty? ? "/firebird/data/tina4.fdb" : path,
+    ]
+  end
+
+  FIREBIRD_HOST, FIREBIRD_PORT, LIVE_DB_PATH = live_firebird_target
 
   def self.firebird_reachable?
     return @_firebird_reachable unless @_firebird_reachable.nil?
