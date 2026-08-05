@@ -547,8 +547,29 @@ RSpec.describe "DocStore substitutability" do
     let(:lifecycle_app_name) { "tina4_docstore_lifecycle_#{SecureRandom.hex(5)}" }
 
     def tagged_uri
-      separator = DOCSTORE_MONGO_URI.include?("?") ? "&" : "/?"
-      "#{DOCSTORE_MONGO_URI}#{separator}appName=#{lifecycle_app_name}"
+      mongo_uri_with_option(DOCSTORE_MONGO_URI, "appName=#{lifecycle_app_name}")
+    end
+
+    # Append one connection-string option to a MongoDB URI of ANY shape.
+    #
+    # The separator depends on whether the URI already has a PATH, not merely
+    # whether it has a query string. A mongodb URI needs a "/" before its
+    # query, but appending "/?" to a URI that already carries a database gives
+    # ".../tina4_rb/?x=1" -- the driver then reads the database name as
+    # "tina4_rb/" and rejects the whole string.
+    #
+    # MEASURED: the hand-rolled `include?("?") ? "&" : "/?"` join this replaces
+    # broke 3 of 6 real URI shapes -- host/db, a bare trailing slash, and
+    # mongodb+srv://.../db, the ordinary Atlas connection string. It only ever
+    # looked correct because the test Mongo URI happened to be the bare
+    # host:port form; the moment per-framework test isolation pointed it at a
+    # URI carrying a database, every caller failed at once. Fixed in all four.
+    def mongo_uri_with_option(uri, option)
+      return "#{uri}&#{option}" if uri.include?("?")
+
+      after_scheme = uri.split("://", 2).last.to_s
+
+      "#{uri}#{after_scheme.include?('/') ? '?' : '/?'}#{option}"
     end
 
     def own_connections
