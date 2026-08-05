@@ -592,9 +592,34 @@ module Tina4
       # silently dropped — a full-table read (MEASURED: 150 of 150 rows).
       has_limit = Tina4::Database.has_trailing_limit?(sql)
       applied_limit = 0
+      # `limit: 0` means "no cap, give me everything" - the same reading as the
+      # Python master's `limit <= 0`. Ruby treats 0 as TRUTHY, so this used to
+      # fall through and append a literal `LIMIT 0`, returning ZERO rows where
+      # Python returned all of them for the identical call. fetch_all passes nil
+      # and was never affected, which is why it went unnoticed.
+      limit = nil if limit.is_a?(Numeric) && limit <= 0
       if limit && !has_limit
         effective_sql = drv.apply_limit(effective_sql, limit, offset)
         applied_limit = limit
+      end
+
+      # COUNT PROBE: `count` is the TRUE total for the filter, not the number of
+      # rows this page returned.
+      #
+      # Ruby and Node used to populate count with records.length while Python
+      # and PHP populated it from a probe, so `db.fetch(sql).count` answered 20
+      # here and 250 there for one query against one table - and every paginated
+      # response built on it under-reported. MEASURED 2026-08-05 on a 250-row
+      # table read with limit=20: Ruby reported total 20 and 1 page against
+      # Python's 250 and 13.
+      #
+      # Only probed when WE appended the pagination. If no limit was applied
+      # (fetch_all, or the caller supplied their own LIMIT) the rows returned
+      # ARE the whole answer for this SQL, so records.length is already the true
+      # total and a second round-trip would buy nothing.
+      total = nil
+      if applied_limit.positive?
+        total = count_probe(drv, sql, params)
       end
 
       if @cache_enabled && !no_cache
@@ -607,13 +632,13 @@ module Tina4
         # fetch_direct RAISES on a SQL error (and captures @last_error), so a
         # failed read never reaches cache_set below — we never cache an empty
         # result produced by a buried failure.
-        result = fetch_direct(drv, effective_sql, params, limit: applied_limit, offset: offset)
+        result = fetch_direct(drv, effective_sql, params, limit: applied_limit, offset: offset, total: total)
         cache_set(key, result)
         @cache_mutex.synchronize { @cache_misses += 1 }
         return result
       end
 
-      fetch_direct(drv, effective_sql, params, limit: applied_limit, offset: offset)
+      fetch_direct(drv, effective_sql, params, limit: applied_limit, offset: offset, total: total)
     end
 
     # Fetch a single row (or nil).
@@ -1217,11 +1242,45 @@ module Tina4
     # 10 on EVERY fetch whatever limit ran — the same stale v2 number the buried
     # PHP row-cap test asserted as the cap, sitting one field away from the read
     # path it fails to describe.
-    def fetch_direct(drv, effective_sql, params, limit: 0, offset: 0)
+    # The true row count for `sql`, ignoring the pagination we appended.
+    #
+    # BEST EFFORT BY DESIGN, and it must never mask a real failure: it runs
+    # BEFORE the main query and returns nil on any error, so the main query
+    # still runs and still raises loudly on bad SQL. A probe that swallowed the
+    # error AND the main query's would turn a typo into "no rows".
+    #
+    # nil (not 0) is the miss value. DatabaseResult then falls back to
+    # records.length, which is a true lower bound. Reporting 0 alongside 100
+    # real records - as a failed probe would - is simply false, and it is the
+    # same "envelope states a wrong number authoritatively" defect this whole
+    # change exists to remove.
+    #
+    # The closing paren goes on its OWN LINE. Appended inline, a trailing
+    # `-- comment` in the caller's SQL comments the paren out and the probe dies
+    # with "incomplete input". Postgres, MySQL, MSSQL and ODBC additionally
+    # require a name for the derived table; SQLite and Firebird do not, and
+    # Firebird rejects the `AS` keyword there - so the alias comes from the
+    # driver rather than being assumed.
+    def count_probe(drv, sql, params)
+      return nil unless driver_implements?(drv, :execute_query)
+
+      alias_name = driver_implements?(drv, :count_subquery_alias) ? drv.count_subquery_alias.to_s : ""
+      suffix = alias_name.empty? ? "" : " AS #{alias_name}"
+      rows = drv.execute_query("SELECT COUNT(*) AS tina4_total FROM (#{sql}\n)#{suffix}", params)
+      row = rows.is_a?(Array) ? rows.first : nil
+      return nil unless row.is_a?(Hash)
+
+      value = row["tina4_total"] || row[:tina4_total] || row["TINA4_TOTAL"] || row.values.first
+      value.nil? ? nil : value.to_i
+    rescue StandardError
+      nil
+    end
+
+    def fetch_direct(drv, effective_sql, params, limit: 0, offset: 0, total: nil)
       result = drv.execute_query(effective_sql, params)
       @last_error = nil
       Tina4::DatabaseResult.new(result, sql: effective_sql, db: self,
-                                limit: limit, offset: offset)
+                                limit: limit, offset: offset, count: total)
     rescue => e
       @last_error = driver_error_message(drv, e)
       raise

@@ -5,6 +5,14 @@ require_relative "schema_split"
 module Tina4
   module Drivers
     class MysqlDriver
+      # Postgres, MySQL, MSSQL and ODBC all REQUIRE a name for a derived
+      # table, so the COUNT probe in Database#count_probe wraps as
+      # `FROM (sql) AS _count_query`. SQLite and Firebird do not define
+      # this and get no alias - Firebird rejects `AS` in that position.
+      def count_subquery_alias
+        "_count_query"
+      end
+
       # First SIX characters of the statements whose row count #affected_rows
       # reports. "REPLAC" is REPLACE truncated to the same width.
       WRITE_VERBS = %w[INSERT UPDATE DELETE REPLAC].freeze

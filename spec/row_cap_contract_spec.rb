@@ -185,14 +185,17 @@ RSpec.describe "raw fetch row-cap contract" do
   end
 
   describe "where the cap lives in THIS framework (measured, not assumed)" do
-    it "reports a count of rows RETURNED, and the limit it actually applied" do
-      # 1. CHARACTERISATION, still. `count` is the number of rows RETURNED, not
-      #    the number of rows MATCHING. It reads 100 here, not 150. The comment
-      #    in the neighbouring spec/orm_row_cap_spec.rb asserts in prose that
-      #    count "stays 150 regardless of truncation" - that prose is wrong,
-      #    and it was never executed as an assertion, which is how it stayed
-      #    wrong. Anything paginating on `count` under a default fetch sees 100
-      #    of 100 and cannot tell that 50 rows were truncated.
+    it "reports the TRUE TOTAL as count, the rows returned, and the limit it applied" do
+      # 1. FIXED 2026-08-05. `count` is now the number of rows MATCHING (150),
+      #    not the number RETURNED (100), because Database#fetch runs a COUNT
+      #    probe whenever it applied a cap. This example used to assert the
+      #    opposite and pin it: anything paginating on `count` under a default
+      #    fetch saw 100 of 100 and could not tell that 50 rows were truncated.
+      #    The prose in the neighbouring spec/orm_row_cap_spec.rb - that count
+      #    "stays 150 regardless of truncation" - was RIGHT about the intended
+      #    contract and was simply never executed as an assertion, which is how
+      #    the code stayed wrong. It is asserted here now, in both halves:
+      #    records.length is the page, count is the total.
       #
       # 2. FIXED 2026-08-01. `limit` used to read 10 - on EVERY fetch, whatever
       #    limit was applied - because Database#fetch_direct never passed
@@ -203,7 +206,7 @@ RSpec.describe "raw fetch row-cap contract" do
       #    applied, so the field describes the read.
       result = @db.fetch("SELECT * FROM #{table}")
       expect(result.records.length).to eq(cap)
-      expect(result.count).to eq(cap)
+      expect(result.count).to eq(rows)
       expect(result.limit).to eq(cap)
       expect(result.offset).to eq(0)
     end

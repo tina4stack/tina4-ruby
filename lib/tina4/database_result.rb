@@ -110,23 +110,28 @@ module Tina4
     # total, so it looked like a real answer.
     #
     # WITH page:/per_page: it slices this result in memory, which is the
-    # behaviour GitHub issue #106 asked for. That is valid only when the result
-    # holds the WHOLE set. Slicing a result that is already ONE PAGE of a larger
-    # query is refused, because the slice is taken from row 0 of what you hold
-    # while the rows themselves start at @offset.
+    # behaviour GitHub issue #106 asked for. That is valid ONLY when the result
+    # holds the WHOLE set (records.size >= count). A PARTIAL result cannot be
+    # sliced by page number without lying: MEASURED on 100,000 rows read under
+    # the default cap of 100, pages 1-5 of 20 were right and every page from 6
+    # onward came back EMPTY while total_pages reported 5,000.
     #
-    # KNOWN, still open: `total` is only as honest as @count, and in Ruby
-    # @count is ROWS RETURNED, not the true total for the filter (Python and
-    # PHP populate it from a separate COUNT probe). Until that is fixed in the
-    # adapters, `total` under-reports on any capped read. See feature 18.
+    # `total` is @count, and @count is now the TRUE total for the filter in all
+    # four frameworks - Database#fetch runs a COUNT probe whenever it applied a
+    # limit. It used to be ROWS RETURNED here and in Node while Python and PHP
+    # probed, so one query answered 20 in two frameworks and 250 in the other
+    # two.
     def to_paginate(page: nil, per_page: nil)
-      if (page || per_page) && @offset.to_i > 0
+      if (page || per_page) && @records.size < @count
         raise ArgumentError,
               "to_paginate(page:, per_page:) slices the rows this result holds, but " \
-              "this result already starts at offset #{@offset} - it is one page of a " \
-              "larger query, so slicing it from row 0 gives a silently wrong answer. " \
-              "Call to_paginate with no arguments to describe the page you fetched, " \
-              "or re-fetch without limit/offset to slice the whole set in memory."
+              "this result holds only #{@records.size} of #{@count} rows - it is a " \
+              "PARTIAL result, so any page past the rows it holds comes back empty " \
+              "while total_pages claims it exists. MEASURED on 100,000 rows read under " \
+              "the default cap of 100: pages 1-5 of 20 were right and pages 6 onward " \
+              "returned NOTHING. Fetch the page you want instead: " \
+              "fetch(sql, limit: per_page, offset: (page - 1) * per_page), then call " \
+              "to_paginate with no arguments."
       end
 
       total = @count

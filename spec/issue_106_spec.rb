@@ -181,8 +181,14 @@ RSpec.describe "Issue #106 equivalent bugs" do
       150.times { |i| db.execute("INSERT INTO fetch_test (id, val) VALUES (?, ?)", [i + 1, "row_#{i + 1}"]) }
 
       result = db.fetch("SELECT * FROM fetch_test")
-      # Without an explicit limit, all 150 rows should be returned
-      expect(result.count).to eq(100)
+      # The default cap returns 100 ROWS, and `count` is the TRUE TOTAL for the
+      # filter (150) - not the rows returned. Both halves matter: the cap is what
+      # protects you from reading a whole table, and the true total is what lets
+      # a paginated response say how many pages really exist. This used to assert
+      # count == 100, which pinned the old rows-returned meaning and made a
+      # truncation indistinguishable from a complete answer.
+      expect(result.records.size).to eq(100)
+      expect(result.count).to eq(150)
 
       db.close
       File.delete(db_path) if File.exist?(db_path)
@@ -196,7 +202,8 @@ RSpec.describe "Issue #106 equivalent bugs" do
       150.times { |i| db.execute("INSERT INTO fetch_test2 (id, val) VALUES (?, ?)", [i + 1, "row_#{i + 1}"]) }
 
       result = db.fetch("SELECT * FROM fetch_test2", [], limit: 100)
-      expect(result.count).to eq(100)
+      expect(result.records.size).to eq(100)
+      expect(result.count).to eq(150)
 
       db.close
       File.delete(db_path) if File.exist?(db_path)
