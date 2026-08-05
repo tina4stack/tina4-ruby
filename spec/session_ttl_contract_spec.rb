@@ -244,17 +244,36 @@ RSpec.describe "Session TTL contract" do
       next unless services[name]
 
       id = "ttloob-#{name}-#{SecureRandom.hex(6)}"
-      handler_for(name, tmp_dir, db_file).write(id, { "seeded" => true })
-      client = Tina4::SessionHandlers::RespClient.new(host: host, port: port)
+      handler = handler_for(name, tmp_dir, db_file)
+      handler.write(id, { "seeded" => true })
+      # Take the KEY from the handler instead of rebuilding "tina4:session:#{id}".
+      # The prefix is a coordinate like the host, the port and the db number, and
+      # the two handlers do not resolve it the same way: ValkeyHandler reads
+      # TINA4_SESSION_VALKEY_PREFIX and RedisHandler reads no prefix variable at
+      # all. MEASURED 2026-08-05 under the lab isolation env, which exports both
+      # prefixes as tina4_rb_: redis PASSED because handler and probe were
+      # consistently literal, and valkey FAILED because the handler wrote
+      # tina4_rb_<id> while the probe asked for tina4:session:<id>. The key is not
+      # the property under test here - the stored deadline is - so delegating it
+      # to the code under test cannot make the assertion vacuous, and it is
+      # immune to whatever the prefix chain does next.
+      key = "#{handler.instance_variable_get(:@prefix)}#{id}"
       # SELECT the SAME db the handler wrote to. A fresh connection is always
       # db 0, so probing db 0 while the handler honoured TINA4_SESSION_REDIS_DB
       # found nothing; redis answers TTL on a missing key with -2 and the
       # assertion then blamed TINA4_SESSION_TTL. A config mismatch reported as
       # a TTL bug - it failed in three frameworks at once and looked real.
       db = ENV.fetch(name == "valkey" ? "TINA4_SESSION_VALKEY_DB" : "TINA4_SESSION_REDIS_DB", "0").to_i
-      client.command("SELECT", db.to_s) if db.positive?
-      ttl = client.command("TTL", "tina4:session:#{id}").to_f
-      raise "tina4:session:#{id} is absent from #{name} db #{db} - probe and handler disagree" if ttl == -2
+      # The db goes in the CONSTRUCTOR, not a separate SELECT command. RespClient
+      # opens one short-lived connection PER COMMAND (open -> AUTH? -> SELECT? ->
+      # command -> close), so `client.command("SELECT", db)` selected on a socket
+      # that was closed before the next line ran, and the TTL then opened a fresh
+      # connection - which is always db 0. Reading the env var correctly and still
+      # probing db 0 is the same root cause one level deeper: resolving the
+      # coordinate is only half of it, it has to reach the connection that asks.
+      client = Tina4::SessionHandlers::RespClient.new(host: host, port: port, db: db)
+      ttl = client.command("TTL", key).to_f
+      raise "#{key} is absent from #{name} db #{db} - probe and handler disagree" if ttl == -2
 
       observed[name] = ttl
     end
