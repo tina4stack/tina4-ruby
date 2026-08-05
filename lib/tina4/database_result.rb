@@ -99,20 +99,57 @@ module Tina4
       lines.join("\n")
     end
 
+    # Describe the page this result actually IS. Takes no arguments.
+    #
+    # MEASURED 2026-08-05 on a real 250-row table read with limit=20 offset=40
+    # (page 3 of 13): this returned ZERO records. It re-sliced @records by the
+    # ABSOLUTE offset - (page - 1) * per_page = 40 - against an array that was
+    # already just that page and only 20 elements long, so the slice fell off
+    # the end and came back nil. Every offset fetch in Ruby produced an empty
+    # paginate envelope, and the envelope still reported a page number and a
+    # total, so it looked like a real answer.
+    #
+    # WITH page:/per_page: it slices this result in memory, which is the
+    # behaviour GitHub issue #106 asked for. That is valid only when the result
+    # holds the WHOLE set. Slicing a result that is already ONE PAGE of a larger
+    # query is refused, because the slice is taken from row 0 of what you hold
+    # while the rows themselves start at @offset.
+    #
+    # KNOWN, still open: `total` is only as honest as @count, and in Ruby
+    # @count is ROWS RETURNED, not the true total for the filter (Python and
+    # PHP populate it from a separate COUNT probe). Until that is fixed in the
+    # adapters, `total` under-reports on any capped read. See feature 18.
     def to_paginate(page: nil, per_page: nil)
-      per_page ||= @limit > 0 ? @limit : 10
-      page ||= @offset > 0 ? (@offset / per_page) + 1 : 1
+      if (page || per_page) && @offset.to_i > 0
+        raise ArgumentError,
+              "to_paginate(page:, per_page:) slices the rows this result holds, but " \
+              "this result already starts at offset #{@offset} - it is one page of a " \
+              "larger query, so slicing it from row 0 gives a silently wrong answer. " \
+              "Call to_paginate with no arguments to describe the page you fetched, " \
+              "or re-fetch without limit/offset to slice the whole set in memory."
+      end
+
       total = @count
-      total_pages = [1, (total.to_f / per_page).ceil].max
-      slice_offset = (page - 1) * per_page
-      page_records = @records[slice_offset, per_page] || []
+      if page.nil? && per_page.nil?
+        per_page = @limit.to_i > 0 ? @limit.to_i : @records.size
+        page = per_page > 0 ? (@offset.to_i / per_page) + 1 : 1
+        offset = @offset.to_i
+        page_records = @records
+      else
+        page ||= 1
+        per_page ||= @limit.to_i > 0 ? @limit.to_i : 10
+        offset = (page - 1) * per_page
+        page_records = @records[offset, per_page] || []
+      end
+      total_pages = per_page.to_i > 0 ? [1, (total.to_f / per_page).ceil].max : 1
+
       {
         records: page_records,
         data: page_records,
         count: total,
         total: total,
         limit: per_page,
-        offset: (page - 1) * per_page,
+        offset: offset,
         page: page,
         per_page: per_page,
         totalPages: total_pages,
