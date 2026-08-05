@@ -94,7 +94,12 @@ RSpec.describe Tina4::Database do
 
     it "supports limit" do
       result = db.fetch("SELECT * FROM users", [], limit: 2)
-      expect(result.count).to eq(2)
+      # The limit caps the ROWS RETURNED; `count` is the TRUE TOTAL for the
+      # filter, so a 2-row page of a 3-row table reports 3. This used to assert
+      # count == 2 and pinned the old rows-returned meaning, which made a
+      # truncated read indistinguishable from a complete one.
+      expect(result.records.size).to eq(2)
+      expect(result.count).to eq(3)
     end
   end
 
