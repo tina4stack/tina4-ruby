@@ -573,7 +573,12 @@ RSpec.describe "DocStore substitutability" do
     end
 
     def own_connections
-      probe = Mongo::Client.new(DOCSTORE_MONGO_URI)
+      # $currentOp MUST run against the admin database - the server rejects it
+      # anywhere else with [73:InvalidNamespace]. `probe.database` is whatever
+      # the URI points at, so this worked only while DOCSTORE_MONGO_URI carried
+      # no database path; the moment it named one (per-framework test isolation)
+      # every call failed. PHP's twin already selects admin explicitly.
+      probe = Mongo::Client.new(DOCSTORE_MONGO_URI).use("admin")
       rows = probe.database.aggregate([
                                         { "$currentOp" => { "allUsers" => true, "idleConnections" => true,
                                                             "localOps" => true } },
