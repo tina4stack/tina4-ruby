@@ -138,7 +138,7 @@ RSpec.describe Tina4::QueueBackends::LiteBackend do
     it "moves message to dead letter directory" do
       msg = Tina4::Job.new(topic: "fail", payload: {})
       backend.dead_letter(msg)
-      dead_letter_path = File.join(tmp_dir, "dead_letter", "#{msg.id}.json")
+      dead_letter_path = File.join(tmp_dir, "dead_letter", "#{msg.id}.queue-data")
       expect(File.exist?(dead_letter_path)).to be true
     end
   end

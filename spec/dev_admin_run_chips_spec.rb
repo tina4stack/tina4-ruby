@@ -124,12 +124,22 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
       run Tina4::RackApp.new(root_dir: #{proj.inspect})
     RU
 
+    # Pin the queue store INSIDE this project, for the server and for this
+    # process alike. TINA4_QUEUE_PATH is an ABSOLUTE store shared by everything
+    # that inherits it (CI exports one), so Dir.chdir below would not isolate
+    # anything on its own - these examples would count jobs another spec file
+    # pushed. Deliberately not <cwd>/data/queue either, so a handler that
+    # re-derives the path from the working directory still fails here.
+    @saved_queue_path = ENV["TINA4_QUEUE_PATH"]
+    ENV["TINA4_QUEUE_PATH"] = File.join(proj, "queue-store")
+
     puma_bin = Gem.bin_path("puma", "puma")
     @log_path = File.join(proj, "puma.log")
     child_env = {
       "TINA4_DEBUG" => "true",
       "TINA4_LOG_LEVEL" => "[TINA4_LOG_NONE]",
       "TINA4_AUTO_MIGRATE" => "false",
+      "TINA4_QUEUE_PATH" => ENV["TINA4_QUEUE_PATH"],
       "TINA4_DATABASE_URL" => "sqlite:app.db",
       "TINA4_NO_AI_PORT" => "true",
       "TINA4_OVERRIDE_CLIENT" => "true",
@@ -164,6 +174,9 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
   end
 
   after(:all) do
+    if defined?(@saved_queue_path)
+      @saved_queue_path.nil? ? ENV.delete("TINA4_QUEUE_PATH") : ENV["TINA4_QUEUE_PATH"] = @saved_queue_path
+    end
     if @pid
       Process.kill("TERM", @pid) rescue nil
       begin
@@ -262,7 +275,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
 
   it "POST /__dev/api/queue/purge actually removes a real enqueued job" do
     # Enqueue a real job into the SAME file-backed queue the server reads
-    # (constructed with cwd == the project, so both resolve project/.queue).
+    # (both resolve the TINA4_QUEUE_PATH store pinned inside the project).
     Dir.chdir(PROJECT) do
       q = Tina4::Queue.new(backend: :file, topic: "default")
       q.push({ "hello" => "world" })

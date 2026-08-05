@@ -7,7 +7,9 @@ module Tina4
   module QueueBackends
     # File-based queue backend — JSON files on disk. Zero dependencies.
     #
-    # Each job is stored as a separate .json file under <dir>/<topic>/.
+    # Each job is stored as a separate .queue-data file under <dir>/<topic>/,
+    # where <dir> is Tina4::Queue.base_path (TINA4_QUEUE_PATH, else data/queue)
+    # — the canonical cross-framework layout Python, PHP and Node all use.
     # Dead-lettered jobs (those that exhausted their retries) live under the
     # shared <dir>/dead_letter/ directory, tagged with their topic.
     #
@@ -15,13 +17,27 @@ module Tina4
     # stored created_at (ISO-8601, so lexicographic == chronological). The
     # file name is NOT the ordering key — the stored priority/created_at are.
     class LiteBackend
+      # The store's layout — extension, topic segment, dead-letter directory —
+      # is defined once on Tina4::Queue and shared with the dev-admin panel
+      # that reads the same files.
+      JOB_EXTENSION = Tina4::Queue::JOB_EXTENSION
+
+      # The pre-alignment Ruby store: Dir.pwd/.queue/<topic>/<id>.json. Read
+      # once per backend so an upgrading app's jobs are rescued rather than
+      # stranded (see migrate_legacy_store).
+      LEGACY_DIRNAME = ".queue"
+      LEGACY_JOB_EXTENSION = ".json"
+
       # Retry policy — settable so a Queue can propagate its own max_retries /
       # retry_backoff onto a backend instance passed directly (legacy path).
       attr_accessor :max_retries, :retry_backoff
 
       def initialize(options = {})
-        @dir = options[:dir] || File.join(Dir.pwd, ".queue")
-        @dead_letter_dir = File.join(@dir, "dead_letter")
+        # An explicit dir: is the caller's own store — take it as given. Only a
+        # store we RESOLVED is one the legacy rescue may touch.
+        resolved_store = options[:dir].nil?
+        @dir = options[:dir] || Tina4::Queue.base_path
+        @dead_letter_dir = File.join(@dir, Tina4::Queue::DEAD_LETTER_DIRNAME)
         # Retry policy. Mirrors the Python lite backend: a failed job is
         # re-enqueued while attempts < max_retries, then dead-lettered.
         @max_retries = options[:max_retries] || 3
@@ -39,6 +55,7 @@ module Tina4
         FileUtils.mkdir_p(@dir)
         FileUtils.mkdir_p(@dead_letter_dir)
         @mutex = Mutex.new
+        migrate_legacy_store if resolved_store
       end
 
       # Retry/visibility policy is settable so a Queue can propagate its own
@@ -49,7 +66,7 @@ module Tina4
         @mutex.synchronize do
           topic_dir = topic_path(message.topic)
           FileUtils.mkdir_p(topic_dir)
-          path = File.join(topic_dir, "#{message.id}.json")
+          path = job_file(topic_dir, message.id)
           File.write(path, message.to_json)
         end
       end
@@ -98,7 +115,7 @@ module Tina4
           return nil unless Dir.exist?(dir)
 
           target = id.to_s
-          Dir.glob(File.join(dir, "*.json")).each do |f|
+          job_files(dir).each do |f|
             data = JSON.parse(File.read(f))
             next unless data["id"].to_s == target
 
@@ -155,7 +172,7 @@ module Tina4
       end
 
       def dead_letter(message)
-        path = File.join(@dead_letter_dir, "#{message.id}.json")
+        path = job_file(@dead_letter_dir, message.id)
         data = message.to_hash
         data[:status] = "dead"
         File.write(path, JSON.generate(data))
@@ -164,7 +181,7 @@ module Tina4
       def size(topic)
         dir = topic_path(topic)
         return 0 unless Dir.exist?(dir)
-        Dir.glob(File.join(dir, "*.json")).length
+        job_files(dir).length
       end
 
       # No-op: the file backend holds no connection to release.
@@ -180,7 +197,7 @@ module Tina4
       def reserved_count(topic)
         dir = reserved_path(topic)
         return 0 unless Dir.exist?(dir)
-        Dir.glob(File.join(dir, "*.json")).length
+        job_files(dir).length
       end
 
       # Count dead-letter / failed messages for a topic.
@@ -188,7 +205,7 @@ module Tina4
         return 0 unless Dir.exist?(@dead_letter_dir)
 
         count = 0
-        Dir.glob(File.join(@dead_letter_dir, "*.json")).each do |file|
+        job_files(@dead_letter_dir).each do |file|
           data = JSON.parse(File.read(file))
           count += 1 if data["topic"] == topic.to_s
         rescue JSON::ParserError
@@ -200,7 +217,7 @@ module Tina4
       def topics
         return [] unless Dir.exist?(@dir)
         Dir.children(@dir)
-           .reject { |d| d == "dead_letter" }
+           .reject { |d| d == Tina4::Queue::DEAD_LETTER_DIRNAME }
            .select { |d| File.directory?(File.join(@dir, d)) }
       end
 
@@ -209,7 +226,7 @@ module Tina4
       def dead_letters(topic, max_retries: 3)
         return [] unless Dir.exist?(@dead_letter_dir)
 
-        files = Dir.glob(File.join(@dead_letter_dir, "*.json")).sort_by { |f| File.mtime(f) }
+        files = job_files(@dead_letter_dir).sort_by { |f| File.mtime(f) }
         jobs = []
 
         files.each do |file|
@@ -234,7 +251,7 @@ module Tina4
         if dead_status?(status)
           return 0 unless Dir.exist?(@dead_letter_dir)
 
-          Dir.glob(File.join(@dead_letter_dir, "*.json")).each do |file|
+          job_files(@dead_letter_dir).each do |file|
             data = JSON.parse(File.read(file))
             if data["topic"] == topic.to_s
               File.delete(file)
@@ -247,7 +264,7 @@ module Tina4
           dir = topic_path(topic)
           return 0 unless Dir.exist?(dir)
 
-          Dir.glob(File.join(dir, "*.json")).each do |file|
+          job_files(dir).each do |file|
             data = JSON.parse(File.read(file))
             if data["status"].to_s == status.to_s
               File.delete(file)
@@ -270,7 +287,7 @@ module Tina4
         FileUtils.mkdir_p(dir)
         count = 0
 
-        Dir.glob(File.join(@dead_letter_dir, "*.json")).each do |file|
+        job_files(@dead_letter_dir).each do |file|
           data = JSON.parse(File.read(file))
           next unless data["topic"] == topic.to_s
           next if (data["attempts"] || 0) >= max_retries
@@ -299,7 +316,7 @@ module Tina4
         count = 0
         [topic_path(topic), reserved_path(topic)].each do |dir|
           next unless Dir.exist?(dir)
-          Dir.glob(File.join(dir, "*.json")).each do |file|
+          job_files(dir).each do |file|
             File.delete(file)
             count += 1
           rescue Errno::ENOENT
@@ -319,7 +336,7 @@ module Tina4
         dir = topic_path(topic)
         return [] unless Dir.exist?(dir)
         jobs = []
-        Dir.glob(File.join(dir, "*.json")).sort_by { |f| File.mtime(f) }.each do |file|
+        job_files(dir).sort_by { |f| File.mtime(f) }.each do |file|
           data = JSON.parse(File.read(file))
           attempts = data["attempts"] || 0
           next unless attempts > 0 && attempts < max_retries
@@ -342,7 +359,7 @@ module Tina4
         available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
         count = 0
 
-        Dir.glob(File.join(@dead_letter_dir, "*.json")).each do |file|
+        job_files(@dead_letter_dir).each do |file|
           data = JSON.parse(File.read(file))
           next unless data["topic"] == topic.to_s
           next if job_id && data["id"] != job_id.to_s
@@ -385,7 +402,7 @@ module Tina4
         now = Time.now
         candidates = []
 
-        Dir.glob(File.join(dir, "*.json")).each do |f|
+        job_files(dir).each do |f|
           data = JSON.parse(File.read(f))
           # Skip messages that are not yet available (delayed).
           if data["available_at"]
@@ -443,7 +460,7 @@ module Tina4
         data[:available_at] = available_at if available_at
         topic_dir = topic_path(job.topic)
         FileUtils.mkdir_p(topic_dir)
-        File.write(File.join(topic_dir, "#{job.id}.json"), JSON.generate(data))
+        File.write(job_file(topic_dir, job.id), JSON.generate(data))
       end
 
       # Move a failed job to the dead-letter directory. Terminal until a manual
@@ -465,12 +482,82 @@ module Tina4
           failed_at: Time.now.iso8601(6)
         }
         FileUtils.mkdir_p(@dead_letter_dir)
-        File.write(File.join(@dead_letter_dir, "#{job.id}.json"), JSON.generate(data))
+        File.write(job_file(@dead_letter_dir, job.id), JSON.generate(data))
+      end
+
+      # One place decides what a job file is called and where a topic lives, so
+      # no call site here can be left addressing a directory or an extension
+      # the dev-admin panel does not also read.
+      def job_files(dir)
+        Tina4::Queue.job_files(dir)
+      end
+
+      def job_file(dir, id)
+        Tina4::Queue.job_file(dir, id)
       end
 
       def topic_path(topic)
-        safe_topic = topic.to_s.gsub(/[^a-zA-Z0-9_-]/, "_")
-        File.join(@dir, safe_topic)
+        File.join(@dir, Tina4::Queue.topic_dirname(topic))
+      end
+
+      # Rescue a pre-alignment store, once, on the way past.
+      #
+      # Until this change the Ruby file backend stored jobs at
+      # Dir.pwd/.queue/<topic>/<id>.json and read TINA4_QUEUE_PATH NOWHERE, so
+      # EVERY existing Ruby app has its jobs there — including apps that had
+      # TINA4_QUEUE_PATH set, because the variable did nothing at all. Moving
+      # to the canonical <TINA4_QUEUE_PATH|data/queue>/<topic>/*.queue-data
+      # layout without this would strand all of them, and a stranded job is
+      # pending work somebody is still waiting on: data loss, not cosmetics.
+      #
+      # MOVE, never copy — a copy would leave the same job in two stores and
+      # let it be delivered twice. Each file is moved individually and never
+      # over an existing destination, so concurrent processes can each only win
+      # a given file once and neither can overwrite a job the other placed.
+      # FileUtils.mv (not File.rename) because the new store may be on another
+      # filesystem, which is the whole point of TINA4_QUEUE_PATH.
+      #
+      # The trigger is the legacy directory EXISTING, not the new one being
+      # absent: during a rolling upgrade an old instance can still be writing
+      # to .queue after the new store exists, and those jobs must be collected
+      # too. Emptied directories are pruned so the steady-state cost is the one
+      # Dir.exist? below.
+      def migrate_legacy_store
+        legacy_root = File.expand_path(File.join(Dir.pwd, LEGACY_DIRNAME))
+        return unless Dir.exist?(legacy_root)
+        return if legacy_root == File.expand_path(@dir)
+
+        moved = 0
+        Dir.glob(File.join(legacy_root, "**", "*#{LEGACY_JOB_EXTENSION}")).sort.each do |source|
+          relative = source.delete_prefix("#{legacy_root}#{File::SEPARATOR}")
+          destination = File.join(@dir, "#{relative.delete_suffix(LEGACY_JOB_EXTENSION)}#{JOB_EXTENSION}")
+          next if File.exist?(destination)
+
+          FileUtils.mkdir_p(File.dirname(destination))
+          FileUtils.mv(source, destination)
+          moved += 1
+        rescue SystemCallError
+          next # another process won the race, or the file is not ours to move
+        end
+
+        prune_empty_dirs(legacy_root)
+        return if moved.zero?
+
+        Tina4::Log.info(
+          "Queue: moved #{moved} job(s) from the legacy #{LEGACY_DIRNAME}/ store to #{@dir} " \
+          "(now #{JOB_EXTENSION} files, matching Python/PHP/Node)"
+        )
+      end
+
+      # Remove +root+ and every directory under it that is empty, deepest
+      # first, so the migration's fast path stops firing once it has nothing
+      # left to do. Anything still holding a file is left exactly as it is.
+      def prune_empty_dirs(root)
+        Dir.glob(File.join(root, "**", "*"))
+           .select { |path| File.directory?(path) }
+           .sort_by { |path| -path.length }
+           .each { |path| Dir.rmdir(path) rescue nil }
+        Dir.rmdir(root) rescue nil
       end
 
       # Directory holding a topic's reservation records (in-flight jobs).
@@ -499,12 +586,12 @@ module Tina4
         }
         dir = reserved_path(topic)
         FileUtils.mkdir_p(dir)
-        File.write(File.join(dir, "#{record[:id]}.json"), JSON.generate(record))
+        File.write(job_file(dir, record[:id]), JSON.generate(record))
       end
 
       # Delete a job's reservation record (best-effort).
       def clear_reservation(topic, id)
-        File.delete(File.join(reserved_path(topic), "#{id}.json"))
+        File.delete(job_file(reserved_path(topic), id))
       rescue Errno::ENOENT
         nil
       end
@@ -522,7 +609,7 @@ module Tina4
         return unless Dir.exist?(dir)
 
         now = Time.now
-        Dir.glob(File.join(dir, "*.json")).each do |file|
+        job_files(dir).each do |file|
           data = JSON.parse(File.read(file))
           available_at = data["available_at"] ? Time.parse(data["available_at"]) : now
           next if available_at > now # reservation still valid

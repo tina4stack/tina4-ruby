@@ -10,6 +10,89 @@ This file is deliberately NOT a copy of those notes. Duplicating them is exactly
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.
 
+### Breaking (the queue store moved to the canonical cross-framework layout)
+
+**Breaking: the file-backed queue's default store moved from
+`<cwd>/.queue/<topic>/<id>.json` to
+`<TINA4_QUEUE_PATH|data/queue>/<topic>/<id>.queue-data`. The DIRECTORY and the
+FILE EXTENSION both changed.** No job is lost - see the migration note below.
+
+Ruby was the odd one out. Python, PHP and Node all store jobs at
+`<TINA4_QUEUE_PATH|data/queue>/<topic>/*.queue-data`. Ruby wrote
+`<cwd>/.queue/<topic>/<id>.json` and read `TINA4_QUEUE_PATH` **nowhere**, so the
+variable `.env.example` has documented all along ("Queue storage path (file
+backend)") did nothing whatsoever: an operator who pointed the store at a
+mounted volume kept writing to the container's ephemeral filesystem and lost
+every queued job on restart, with no error and no warning.
+
+The store's layout - root, topic segment, job extension, dead-letter directory -
+is now defined once on `Tina4::Queue` (`base_path`, `topic_dirname`,
+`topic_path`, `job_files`, `job_file`, `JOB_EXTENSION`,
+`DEAD_LETTER_DIRNAME`) and is the single answer both the backend and the
+dev-admin queue panel ask. The topic is sanitised to one path segment there,
+in the one place that resolves it, because the panel takes its topic straight
+off a query string.
+
+**MIGRATION NOTE.** Nothing is required of you, and no job is stranded.
+
+- The first time the file backend resolves its own store, it **moves** every
+  `*.json` under `<cwd>/.queue/` into the new store, renaming to
+  `*.queue-data` and preserving the `<topic>/`, `<topic>/reserved/` and
+  `dead_letter/` structure. It logs `Queue: moved N job(s) ...` at INFO.
+- It is a MOVE, never a copy, so a job cannot be delivered twice; it never
+  overwrites a file already at the destination, so concurrent processes cannot
+  clobber each other; and emptied legacy directories are removed, so the check
+  costs one `Dir.exist?` afterwards.
+- **If you had `TINA4_QUEUE_PATH` set:** it previously did nothing in Ruby, so
+  your jobs are in `<cwd>/.queue` too. They move into the path you configured,
+  which now works as it does in the other three frameworks.
+- **If you did not:** your jobs move to `<cwd>/data/queue`.
+- **If you construct `LiteBackend.new(dir: ...)` yourself:** that store is yours
+  and is never touched.
+- Add `data/queue/` to your `.gitignore`. Newly scaffolded projects get it.
+- The rescue triggers on the legacy directory EXISTING, not on the new store
+  being absent, so a rolling upgrade in which an old instance keeps writing to
+  `.queue` still has those jobs collected.
+
+Pending jobs and reservations now interoperate with a store written by Python,
+PHP or Node. Dead letters still do not: Ruby keeps them in a shared
+`<base>/dead_letter/` tagged by topic, where Python and Node use a per-topic
+`<base>/<topic>/failed/`. That divergence is unchanged here.
+
+### Fixed (the dev-admin queue panel listed a different store from the one it counted)
+
+The panel's job list and its stats read different sources, so the two disagreed.
+`GET /__dev/api/queue/topics` scanned a hardcoded `<cwd>/data/queue` that no
+Ruby app ever wrote to, so it could not name a real topic. `GET /__dev/api/queue`
+never listed pending or reserved jobs at all - only `queue.failed()` and
+`queue.dead_letters()` - while its stats counted all four buckets, and it ignored
+the `?status=` filter the panel's own badges have always sent.
+
+Four defects, all the same shape - the list describes a different set from the
+counts:
+
+1. **The directory.** Both handlers re-derived the path instead of asking where
+   the store is.
+2. **The set.** Pending and reserved jobs were counted and never listed. A
+   failed-but-retryable job - which lives in the PENDING directory - was counted
+   by `stats.pending` and listed as `"failed"`: one job, two contradictory
+   answers.
+3. **max_retries.** Dead letters were listed via `queue.dead_letters()`, which
+   filters on the max_retries of the Queue the dev admin itself constructed (3).
+   An app configured `max_retries: 1` dead-letters at ONE attempt, and every one
+   of those jobs was counted by `stats.failed` and never shown. The list now
+   uses `max_retries: 0` - the same "no attempt-count filter" spelling
+   `tina4ruby queue retry` already used.
+4. **Duplicate JSON keys.** `job.merge(status: "...")` added a SYMBOL key beside
+   the record's existing STRING one, so every job went out as
+   `{"status":"dead", ..., "status":"dead_letter"}` - two `status` names in one
+   object.
+
+Every job now appears exactly once, in the bucket its own stat counts it in, so
+`sum(pending, completed, failed, reserved) == jobs.length` by construction on a
+quiescent store, and every `?status=` filter returns exactly what its stat
+counts.
+
 ### Fixed (the documented sort spelling raised on real MongoDB, ADR-0036)
 
 `cursor.sort("total", -1)` - the spelling this file documents - raised

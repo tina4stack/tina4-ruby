@@ -8,7 +8,9 @@
 logs/
 sessions/
 
-# Queue storage
+# Queue storage — data/queue is the canonical store; .queue is the legacy one
+# the lite backend migrates out of on first use, and may still appear locally.
+data/queue/
 .queue/
 
 # Database files

@@ -4,6 +4,7 @@ require "spec_helper"
 require_relative "support/real_env"
 require "json"
 require "stringio"
+require "tmpdir"
 
 RSpec.describe Tina4::MessageLog do
   subject(:log) { Tina4::MessageLog.new }
@@ -459,12 +460,25 @@ RSpec.describe Tina4::DevAdmin do
       expect(data["cleared"]).to be true
     end
 
-    it "returns queue stub on GET /__dev/api/queue" do
-      env = { "PATH_INFO" => "/__dev/api/queue", "REQUEST_METHOD" => "GET" }
-      status, _headers, body = Tina4::DevAdmin.handle_request(env)
-      data = JSON.parse(body.first)
-      expect(data["jobs"]).to eq([])
-      expect(data["stats"]["pending"]).to eq(0)
+    it "returns an empty queue payload when the store holds no jobs" do
+      # Pin a store of this example's own. TINA4_QUEUE_PATH is an ABSOLUTE
+      # store shared by every spec file that inherits it (CI exports one), so
+      # without this the panel reads a store other files are pushing to. The
+      # jobs assertion also used to be unfalsifiable: the handler never listed
+      # pending jobs at all, so it read [] whatever was on disk.
+      Dir.mktmpdir("devadmin-empty-queue-") do |store|
+        saved_queue_path = ENV["TINA4_QUEUE_PATH"]
+        ENV["TINA4_QUEUE_PATH"] = store
+        begin
+          env = { "PATH_INFO" => "/__dev/api/queue", "REQUEST_METHOD" => "GET" }
+          _status, _headers, body = Tina4::DevAdmin.handle_request(env)
+          data = JSON.parse(body.first)
+          expect(data["jobs"]).to eq([])
+          expect(data["stats"]["pending"]).to eq(0)
+        ensure
+          saved_queue_path.nil? ? ENV.delete("TINA4_QUEUE_PATH") : ENV["TINA4_QUEUE_PATH"] = saved_queue_path
+        end
+      end
     end
 
     it "returns broken errors stub on GET /__dev/api/broken" do

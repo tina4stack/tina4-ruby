@@ -3159,6 +3159,7 @@ module Tina4
           .keys/
           logs/
           sessions/
+          data/queue/
           .queue/
           *.db
           vendor/
@@ -3231,6 +3232,7 @@ module Tina4
           .keys/
           logs/
           sessions/
+          data/queue/
           .queue/
           *.db
           *.gem

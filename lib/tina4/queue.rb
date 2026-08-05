@@ -36,6 +36,67 @@ module Tina4
       @backend = resolve_backend_arg(backend)
     end
 
+    # ── The file store's layout: the ONE answer to "where do the queue files
+    # live". ─────────────────────────────────────────────────────────────────
+    #
+    # Everything that touches the store asks here — the lite backend that
+    # writes it, and every dev-admin queue handler that reads it. It exists
+    # because they used to disagree: the dev admin scanned a hardcoded
+    # Dir.pwd/data/queue while the backend wrote to Dir.pwd/.queue and read
+    # TINA4_QUEUE_PATH nowhere, so the panel counted one directory and listed
+    # another, and its topic list could never name a real topic. Re-deriving
+    # any of this anywhere else re-opens that defect.
+    #
+    # The layout is the canonical cross-framework one, identical to the Python
+    # master, PHP and Node:
+    #
+    #   <base>/<topic>/*.queue-data            pending
+    #   <base>/<topic>/reserved/*.queue-data   reserved (in flight)
+    #   <base>/dead_letter/*.queue-data        dead-lettered, tagged by topic
+
+    # Canonical job-file extension in all four frameworks.
+    JOB_EXTENSION = ".queue-data"
+
+    # Dead letters share one directory and carry their topic in the record.
+    DEAD_LETTER_DIRNAME = "dead_letter"
+
+    # Root of the file store: TINA4_QUEUE_PATH, else "data/queue" relative to
+    # the working directory.
+    #
+    # Absolute, so every caller gets the same directory rather than one that
+    # depends on when it was resolved. A blank value is treated as unset (the
+    # same normalisation TINA4_SESSION_BACKEND applies) — File.join("", topic)
+    # would otherwise silently address /<topic>, at the filesystem root.
+    def self.base_path
+      configured = ENV["TINA4_QUEUE_PATH"].to_s.strip
+      File.expand_path(configured.empty? ? "data/queue" : configured)
+    end
+
+    # The single path segment a topic maps to.
+    #
+    # Sanitised HERE, in the one place that resolves it, so no caller can build
+    # a store path out of an unsanitised topic name — the dev-admin queue panel
+    # takes its topic straight off a query string, where "../.." would
+    # otherwise walk out of the store.
+    def self.topic_dirname(topic)
+      topic.to_s.gsub(/[^a-zA-Z0-9_-]/, "_")
+    end
+
+    # Directory holding +topic+'s pending jobs.
+    def self.topic_path(topic)
+      File.join(base_path, topic_dirname(topic))
+    end
+
+    # Every job file in +dir+, name-sorted so two readers of the same directory
+    # always see the same order.
+    def self.job_files(dir)
+      Dir.glob(File.join(dir, "*#{JOB_EXTENSION}")).sort
+    end
+
+    def self.job_file(dir, id)
+      File.join(dir, "#{id}#{JOB_EXTENSION}")
+    end
+
     # Reservation/visibility timeout in seconds, from env (default 300 = 5 min).
     def self.default_visibility_timeout
       Float(ENV.fetch("TINA4_QUEUE_VISIBILITY_TIMEOUT", "300"))

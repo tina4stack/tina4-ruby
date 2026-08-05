@@ -28,7 +28,18 @@ RSpec.describe "tina4ruby queue" do
   around(:each) do |example|
     Dir.mktmpdir("tina4_cli_queue") do |dir|
       @tmp = dir
-      Dir.chdir(dir) { example.run }
+      # The queue store must follow this example's temp cwd. An ambient
+      # TINA4_QUEUE_PATH (CI exports one) is an ABSOLUTE store shared by every
+      # spec file, so Dir.chdir on its own would isolate nothing and these
+      # examples would count jobs a sibling file pushed. Unset it, and the
+      # cwd-relative default (data/queue) lands inside dir.
+      saved_queue_path = ENV["TINA4_QUEUE_PATH"]
+      ENV.delete("TINA4_QUEUE_PATH")
+      begin
+        Dir.chdir(dir) { example.run }
+      ensure
+        ENV["TINA4_QUEUE_PATH"] = saved_queue_path unless saved_queue_path.nil?
+      end
     end
   end
 

@@ -75,7 +75,7 @@ RSpec.describe "Queue Backends" do
     it "sends message to dead letter queue" do
       msg = Tina4::Job.new(topic: "test_topic", payload: "failed")
       backend.dead_letter(msg)
-      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
+      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.queue-data"))
       expect(dl_files.length).to eq(1)
     end
 
@@ -111,15 +111,15 @@ RSpec.describe "Queue Backends" do
       dequeued = backend.dequeue("test_topic")
       expect(dequeued).not_to be_nil
       # dequeue already claimed (deleted) the pending file, so size is 0 and the
-      # topic dir holds no pending *.json before acknowledge.
+      # topic dir holds no pending *.queue-data before acknowledge.
       expect(backend.size("test_topic")).to eq(0)
-      expect(Dir.glob(File.join(tmpdir, "test_topic", "*.json"))).to be_empty
+      expect(Dir.glob(File.join(tmpdir, "test_topic", "*.queue-data"))).to be_empty
 
       # acknowledge() is the documented no-op: it must NOT resurrect, recreate or
       # leave a stray pending file — the already-deleted state stays intact.
       backend.acknowledge(dequeued)
       expect(backend.size("test_topic")).to eq(0)
-      expect(Dir.glob(File.join(tmpdir, "test_topic", "*.json"))).to be_empty
+      expect(Dir.glob(File.join(tmpdir, "test_topic", "*.queue-data"))).to be_empty
     end
   end
 
@@ -591,14 +591,14 @@ RSpec.describe "Queue Backends" do
         msg = Tina4::Job.new(topic: "dl_topic", payload: "dead_#{i}")
         backend.dead_letter(msg)
       end
-      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
+      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.queue-data"))
       expect(dl_files.length).to eq(3)
     end
 
     it "preserves message payload in dead letter queue" do
       msg = Tina4::Job.new(topic: "dl_payload", payload: { "error" => "timeout" })
       backend.dead_letter(msg)
-      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.json"))
+      dl_files = Dir.glob(File.join(tmpdir, "dead_letter", "*.queue-data"))
       content = JSON.parse(File.read(dl_files.first))
       expect(content["payload"]).to eq({ "error" => "timeout" })
     end

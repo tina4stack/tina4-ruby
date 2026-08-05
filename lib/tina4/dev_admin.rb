@@ -467,18 +467,13 @@ module Tina4
         when ["GET", "/__dev/api/system"]
           json_response(system_payload)
         when ["GET", "/__dev/api/queue/topics"]
-          queue_dir = File.join(Dir.pwd, "data", "queue")
-          topics = Dir.exist?(queue_dir) ? Dir.children(queue_dir).select { |d| File.directory?(File.join(queue_dir, d)) }.sort : []
-          topics = ["default"] if topics.empty?
-          json_response({ topics: topics })
+          json_response({ topics: queue_topics })
         when ["GET", "/__dev/api/queue/dead-letters"]
           topic = query_param(env, "topic") || "default"
-          jobs = []
-          begin
-            queue = Tina4::Queue.new(backend: :file, topic: topic) if defined?(Tina4::Queue)
-            jobs = queue.respond_to?(:dead_letters) ? queue.dead_letters.map { |j| j.merge(status: "dead_letter") } : []
-          rescue StandardError => e
-            jobs = []
+          jobs = begin
+            queue_dead_letters(topic)
+          rescue StandardError
+            []
           end
           json_response({ jobs: jobs, count: jobs.size, topic: topic })
         when ["GET", "/__dev/api/queue"]
@@ -492,15 +487,14 @@ module Tina4
               # positionally raises ArgumentError, which the rescue below
               # swallows — silently zeroing every stat. Use keyword form.
               stats = {
-                pending: queue.respond_to?(:size) ? queue.size(status: "pending") : 0,
-                completed: queue.respond_to?(:size) ? queue.size(status: "completed") : 0,
-                failed: queue.respond_to?(:size) ? queue.size(status: "failed") : 0,
-                reserved: queue.respond_to?(:size) ? queue.size(status: "reserved") : 0,
+                pending: queue.size(status: "pending"),
+                completed: queue.size(status: "completed"),
+                failed: queue.size(status: "failed"),
+                reserved: queue.size(status: "reserved"),
               }
-              jobs.concat(queue.failed.map { |j| j.merge(status: "failed") }) if queue.respond_to?(:failed)
-              jobs.concat(queue.dead_letters.map { |j| j.merge(status: "dead_letter") }) if queue.respond_to?(:dead_letters)
+              jobs = queue_jobs(topic, query_param(env, "status"))
             end
-          rescue StandardError => e
+          rescue StandardError
             # fall through to empty stats
           end
           json_response({ jobs: jobs, stats: stats })
@@ -1075,6 +1069,86 @@ module Tina4
         { ok: true, configured: configured, last4: configured ? token[-4..].to_s : "" }
       rescue => e
         { ok: false, error: e.message }
+      end
+
+      # ── Queue panel: the list must describe the set the stats count ──
+      #
+      # Every reader below goes through Tina4::Queue.base_path / .topic_path,
+      # or through the backend itself — the SAME answers the lite backend
+      # writes to and Queue#size counts. These handlers used to re-derive the
+      # path as
+      # Dir.pwd/data/queue, which no Ruby app ever wrote to, so the topic list
+      # could not name a real topic and the job list described a store that was
+      # not the one being counted.
+      #
+      # Each job appears EXACTLY ONCE, in the bucket its OWN stat counts it in:
+      #
+      #   stats.pending   <- <base>/<topic>/*.queue-data
+      #   stats.reserved  <- <base>/<topic>/reserved/*.queue-data
+      #   stats.failed    <- <base>/dead_letter/*.queue-data tagged with topic
+      #   stats.completed <- always 0; the file backend deletes on complete
+      #
+      # so sum(stats) == jobs.length by construction on a quiescent store, and
+      # every ?status= filter returns exactly what its own stat counts.
+
+      # Topic directories in the real store. The shared dead-letter directory
+      # is a sibling of the topic directories, not a topic.
+      def queue_topics
+        base = Tina4::Queue.base_path
+        return ["default"] unless Dir.exist?(base)
+
+        topics = Dir.children(base)
+                    .select { |entry| File.directory?(File.join(base, entry)) }
+                    .reject { |entry| entry == Tina4::Queue::DEAD_LETTER_DIRNAME }
+                    .sort
+        topics.empty? ? ["default"] : topics
+      rescue StandardError
+        ["default"]
+      end
+
+      # Jobs for +topic+, optionally narrowed to one bucket.
+      def queue_jobs(topic, status_filter = nil)
+        wanted = status_filter.to_s.strip
+        topic_dir = Tina4::Queue.topic_path(topic)
+        jobs = []
+        jobs.concat(read_queue_dir(topic_dir, "pending")) if wanted.empty? || wanted == "pending"
+        if wanted.empty? || wanted == "reserved"
+          jobs.concat(read_queue_dir(File.join(topic_dir, "reserved"), "reserved"))
+        end
+        jobs.concat(queue_dead_letters(topic)) if wanted.empty? || wanted == "failed" || wanted == "dead"
+        jobs
+      end
+
+      # Read one queue directory the way Queue#size COUNTS it. size globs the
+      # files without parsing them, so a job file that cannot be parsed still
+      # counts — and must therefore still be LISTED, or the panel shows a total
+      # it cannot account for. Listing it is also the only way an operator ever
+      # learns the file is there.
+      def read_queue_dir(dir, status)
+        return [] unless Dir.exist?(dir)
+
+        Tina4::Queue.job_files(dir).filter_map do |file|
+          begin
+            JSON.parse(File.read(file)).merge("status" => status)
+          rescue JSON::ParserError
+            { "id" => File.basename(file, Tina4::Queue::JOB_EXTENSION), "status" => status,
+              "error" => "unreadable job file" }
+          rescue Errno::ENOENT
+            nil # consumed between the glob and the read
+          end
+        end
+      end
+
+      # Every dead letter for +topic+ — the same set stats.failed counts.
+      #
+      # max_retries: 0 is the established "no attempt-count filter" spelling
+      # (the `tina4ruby queue retry` command uses it for the same reason). The
+      # DEFAULT filters on the max_retries of the Queue this dev admin happened
+      # to construct, which is 3 and has nothing to do with the app's: an app
+      # configured max_retries: 1 dead-letters a job at ONE attempt, and every
+      # one of those was counted by stats.failed and never listed.
+      def queue_dead_letters(topic)
+        dev_queue(topic).dead_letters(max_retries: 0).map { |job| job.merge("status" => "dead_letter") }
       end
 
       # ── Queue run-chips (Tier 3) ───────────────────────────────────
