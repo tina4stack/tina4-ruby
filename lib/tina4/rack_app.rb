@@ -125,6 +125,19 @@ module Tina4
       end
 
       response
+    rescue Tina4::Request::PayloadTooLarge => e
+      # 413, not 500. PayloadTooLarge was raised by Request and rescued by
+      # nobody, so it fell into the generic handler below and an oversized
+      # upload answered "Internal Server Error" - which tells the caller to
+      # retry the exact request that will fail again.
+      #
+      # Measured on Puma with a 1MB TINA4_MAX_UPLOAD_SIZE and an 8MB body:
+      # HTTP 500, and the same for a chunked body. Memory stayed flat (Puma
+      # bounds the read), so unlike Node and Python this was only ever the
+      # status code - but the status code is what a client acts on.
+      body = JSON.generate({ "error" => e.message })
+      [413, { "content-type" => "application/json",
+              "content-length" => body.bytesize.to_s }, [body]]
     rescue => e
       handle_500(e, env)
     end
