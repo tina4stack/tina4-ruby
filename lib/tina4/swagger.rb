@@ -259,7 +259,18 @@ module Tina4
           return reqs.empty? ? [] : sanitize_security(reqs, schemes)
         end
 
-        return sanitize_security([{ default_scheme => [] }], schemes) if route.auth_handler
+        # auth_required is what DISPATCH enforces: true by default on
+        # POST/PUT/PATCH/DELETE, flipped by `.secure` / `.no_auth`. This branch
+        # read `auth_handler` instead, which defaults to nil and is set only by
+        # the `auth:` keyword or the secure_* helpers - so every write route
+        # registered the ordinary way was enforced-secured and documented
+        # PUBLIC, and `.secure` on a GET never reached the document at all.
+        # MEASURED: POST /api/items answered 401 while its operation carried no
+        # security key, in the framework's own AutoCrud output too.
+        #
+        # Both flags are honoured. A custom auth_handler protects a route even
+        # when auth_required is false for its method, so it is still documented.
+        return sanitize_security([{ default_scheme => [] }], schemes) if route.auth_required || route.auth_handler
 
         nil
       end
