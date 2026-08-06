@@ -1136,8 +1136,8 @@ Environment variables (read by `lib/tina4/swagger.rb` and
 | `TINA4_SWAGGER_SERVERS` | `SWAGGER_DEV_URL`, else `/` | Comma-separated list of server URLs for the OpenAPI `servers[]` block (multi-server / multi-environment). |
 | `TINA4_SWAGGER_UI_CDN` | `https://cdn.jsdelivr.net/npm/swagger-ui-dist@5` | Base URL for the Swagger UI assets (`swagger-ui.css` + `swagger-ui-bundle.js`). Point it at a self-hosted mirror for air-gapped deployments. |
 | `TINA4_SWAGGER_TITLE` | `PROJECT_NAME`, else `Tina4 API` | `info.title`. |
-| `TINA4_SWAGGER_VERSION` | `Tina4::VERSION` | `info.version`. |
-| `TINA4_SWAGGER_DESCRIPTION` | `Auto-generated API documentation` | `info.description`. |
+| `TINA4_SWAGGER_VERSION` | `1.0.0` | `info.version` — the APP's API version, not the framework's. |
+| `TINA4_SWAGGER_DESCRIPTION` | `""` (empty) | `info.description`. |
 | `TINA4_SWAGGER_CONTACT_EMAIL` | (unset) | `info.contact.email` (block emitted only when a contact field is set). |
 | `TINA4_SWAGGER_CONTACT_TEAM` | `SWAGGER_CONTACT_TEAM` | `info.contact.name`. |
 | `TINA4_SWAGGER_CONTACT_URL` | `SWAGGER_CONTACT_URL` | `info.contact.url`. |

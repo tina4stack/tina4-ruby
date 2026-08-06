@@ -73,21 +73,30 @@ RSpec.describe Tina4::Swagger do
       end
     end
 
-    it "falls back to Tina4::VERSION for the default info version" do
-      # base_spec uses Tina4::VERSION as the version default when
-      # TINA4_SWAGGER_VERSION is unset.
+    it "defaults info.version to the app version 1.0.0, not the framework version" do
+      # S3 (3.13.96): info.version is the APPLICATION's API version. Defaulting
+      # to Tina4::VERSION made an undocumented app claim API v3.13.x; the settled
+      # default is "1.0.0". TINA4_SWAGGER_VERSION still overrides.
       original_version = ENV.delete("TINA4_SWAGGER_VERSION")
       begin
         spec = Tina4::Swagger.generate
-        expect(spec["info"]["version"]).to eq(Tina4::VERSION)
+        expect(spec["info"]["version"]).to eq("1.0.0")
+        expect(spec["info"]["version"]).not_to eq(Tina4::VERSION)
       ensure
         ENV["TINA4_SWAGGER_VERSION"] = original_version if original_version
       end
     end
 
-    it "has a description in info" do
-      spec = Tina4::Swagger.generate
-      expect(spec["info"]["description"]).to eq("Auto-generated API documentation")
+    it "defaults info.description to the empty string" do
+      # S3 (3.13.96): a canned "Auto-generated..." blurb is doc noise; the
+      # settled default is empty. Set TINA4_SWAGGER_DESCRIPTION to fill it.
+      original = ENV.delete("TINA4_SWAGGER_DESCRIPTION")
+      begin
+        spec = Tina4::Swagger.generate
+        expect(spec["info"]["description"]).to eq("")
+      ensure
+        ENV["TINA4_SWAGGER_DESCRIPTION"] = original if original
+      end
     end
 
     it "has servers array with root url" do
@@ -140,15 +149,15 @@ RSpec.describe Tina4::Swagger do
       expect(spec["paths"]["/api/items"]).to have_key("get")
     end
 
-    it "includes default responses" do
+    it "emits only 200 on an undecorated public GET (S5)" do
+      # S5 (3.13.96): an undecorated route emits ONLY 200. The framework does
+      # not produce 400/404/500 for a public GET, and 401 appears only on a
+      # secured route (see swagger_parity_31396_spec.rb) — so a public GET
+      # advertising 401/404/500 was fiction. This corrects that pinned bug.
       Tina4.get("/api/test") { |_req, res| res.json({}) }
       spec = Tina4::Swagger.generate
       responses = spec["paths"]["/api/test"]["get"]["responses"]
-      expect(responses).to have_key("200")
-      expect(responses).to have_key("400")
-      expect(responses).to have_key("401")
-      expect(responses).to have_key("404")
-      expect(responses).to have_key("500")
+      expect(responses.keys).to eq(["200"])
     end
 
     it "generates summary from method and path" do

@@ -6,6 +6,38 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+### Breaking: Swagger defaults, response codes, and operationId (3.13.96 parity)
+
+Four measured cross-framework divergences in the OpenAPI generator, settled to
+match the Python/PHP reference.
+
+**`info.version` defaults to `1.0.0`, `info.description` to `""`.** Ruby defaulted
+`info.version` to the FRAMEWORK version (`Tina4::VERSION`), so an undocumented app
+claimed API `v3.13.x`. `info.version` is the APPLICATION's API version; it now
+defaults to `1.0.0`. `info.description` defaults to empty instead of the canned
+"Auto-generated API documentation". `TINA4_SWAGGER_VERSION` /
+`TINA4_SWAGGER_DESCRIPTION` still override.
+
+**An undecorated route emits only `200`; `401` appears only on a secured route.**
+Ruby stamped `200/400/401/404/500` on EVERY operation, including a public GET,
+advertising status codes nothing in the framework produces. Now an undecorated
+route carries only `200`, and a route documented as secured also carries `401`.
+
+**`operationId` preserves the path's underscores.** `/__health` and `/health`
+both collapsed to `get_health` and then one got a `_2` suffix by registration
+order. They now produce distinct `get___health` / `get_health` — an
+operationId is a generated client's method name and must be stable and unique.
+
+**AutoCrud emits `components.schemas`.** Generated write routes referenced a bare
+`{"type":"object"}` request body. They now `$ref` a `components.schemas` entry
+keyed by the model CLASS name, with a `required` array derived from column
+nullability.
+
+**Migration.** A generated client that hard-coded the app version from
+`info.version`, or generated error handlers from the phantom `400/404/500`
+responses, or a method name from the collapsed `get_health`, will regenerate to
+the corrected shape. No runtime behaviour of a Tina4 server changes.
+
 ### Breaking: Messenger `uid` is a String, and `inbox()` pages newest first
 
 Two cross-framework divergences, both MEASURED 2026-08-06 against live GreenMail

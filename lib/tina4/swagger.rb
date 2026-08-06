@@ -87,8 +87,14 @@ module Tina4
       def base_spec
         info = {
           "title" => ENV["TINA4_SWAGGER_TITLE"] || ENV["PROJECT_NAME"] || "Tina4 API",
-          "version" => ENV["TINA4_SWAGGER_VERSION"] || Tina4::VERSION,
-          "description" => ENV["TINA4_SWAGGER_DESCRIPTION"] || "Auto-generated API documentation"
+          # info.version is the APPLICATION's API version, not the framework's.
+          # Defaulting to Tina4::VERSION made an undocumented app claim API
+          # v3.13.x; "1.0.0" is the settled cross-framework default (Python/PHP).
+          # TINA4_SWAGGER_VERSION still overrides.
+          "version" => ENV["TINA4_SWAGGER_VERSION"] || "1.0.0",
+          # Empty by default (parity) — a canned "Auto-generated..." blurb is
+          # noise in a real API's docs. Set TINA4_SWAGGER_DESCRIPTION to fill it.
+          "description" => ENV["TINA4_SWAGGER_DESCRIPTION"] || ""
         }
 
         # Optional contact block — only emitted when at least one field is set.
@@ -228,6 +234,8 @@ module Tina4
         tags = meta[:tags] || [extract_tag(route.path)]
         tags.each { |t| ctx[:used_tags] << t unless ctx[:used_tags].include?(t) }
 
+        security = resolve_security(meta, route, ctx[:schemes])
+
         spec["paths"][path] ||= {}
         operation = {
           "operationId" => unique_operation_id(method, path, ctx[:seen_ids]),
@@ -239,9 +247,17 @@ module Tina4
         }
 
         operation["deprecated"] = true if meta[:deprecated]
-
-        security = resolve_security(meta, route, ctx[:schemes])
         operation["security"] = security unless security.nil?
+
+        # A route emits 401 WHEN AND ONLY WHEN it is documented as secured (a
+        # non-empty security requirement). An undecorated route carries only
+        # 200; nothing invents 400/404/500, and an explicitly public route
+        # (security == []) gets no 401. Mirrors PHP; drops the old
+        # default_responses that stamped 200/400/401/404/500 on every operation
+        # including a public GET.
+        if security && !security.empty? && !operation["responses"].key?("401")
+          operation["responses"]["401"] = { "description" => "Unauthorized" }
+        end
 
         if %w[post put patch].include?(method)
           operation["requestBody"] = build_request_body(method, meta, ref, ctx)
@@ -375,8 +391,13 @@ module Tina4
         end
       end
 
+      # A route's success response. An undecorated route emits ONLY 200
+      # (description-only); with a model ref the 200 carries the schema. The
+      # 401-on-secured addition happens in add_route_to_spec, not here.
       def model_or_default_responses(ref, model_list)
-        return default_responses unless ref
+        unless ref
+          return { "200" => { "description" => "Successful response" } }
+        end
 
         schema = model_list ? { "type" => "array", "items" => { "$ref" => ref } } : { "$ref" => ref }
         {
@@ -404,9 +425,19 @@ module Tina4
         first
       end
 
+      # operationId is a generated client's METHOD NAME, so two distinct paths
+      # must produce two distinct ids. Preserve the path's own underscores —
+      # /__health -> get___health, /health -> get_health — instead of collapsing
+      # both to get_health and suffixing _2 onto whichever registered second
+      # (order-dependent). Mirrors the Python master: strip the outer slashes,
+      # turn internal "/" into "_", drop the {} around params, map a splat to
+      # "wildcard", and DO NOT collapse repeated underscores.
       def unique_operation_id(method, path, seen)
-        base = method + path.gsub(%r{[/{}*]}) { |c| c == "*" ? "wildcard" : "_" }
-        base = base.gsub(/_+/, "_").chomp("_")
+        clean = path.gsub(%r{\A/+|/+\z}, "")
+                    .gsub("/", "_")
+                    .delete("{}")
+                    .gsub("*", "wildcard")
+        base = clean.empty? ? method : "#{method}_#{clean}"
         oid = base
         n = 2
         while seen.include?(oid)
@@ -496,16 +527,6 @@ module Tina4
         rescue NameError
           nil
         end
-      end
-
-      def default_responses
-        {
-          "200" => { "description" => "Successful response" },
-          "400" => { "description" => "Bad request" },
-          "401" => { "description" => "Unauthorized" },
-          "404" => { "description" => "Not found" },
-          "500" => { "description" => "Internal server error" }
-        }
       end
     end
   end

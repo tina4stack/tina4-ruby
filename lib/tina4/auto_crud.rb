@@ -120,7 +120,8 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
-        }, swagger_meta: { summary: "List all #{pretty_name}", tags: [table.to_s] })
+        }, swagger_meta: { summary: "List all #{pretty_name}", tags: [table.to_s],
+                           model: model_class, model_list: true })
 
         # GET /api/{table}/{id} -- get single record
         Tina4::Router.add("GET", "#{prefix}/#{table}/{id}", proc { |req, res|
@@ -135,7 +136,8 @@ module Tina4
           rescue => e
             res.json({ error: e.message }, status: 500)
           end
-        }, swagger_meta: { summary: "Get #{pretty_name} by ID", tags: [table.to_s] })
+        }, swagger_meta: { summary: "Get #{pretty_name} by ID", tags: [table.to_s],
+                           model: model_class })
 
         # POST /api/{table} -- create record
         post_route = Tina4::Router.add("POST", "#{prefix}/#{table}", proc { |req, res|
@@ -153,16 +155,11 @@ module Tina4
         }, swagger_meta: {
           summary: "Create #{pretty_name}",
           tags: [table.to_s],
-          request_body: {
-            "description" => "#{pretty_name} data",
-            "required" => true,
-            "content" => {
-              "application/json" => {
-                "schema" => { "type" => "object" },
-                "example" => example_body
-              }
-            }
-          }
+          # Reference the model's components.schemas entry ($ref, keyed by the
+          # model CLASS name) instead of a bare {type:object}; the generated
+          # example stays as a sample body. See decisions doc S2.
+          model: model_class,
+          example: example_body
         })
 
         # Secure-by-default: only opt out of the write gate when public: true.
@@ -194,16 +191,9 @@ module Tina4
         }, swagger_meta: {
           summary: "Update #{pretty_name}",
           tags: [table.to_s],
-          request_body: {
-            "description" => "#{pretty_name} data",
-            "required" => true,
-            "content" => {
-              "application/json" => {
-                "schema" => { "type" => "object" },
-                "example" => example_body
-              }
-            }
-          }
+          # $ref the model schema instead of {type:object} (see decisions S2).
+          model: model_class,
+          example: example_body
         })
 
         # Secure-by-default: only opt out of the write gate when public: true.
