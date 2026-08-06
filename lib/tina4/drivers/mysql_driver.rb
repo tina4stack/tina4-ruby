@@ -41,13 +41,23 @@ module Tina4
         # identical socket trap).
         host = uri.host || "127.0.0.1"
         host = "127.0.0.1" if host == "localhost" && uri.port
-        @connection = Mysql2::Client.new(
+        options = {
           host: host,
           port: uri.port || 3306,
           username: username || uri.user,
           password: password || uri.password,
           database: uri.path&.sub("/", "")
-        )
+        }
+        # mysql2's OWN connect_timeout, in whole seconds. MEASURED: it bounds the
+        # handshake read too, not just the TCP connect - 3.01s with "Lost
+        # connection ... waiting for initial communication packet" against a
+        # TCPServer that accepts and never replies, where the same connect with
+        # no bound sat past 20s and needed SIGKILL.
+        seconds = Tina4::DatabaseAdapter.connect_timeout_whole_seconds
+        options[:connect_timeout] = seconds if seconds
+        Tina4::DatabaseAdapter.bounding_connect(options[:host], options[:port]) do
+          @connection = Mysql2::Client.new(**options)
+        end
       end
 
       def close

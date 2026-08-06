@@ -18,7 +18,17 @@ module Tina4
 
         uri = build_uri(connection_string, username, password)
         @db_name = extract_db_name(connection_string)
-        @client = Mongo::Client.new(uri)
+        # The mongo driver's OWN connect_timeout, in seconds. It already bounds
+        # itself - MEASURED: Mongo::Client.new against a TCPServer that accepts
+        # and never replies returns after 10.02s, the gem's hard-coded default -
+        # so this makes it honour the Tina4 variable instead. A URI that spells
+        # connectTimeoutMS itself keeps that value. No bounding_connect wrapper:
+        # Client.new does NOT raise on an unreachable server (server selection
+        # happens later, on the first operation), so there is no expiry to name.
+        seconds = Tina4::DatabaseAdapter.connect_timeout_seconds
+        options = {}
+        options[:connect_timeout] = seconds if seconds && !uri.include?("connectTimeoutMS")
+        @client = Mongo::Client.new(uri, options)
         @db = @client.use(@db_name)
         @connection = @db
         @last_insert_id = nil

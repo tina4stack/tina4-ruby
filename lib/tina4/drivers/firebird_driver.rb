@@ -113,6 +113,55 @@ module Tina4
         url_charset || kwarg || env || "UTF8"
       end
 
+      # Bound the REACH to a Firebird server before libfbclient is handed the
+      # attach. Raises the shared connect-timeout error when the host does not
+      # answer within TINA4_DATABASE_CONNECT_TIMEOUT.
+      #
+      # Why a socket probe and not a timeout around the attach - MEASURED on
+      # Ruby 3.2.3 / Ubuntu 24.04.4 / fb 0.10.0 against a REAL TCPServer that
+      # accepts the connection and then never replies:
+      #
+      #   fb attach, no bound          WEDGED past 20s, SIGKILL needed
+      #   fb attach, Timeout.timeout(3) WEDGED past 20s - the timeout NEVER fired
+      #   fb attach, Thread#join(3)     WEDGED past 20s - join never returned
+      #
+      # The gem calls isc_attach_database (fb.c:3002) WITHOUT releasing the GVL
+      # and without an unblocking function, so no Ruby thread runs to deliver
+      # the interrupt - `timeout`'s SIGTERM could not even be delivered. It also
+      # builds its DPB from a fixed four-item set (user, password, lc_ctype,
+      # role) with no connect-timeout item. There is therefore NO in-process way
+      # to bound the attach itself, and a Timeout.timeout here would be WORSE
+      # than nothing because it would look like protection and silently not fire.
+      #
+      # What IS boundable is reaching the host at all, which is the hang
+      # operators actually hit: a dead or firewalled server swallows the SYN and
+      # the process sits there. A plain stdlib socket bounds that exactly.
+      #
+      # RESIDUAL GAP, stated plainly so this is not mistaken for full cover: if
+      # the TCP handshake SUCCEEDS and the server then never speaks the Firebird
+      # protocol, the attach is still UNBOUNDED. Ruby cannot fix that from
+      # inside this process - it needs a connect timeout in the fb gem itself.
+      #
+      # ONLY a timeout is converted. A refused connection, an unknown host or
+      # any other socket error is swallowed so libfbclient still produces its
+      # own (better) diagnosis: this probe adds a bound, it does not take over
+      # error reporting.
+      def self.bound_reachability!(host, port)
+        seconds = Tina4::DatabaseAdapter.connect_timeout_seconds
+        return if seconds.nil? || host.to_s.empty?
+
+        require "socket"
+        begin
+          Tina4::DatabaseAdapter.bounding_connect(host, port) do
+            Socket.tcp(host, port, connect_timeout: seconds, &:close)
+          end
+        rescue Tina4::DatabaseConnectionError
+          raise
+        rescue StandardError
+          nil
+        end
+      end
+
       def connect(connection_string, username: nil, password: nil, charset: nil)
         require "fb"
         require "uri"
@@ -157,6 +206,7 @@ module Tina4
         # with the gem's default charset (double-encoding). Defaults to UTF8.
         @connect_opts[:charset] = self.class.resolve_charset(connection_string, charset)
 
+        self.class.bound_reachability!(host, port)
         open_connection
       rescue LoadError
         raise LoadError,

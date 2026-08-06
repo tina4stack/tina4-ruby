@@ -27,13 +27,23 @@ module Tina4
                 "    gem install tiny_tds    # bare driver"
         end
         uri = parse_connection(connection_string)
-        @connection = TinyTds::Client.new(
+        options = {
           host: uri[:host],
           port: uri[:port] || 1433,
           username: username || uri[:username],
           password: password || uri[:password],
           database: uri[:database]
-        )
+        }
+        # FreeTDS's OWN login_timeout, in whole seconds - the bound on reaching
+        # and logging in to the server. MEASURED: 3.01s ("TDS server connection
+        # timed out") against a TCPServer that accepts and never replies, where
+        # the same connect with no bound sat past 20s and needed SIGKILL. The
+        # separate :timeout (per-query, tiny_tds default 5s) is untouched.
+        seconds = Tina4::DatabaseAdapter.connect_timeout_whole_seconds
+        options[:login_timeout] = seconds if seconds
+        Tina4::DatabaseAdapter.bounding_connect(options[:host], options[:port]) do
+          @connection = TinyTds::Client.new(**options)
+        end
       end
 
       def close

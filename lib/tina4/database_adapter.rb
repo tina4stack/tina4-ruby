@@ -67,6 +67,99 @@ module Tina4
       end
     end
 
+    # == Bounding the connect
+    #
+    # A connect that can block forever hangs the whole application with NO log,
+    # no error and no signal. MEASURED here on Ruby 3.2.3 / Ubuntu 24.04.4
+    # against a real TCPServer that accepts the TCP connection and then never
+    # replies: pg, mysql2, tiny_tds AND fb all sat past 20 seconds and needed
+    # SIGKILL - `timeout`'s SIGTERM could not even be delivered, because the
+    # blocking work happens inside a C client that never yields to the
+    # interpreter. (A CLOSED port is a different thing entirely: it refuses in
+    # 0.00s and tests nothing.)
+    #
+    # ONE variable governs every driver whose connect crosses a network:
+    #
+    #   TINA4_DATABASE_CONNECT_TIMEOUT   seconds, default 10; <= 0 disables the
+    #                                    bound (unbounded, the old behaviour);
+    #                                    a non-number warns and falls back to 10
+    #
+    # Each driver applies it through its OWN native option - libpq
+    # connect_timeout, mysql2 connect_timeout, FreeTDS login_timeout, mongo
+    # connect_timeout - because only the C client can interrupt its own blocking
+    # socket work. Ruby's Timeout.timeout and Thread#join CANNOT: see
+    # Tina4::Drivers::FirebirdDriver.bound_reachability! for the measurement.
+    #
+    # There is deliberately NO outer Ruby timeout racing the native one. The
+    # native option is the ONLY timer; bounding_connect below merely TRANSLATES
+    # whatever the client raises into the one contract message, so the operator
+    # is never left holding a driver-worded error that names no variable. Where
+    # a driver cannot produce that message at all, its own file says so at the
+    # point of exclusion:
+    #
+    #   postgres  bounded + contract message   libpq connect_timeout
+    #   mysql     bounded + contract message   mysql2 connect_timeout
+    #   mssql     bounded + contract message   FreeTDS login_timeout
+    #   firebird  bounded to REACHABILITY only stdlib socket; the attach itself
+    #                                          cannot be bounded from Ruby
+    #   mongodb   bounded, NO message possible Client.new never fails
+    #   sqlite    n/a                          local file, no network peer
+    #   odbc      NOT bounded                  gem untestable here; see its file
+    CONNECT_TIMEOUT_VAR = "TINA4_DATABASE_CONNECT_TIMEOUT"
+    DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
+
+    # Clock slack when deciding whether a failed connect was OUR bound expiring.
+    # A native bound of 10s is measured back as 9.998s often enough to matter,
+    # and without the slack the contract error would degrade into the raw driver
+    # error at random.
+    CONNECT_TIMEOUT_SLACK_SECONDS = 0.25
+
+    # Seconds to bound a connect by, or nil when the operator disabled the bound.
+    def self.connect_timeout_seconds
+      seconds = Tina4::Env.float(CONNECT_TIMEOUT_VAR, default: DEFAULT_CONNECT_TIMEOUT_SECONDS)
+      seconds.positive? ? seconds : nil
+    end
+
+    # Whole seconds for the native options that accept only an integer (libpq,
+    # libmysqlclient, FreeTDS). Rounds UP and never below 1: libpq reads
+    # connect_timeout=0 as "wait forever", so rounding 0.4 DOWN to 0 would
+    # silently disable the very bound being set.
+    def self.connect_timeout_whole_seconds
+      seconds = connect_timeout_seconds
+      seconds && [seconds.ceil, 1].max
+    end
+
+    # The one error a timed-out connect raises: it names the host, the port, the
+    # seconds actually spent, and the variable that tunes it.
+    def self.connect_timed_out!(host, port, elapsed_seconds, cause = nil)
+      detail = cause ? " Driver reported: #{cause.message.to_s.gsub(/\s+/, " ").strip}" : ""
+      raise Tina4::DatabaseConnectionError,
+            "Database connect to #{host}:#{port} timed out after " \
+            "#{format("%.1f", elapsed_seconds)}s (#{CONNECT_TIMEOUT_VAR}=" \
+            "#{connect_timeout_seconds} seconds; set it to 0 to wait " \
+            "indefinitely).#{detail}"
+    end
+
+    # Run a driver's natively-bounded connect and translate an expiry into the
+    # contract error above. The NATIVE option does the bounding; this only names
+    # it. Whether the bound expired is decided by ELAPSED TIME, not by matching
+    # driver error text - the four clients word it four different ways
+    # ("timeout expired", "waiting for initial communication packet", "TDS
+    # server connection timed out", "Connection timed out"), and a marker table
+    # is one more thing to drift and MISS. A missed timeout is the whole defect.
+    def self.bounding_connect(host, port)
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      yield
+    rescue StandardError => error
+      bound = connect_timeout_seconds
+      raise if bound.nil?
+
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      raise if elapsed < bound - CONNECT_TIMEOUT_SLACK_SECONDS
+
+      connect_timed_out!(host, port, elapsed, error)
+    end
+
     # Did this driver actually OVERRIDE the contract method, or is it inheriting
     # the raising stub? `respond_to?` cannot answer that once the module is
     # included, and answering it wrongly turns a working silent-skip path into a

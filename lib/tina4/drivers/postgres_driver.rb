@@ -33,7 +33,23 @@ module Tina4
           uri.password = password if password
           url = uri.to_s
         end
-        @connection = PG.connect(url)
+        # libpq's OWN connect_timeout, in whole seconds. MEASURED: it bounds the
+        # entire connect INCLUDING the startup handshake - 3.01s against a
+        # TCPServer that accepts and never replies, where the same connect with
+        # no bound sat past 20s and needed SIGKILL. An operator who spelled
+        # connect_timeout in the URL themselves keeps their value.
+        seconds = Tina4::DatabaseAdapter.connect_timeout_whole_seconds
+        seconds = nil if url.include?("connect_timeout=")
+        # Host/port for the timeout message only. A libpq keyword/value conninfo
+        # string is not a URL and simply yields nil here, which is fine.
+        target = begin
+          URI.parse(url)
+        rescue URI::Error
+          nil
+        end
+        Tina4::DatabaseAdapter.bounding_connect(target&.host, target&.port || 5432) do
+          @connection = seconds ? PG.connect(url, connect_timeout: seconds) : PG.connect(url)
+        end
         apply_result_type_map(@connection)
         @connection
       end

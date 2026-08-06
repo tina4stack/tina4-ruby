@@ -25,6 +25,28 @@ module Tina4
       # passed verbatim to ODBC::Database.new as a connection string.
       # username: and password: are appended as UID/PWD if not already present
       # in the connection string.
+      #
+      # NOT bounded by TINA4_DATABASE_CONNECT_TIMEOUT, and this is a deliberate
+      # exclusion rather than an oversight. Three reasons, in order of weight:
+      #
+      # 1. ruby-odbc is not a Tina4 dependency (it is in neither the gemspec nor
+      #    the Gemfile) and its C extension will not build without unixodbc-dev,
+      #    so it is installed in neither CI nor the lab. A change here could not
+      #    be tested, and an untestable change to a connect path is exactly the
+      #    kind of "protection" that turns out not to fire.
+      # 2. An ODBC target is a DSN name, a file DSN or a local driver. In the
+      #    general case there is no host and no port, so the contract's error
+      #    message has nothing to name.
+      # 3. The ODBC-standard bound is SQL_LOGIN_TIMEOUT, which the operator
+      #    already controls: the DSN string below is passed through verbatim, so
+      #    a driver-specific `Login Timeout=` / `Connection Timeout=` in it takes
+      #    effect today with no framework code at all.
+      #
+      # If ruby-odbc ever becomes testable here, the hook exists:
+      # ODBC::Database#login_timeout= maps to SQL_LOGIN_TIMEOUT (odbc.c:5475,
+      # bound at odbc.c:9366), reachable by constructing an unconnected
+      # ODBC::Database, setting it, then calling #drvconnect (odbc.c:9330)
+      # instead of connecting inside ::new.
       def connect(connection_string, username: nil, password: nil)
         begin
           require "odbc"
