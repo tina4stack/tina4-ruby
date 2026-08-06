@@ -388,8 +388,19 @@ module Tina4
       # (.env.local loads first, both first-wins, so a real env var always wins).
       Tina4::Env.load_env(root_dir)
 
-      # Setup debug logging
-      Tina4::Log.configure(root_dir)
+      # Setup debug logging.
+      #
+      # No argument here, deliberately (ADR-0041). This used to pass `root_dir`,
+      # and since Ruby correctly lets an explicit argument beat the environment,
+      # that had two measured consequences in every booted Ruby app:
+      # TINA4_LOG_DIR was ENTIRELY DEAD -- the documented variable could not
+      # move the logs anywhere -- and because root_dir is an existing directory
+      # it became the log directory itself, so tina4.log and error.log were
+      # written into the PROJECT ROOT rather than the documented logs/.
+      # root_dir is the framework's default, not a user instruction, so it
+      # belongs below the environment. Resolution is now TINA4_LOG_DIR, then
+      # logs/, matching Python and Node.
+      Tina4::Log.configure
       Tina4::Log.info("Tina4 Ruby v#{VERSION} initializing...")
 
       # Fail-safe dev secret: in dev (and NOT CI/prod) mint a per-machine

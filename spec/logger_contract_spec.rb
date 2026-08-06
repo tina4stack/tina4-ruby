@@ -334,4 +334,97 @@ RSpec.describe "the settled logger contract" do
       saved == :__unset__ ? ENV.delete("TINA4_LOG_ROTATE_SIZE") : ENV["TINA4_LOG_ROTATE_SIZE"] = saved
     end
   end
+
+  # ── L6: explicit argument > environment > default (ADR-0041) ───────────────
+  #
+  # Ruby already applied the correct precedence in Log.configure, which is why
+  # it is the reference implementation for the rule. What it got WRONG was the
+  # bootstrap: Tina4::App.initialize! called `Tina4::Log.configure(root_dir)`,
+  # passing the framework's own default through the ARGUMENT channel. Because
+  # an argument correctly outranks the environment, that had two measured
+  # consequences in every booted Ruby app:
+  #
+  #   * TINA4_LOG_DIR was ENTIRELY DEAD -- a documented variable that could not
+  #     move the logs anywhere; and
+  #   * root_dir is an existing directory, so it became the log directory
+  #     itself and tina4.log / error.log were written into the PROJECT ROOT
+  #     rather than the documented logs/.
+  #
+  # A framework default is not a caller instruction. It belongs below the
+  # environment, never above it.
+  describe "L6 an explicit argument beats the environment (ADR-0041)" do
+    # A REAL child process. The logger memoises its resolved state for the life
+    # of the process and this suite has already configured it, so nothing short
+    # of a separate process can honestly measure what a fresh boot resolves.
+    def run_precedence_child(env, body)
+      Dir.mktmpdir("tina4-logprec-") do |root|
+        env_dir = File.join(root, "from_env")
+        arg_dir = File.join(root, "from_argument")
+        [env_dir, arg_dir].each { |d| FileUtils.mkdir_p(d) }
+        script = File.join(root, "child.rb")
+        File.write(script, <<~RUBY)
+          $LOAD_PATH.unshift(#{File.expand_path('../lib', __dir__).inspect})
+          require "tina4"
+          ARG_DIR = #{arg_dir.inspect}
+          #{body}
+        RUBY
+        child_env = { "TINA4_LOG_DIR" => env_dir, "TINA4_LOG_OUTPUT" => "file",
+                      "TINA4_DEBUG" => "true" }.merge(env)
+        ok = system(child_env, RbConfig.ruby, script, chdir: root,
+                                out: File::NULL, err: File::NULL)
+        raise "child process failed" unless ok
+
+        # Read the FILESYSTEM. The coordinate under test IS "which value won",
+        # so asking the logger which directory it chose would delegate the
+        # asserted property to the code being tested.
+        #
+        # `root_logs` lists only LOG files loose in the project root. Listing
+        # everything would be wrong: a real initialize! also scaffolds .env,
+        # .env.local and .keys there, and none of those is what this clause is
+        # about -- an over-broad assertion here fails for reasons that have
+        # nothing to do with log precedence.
+        yield({ env: Dir.children(env_dir).sort, arg: Dir.children(arg_dir).sort,
+                root_entries: Dir.children(root).sort,
+                root_logs: Dir.children(root).grep(/\.log\z/).sort })
+      end
+    end
+
+    it "writes to the configure() argument, not to TINA4_LOG_DIR" do
+      run_precedence_child({}, %(Tina4::Log.configure(ARG_DIR); Tina4::Log.info("probe"))) do |seen|
+        expect(seen[:arg]).to include("tina4.log")
+        expect(seen[:env]).to be_empty,
+                              "the log landed in TINA4_LOG_DIR, so the environment beat the explicit argument"
+      end
+    end
+
+    it "NEGATIVE: TINA4_LOG_DIR still applies when configure() is given no argument" do
+      # Without this half, an implementation that ignored the environment
+      # ENTIRELY would satisfy the positive example above.
+      run_precedence_child({}, %(Tina4::Log.configure; Tina4::Log.info("probe"))) do |seen|
+        expect(seen[:env]).to include("tina4.log"),
+                              "TINA4_LOG_DIR was ignored even with no explicit argument to outrank it"
+        expect(seen[:arg]).to be_empty
+      end
+    end
+
+    it "honours TINA4_LOG_DIR through a real Tina4.initialize! boot" do
+      # The regression that mattered: the BOOTSTRAP passing its own default.
+      run_precedence_child({}, %(Tina4.initialize!; Tina4::Log.info("boot probe"))) do |seen|
+        expect(seen[:env]).to include("tina4.log"),
+                              "a booted app ignored TINA4_LOG_DIR - the bootstrap is passing a directory again"
+        expect(seen[:root_logs]).to be_empty,
+                                    "a booted app wrote its log into the PROJECT ROOT instead of the configured directory"
+      end
+    end
+
+    it "defaults a booted app to logs/, not the project root" do
+      run_precedence_child({ "TINA4_LOG_DIR" => nil },
+                           %(Tina4.initialize!; Tina4::Log.info("default probe"))) do |seen|
+        expect(seen[:root_entries]).to include("logs"),
+                                       "with no TINA4_LOG_DIR a booted app must write into logs/"
+        expect(seen[:root_logs]).to be_empty,
+                                    "a booted app dropped tina4.log / error.log beside the Gemfile instead of into logs/"
+      end
+    end
+  end
 end
