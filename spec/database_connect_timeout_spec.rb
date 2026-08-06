@@ -47,15 +47,31 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
     "192.0.2.1"
   end
 
-  # Confirm this environment really does blackhole that address, so a network
-  # that answers it produces a declared skip rather than a confusing failure.
-  def blackhole_available?
-    Socket.tcp(blackhole_host, 3050, connect_timeout: 1, &:close)
-    false
-  rescue Errno::ETIMEDOUT
-    true
-  rescue StandardError
-    false
+  # Confirm this environment really does blackhole that address. Returns nil
+  # when it does, or the REASON it does not - which goes into the skip message,
+  # so a skip explains itself instead of leaving the next person to re-derive it.
+  #
+  # Classified by ELAPSED TIME, not by error class. A blackhole swallows the SYN
+  # so the probe burns its whole budget; a refusal or an unreachable route comes
+  # back immediately. The first version rescued Errno::ETIMEDOUT alone and
+  # treated every other error as "no blackhole here", which silently skipped
+  # this example at seed 9999 for a reason it did not record - a guard that
+  # quietly turns a real test off is exactly the ghost this suite exists to
+  # prevent. The probe is stable in isolation (30/30 Errno::ETIMEDOUT, all
+  # >= 0.9s, measured on the lab), so anything fast is a genuine environment
+  # difference worth naming rather than swallowing.
+  def blackhole_unavailable_reason
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    begin
+      Socket.tcp(blackhole_host, 3050, connect_timeout: 1, &:close)
+      "#{blackhole_host} ANSWERED - it is not a blackhole on this network"
+    rescue StandardError => error
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      return nil if elapsed >= 0.9
+
+      "#{blackhole_host} failed fast (#{error.class} after " \
+        "#{format("%.2f", elapsed)}s) - not a blackhole, so the bound cannot be observed"
+    end
   end
 
   def with_connect_timeout(raw)
@@ -78,6 +94,33 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
     started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     yield
     Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+  end
+
+  # Make Tina4::Log's CONSOLE sink deterministic for the duration of a block.
+  #
+  # Tina4::Log memoises its output destination and console level in class ivars
+  # at configure time, and an earlier spec in a full-suite run can leave the
+  # destination set to "file" - MEASURED at seed 1111, where the warning example
+  # failed with out="file" and an empty capture while passing in isolation,
+  # because Log#log gates the console branch on `@output != "file"` and the
+  # warning went to the log FILE instead of $stdout. Nothing is memoised about
+  # the WARNING itself: Env.float warns on every single parse failure.
+  #
+  # Log must be initialized BEFORE the ivars are forced, or the first Log.log
+  # call would run `configure unless @initialized` and overwrite them. The exact
+  # previous values go back afterwards, so this neither depends on nor changes
+  # global logger state - restoring by re-configuring would swap one leak for
+  # another.
+  def with_console_logging
+    Tina4::Log.configure unless Tina4::Log.instance_variable_get(:@initialized)
+    previous_output = Tina4::Log.instance_variable_get(:@output)
+    previous_level = Tina4::Log.instance_variable_get(:@console_level)
+    Tina4::Log.instance_variable_set(:@output, "stdout")
+    Tina4::Log.instance_variable_set(:@console_level, 0)
+    yield
+  ensure
+    Tina4::Log.instance_variable_set(:@output, previous_output)
+    Tina4::Log.instance_variable_set(:@console_level, previous_level)
   end
 
   # Prove a connect is REALLY unbounded without hanging the suite: run it in a
@@ -159,11 +202,13 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
       ["abc", "ten", "10s", "", "  "].each do |raw|
         captured = StringIO.new
         original_stdout = $stdout
-        $stdout = captured
         begin
-          with_connect_timeout(raw) do
-            expect(Tina4::DatabaseAdapter.connect_timeout_seconds)
-              .to eq(10), "#{raw.inspect} should fall back to the default"
+          with_console_logging do
+            $stdout = captured
+            with_connect_timeout(raw) do
+              expect(Tina4::DatabaseAdapter.connect_timeout_seconds)
+                .to eq(10), "#{raw.inspect} should fall back to the default"
+            end
           end
         ensure
           $stdout = original_stdout
@@ -171,6 +216,24 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
         expect(captured.string).to include("TINA4_DATABASE_CONNECT_TIMEOUT"),
                                    "#{raw.inspect} should have warned"
       end
+    end
+
+    it "warns EVERY time, not once per process - an operator greps the log after the incident" do
+      # Deliberate, not emergent: Env.float has no warn memo, and neither does
+      # Python's, PHP's or Node's. If a memo is ever added, this reddens.
+      captured = StringIO.new
+      original_stdout = $stdout
+      begin
+        with_console_logging do
+          $stdout = captured
+          3.times do
+            with_connect_timeout("not-a-number") { Tina4::DatabaseAdapter.connect_timeout_seconds }
+          end
+        end
+      ensure
+        $stdout = original_stdout
+      end
+      expect(captured.string.scan("TINA4_DATABASE_CONNECT_TIMEOUT").length).to eq(3)
     end
 
     it "never rounds a sub-second bound DOWN to zero for the whole-second options" do
@@ -363,7 +426,8 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
 
   describe "Firebird (stdlib reachability probe)" do
     it "gives up on an unreachable host, naming host, port, elapsed and the variable" do
-      skip "[needs:blackhole-route] #{blackhole_host} is not blackholed on this network" unless blackhole_available?
+      blackhole_reason = blackhole_unavailable_reason
+      skip "[needs:blackhole-route] #{blackhole_reason}" if blackhole_reason
 
       with_connect_timeout("2") do
         elapsed = seconds_spent do
@@ -398,7 +462,8 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
     end
 
     it "restores the OLD UNBOUNDED behaviour when the variable is 0" do
-      skip "[needs:blackhole-route] #{blackhole_host} is not blackholed on this network" unless blackhole_available?
+      blackhole_reason = blackhole_unavailable_reason
+      skip "[needs:blackhole-route] #{blackhole_reason}" if blackhole_reason
 
       with_connect_timeout("0") do
         elapsed = seconds_spent do
@@ -418,7 +483,8 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
       rescue LoadError
         skip "fb gem not installed"
       end
-      skip "[needs:blackhole-route] #{blackhole_host} is not blackholed on this network" unless blackhole_available?
+      blackhole_reason = blackhole_unavailable_reason
+      skip "[needs:blackhole-route] #{blackhole_reason}" if blackhole_reason
 
       with_connect_timeout("2") do
         driver = Tina4::Drivers::FirebirdDriver.new
