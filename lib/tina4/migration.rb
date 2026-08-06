@@ -71,7 +71,23 @@ module Tina4
       created_at = Time.now.utc.strftime("%Y-%m-%d %H:%M:%S UTC")
       safe_name = description.gsub(/[^a-z0-9]+/i, "_").downcase.gsub(/^_|_$/, "")
 
-      if kind == "ruby" || kind == "python"
+      # MEASURED 2026-08-06: the accepted kind differed in every framework -
+      # python "python", php "php", ruby "ruby" OR "python", node "class" - and
+      # NONE validated it, so create_migration(..., kind="python") produced a
+      # code migration in Python and Ruby and a SILENT .sql file in PHP and
+      # Node. "code" is now the canonical spelling in all four; each keeps its
+      # own language name as a legacy alias; anything else raises.
+      # Ruby also accepted "python", which was a copy-paste from the master
+      # and is dropped: a Ruby project never wants a .py migration.
+      kind = (kind || "sql").to_s.strip.downcase
+      unless %w[sql code ruby].include?(kind)
+        raise ArgumentError,
+              "Unknown migration kind #{kind.inspect}. Use 'sql' (default) or " \
+              "'code' (alias: 'ruby'). An unrecognised kind used to produce a " \
+              ".sql file silently, which is why this now raises."
+      end
+
+      if %w[code ruby].include?(kind)
         filename = "#{timestamp}_#{safe_name}.rb"
         filepath = File.join(@migrations_dir, filename)
 
