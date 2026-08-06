@@ -48,6 +48,7 @@ module SpecTmpdir
       root = File.join(base, "tina4-rspec-#{Process.pid}")
       FileUtils.mkdir_p(root)          # must exist BEFORE TMPDIR announces it
       ENV["TMPDIR"] = root
+      @owner_pid = Process.pid
       @root = root
     end
 
@@ -59,7 +60,24 @@ module SpecTmpdir
     end
 
     # Remove the sandbox and anything tracked outside it.
+    #
+    # THE PID GUARD IS LOAD-BEARING. Ruby's at_exit handlers are INHERITED BY
+    # FORKED CHILDREN and run when the child exits -- measured directly:
+    #
+    #     at_exit { puts "ran in #{Process.pid}" }
+    #     fork { }        # => prints for the CHILD pid, then the parent's
+    #
+    # spec/logger_contract_spec.rb and spec/database_connect_timeout_spec.rb
+    # both fork. Without this guard the first child to finish deletes the
+    # PARENT'S sandbox mid-run, and Ruby then makes that silent rather than
+    # loud: Dir.tmpdir falls back to /var/folders or /tmp when TMPDIR no longer
+    # exists, so every later spec would leak into the real temp dir instead of
+    # failing. PHP's identical hazard did fail loudly -- 60 pcntl_fork children
+    # in DbContractAbcTest deleted the shared SQLite file out from under each
+    # other -- which is how this was found at all.
     def reap
+      return unless @owner_pid.nil? || Process.pid == @owner_pid
+
       (@created + [@root]).compact.each do |dir|
         FileUtils.remove_entry(dir)
       rescue StandardError
