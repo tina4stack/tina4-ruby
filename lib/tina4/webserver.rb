@@ -5,13 +5,16 @@ module Tina4
     DEFAULT_HOST = "0.0.0.0"
     DEFAULT_PORT = 7147
 
-    # TINA4_HOST overrides the bind address when caller doesn't pass `host:`.
+    # Bind address and port, when the caller does not pass host:/port:.
+    #
+    # Both go through Tina4.resolve_bind_* so this and Tina4.start! cannot
+    # drift apart - they already had: this file read TINA4_PORT first while
+    # tina4.rb read bare PORT first, so the same variable meant different
+    # things depending which entry point you came through.
     def initialize(app, host: nil, port: nil)
       @app = app
-      env_host = ENV["TINA4_HOST"]
-      @host = host || (env_host && !env_host.empty? ? env_host : DEFAULT_HOST)
-      env_port = ENV["TINA4_PORT"] || ENV["PORT"]
-      @port = port || (env_port && !env_port.empty? ? env_port.to_i : DEFAULT_PORT)
+      @host = host || Tina4.resolve_bind_host(DEFAULT_HOST)
+      @port = port || Tina4.resolve_bind_port(DEFAULT_PORT)
     end
 
     # Kill whatever process is listening on *port*.

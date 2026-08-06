@@ -56,6 +56,51 @@ require_relative "tina4/mcp"
 require_relative "tina4/realtime"
 
 module Tina4
+  # Bind address, with the framework name winning over the bare one.
+  #
+  # TINA4_HOST > HOST (deprecated) > default. See resolve_bind_port.
+  def self.resolve_bind_host(default = "0.0.0.0")
+    tina4_host = ENV["TINA4_HOST"]
+    return tina4_host if tina4_host && !tina4_host.empty?
+
+    legacy = ENV["HOST"]
+    if legacy && !legacy.empty?
+      warn_deprecated_bind_var("HOST", "TINA4_HOST", legacy)
+      return legacy
+    end
+    default
+  end
+
+  # Bind port, with the framework name winning over the bare one.
+  #
+  # TINA4_PORT > PORT (deprecated) > default. Bare PORT is a name anything can
+  # set - a shared CI runner, a PaaS, another tool - and it should never
+  # outrank the framework's own variable. It is still honoured so no deployment
+  # breaks; the warning is what drives the move. Removal is 3.14.
+  def self.resolve_bind_port(default = 7147)
+    tina4_port = ENV["TINA4_PORT"]
+    return tina4_port.to_i if tina4_port && tina4_port.match?(/\A\d+\z/)
+
+    legacy = ENV["PORT"]
+    if legacy && legacy.match?(/\A\d+\z/)
+      warn_deprecated_bind_var("PORT", "TINA4_PORT", legacy)
+      return legacy.to_i
+    end
+    default
+  end
+
+  # Warn ONCE per variable. Repeated on every call it is noise people filter.
+  def self.warn_deprecated_bind_var(old_name, new_name, value)
+    @warned_bind_vars ||= {}
+    return if @warned_bind_vars[old_name]
+
+    @warned_bind_vars[old_name] = true
+    Tina4::Log.warning(
+      "#{old_name} is deprecated and will be removed in 3.14 - use " \
+      "#{new_name} instead (using #{value} from #{old_name})"
+    )
+  end
+
   # ── Lazy-loaded: database drivers ─────────────────────────────────────
   module Drivers
     autoload :SchemaSplit,    File.expand_path("tina4/drivers/schema_split", __dir__)
@@ -506,8 +551,18 @@ module Tina4
       # code under `tina4ruby serve` served 200.
       register_builtin_routes!
 
-      host = ENV.fetch("HOST", ENV.fetch("TINA4_HOST", "0.0.0.0"))
-      port = ENV.fetch("PORT", ENV.fetch("TINA4_PORT", "7147")).to_i
+      # TINA4_HOST/TINA4_PORT BEFORE the bare names, not after.
+      #
+      # This had both the wrong way round: ENV.fetch("PORT", ...) returns PORT
+      # whenever it is set, so a stray OS-level HOST or PORT outranked the
+      # framework's own variable - the one the CLI documents and prefers, and
+      # the one Tina4::WebServer a few files away already reads first. Two code
+      # paths in one framework disagreeing about the same variable.
+      #
+      # Bare HOST/PORT stay honoured so nothing breaks, and warn so the
+      # migration happens. Removal is 3.14.
+      host = Tina4.resolve_bind_host
+      port = Tina4.resolve_bind_port(7147)
 
       actual_port = find_available_port(port)
       if actual_port != port
