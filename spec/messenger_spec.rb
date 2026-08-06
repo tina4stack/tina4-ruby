@@ -504,6 +504,60 @@ RSpec.describe Tina4::Messenger do
       envelope
     end
 
+    # ── uid TYPE and page ORDER, both measured across all four ──────────────
+    #
+    # MEASURED 2026-08-06 against this same GreenMail, one mailbox, all four
+    # frameworks asked the same question:
+    #
+    #   uid type   python str   php string   node string   ruby Integer
+    #   page order python P3,P2 php P3,P2    node P3,P2    ruby P2,P3
+    #
+    # Ruby is the outlier on both. The documented contract says uid is a STRING
+    # everywhere, so a caller comparing `uid == "3"` gets false in Ruby alone;
+    # and `inbox(limit: 1)` returns the NEWEST message in three frameworks and
+    # the OLDEST in Ruby, which is the most common inbox call there is.
+    #
+    # The order bug is subtle: uid_search is reversed to newest-first and the
+    # page is sliced correctly, but uid_fetch returns rows in SERVER (ascending)
+    # order, discarding the caller's ordering. Selection was right; presentation
+    # was not.
+    describe "uid type and page order (cross-framework contract)" do
+      it "returns uid as a String, the way the other three do" do
+        envelope = deliver_and_wait(subject: "uidtype-#{SecureRandom.hex(4)}", body: "x")
+        expect(envelope[:uid]).to be_a(String),
+          "uid is #{envelope[:uid].class} (#{envelope[:uid].inspect}); the contract " \
+          "says String in all four, so `uid == '1'` is false in Ruby alone"
+      end
+
+      it "pages newest first, so inbox(limit: 1) is the newest message" do
+        first  = "order1-#{SecureRandom.hex(4)}"
+        second = "order2-#{SecureRandom.hex(4)}"
+        deliver_and_wait(subject: first, body: "older")
+        deliver_and_wait(subject: second, body: "newer")
+
+        page = messenger.inbox(limit: 2)
+        expect(page.length).to eq(2), "fixture did not build: #{page.map { |m| m[:subject] }}"
+        expect(page.first[:subject]).to eq(second),
+          "inbox(limit: 2).first is #{page.first[:subject].inspect}; expected the NEWEST " \
+          "(#{second.inspect}). Ruby paged oldest-first while the other three page newest-first"
+
+        # The selection half, kept separate from the ordering half: a limit of 1
+        # must pick the newest message, not merely order a full page correctly.
+        expect(messenger.inbox(limit: 1).map { |m| m[:subject] }).to eq([second])
+      end
+
+      it "still reads a message back by the uid it handed out" do
+        # The pair. A change that stringified the uid but broke addressing would
+        # satisfy the type assertion and be useless.
+        subject = "uidread-#{SecureRandom.hex(4)}"
+        envelope = deliver_and_wait(subject: subject, body: "read me")
+        full = messenger.read(envelope[:uid])
+        expect(full).not_to be_nil, "read(#{envelope[:uid].inspect}) found nothing"
+        expect(full[:subject]).to eq(subject)
+      end
+    end
+
+
     it "delivers over real SMTP and reads the envelope back over real IMAP" do
       subject = "Inbox RoundTrip #{SecureRandom.hex(4)}"
       env = deliver_and_wait(subject: subject, body: "plain text body")
@@ -511,7 +565,10 @@ RSpec.describe Tina4::Messenger do
       expect(env[:subject]).to eq(subject)
       expect(env[:to].map { |a| a[:email] }).to include(recipient)
       expect(env[:from].map { |a| a[:email] }).to include("sender@tina4.test")
-      expect(env[:uid]).to be_a(Integer)
+      # Was `be_a(Integer)`, which PINNED the divergence: the documented
+      # cross-framework contract says uid is a String in all four, and Ruby
+      # was the only one returning Integer. The spec asserted the bug.
+      expect(env[:uid]).to be_a(String)
     end
 
     it "reads the full message body back over real IMAP" do

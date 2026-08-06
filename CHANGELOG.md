@@ -6,6 +6,33 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+### Breaking: Messenger `uid` is a String, and `inbox()` pages newest first
+
+Two cross-framework divergences, both MEASURED 2026-08-06 against live GreenMail
+with all four frameworks asked the same question about the same mailbox.
+
+    uid type    python str     php string   node string   ruby Integer
+    page order  python P3,P2   php P3,P2    node P3,P2    ruby P2,P3
+
+Ruby was the outlier on both.
+
+**`uid` is now a String.** The documented contract says String in all four, so a
+caller comparing `uid == "3"` got false in Ruby alone. `read()` / `mark_read()` /
+`delete()` still accept a String or an Integer, so passing an id back in is
+unchanged.
+
+**`inbox()` and `search()` now page newest first.** `uid_search` was already
+reversed and the page sliced correctly, but `uid_fetch` returns rows in SERVER
+(ascending) order however the uids were asked for, silently re-sorting the page.
+So `inbox(limit: 1)` returned the OLDEST message in Ruby and the NEWEST in the
+other three - the most common inbox call there is.
+
+**Migration.** Code doing `uid == 3` or `uid.to_i` keeps working; code relying on
+`uid.is_a?(Integer)` does not. Code that took `inbox(limit: n).first` as the
+oldest message in that page now gets the newest, which is what the other three
+frameworks always returned.
+
+
 This file is deliberately NOT a copy of those notes. Duplicating them is exactly how a
 changelog rots into claiming a version that was never cut, so this file records only
 UNRELEASED work. When a version ships, its notes go to the release notes above.

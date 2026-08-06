@@ -240,7 +240,12 @@ module Tina4
         return [] if page.empty?
 
         envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "RFC822.SIZE"])
-        (envelopes || []).map { |msg| parse_envelope(msg) }
+        # uid_fetch returns rows in SERVER (ascending) order however the uids
+        # were asked for, so the newest-first page above was silently re-sorted
+        # and inbox(limit: 1) handed back the OLDEST message. Selection was
+        # right; presentation was not. Restore the requested order.
+        by_uid = (envelopes || []).each_with_object({}) { |m, h| h[m.attr["UID"]] = m }
+        page.filter_map { |uid| by_uid[uid] }.map { |msg| parse_envelope(msg) }
       rescue *IMAP_CONNECTION_ERRORS => e
         raise imap_fail("inbox", e)
       ensure
@@ -308,7 +313,12 @@ module Tina4
         return [] if page.empty?
 
         envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "RFC822.SIZE"])
-        (envelopes || []).map { |msg| parse_envelope(msg) }
+        # uid_fetch returns rows in SERVER (ascending) order however the uids
+        # were asked for, so the newest-first page above was silently re-sorted
+        # and inbox(limit: 1) handed back the OLDEST message. Selection was
+        # right; presentation was not. Restore the requested order.
+        by_uid = (envelopes || []).each_with_object({}) { |m, h| h[m.attr["UID"]] = m }
+        page.filter_map { |uid| by_uid[uid] }.map { |msg| parse_envelope(msg) }
       rescue *IMAP_CONNECTION_ERRORS => e
         raise imap_fail("search", e)
       ensure
@@ -582,7 +592,9 @@ module Tina4
       size = fetch_data.attr["RFC822.SIZE"] || 0
 
       {
-        uid: fetch_data.attr.keys.include?("UID") ? fetch_data.attr["UID"] : nil,
+        # String in all four frameworks. Ruby alone returned Integer, so
+        # `uid == "3"` was false here and true everywhere else.
+        uid: fetch_data.attr.keys.include?("UID") ? fetch_data.attr["UID"].to_s : nil,
         subject: env.subject ? decode_mime_header(env.subject) : "",
         from: format_imap_address(env.from),
         to: format_imap_address(env.to),
@@ -601,7 +613,9 @@ module Tina4
       body_text, body_html = extract_body_parts(raw_body)
 
       {
-        uid: fetch_data.attr.keys.include?("UID") ? fetch_data.attr["UID"] : nil,
+        # String in all four frameworks. Ruby alone returned Integer, so
+        # `uid == "3"` was false here and true everywhere else.
+        uid: fetch_data.attr.keys.include?("UID") ? fetch_data.attr["UID"].to_s : nil,
         subject: env.subject ? decode_mime_header(env.subject) : "",
         from: format_imap_address(env.from),
         to: format_imap_address(env.to),
