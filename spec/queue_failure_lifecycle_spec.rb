@@ -83,7 +83,7 @@ RSpec.describe "Queue failure lifecycle (live, no mocks)" do
     )
     ENV["TINA4_MONGO_URI"] = "mongodb://#{FAILLC_MONGO_HOST}:#{FAILLC_MONGO_PORT}"
     ENV["TINA4_QUEUE_MONGO_URI"] = ENV["TINA4_MONGO_URI"]
-    ENV["TINA4_QUEUE_PATH"] = Dir.mktmpdir("faillc")
+    ENV["TINA4_QUEUE_PATH"] = SpecTmpdir.create("faillc")
     begin
       example.run
     ensure

@@ -160,7 +160,7 @@ end
 RSpec.describe Tina4::Auth, "valid_token return type (3.13.0)" do
   before(:all) do
     require "tmpdir"
-    Tina4::Auth.setup(Dir.mktmpdir)
+    Tina4::Auth.setup(SpecTmpdir.create)
   end
 
   it "returns the payload Hash on success (not a bare bool)" do

@@ -57,7 +57,7 @@ RSpec.describe "DocStore substitutability" do
   def collection_for(uri)
     %w[TINA4_MONGO_URI TINA4_SESSION_MONGO_URI TINA4_SESSION_MONGO_URL].each { |k| ENV.delete(k) }
     ENV["TINA4_MONGO_URI"] = uri if uri
-    ENV["TINA4_DOC_STORE_PATH"] = File.join(Dir.mktmpdir, "ds.db")
+    ENV["TINA4_DOC_STORE_PATH"] = File.join(SpecTmpdir.create, "ds.db")
     Tina4::DocStore.get_collection("ds_contract_#{SecureRandom.hex(5)}")
   end
 
@@ -595,7 +595,7 @@ RSpec.describe "DocStore substitutability" do
       skip "no reachable MongoDB at #{DOCSTORE_MONGO_URI}" unless self.class.mongo_reachable?
 
       ENV["TINA4_MONGO_URI"] = tagged_uri
-      ENV["TINA4_DOC_STORE_PATH"] = File.join(Dir.mktmpdir, "ds.db")
+      ENV["TINA4_DOC_STORE_PATH"] = File.join(SpecTmpdir.create, "ds.db")
 
       # The measurement must be able to SEE this client, or every expectation
       # below is vacuously true and proves nothing.

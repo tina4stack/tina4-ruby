@@ -40,7 +40,7 @@ RSpec.describe "DB query cache (opt-in, default-off)" do
   end
 
   def make_db
-    path = File.join(Dir.mktmpdir, "qc.db")
+    path = File.join(SpecTmpdir.create, "qc.db")
     db = Tina4::Database.new("sqlite:///#{path}")
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)")
     db.execute("INSERT INTO t (n) VALUES (?)", ["a"])

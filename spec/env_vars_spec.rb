@@ -41,14 +41,14 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
   describe "TINA4_HOST" do
     it "defaults to 0.0.0.0 when unset" do
       with_env("TINA4_HOST" => nil, "TINA4_PORT" => nil, "PORT" => nil) do
-        ws = Tina4::WebServer.new(Tina4::RackApp.new(root_dir: Dir.mktmpdir))
+        ws = Tina4::WebServer.new(Tina4::RackApp.new(root_dir: SpecTmpdir.create))
         expect(ws.instance_variable_get(:@host)).to eq("0.0.0.0")
       end
     end
 
     it "uses the env value when set" do
       with_env("TINA4_HOST" => "127.0.0.1", "TINA4_PORT" => nil, "PORT" => nil) do
-        ws = Tina4::WebServer.new(Tina4::RackApp.new(root_dir: Dir.mktmpdir))
+        ws = Tina4::WebServer.new(Tina4::RackApp.new(root_dir: SpecTmpdir.create))
         expect(ws.instance_variable_get(:@host)).to eq("127.0.0.1")
       end
     end
@@ -526,14 +526,14 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
   describe "TINA4_SESSION_HTTPONLY" do
     it "defaults to true (HttpOnly present)" do
       with_env("TINA4_SESSION_HTTPONLY" => nil) do
-        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: Dir.mktmpdir })
+        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: SpecTmpdir.create })
         expect(sess.cookie_header).to include("HttpOnly")
       end
     end
 
     it "drops HttpOnly when explicitly false" do
       with_env("TINA4_SESSION_HTTPONLY" => "false") do
-        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: Dir.mktmpdir })
+        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: SpecTmpdir.create })
         expect(sess.cookie_header).not_to include("HttpOnly")
       end
     end
@@ -542,14 +542,14 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
   describe "TINA4_SESSION_NAME" do
     it "defaults to tina4_session" do
       with_env("TINA4_SESSION_NAME" => nil) do
-        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: Dir.mktmpdir })
+        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: SpecTmpdir.create })
         expect(sess.cookie_header).to start_with("tina4_session=")
       end
     end
 
     it "uses the override" do
       with_env("TINA4_SESSION_NAME" => "myapp_sess") do
-        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: Dir.mktmpdir })
+        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: SpecTmpdir.create })
         expect(sess.cookie_header).to start_with("myapp_sess=")
       end
     end
@@ -558,14 +558,14 @@ RSpec.describe "TINA4 environment variables (v3.12.4 parity)" do
   describe "TINA4_SESSION_SECURE" do
     it "defaults to false (no Secure flag)" do
       with_env("TINA4_SESSION_SECURE" => nil) do
-        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: Dir.mktmpdir })
+        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: SpecTmpdir.create })
         expect(sess.cookie_header).not_to include("Secure")
       end
     end
 
     it "adds the Secure flag when truthy" do
       with_env("TINA4_SESSION_SECURE" => "true") do
-        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: Dir.mktmpdir })
+        sess = Tina4::Session.new({}, handler: :file, handler_options: { dir: SpecTmpdir.create })
         expect(sess.cookie_header).to include("Secure")
       end
     end

@@ -14,6 +14,14 @@ $LOAD_PATH.unshift File.join(File.dirname(__FILE__), "..", "lib")
 require "tina4"
 require "tina4/dev"
 
+# Tracked temp directories, reaped when the process ends. Bare Dir.mktmpdir (no
+# block) never cleans up, and nine spec files had no teardown for theirs -- the
+# lab's /tmp held ~55-59 `d<date>-<pid>-` entries per rspec process, growing
+# every run. See spec/support/spec_tmpdir.rb for the audit.
+require_relative "support/spec_tmpdir"
+SpecTmpdir.sandbox!            # BEFORE anything resolves a temp path
+at_exit { SpecTmpdir.reap }
+
 # ── Canonical repo paths, defined ONCE ────────────────────────────────────────
 #
 # A constant assigned inside an RSpec.describe block is defined on Object, i.e.

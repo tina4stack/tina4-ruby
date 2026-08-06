@@ -107,7 +107,7 @@ module PumaShutdownProbe
   end
 
   def boot(slow_seconds: 2.0, shutdown_timeout: nil, pin_builtin: false)
-    dir = Dir.mktmpdir("tina4-puma-shutdown")
+    dir = SpecTmpdir.create("tina4-puma-shutdown")
     write_project(dir)
     port = ShutdownProbe.free_port
     log_path = File.join(dir, "server.log")

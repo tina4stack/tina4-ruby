@@ -151,7 +151,7 @@ module GracefulShutdownProbe
   end
 
   def boot(slow_seconds: 2.0, shutdown_timeout: nil, background: false, websocket_port: nil)
-    dir = Dir.mktmpdir("tina4-graceful-shutdown")
+    dir = SpecTmpdir.create("tina4-graceful-shutdown")
     port = free_port
     app_path = write_app(dir)
     log_path = File.join(dir, "server.log")

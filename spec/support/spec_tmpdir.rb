@@ -3,65 +3,73 @@
 require "tmpdir"
 require "fileutils"
 
-# A temp directory that gets reaped.
+# Temp directories that cannot outlive the run.
 #
-# `Dir.mktmpdir` WITH A BLOCK removes the directory when the block ends. WITHOUT
-# one it does not, and nothing else will either. Audited across spec/: 173 bare
-# (blockless) calls in 105 files, and almost all of them pair with an
-# `after { FileUtils.remove_entry(...) }` — but NINE FILES had no cleanup
-# anywhere, 17 sites between them:
+# THE MEASUREMENT THAT SET THE DESIGN. A first attempt converted the 17 blockless
+# `Dir.mktmpdir` calls that had no cleanup (nine spec files) to a tracked helper.
+# Run against the FULL suite on the lab, /tmp still gained 59 entries. Converting
+# call sites does not converge: `spec/` has 173 blockless calls across 105 files,
+# new specs add more, and CHILD PROCESSES the specs spawn create their own.
 #
-#   env_vars_spec (8)          docstore_substitutability_spec (2)
-#   db_query_cache_spec (1)    form_token_spec (1)
-#   graceful_shutdown_spec (1) parity_test_class_spec (1)
-#   puma_shutdown_spec (1)     queue_backend_validation_spec (1)
-#   queue_failure_lifecycle_spec (1)
+# So the primary mechanism is not a call-site convention at all -- it is a
+# SANDBOX. `sandbox!` points TMPDIR at one per-run directory before anything
+# uses it, so every temp path any spec creates lands inside it, and the whole
+# tree is removed at exit. Measured, because Ruby's own rule here is easy to get
+# wrong: `Dir.tmpdir` honours ENV["TMPDIR"] only when that directory EXISTS --
+# it silently falls through to /var/folders or /tmp otherwise, which is exactly
+# what a first probe of this showed. It must be created before it is announced.
 #
-# MEASURED on the lab: /tmp held ~55-59 `d<date>-<pid>-` entries per rspec
-# process — that is Ruby's DEFAULT mktmpdir prefix — across dozens of pids, and
-# it grew on every run.
+#   ENV["TMPDIR"]=/tmp/probe-rb  ->  Dir.mktmpdir -> /tmp/probe-rb/d20260806-...
 #
-# Every one of those sites is an INLINE expression:
+# Child processes inherit TMPDIR, so a spec that shells out to another ruby or
+# to a server gets the same sandbox without knowing about it.
 #
-#     Tina4::Frond.new(template_dir: Dir.mktmpdir)
-#     ENV["TINA4_QUEUE_PATH"] = Dir.mktmpdir
-#     File.join(Dir.mktmpdir, "qc.db")
+# `create` remains for call sites that want to say plainly that they are making
+# a temp directory. It is no longer load-bearing for cleanup -- the sandbox is --
+# but it keeps the intent visible where a bare inline `Dir.mktmpdir` said nothing:
 #
-# There is no local to hang an `after` hook on, which is exactly why they were
-# missed: the fix is not "add a teardown", it is "make the creation itself
-# tracked". Hence a helper rather than nine sets of hooks.
+#     Tina4::Frond.new(template_dir: SpecTmpdir.create)
 #
-# NOT a monkey-patch of Dir.mktmpdir. Instrumenting stdlib for the whole spec
-# process would reap directories belonging to code that never opted in, and the
-# repo already treats surprising test-harness behaviour as a defect in its own
-# right. Call sites say what they are doing.
+# reap/remove NEVER raise. A directory may be held open, or already gone, and a
+# reaper that raised at_exit would turn a green suite into a non-zero exit for a
+# reason unrelated to any behaviour under test.
 module SpecTmpdir
   @created = []
+  @root = nil
 
   class << self
-    # Create a tracked temp directory. Same signature shape as Dir.mktmpdir.
+    attr_reader :root
+
+    # Point TMPDIR at a per-run directory. Call ONCE, as early as possible.
+    def sandbox!
+      return @root if @root
+
+      base = ENV["TMPDIR"].to_s.empty? ? Dir.tmpdir : ENV["TMPDIR"]
+      root = File.join(base, "tina4-rspec-#{Process.pid}")
+      FileUtils.mkdir_p(root)          # must exist BEFORE TMPDIR announces it
+      ENV["TMPDIR"] = root
+      @root = root
+    end
+
+    # A tracked temp directory. Same signature shape as Dir.mktmpdir.
     def create(prefix = "tina4-spec-")
       dir = Dir.mktmpdir(prefix)
       @created << dir
       dir
     end
 
-    # Remove everything still present.
-    #
-    # NEVER RAISES. Cleanup that can fail a run is worse than the leak it fixes:
-    # a directory may be held open or have been removed already by the spec that
-    # asked for it, and a reaper that raised at_exit would turn a green suite
-    # into a non-zero exit for a reason unrelated to any behaviour under test.
+    # Remove the sandbox and anything tracked outside it.
     def reap
-      @created.each do |dir|
+      (@created + [@root]).compact.each do |dir|
         FileUtils.remove_entry(dir)
       rescue StandardError
-        # already gone, or not ours to remove
+        # already gone, held open, or not ours -- never fail a run over cleanup
       end
       @created = []
+      @root = nil
     end
 
-    # Test seam: how many directories are still tracked.
+    # Test seam.
     def tracked_count
       @created.size
     end

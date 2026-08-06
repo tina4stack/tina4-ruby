@@ -24,7 +24,7 @@ RSpec.describe "Queue backend validation" do
     saved = ENV["TINA4_QUEUE_BACKEND"]
     saved_path = ENV["TINA4_QUEUE_PATH"]
     ENV.delete("TINA4_QUEUE_BACKEND")
-    ENV["TINA4_QUEUE_PATH"] = Dir.mktmpdir
+    ENV["TINA4_QUEUE_PATH"] = SpecTmpdir.create
     example.run
     saved.nil? ? ENV.delete("TINA4_QUEUE_BACKEND") : ENV["TINA4_QUEUE_BACKEND"] = saved
     saved_path.nil? ? ENV.delete("TINA4_QUEUE_PATH") : ENV["TINA4_QUEUE_PATH"] = saved_path

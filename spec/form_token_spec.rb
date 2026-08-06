@@ -5,7 +5,7 @@ require "json"
 require "base64"
 
 RSpec.describe "form_token template function" do
-  let(:engine) { Tina4::Frond.new(template_dir: Dir.mktmpdir) }
+  let(:engine) { Tina4::Frond.new(template_dir: SpecTmpdir.create) }
 
   def decode_jwt_payload(token)
     parts = token.split(".")
