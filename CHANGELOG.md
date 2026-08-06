@@ -6,6 +6,44 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+### Breaking: Messenger `inbox()` / `read()` item shapes (3.13.96 parity)
+
+The IMAP read path is aligned to the settled cross-framework shape (Python is the
+reference). Measured against live GreenMail.
+
+**`inbox()` item is EXACTLY `{uid, subject, from, to, date, snippet, seen}`.**
+- `from` and `to` are header STRINGS (`"Name <email>"`), not arrays of
+  `{name, email}`.
+- the `read` key is renamed `seen` (Boolean).
+- `date` is ISO-8601.
+- `flags` and `size` are dropped.
+- a new `snippet` field carries decoded, transfer-decoded, tag-stripped plain
+  text, truncated to 200 chars (no more raw base64 / no more absent field).
+
+**`read()` item uses `body_text` / `body_html`** (renamed from `body` / `html`),
+returns `from`/`to`/`cc` as STRINGS, an `attachments` array of
+`{filename, content_type, size}`, and a `headers` Hash (Message-ID lives there).
+The old `flags` / `read` / `raw` / `message_id` top-level keys are dropped
+(`headers["Message-ID"]` replaces `message_id`).
+
+**`inbox` and `read` are callable POSITIONALLY** — `inbox("INBOX", 10, 0)`,
+`read(uid, "INBOX")` — as well as by keyword (both forms work).
+
+**New methods:** `mark_unread`, `send_template` (renders a Frond template string
+to HTML and sends), and `delete` (flags `\Deleted` + expunge; fails loud like the
+other reads).
+
+**`TINA4_MAIL_IMAP_USERNAME` / `_PASSWORD` are honoured**, falling back to
+`TINA4_MAIL_USERNAME` / `_PASSWORD`. Ruby authenticated IMAP to the SMTP account,
+so an app whose reading mailbox differed from its SMTP relay account read the
+wrong mailbox. There are matching `imap_username:` / `imap_password:` constructor
+args (explicit beats env, ADR-0041).
+
+**Migration.** Code reading `item[:from].first[:email]` becomes
+`item[:from]` (a string); `item[:read]` becomes `item[:seen]`; `msg[:body]` /
+`msg[:html]` become `msg[:body_text]` / `msg[:body_html]`; `msg[:message_id]`
+becomes `msg[:headers]["Message-ID"]`.
+
 ### Breaking: Swagger defaults, response codes, and operationId (3.13.96 parity)
 
 Four measured cross-framework divergences in the OpenAPI generator, settled to

@@ -563,8 +563,13 @@ RSpec.describe Tina4::Messenger do
       env = deliver_and_wait(subject: subject, body: "plain text body")
 
       expect(env[:subject]).to eq(subject)
-      expect(env[:to].map { |a| a[:email] }).to include(recipient)
-      expect(env[:from].map { |a| a[:email] }).to include("sender@tina4.test")
+      # G4 (3.13.96): from/to are header STRINGS now, not arrays of {name,email}.
+      # This assertion PINNED the pre-G4 array shape; corrected to the settled
+      # cross-framework string contract.
+      expect(env[:to]).to be_a(String)
+      expect(env[:to]).to include(recipient)
+      expect(env[:from]).to be_a(String)
+      expect(env[:from]).to include("sender@tina4.test")
       # Was `be_a(Integer)`, which PINNED the divergence: the documented
       # cross-framework contract says uid is a String in all four, and Ruby
       # was the only one returning Integer. The spec asserted the bug.
@@ -579,7 +584,8 @@ RSpec.describe Tina4::Messenger do
       full = messenger.read(env[:uid])
       expect(full).not_to be_nil
       expect(full[:subject]).to eq(subject)
-      expect(full[:body]).to eq(body)
+      # G5 (3.13.96): body -> body_text. This spec pinned the pre-G5 key name.
+      expect(full[:body_text]).to eq(body)
     end
 
     it "reads an HTML message body back over real IMAP" do
@@ -588,7 +594,8 @@ RSpec.describe Tina4::Messenger do
       env = deliver_and_wait(subject: subject, body: html, html: true)
 
       full = messenger.read(env[:uid])
-      expect(full[:html]).to eq(html)
+      # G5 (3.13.96): html -> body_html.
+      expect(full[:body_html]).to eq(html)
     end
 
     it "counts unread messages over real IMAP, then zero after reading" do
@@ -612,6 +619,216 @@ RSpec.describe Tina4::Messenger do
       # Touch the mailbox so GreenMail creates it, then list folders for real.
       deliver_and_wait(subject: "Folders #{SecureRandom.hex(4)}", body: "x")
       expect(messenger.folders.map(&:upcase)).to include("INBOX")
+    end
+
+    # ── G1: inbox and read are callable positionally AND by keyword ─────────
+    describe "positional + keyword arguments (G1)" do
+      it "inbox and read accept POSITIONAL args" do
+        subject = "pos-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "positional")
+        page = messenger.inbox("INBOX", 10, 0)
+        expect(page.map { |m| m[:subject] }).to include(subject)
+        full = messenger.read(env[:uid], "INBOX")
+        expect(full[:subject]).to eq(subject)
+      end
+
+      it "inbox and read still accept KEYWORD args" do
+        subject = "kw-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "keyword")
+        page = messenger.inbox(folder: "INBOX", limit: 10)
+        expect(page.map { |m| m[:subject] }).to include(subject)
+        full = messenger.read(env[:uid], folder: "INBOX", mark_read: false)
+        expect(full[:subject]).to eq(subject)
+      end
+    end
+
+    # ── G4: inbox() item shape — EXACTLY seven keys ─────────────────────────
+    describe "inbox item shape (G4)" do
+      it "has EXACTLY {uid, subject, from, to, date, snippet, seen}" do
+        subject = "shape-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "hello shape")
+        expect(env.keys.sort).to eq(%i[date from seen snippet subject to uid])
+      end
+
+      it "returns from/to as STRINGS, date as ISO-8601, seen as a Boolean" do
+        subject = "shape2-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "shapes")
+        expect(env[:from]).to be_a(String).and include("sender@tina4.test")
+        expect(env[:to]).to be_a(String).and include(recipient)
+        expect(env[:date]).to match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+        # A freshly delivered message, listed via BODY.PEEK[], is NOT marked read.
+        expect(env[:seen]).to be(false)
+      end
+    end
+
+    # ── G3: snippet is decoded, transfer-decoded, tag-stripped, <=200 chars ─
+    describe "snippet (G3)" do
+      it "is the DECODED plain text, not raw base64" do
+        subject = "snip-#{SecureRandom.hex(4)}"
+        body = "the quick brown fox jumps"
+        env = deliver_and_wait(subject: subject, body: body)
+        expect(env[:snippet]).to eq(body)
+      end
+
+      it "strips HTML tags" do
+        subject = "snhtml-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "<p>Hello <b>world</b></p>", html: true)
+        expect(env[:snippet]).to eq("Hello world")
+      end
+
+      it "truncates to 200 characters" do
+        subject = "snlong-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "x" * 500)
+        expect(env[:snippet].length).to eq(200)
+        expect(env[:snippet]).to eq("x" * 200)
+      end
+    end
+
+    # ── G5: read() item shape — body_text/body_html, attachments, headers ───
+    describe "read item shape (G5)" do
+      it "uses body_text/body_html and returns from/to/cc as STRINGS" do
+        subject = "read5-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "read body text")
+        full = messenger.read(env[:uid])
+        expect(full[:body_text]).to eq("read body text")
+        expect(full).to have_key(:body_html)
+        expect(full[:from]).to be_a(String).and include("sender@tina4.test")
+        expect(full[:to]).to be_a(String).and include(recipient)
+        expect(full).to have_key(:cc)
+        # The old body/html keys are gone.
+        expect(full).not_to have_key(:body)
+        expect(full).not_to have_key(:html)
+      end
+
+      it "returns a headers Hash carrying Subject, From and Message-ID" do
+        subject = "hdrs-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "x")
+        full = messenger.read(env[:uid])
+        expect(full[:headers]).to be_a(Hash)
+        expect(full[:headers]["Subject"]).to eq(subject)
+        expect(full[:headers]).to have_key("From")
+        expect(full[:headers]).to have_key("Message-ID")
+      end
+
+      it "returns [] for attachments on a plain message" do
+        subject = "noatt-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "no attachment")
+        full = messenger.read(env[:uid])
+        expect(full[:attachments]).to eq([])
+      end
+
+      it "returns attachment metadata {filename, content_type, size} when present" do
+        subject = "att-#{SecureRandom.hex(4)}"
+        result = messenger.send(
+          to: recipient, subject: subject, body: "see the attachment", html: false,
+          attachments: [{ filename: "note.txt", content: "hello attachment",
+                          mime_type: "text/plain" }]
+        )
+        expect(result[:success]).to be(true), "SMTP send failed: #{result[:message]}"
+
+        env = nil
+        40.times do
+          env = messenger.inbox.find { |m| m[:subject] == subject }
+          break if env
+
+          sleep 0.25
+        end
+        expect(env).not_to be_nil, "attachment message never arrived"
+        full = messenger.read(env[:uid])
+        att = full[:attachments].find { |a| a[:filename] == "note.txt" }
+        expect(att).not_to be_nil, "attachments were #{full[:attachments].inspect}"
+        expect(att[:content_type]).to include("text/plain")
+        expect(att[:size]).to be > 0
+      end
+    end
+
+    # ── G7: mark_unread, delete, send_template ──────────────────────────────
+    describe "mark_unread / delete / send_template (G7)" do
+      it "mark_unread clears the Seen flag so the message is unread again" do
+        subject = "unread-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "toggle me")
+        messenger.read(env[:uid]) # sets \Seen
+        expect(messenger.unread).to eq(0)
+        messenger.mark_unread(env[:uid])
+        expect(messenger.unread).to eq(1)
+      end
+
+      it "delete removes a message from the real mailbox" do
+        subject = "del-#{SecureRandom.hex(4)}"
+        env = deliver_and_wait(subject: subject, body: "delete me")
+        expect(messenger.inbox.map { |m| m[:subject] }).to include(subject)
+        expect(messenger.delete(env[:uid])).to be(true)
+        expect(messenger.inbox.map { |m| m[:subject] }).not_to include(subject)
+      end
+
+      it "send_template renders a Frond template and delivers the HTML" do
+        token = SecureRandom.hex(4)
+        subject = "tmpl-#{token}"
+        result = messenger.send_template(
+          to: recipient, subject: subject,
+          template: "<h1>Hi {{ name }}</h1>", data: { "name" => "Ada #{token}" }
+        )
+        expect(result[:success]).to be(true), "send_template SMTP failed: #{result[:message]}"
+
+        env = nil
+        40.times do
+          env = messenger.inbox.find { |m| m[:subject] == subject }
+          break if env
+
+          sleep 0.25
+        end
+        expect(env).not_to be_nil, "templated message never arrived"
+        full = messenger.read(env[:uid])
+        expect(full[:body_html]).to include("Hi Ada #{token}")
+      end
+    end
+
+    # ── G8: IMAP credentials are separate from SMTP ─────────────────────────
+    describe "separate IMAP credentials (G8)" do
+      it "reads the account named by imap_username, NOT the SMTP account" do
+        # Deliver into `recipient`'s mailbox (SMTP-auth account is `recipient`).
+        subject = "imapcreds-#{SecureRandom.hex(4)}"
+        deliver_and_wait(subject: subject, body: "x")
+
+        # POSITIVE: a reader whose IMAP user is a DIFFERENT fresh mailbox reads
+        # THAT (empty) mailbox — GreenMail creates it on first access.
+        other = "rb-other-#{SecureRandom.hex(8)}@tina4.test"
+        reader = described_class.new(
+          host: GREENMAIL_HOST, port: GREENMAIL_SMTP_PORT, use_tls: false,
+          imap_host: GREENMAIL_HOST, imap_port: GREENMAIL_IMAP_PORT, imap_encryption: "none",
+          username: recipient, password: "secret",
+          imap_username: other, imap_password: "secret"
+        )
+        expect(reader.imap_username).to eq(other)
+        expect(reader.inbox).to eq([])
+
+        # NEGATIVE: with NO IMAP override the reader falls back to the SMTP
+        # username and DOES see the delivered message.
+        fallback = described_class.new(
+          host: GREENMAIL_HOST, port: GREENMAIL_SMTP_PORT, use_tls: false,
+          imap_host: GREENMAIL_HOST, imap_port: GREENMAIL_IMAP_PORT, imap_encryption: "none",
+          username: recipient, password: "secret"
+        )
+        expect(fallback.imap_username).to eq(recipient)
+        expect(fallback.inbox.map { |m| m[:subject] }).to include(subject)
+      end
+
+      it "reads TINA4_MAIL_IMAP_USERNAME/_PASSWORD from the environment" do
+        original = ENV.to_h.slice("TINA4_MAIL_IMAP_USERNAME", "TINA4_MAIL_IMAP_PASSWORD")
+        env_user = "rb-env-#{SecureRandom.hex(8)}@tina4.test"
+        ENV["TINA4_MAIL_IMAP_USERNAME"] = env_user
+        ENV["TINA4_MAIL_IMAP_PASSWORD"] = "secret"
+        m = described_class.new(
+          host: GREENMAIL_HOST, port: GREENMAIL_SMTP_PORT, use_tls: false,
+          imap_host: GREENMAIL_HOST, imap_port: GREENMAIL_IMAP_PORT, imap_encryption: "none",
+          username: "someone-else@tina4.test", password: "secret"
+        )
+        expect(m.imap_username).to eq(env_user)
+        expect(m.inbox).to eq([]) # env_user's mailbox is brand new -> empty
+      ensure
+        %w[TINA4_MAIL_IMAP_USERNAME TINA4_MAIL_IMAP_PASSWORD].each { |k| ENV.delete(k) }
+        original.each { |k, v| ENV[k] = v }
+      end
     end
 
     context "when the mailbox is genuinely empty (successful real fetch)" do
@@ -668,6 +885,10 @@ RSpec.describe Tina4::Messenger do
 
       it "folders raises instead of returning []" do
         expect { messenger.folders }.to raise_error(Tina4::MessengerConnectionError)
+      end
+
+      it "delete raises instead of silently reporting success (destructive, fail-loud)" do
+        expect { messenger.delete("1") }.to raise_error(Tina4::MessengerConnectionError)
       end
 
       it "MessengerConnectionError is a MessengerError" do
@@ -994,5 +1215,37 @@ RSpec.describe "Tina4::Messenger capture path (replaces DevMessengerProxy)" do
       expect(messenger).to be_a(Tina4::Messenger)
       expect(messenger).to respond_to(:send)
     end
+  end
+end
+
+# G10: pin the capture gate that already holds — availability decides, not
+# verbosity. No mocks: these construct a real Messenger and read the real
+# should_capture? decision over its config/env (a pure decision, no network).
+RSpec.describe "Tina4::Messenger capture gate (G10)" do
+  around(:each) do |example|
+    keys = %w[TINA4_MAIL_HOST TINA4_MAIL_CAPTURE TINA4_DEBUG]
+    saved = ENV.to_h.slice(*keys)
+    keys.each { |k| ENV.delete(k) }
+    example.run
+    keys.each { |k| ENV.delete(k) }
+    saved.each { |k, v| ENV[k] = v }
+  end
+
+  it "captures when no SMTP host is configured" do
+    expect(Tina4::Messenger.new.should_capture?).to be(true)
+  end
+
+  it "sends (does NOT capture) when an SMTP host IS configured" do
+    expect(Tina4::Messenger.new(host: "smtp.example.com").should_capture?).to be(false)
+  end
+
+  it "does NOT let TINA4_DEBUG suppress sending (debug still sends)" do
+    ENV["TINA4_DEBUG"] = "true"
+    expect(Tina4::Messenger.new(host: "smtp.example.com").should_capture?).to be(false)
+  end
+
+  it "TINA4_MAIL_CAPTURE=true forces capture even with a host configured" do
+    ENV["TINA4_MAIL_CAPTURE"] = "true"
+    expect(Tina4::Messenger.new(host: "smtp.example.com").should_capture?).to be(true)
   end
 end

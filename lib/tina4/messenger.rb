@@ -95,13 +95,14 @@ module Tina4
 
     attr_reader :host, :port, :username, :from_address, :from_name,
                 :imap_host, :imap_port, :use_tls, :encryption,
-                :imap_encryption, :imap_use_tls
+                :imap_encryption, :imap_use_tls, :imap_username, :imap_password
 
     # Initialize with SMTP config.
     # Priority: constructor params > ENV (TINA4_MAIL_*) > sensible defaults
     def initialize(host: nil, port: nil, username: nil, password: nil,
                    from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
-                   imap_host: nil, imap_port: nil, imap_encryption: nil)
+                   imap_host: nil, imap_port: nil, imap_encryption: nil,
+                   imap_username: nil, imap_password: nil)
       # Whether a host was actually CONFIGURED, which is not the same as @host being
       # set: it falls back to "localhost", so it is never nil and cannot answer
       # "can this messenger send?". The capture gate needs that answer, so record it
@@ -139,6 +140,14 @@ module Tina4
       env_imap_enc = imap_encryption || ENV["TINA4_MAIL_IMAP_ENCRYPTION"]
       @imap_encryption = (env_imap_enc && !env_imap_enc.to_s.empty?) ? env_imap_enc.to_s.downcase : "tls"
       @imap_use_tls    = %w[tls starttls ssl].include?(@imap_encryption)
+
+      # IMAP credentials, independent of SMTP. Dedicated
+      # TINA4_MAIL_IMAP_USERNAME/_PASSWORD, falling back to the SMTP
+      # TINA4_MAIL_USERNAME/_PASSWORD. Ruby authenticated IMAP to the SMTP
+      # account, so an app whose mailbox for READING differs from its SMTP relay
+      # account read the wrong mailbox. Explicit constructor args win (ADR-0041).
+      @imap_username = imap_username || ENV["TINA4_MAIL_IMAP_USERNAME"] || @username
+      @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
     end
 
     # Send email using Ruby's Net::SMTP
@@ -210,6 +219,24 @@ module Tina4
       { success: false, message: e.message, id: nil }
     end
 
+    # Send an email whose HTML body is rendered from a Frond template string.
+    # Parity with the Python master's send_template. Extra keyword args (cc, bcc,
+    # attachments, reply_to, headers, text) pass straight through to #send. If
+    # Frond is unusable, the raw template string is sent as-is (a graceful
+    # fallback, mirroring Python's ImportError branch).
+    #
+    #   mail.send_template(to: "u@x.com", subject: "Hi {{ name }}",
+    #                      template: "<h1>Hi {{ name }}</h1>", data: { "name" => "Al" })
+    def send_template(to:, subject:, template:, data: {}, **kwargs)
+      body = begin
+        Tina4::Frond.new.render_string(template, data || {})
+      rescue StandardError => e
+        Tina4::Log.error("Messenger send_template render failed: #{e.message}")
+        template
+      end
+      send(to: to, subject: subject, body: body, html: true, **kwargs)
+    end
+
     # Test SMTP connection
     # Returns { success: true/false, message: "..." }
     def test_connection
@@ -227,10 +254,21 @@ module Tina4
 
     # List messages in a folder.
     #
+    # Callable POSITIONALLY — inbox("INBOX", 10, 0) — or by keyword —
+    # inbox(folder: "INBOX", limit: 10). Node moved to folder-first in 3.13.95
+    # to satisfy a contract Ruby could not satisfy at all; this closes that loop.
+    #
+    # Each item is EXACTLY {uid:String, subject, from:String, to:String,
+    # date:ISO-8601, snippet, seen:Boolean} — the settled cross-framework shape.
+    #
     # Raises Tina4::MessengerConnectionError on a connection/auth/protocol
     # failure (FAILS LOUD — never returns [] to hide it). A successful fetch
     # from an empty folder returns [] (that is NOT an error).
-    def inbox(folder: "INBOX", limit: 20, offset: 0)
+    def inbox(folder = "INBOX", limit = 20, offset = 0, **opts)
+      folder = opts[:folder] if opts.key?(:folder)
+      limit  = opts[:limit]  if opts.key?(:limit)
+      offset = opts[:offset] if opts.key?(:offset)
+
       imap = imap_open("inbox")
       begin
         imap.select(folder)
@@ -239,7 +277,12 @@ module Tina4
         page = uids[offset, limit] || []
         return [] if page.empty?
 
-        envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "RFC822.SIZE"])
+        # BODY.PEEK[] fetches the full message WITHOUT setting \Seen — listing an
+        # inbox must never mark messages read — so parse_envelope can build a
+        # decoded, transfer-decoded, tag-stripped snippet. tina4: heavier than a
+        # header-only fetch for large mailboxes; fetch BODYSTRUCTURE + the text
+        # part only if this ever gets hot.
+        envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "BODY.PEEK[]"])
         # uid_fetch returns rows in SERVER (ascending) order however the uids
         # were asked for, so the newest-first page above was silently re-sorted
         # and inbox(limit: 1) handed back the OLDEST message. Selection was
@@ -255,9 +298,17 @@ module Tina4
 
     # Read a single message by UID.
     #
+    # Callable POSITIONALLY — read(uid, "INBOX") — or by keyword —
+    # read(uid, folder: "INBOX"). Returns EXACTLY {uid, subject, from:String,
+    # to:String, cc:String, date:ISO-8601, message_id, body_text, body_html,
+    # attachments, headers}.
+    #
     # Raises Tina4::MessengerConnectionError on a connection/protocol failure.
     # A successful fetch for a non-existent UID returns nil (that is NOT an error).
-    def read(uid, folder: "INBOX", mark_read: true)
+    def read(uid, folder = "INBOX", mark_read = true, **opts)
+      folder    = opts[:folder]    if opts.key?(:folder)
+      mark_read = opts[:mark_read] if opts.key?(:mark_read)
+
       imap = imap_open("read")
       begin
         imap.select(folder)
@@ -312,7 +363,9 @@ module Tina4
         page = uids[0, limit] || []
         return [] if page.empty?
 
-        envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "RFC822.SIZE"])
+        # BODY.PEEK[] (no \Seen) so search results carry the same decoded snippet
+        # as inbox(); search shares parse_envelope and therefore the item shape.
+        envelopes = imap.uid_fetch(page, ["ENVELOPE", "FLAGS", "BODY.PEEK[]"])
         # uid_fetch returns rows in SERVER (ascending) order however the uids
         # were asked for, so the newest-first page above was silently re-sorted
         # and inbox(limit: 1) handed back the OLDEST message. Selection was
@@ -352,6 +405,42 @@ module Tina4
       end
     rescue => e
       Tina4::Log.error("IMAP mark_read failed: #{e.message}")
+    end
+
+    # Mark a message as unread (clear \Seen flag). Mirror of mark_read; same
+    # result-style error handling (logs, returns nil) — the two are a matched
+    # pair of idempotent flag toggles.
+    #
+    # @param uid [String, Integer] message UID
+    # @param folder [String] IMAP folder name
+    def mark_unread(uid, folder: "INBOX")
+      imap_connect do |imap|
+        imap.select(folder)
+        imap.uid_store(uid.to_i, "-FLAGS", [:Seen])
+      end
+    rescue => e
+      Tina4::Log.error("IMAP mark_unread failed: #{e.message}")
+    end
+
+    # Delete a message: flag it \Deleted and expunge. Destructive, so it FAILS
+    # LOUD — a connection/protocol failure raises MessengerConnectionError rather
+    # than silently reporting success (parity with the Python master, which also
+    # raises). Returns true when the expunge completes.
+    #
+    # @param uid [String, Integer] message UID
+    # @param folder [String] IMAP folder name
+    def delete(uid, folder: "INBOX")
+      imap = imap_open("delete")
+      begin
+        imap.select(folder)
+        imap.uid_store(uid, "+FLAGS", [:Deleted])
+        imap.expunge
+        true
+      rescue *IMAP_CONNECTION_ERRORS => e
+        raise imap_fail("delete", e)
+      ensure
+        imap_cleanup(imap)
+      end
     end
 
     # Test IMAP connectivity without reading messages.
@@ -538,7 +627,7 @@ module Tina4
     # rather than swallowing the error into an empty result.
     def imap_open(method)
       imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
-      imap.login(@username, @password)
+      imap.login(@imap_username, @imap_password)
       imap
     rescue *IMAP_CONNECTION_ERRORS => e
       raise imap_fail(method, e)
@@ -579,68 +668,139 @@ module Tina4
     # they can fail loud.
     def imap_connect(&block)
       imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
-      imap.login(@username, @password)
+      imap.login(@imap_username, @imap_password)
       result = block.call(imap)
       imap.logout
       imap.disconnect
       result
     end
 
+    # An inbox() item — EXACTLY these seven keys (decisions doc G4):
+    #   uid:String, subject, from:String, to:String, date:ISO-8601, snippet, seen:Boolean
+    # from/to are header STRINGS ("Name <email>"), NOT arrays of {name,email};
+    # date is ISO-8601; snippet is decoded/transfer-decoded/tag-stripped plain
+    # text (<= 200 chars); seen is a Boolean. No flags/size.
     def parse_envelope(fetch_data)
       env = fetch_data.attr["ENVELOPE"]
       flags = fetch_data.attr["FLAGS"] || []
-      size = fetch_data.attr["RFC822.SIZE"] || 0
+      raw_body = fetch_data.attr["BODY[]"] || ""
 
       {
         # String in all four frameworks. Ruby alone returned Integer, so
         # `uid == "3"` was false here and true everywhere else.
         uid: fetch_data.attr.keys.include?("UID") ? fetch_data.attr["UID"].to_s : nil,
         subject: env.subject ? decode_mime_header(env.subject) : "",
-        from: format_imap_address(env.from),
-        to: format_imap_address(env.to),
-        date: env.date,
-        flags: flags.map(&:to_s),
-        read: flags.include?(:Seen),
-        size: size
+        from: format_address_string(env.from),
+        to: format_address_string(env.to),
+        date: format_date_iso8601(env.date),
+        snippet: build_snippet(raw_body),
+        seen: flags.include?(:Seen)
       }
     end
 
+    # A read() item (decisions doc G5). Body fields are body_text/body_html (was
+    # body/html); from/to/cc are header STRINGS; attachments is an array of
+    # {filename, content_type, size}; headers is the full header Hash. Mirrors the
+    # Python master's read() shape in Ruby-idiomatic snake_case. Message-ID lives
+    # in headers["Message-ID"], matching the master.
     def parse_full_message(fetch_data)
       env = fetch_data.attr["ENVELOPE"]
-      flags = fetch_data.attr["FLAGS"] || []
       raw_body = fetch_data.attr["BODY[]"] || ""
 
       body_text, body_html = extract_body_parts(raw_body)
 
       {
-        # String in all four frameworks. Ruby alone returned Integer, so
-        # `uid == "3"` was false here and true everywhere else.
         uid: fetch_data.attr.keys.include?("UID") ? fetch_data.attr["UID"].to_s : nil,
         subject: env.subject ? decode_mime_header(env.subject) : "",
-        from: format_imap_address(env.from),
-        to: format_imap_address(env.to),
-        cc: format_imap_address(env.cc),
-        date: env.date,
-        message_id: env.message_id,
-        flags: flags.map(&:to_s),
-        read: flags.include?(:Seen),
-        body: body_text,
-        html: body_html,
-        raw: raw_body
+        from: format_address_string(env.from),
+        to: format_address_string(env.to),
+        cc: format_address_string(env.cc),
+        date: format_date_iso8601(env.date),
+        body_text: body_text,
+        body_html: body_html,
+        attachments: extract_attachments(raw_body),
+        headers: parse_headers(raw_body)
       }
     end
 
-    def format_imap_address(addresses)
-      return [] if addresses.nil?
+    # Format an ENVELOPE address list into the header STRING shape the other three
+    # frameworks return: "Name <email>" per address (bare "email" when unnamed),
+    # comma-joined. Empty string when there are no addresses.
+    def format_address_string(addresses)
+      return "" if addresses.nil? || addresses.empty?
 
       addresses.map do |addr|
         email = "#{addr.mailbox}@#{addr.host}"
-        if addr.name && !addr.name.empty?
-          { name: decode_mime_header(addr.name), email: email }
-        else
-          { name: nil, email: email }
+        name = addr.name && !addr.name.to_s.empty? ? decode_mime_header(addr.name) : nil
+        name ? "#{name} <#{email}>" : email
+      end.join(", ")
+    end
+
+    # ISO-8601 string from an ENVELOPE date. Mirrors Python's
+    # parsedate_to_datetime(...).isoformat(): parse the RFC5322 date and emit
+    # ISO-8601; fall back to the raw value on a parse failure, "" when absent.
+    def format_date_iso8601(raw)
+      return "" if raw.nil? || raw.to_s.strip.empty?
+
+      begin
+        Time.parse(raw.to_s).iso8601
+      rescue ArgumentError, TypeError
+        raw.to_s
+      end
+    end
+
+    # Decoded, transfer-decoded, tag-stripped, whitespace-collapsed plain text,
+    # truncated to 200 chars — the settled snippet shape (G3). Reuses the
+    # existing multipart/transfer-decoding; prefers the text part, falls back to
+    # the HTML part with its tags stripped.
+    def build_snippet(raw_body)
+      text, html = extract_body_parts(raw_body.to_s)
+      source = text.nil? || text.empty? ? html.to_s : text
+      plain = source.gsub(/<[^>]+>/, " ").gsub(/\s+/, " ").strip
+      plain.length > 200 ? plain[0, 200] : plain
+    end
+
+    # Attachment metadata parsed from a raw MIME message: an array of
+    # {filename, content_type, size}. A part is an attachment when it carries a
+    # Content-Disposition of attachment. Content bytes are intentionally omitted
+    # (parity + JSON-safety); size is the decoded byte length. [] when the
+    # message is not multipart or has no attachment parts.
+    def extract_attachments(raw)
+      raw = raw.to_s
+      return [] unless raw =~ %r{Content-Type:\s*multipart/\w+;\s*boundary="?([^"\s;]+)"?}i
+
+      boundary = Regexp.last_match(1)
+      raw.split("--#{boundary}").each_with_object([]) do |part, acc|
+        next unless part =~ /Content-Disposition:\s*attachment/i
+
+        filename = part[/filename="?([^"\r\n;]+)"?/i, 1] ||
+                   part[/name="?([^"\r\n;]+)"?/i, 1] || "attachment"
+        content_type = part[%r{Content-Type:\s*([^\s;]+)}i, 1] || "application/octet-stream"
+        acc << {
+          filename: filename.strip,
+          content_type: content_type.strip,
+          size: extract_part_body(part).bytesize
+        }
+      end
+    end
+
+    # Parse the top-level RFC5322 header block of a raw message into a Hash
+    # (name => value). Mirrors Python's dict(msg.items()); a repeated header keeps
+    # the last value; folded continuation lines are unfolded.
+    def parse_headers(raw)
+      header_block = raw.to_s.split(/\r?\n\r?\n/, 2).first.to_s
+      headers = {}
+      current_key = nil
+      header_block.each_line do |raw_line|
+        line = raw_line.chomp
+        if current_key && line =~ /\A[ \t]/
+          headers[current_key] = "#{headers[current_key]} #{line.strip}"
+        elsif (m = line.match(/\A([\w!\#$%&'*+\-.^_`|~]+):[ \t]?(.*)\z/))
+          current_key = m[1]
+          headers[current_key] = m[2]
         end
       end
+      headers
     end
 
     def decode_mime_header(value)
