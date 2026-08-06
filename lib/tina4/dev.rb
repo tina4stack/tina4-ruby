@@ -3,7 +3,6 @@
 # Convenience require for all development/optional tools.
 # Usage: require "tina4/dev"
 
-require_relative "scss_compiler"
 require_relative "testing"
 require_relative "graphql"
 require_relative "websocket"

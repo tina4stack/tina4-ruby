@@ -318,7 +318,6 @@ module Tina4
   end
   autoload :IMAP_CONNECTION_ERRORS, File.expand_path("tina4/messenger", __dir__)
   autoload :DocStore,            File.expand_path("tina4/docstore", __dir__)
-  autoload :ScssCompiler,        File.expand_path("tina4/scss_compiler", __dir__)
   autoload :FakeData,            File.expand_path("tina4/seeder", __dir__)
   autoload :WSDL,                File.expand_path("tina4/wsdl", __dir__)
   # Validator is a counted framework feature and belongs on the main

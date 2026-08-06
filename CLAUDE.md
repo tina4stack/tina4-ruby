@@ -1176,7 +1176,7 @@ mode and protected for remote callers. Environment variables (read by
 - ORM uses DSL methods (`integer_field`, `string_field`) with `FieldTypes` module
 - Templates use ERB and Twig (custom engine)
 - CLI (Thor): `tina4ruby serve` (--dev, --port), `tina4ruby seed` (--clear), `tina4ruby seed_create NAME`, `tina4ruby migrate`, `tina4ruby ai` (--all)
-- SCSS compilation built-in
+- SCSS compilation is owned by the `tina4` Rust CLI (grass), not the framework
 - JWT auth via stdlib OpenSSL only, NO gem. HS256/HS384/HS512 use `OpenSSL::HMAC`; the opt-in
   RS256 uses `OpenSSL::PKey::RSA#sign`/`#verify`. The `jwt` gem was a declared runtime
   dependency purely to wrap the base64url envelope `lib/tina4/auth.rb` already builds itself,
