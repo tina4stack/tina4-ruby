@@ -113,6 +113,29 @@ def tina4_gate_each_example(groups, &block)
   end
 end
 
+# ── Tina4::Log console-sink hygiene ───────────────────────────────────────────
+#
+# Tina4::Log memoises WHERE it writes in class ivars at configure time, and
+# Log#log gates the console branch on `@output != "file"`. So a spec that
+# configures Log for its own purposes leaves every LATER spec logging to the log
+# FILE, and any spec that captures $stdout to assert on a warning captures ""
+# instead - at some seeds only, depending on whether it happens to run inside
+# the window before something reconfigures Log.
+#
+# This is NOT a spec forgetting to clean up. MEASURED on the lab: all eight
+# sites that do this (six in env_vars_spec.rb, one in mqtt_auth_tls_spec.rb, and
+# one in logger_contract_spec.rb which is inside a forked child and harmless)
+# save and restore TINA4_LOG_OUTPUT correctly. What they cannot restore is a
+# PRIVATE memo they have no supported way to reach - restoring the ENV VAR is
+# not restoring the MEMO. Ten spec files assert on captured log text and every
+# one of them is exposed, so the invariant is made true by construction here
+# rather than asking ten files (and every future one) to defend themselves.
+#
+# Found by seed 55555 (cache_provider_selection_spec "an unreachable backend
+# logs a warning", Captured: "") after seeds 777/31337/1111/2468/13579/4242 all
+# passed. Two seeds is a floor, not a proof.
+TINA4_LOG_CONSOLE_MEMO_IVARS = %i[@output @console_level @json_mode @strict].freeze
+
 RSpec.configure do |config|
   config.after(:suite) do
     # Record any provisioned-service skip so the suite fails on it (see above).
@@ -146,6 +169,36 @@ RSpec.configure do |config|
 
   config.shared_context_metadata_behavior = :apply_to_host_groups
   config.order = :random
+
+  # ── Tina4::Log console-sink memo (see TINA4_LOG_CONSOLE_MEMO_IVARS above) ────
+  #
+  # Snapshot the sink once, then put it back before EVERY example, so no spec
+  # can be poisoned by an earlier one regardless of what that one did.
+  #
+  # BEFORE each example, not after, and deliberately so. An after(:each) is the
+  # pattern used below for Router/Frond/ServiceRunner, but it is the weaker
+  # guarantee here: RSpec does NOT run after(:each) for an example skipped by a
+  # before(:context) hook (this file's own gate documents that), so a leak from
+  # a group-level hook would survive it. "Every example STARTS at the baseline"
+  # cannot be defeated that way.
+  #
+  # prepend_before puts this first, so a spec's own before(:each) that
+  # configures Log still wins for that example - this restores the baseline, it
+  # does not fight legitimate per-example setup.
+  tina4_log_console_baseline = nil
+
+  config.before(:suite) do
+    Tina4::Log.configure unless Tina4::Log.instance_variable_get(:@initialized)
+    tina4_log_console_baseline = TINA4_LOG_CONSOLE_MEMO_IVARS.to_h do |ivar|
+      [ivar, Tina4::Log.instance_variable_get(ivar)]
+    end
+  end
+
+  config.prepend_before(:each) do
+    tina4_log_console_baseline&.each do |ivar, value|
+      Tina4::Log.instance_variable_set(ivar, value)
+    end
+  end
 
   # Clean up after each test
   config.after(:each) do
