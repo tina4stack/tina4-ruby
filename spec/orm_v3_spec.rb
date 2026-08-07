@@ -129,6 +129,22 @@ RSpec.describe "ORM v3 features" do
 
       expect(SoftDeleteUser.count).to eq(2)
     end
+
+    it "force_delete hard-removes the row so with_trashed cannot find it" do
+      user = SoftDeleteUser.new(name: "Gone")
+      user.save
+      id = user.id
+
+      # Contrast with delete: a soft delete would leave an is_deleted=1 row that
+      # with_trashed still returns. force_delete bypasses soft-delete AND
+      # hard-removes the row (mirrors the Python master test_force_delete).
+      user.force_delete
+
+      # Not even with_trashed (which includes is_deleted=1 rows) finds it...
+      expect(SoftDeleteUser.with_trashed("id = ?", [id])).to be_empty
+      # ...and a raw SELECT confirms the row is gone from the DB entirely.
+      expect(db.fetch_one("SELECT * FROM softdeleteusers WHERE id = ?", [id])).to be_nil
+    end
   end
 
   describe "Per-model database" do
