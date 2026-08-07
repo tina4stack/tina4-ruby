@@ -190,6 +190,40 @@ RSpec.describe Tina4::DocStore do
     end
   end
 
+  # -- distinct -----------------------------------------------------------------
+
+  describe "#distinct" do
+    # distinct() dedups by VALUE, including ObjectId (24-hex) and Time (instant)
+    # - not by object identity. ObjectId defines ==/eql?/hash and Time compares
+    # by value, so seen.include?(v) dedups both. Parity with the PHP fix + the
+    # Python master + Node; guards against a regression that drops that
+    # value-equality or the type-preserving decode.
+    it "dedups repeated ObjectId and Date values by value" do
+      cat_a = Tina4::DocStore::ObjectId.new("64d2f8a1b2c3d4e5f6a7b8c9")
+      cat_b = Tina4::DocStore::ObjectId.new("64d2f8a1b2c3d4e5f6a7b8ca")
+      d1 = Time.utc(2026, 8, 7, 12, 0, 0)
+      d2 = Time.utc(2026, 8, 8, 9, 30, 0)
+      orders.insert_many([
+        { "category_id" => cat_a, "when" => d1 },
+        { "category_id" => cat_a, "when" => d1 },
+        { "category_id" => cat_a, "when" => d2 },
+        { "category_id" => cat_b, "when" => d2 },
+        { "category_id" => cat_b, "when" => d1 }
+      ])
+
+      # ObjectId: two distinct values (A x3, B x2) -> exactly 2, not 5.
+      ids = orders.distinct("category_id")
+      expect(ids.size).to eq(2)
+      expect(ids.map(&:to_s).sort)
+        .to eq(%w[64d2f8a1b2c3d4e5f6a7b8c9 64d2f8a1b2c3d4e5f6a7b8ca])
+
+      # Time: two distinct instants (D1 x3, D2 x2) -> exactly 2, not 5.
+      dates = orders.distinct("when")
+      expect(dates.size).to eq(2)
+      expect(dates.map(&:to_i).sort).to eq([d1.to_i, d2.to_i].sort)
+    end
+  end
+
   # -- updates ------------------------------------------------------------------
 
   describe "updates" do
