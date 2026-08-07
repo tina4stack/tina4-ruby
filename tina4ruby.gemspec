@@ -83,4 +83,13 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.12"
   spec.add_development_dependency "rubocop", "~> 1.50"
+  # openapi3_parser — TEST-ONLY OpenAPI 3.0 validator for the Swagger contract
+  # suite (spec/swagger_contract_spec.rb). It implements the OpenAPI 3.0
+  # validation rules and exposes document.valid? / document.errors, so the suite
+  # checks the REAL generated /swagger/openapi.json against a real validator
+  # instead of hand-rolling structural checks (the invariant that would have
+  # caught the two frameworks that shipped a structurally invalid document). A
+  # development dependency ONLY — like rspec/pg/mongo above it is never a runtime
+  # dependency of the published gem, so the framework core stays zero-dependency.
+  spec.add_development_dependency "openapi3_parser", "~> 0.10"
 end
