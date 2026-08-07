@@ -20,6 +20,30 @@ Branch: feature/release3.13.96. Ruby ONLY.
 - [x] G8 — TINA4_MAIL_IMAP_USERNAME/_PASSWORD w/ SMTP fallback + ctor args.
 - [x] G10 — capture-gate matrix + delete fail-loud pinned.
 
+### AutoCrud REST list envelope (lib/tina4/auto_crud.rb) — DONE, mutation-proven
+Authority: ADR-0043 + tina4-documentation/plan/v3/fixtures/pagination_contract.json.
+- [x] MEASURED the real endpoint. The AutoCrud REST list route is `GET /api/{table}`
+      in lib/tina4/auto_crud.rb (NOT crud.rb — crud.rb is the HTML admin view). It
+      emitted `{data, total, limit, offset}` (4 keys), bypassing to_paginate().
+- [x] FIXED to the canonical seven snake_case keys by routing the envelope through
+      the ONE derivation ADR-0043 fixed — DatabaseResult#to_paginate — so it can
+      never drift again: `{records, total, page, per_page, total_pages, limit, offset}`.
+- [x] Filtered branch fixed too: was `total = records.length` (capped at where()'s
+      default limit:100) + an in-memory re-slice (ADR-0043 root causes 2+3). Now a
+      real COUNT over the filter + SQL limit/offset.
+- [x] Spec: spec/auto_crud_paginate_envelope_spec.rb — real SQLite 250-row table,
+      real RackApp via TestClient (no mocks). Proven RED on the old code first.
+      Mutation-proven: 7-keys (added `data` -> red), total-is-true-count
+      (rows-returned -> 250!=100 red; filtered capped -> 120!=100 red).
+- [x] Updated spec/auto_crud_spec.rb "list endpoint returns records" (was `data`).
+- HTML admin view (crud.rb) does NOT share this JSON envelope — separate concern,
+  untouched; its crud_spec HTML-string assertions ("Showing 3 of 3 records") stand.
+- PARITY (measured, OWED — flag to orchestrator): NONE of the four AutoCrud list
+  endpoints emit the 7 keys. PHP `{data,total,limit,offset}`; Python 10 keys
+  (records+data, count+total, totalPages+total_pages duplicated); Node nested
+  `{data, pagination:{total,page,limit,totalPages}}`. Ruby now canonical; PHP/
+  Python/Node still bypass to_paginate.
+
 ### Migrations — M1 MEASURED (real SQLite), no divergence -> no Ruby change
 - [x] M1 — measured. Findings:
   - tracking table `tina4_migration`, columns MATCH the canonical set (verified via db.columns):

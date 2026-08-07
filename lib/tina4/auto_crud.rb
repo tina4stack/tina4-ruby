@@ -105,18 +105,25 @@ module Tina4
               total = model_class.count
             else
               where_clause = filter_conditions.join(" AND ")
-              records = model_class.where(where_clause, filter_values)
-              total = records.length
-              # Apply manual pagination for filtered results
-              records = records.slice(offset, limit) || []
+              # Fetch THIS page in SQL (limit + offset) and take the total from a
+              # COUNT(*) over the same filter — never rows-returned, never an
+              # in-memory re-slice by the absolute offset (ADR-0043 root causes 2
+              # and 3, which returned zero rows for a valid page).
+              records = model_class.where(where_clause, filter_values,
+                                          limit: limit, offset: offset, order_by: order_by)
+              total = model_class.count(where_clause, filter_values)
             end
 
-            res.json({
-              data: records.map { |r| r.to_h },
-              total: total,
-              limit: limit,
-              offset: offset
-            })
+            # Build the envelope through the ONE canonical derivation — the same
+            # DatabaseResult#to_paginate ADR-0043 fixed — so the REST list endpoint
+            # can never drift from it again. Exactly seven snake_case keys:
+            # records, total, page, per_page, total_pages, limit, offset. `records`
+            # is this page verbatim, `total` the true COUNT, and page/per_page/
+            # total_pages/limit/offset are all derived from the query that ran.
+            page_result = Tina4::DatabaseResult.new(
+              records.map { |r| r.to_h }, count: total, limit: limit, offset: offset
+            )
+            res.json(page_result.to_paginate)
           rescue => e
             res.json({ error: e.message }, status: 500)
           end

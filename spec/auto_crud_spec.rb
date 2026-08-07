@@ -102,8 +102,14 @@ RSpec.describe Tina4::AutoCrud do
       res = Tina4::Response.new
       result = route.handler.call(req, res)
       body = JSON.parse(result.body)
-      expect(body["data"].length).to eq(3)
+      # ADR-0043: the list envelope is EXACTLY the seven canonical snake_case keys
+      # (no `data`, no `count`), derived from the query that ran.
+      expect(body.keys.sort).to eq(%w[limit offset page per_page records total total_pages])
+      expect(body["records"].length).to eq(3)
       expect(body["total"]).to eq(3)
+      expect(body["page"]).to eq(1)
+      expect(body["per_page"]).to eq(10)
+      expect(body["total_pages"]).to eq(1)
     end
 
     it "single endpoint returns one record" do
