@@ -210,18 +210,36 @@ module Tina4
         true
       end
 
-      # Remove messages by status. "dead" empties the dead-letter queue;
-      # anything else empties the main queue. Returns the count removed.
-      def purge(topic, status)
-        name = dead_status?(status) ? "#{topic}.dead_letter" : topic
-        queue = get_queue(name)
-        count = queue.message_count
-        queue.purge
-        count
+      # Not performable on RabbitMQ - raises naming the backend and the operation.
+      #
+      # purge(status) removes jobs SELECTED BY STATUS. RabbitMQ cannot address
+      # messages by status: basic.get pops the head of the queue and the only
+      # bulk operation is queue.purge, which empties the WHOLE live queue
+      # regardless of status. This used to drain that queue on any non-dead
+      # status, destroying every pending job - the destructive no-op ADR-0022
+      # invariant 6 forbids. Refusing by name is the honest answer.
+      def purge(_topic, _status)
+        raise NotImplementedError,
+              "The rabbitmq queue backend cannot perform purge(): RabbitMQ " \
+              "cannot address messages by status (basic.get pops the head of " \
+              "the queue), so a status-addressed purge would have to drain the " \
+              "entire live queue and destroy pending work. Use the file or " \
+              "mongodb backend."
       end
 
-      def clear(topic)
-        purge(topic, "pending")
+      # Not performable on RabbitMQ - raises naming the backend and the operation.
+      #
+      # clear() empties the queue. RabbitMQ cannot address messages by status,
+      # so the only thing it could do is queue.purge the WHOLE live queue. This
+      # used to do exactly that and return 0, silently destroying every pending
+      # job. Draining a live broker on a status-addressed clear is data loss.
+      def clear(_topic)
+        raise NotImplementedError,
+              "The rabbitmq queue backend cannot perform clear(): RabbitMQ " \
+              "cannot address messages by status (basic.get pops the head of " \
+              "the queue), so a status-addressed clear would have to drain the " \
+              "entire live queue and destroy pending work. Use the file or " \
+              "mongodb backend."
       end
 
       def size(topic)
@@ -249,10 +267,6 @@ module Tina4
 
       def get_queue(topic)
         @queues[topic] ||= @channel.queue(topic, durable: true)
-      end
-
-      def dead_status?(status)
-        %w[dead dead_letter deadletter failed].include?(status.to_s.downcase)
       end
 
       # Pop every message off <topic>.dead_letter and put it straight back.
