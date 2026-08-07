@@ -244,9 +244,12 @@ RSpec.describe "Messenger contract invariants" do
   end
 
   # Deliver over real SMTP, then poll the real IMAP INBOX until it arrives.
-  # Returns the envelope hash from #inbox.
-  def deliver_and_wait(msgr, subject:, body:, html: false)
-    result = msgr.send(to: msgr.username, subject: subject, body: body, html: html)
+  # Returns the envelope hash from #inbox. `attachments:` passes straight through
+  # to #send (backward-compatible default [], so every existing caller is
+  # unchanged) for the #69 attachment-bytes example.
+  def deliver_and_wait(msgr, subject:, body:, html: false, attachments: [])
+    result = msgr.send(to: msgr.username, subject: subject, body: body, html: html,
+                       attachments: attachments)
     expect(result[:success]).to be(true), "SMTP send failed: #{result[:message]}"
 
     envelope = nil
@@ -387,6 +390,49 @@ RSpec.describe "Messenger contract invariants" do
     expect(full[:headers]["Message-ID"]).to be_a(String)
     expect(full).not_to have_key(:body)
     expect(full).not_to have_key(:html)
+  end
+
+  # ── 8b. #69 follow-up: read() attachments carry the DECODED BYTES ────────────
+  # The msg-read-item-shape fixture note left attachment BYTES as an OPEN
+  # follow-up ("retrievable only in Python via attachments_data"). This closes it
+  # for Ruby: read() returns the bytes INLINE on each attachment item as
+  # `content`, so an attachment is downloadable straight from read(). Sent through
+  # real GreenMail with a deliberately BINARY payload (NUL, high bytes, a
+  # multibyte UTF-8 glyph) so a UTF-8 force-encode or a strip would corrupt it —
+  # the gate is `content == the original raw bytes`, byte for byte.
+  it "read-attachments-carry-decoded-bytes: a read() attachment carries filename/content_type/size AND content == the original raw bytes" do
+    greenmail!
+    tag = SecureRandom.hex(4)
+    subject = "att69-#{tag}"
+    original = "tina4\x00\xFF\xFE bytes \xE2\x9C\x93 #{tag}".b
+
+    env = deliver_and_wait(
+      messenger, subject: subject, body: "see attachment",
+      attachments: [{ filename: "payload.bin", content: original,
+                      mime_type: "application/octet-stream" }]
+    )
+
+    full = messenger.read(env[:uid])
+    att = full[:attachments].find { |a| a[:filename] == "payload.bin" }
+    expect(att).not_to be_nil, "attachments were #{full[:attachments].inspect}"
+    expect(att[:content_type]).to include("application/octet-stream")
+    expect(att[:content]).to eq(original)          # the RAW DECODED BYTES, byte for byte
+    expect(att[:size]).to eq(original.bytesize)    # size is that byte length
+    expect(att[:size]).to eq(att[:content].bytesize)
+  end
+
+  # ── 8c. #69 follow-up: read() is EXACTLY the 10 canonical keys ───────────────
+  # msg-read-item-shape pins the CONCEPT set; this pins that Ruby carries NO stray
+  # idiomatic extras (no attachments_data / message_id / msgno). Exact-set gate.
+  it "read-item-shape-is-exactly-ten-keys: read() returns EXACTLY the 10 canonical keys, no strays" do
+    greenmail!
+    subject = "tenkeys-#{SecureRandom.hex(4)}"
+    env = deliver_and_wait(messenger, subject: subject, body: "ten keys please")
+    full = messenger.read(env[:uid])
+
+    expect(full.keys.sort).to eq(
+      %i[attachments body_html body_text cc date from headers subject to uid]
+    )
   end
 
   # ── 9. msg-snippet-is-decoded-text ──────────────────────────────────────────

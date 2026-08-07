@@ -299,9 +299,11 @@ module Tina4
     # Read a single message by UID.
     #
     # Callable POSITIONALLY — read(uid, "INBOX") — or by keyword —
-    # read(uid, folder: "INBOX"). Returns EXACTLY {uid, subject, from:String,
-    # to:String, cc:String, date:ISO-8601, message_id, body_text, body_html,
-    # attachments, headers}.
+    # read(uid, folder: "INBOX"). Returns EXACTLY these 10 keys: {uid, subject,
+    # from:String, to:String, cc:String, date:ISO-8601, body_text, body_html,
+    # attachments, headers}. Message-ID lives in headers, never a top-level key.
+    # Each attachments item is {filename, content_type, size, content} where
+    # content is the RAW DECODED BYTES of the part (issue #69).
     #
     # Raises Tina4::MessengerConnectionError on a connection/protocol failure.
     # A successful fetch for a non-existent UID returns nil (that is NOT an error).
@@ -698,11 +700,13 @@ module Tina4
       }
     end
 
-    # A read() item (decisions doc G5). Body fields are body_text/body_html (was
-    # body/html); from/to/cc are header STRINGS; attachments is an array of
-    # {filename, content_type, size}; headers is the full header Hash. Mirrors the
-    # Python master's read() shape in Ruby-idiomatic snake_case. Message-ID lives
-    # in headers["Message-ID"], matching the master.
+    # A read() item (decisions doc G5) — EXACTLY these 10 keys: uid, subject,
+    # from/to/cc (header STRINGS), date, body_text/body_html (was body/html),
+    # attachments, headers (the full header Hash). Message-ID lives in
+    # headers["Message-ID"], never a top-level key. Each attachments item is
+    # {filename, content_type, size, content} — content is the RAW DECODED BYTES
+    # of the part (issue #69), so an attachment is downloadable straight from
+    # read() and size is that byte length.
     def parse_full_message(fetch_data)
       env = fetch_data.attr["ENVELOPE"]
       raw_body = fetch_data.attr["BODY[]"] || ""
@@ -760,11 +764,13 @@ module Tina4
       plain.length > 200 ? plain[0, 200] : plain
     end
 
-    # Attachment metadata parsed from a raw MIME message: an array of
-    # {filename, content_type, size}. A part is an attachment when it carries a
-    # Content-Disposition of attachment. Content bytes are intentionally omitted
-    # (parity + JSON-safety); size is the decoded byte length. [] when the
-    # message is not multipart or has no attachment parts.
+    # Attachments parsed from a raw MIME message: an array of
+    # {filename, content_type, size, content}. A part is an attachment when it
+    # carries a Content-Disposition of attachment. content is the RAW DECODED
+    # BYTES of the part (transfer-decoded, binary encoding — the same convention
+    # as request.files' "content"), so an attachment is downloadable straight
+    # from read() (issue #69); size is that byte length. [] when the message is
+    # not multipart or has no attachment parts.
     def extract_attachments(raw)
       raw = raw.to_s
       return [] unless raw =~ %r{Content-Type:\s*multipart/\w+;\s*boundary="?([^"\s;]+)"?}i
@@ -776,10 +782,12 @@ module Tina4
         filename = part[/filename="?([^"\r\n;]+)"?/i, 1] ||
                    part[/name="?([^"\r\n;]+)"?/i, 1] || "attachment"
         content_type = part[%r{Content-Type:\s*([^\s;]+)}i, 1] || "application/octet-stream"
+        content = extract_part_bytes(part)
         acc << {
           filename: filename.strip,
           content_type: content_type.strip,
-          size: extract_part_body(part).bytesize
+          size: content.bytesize,
+          content: content
         }
       end
     end
@@ -864,6 +872,36 @@ module Tina4
         body.gsub(/=\r?\n/, "").gsub(/=([0-9A-Fa-f]{2})/) { [$1].pack("H2") }
       else
         body
+      end
+    end
+
+    # The RAW DECODED BYTES of a MIME part: transfer-decoded (base64 /
+    # quoted-printable → the original bytes) in BINARY (ASCII-8BIT) encoding, so a
+    # non-text attachment (image, PDF, zip) round-trips byte-for-byte. This is the
+    # attachment analogue of extract_part_body, which force-encodes UTF-8 for the
+    # text/HTML BODIES and strips them; an attachment must stay raw, unstripped
+    # bytes, so the two are kept separate rather than shared. tina4: if a third
+    # raw-part reader appears, fold the shared "split headers/body + read
+    # Content-Transfer-Encoding" step into one helper the two call with different
+    # post-decode handling.
+    def extract_part_bytes(part)
+      header_body = part.to_s.split(/\r?\n\r?\n/, 2)
+      return "".b unless header_body.length > 1
+
+      headers = header_body[0]
+      # The single CRLF immediately before the next boundary delimiter is MIME
+      # framing, not payload, so drop it before decoding (Python's
+      # get_payload(decode=True) drops it too). base64 decoding ignores it
+      # anyway; quoted-printable and raw 7bit/8bit would otherwise keep it.
+      body = header_body[1].sub(/\r?\n\z/, "")
+
+      if headers =~ /Content-Transfer-Encoding:\s*base64/i
+        Base64.decode64(body)
+      elsif headers =~ /Content-Transfer-Encoding:\s*quoted-printable/i
+        body.gsub(/=\r?\n/, "").gsub(/=([0-9A-Fa-f]{2})/) { [$1].pack("H2") }.b
+      else
+        # 7bit/8bit/none: the part body IS the bytes.
+        body.b
       end
     end
 
