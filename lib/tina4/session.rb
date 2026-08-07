@@ -178,8 +178,12 @@ module Tina4
     # Persist the session if dirty. On a backend write failure the error is
     # logged and false is returned — the @modified (dirty) flag is RETAINED so
     # a later save can retry. Returns true on a successful (or no-op) write.
+    #
+    # A cleared id (@id nil, e.g. after #destroy) is a no-op: there is nothing
+    # to persist, and a write would re-create the just-destroyed record. Mirrors
+    # the Python master's `if self._session_id and self._dirty`.
     def save
-      return true unless @modified
+      return true unless @id && @modified
       if safe_write(@id, @data, @ttl)
         @modified = false
         true
@@ -188,11 +192,16 @@ module Tina4
       end
     end
 
-    # Destroy the current session. Should be called right after login or any
-    # privilege change to defend against session fixation (see #regenerate).
+    # Destroy the current session. ENDS the session: the stored record is
+    # removed and the id is CLEARED (@id = nil), so a later set()+save() with no
+    # new #start has no id to persist under and cannot RESURRECT the just-
+    # destroyed record. Mirrors the Python master (nulls _session_id) and Node
+    # (nulls sessionId). A fresh session needs a new #start, which mints a new id.
     def destroy
-      safe_destroy(@id)
+      safe_destroy(@id) if @id
+      @id = nil
       @data = {}
+      @modified = false
     end
 
     # Get a session value with optional default.
