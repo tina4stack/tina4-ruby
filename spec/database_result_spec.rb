@@ -64,10 +64,12 @@ RSpec.describe Tina4::DatabaseResult do
   end
 
   describe "#to_paginate" do
-    it "returns pagination metadata" do
+    it "returns pagination metadata under the canonical :records key" do
       page = result.to_paginate
       expect(page).to be_a(Hash)
-      expect(page[:data] || page["data"]).to be_an(Array)
+      # ADR-0043: the rows live under :records; the old :data alias was dropped.
+      expect(page[:records]).to be_an(Array)
+      expect(page).not_to have_key(:data)
     end
   end
 

@@ -28,7 +28,18 @@ RSpec.describe "DatabaseResult#to_paginate describes the fetched page" do
     expect(pag[:records].first["id"]).to eq(40)
   end
 
-  it "refuses to slice a result that is already one page" do
+  it "raises on any argument - to_paginate takes none (ADR-0043)" do
+    # ADR-0043 removed the page:/per_page: slicing mode entirely: a DatabaseResult
+    # holds no connection, so an argument could only re-slice rows already in
+    # memory and lie about total_pages. Passing one is a hard error, never a
+    # silent reinterpretation.
     expect { result.to_paginate(page: 2, per_page: 10) }.to raise_error(ArgumentError)
+    expect { result.to_paginate(2) }.to raise_error(ArgumentError)
+  end
+
+  it "returns exactly the seven canonical snake_case keys" do
+    expect(result.to_paginate.keys).to match_array(
+      %i[records total page per_page total_pages limit offset]
+    )
   end
 end

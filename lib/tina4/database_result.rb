@@ -99,68 +99,60 @@ module Tina4
       lines.join("\n")
     end
 
-    # Describe the page this result actually IS. Takes no arguments.
+    # Describe the page this result already IS. Takes NO arguments (ADR-0043).
+    #
+    # Every field is derived from the query that produced this result:
+    #   per_page    = the query's limit
+    #   page        = floor(offset / limit) + 1
+    #   total       = the true total for the filter (@count, from the COUNT probe
+    #                 Database#fetch runs when it applied the limit), NEVER the
+    #                 number of rows this page returned
+    #   total_pages = ceil(total / per_page)
+    #   records     = the rows the query returned, VERBATIM, never re-sliced
+    #   limit/offset= the SQL limit/offset actually applied
+    #
+    # The envelope is EXACTLY seven snake_case keys, identical in all four
+    # frameworks: records, total, page, per_page, total_pages, limit, offset. The
+    # old duplicate/camelCase spellings (data, count, totalPages, has_next,
+    # has_prev) are gone - a JSON key is data and does not change spelling by host
+    # language, so the same integer never ships twice under two names.
+    #
+    # PASSING ANY ARGUMENT RAISES. A DatabaseResult holds no connection, so an
+    # argument could only re-slice rows already in memory and then report
+    # total_pages for pages it can never reach. To read page N, FETCH page N
+    # (limit + offset) and call this with no arguments. The removed page:/per_page:
+    # slicing mode is a hard error, never a silent reinterpretation - superseding
+    # the in-memory slice GitHub #106 asked for.
     #
     # MEASURED 2026-08-05 on a real 250-row table read with limit=20 offset=40
-    # (page 3 of 13): this returned ZERO records. It re-sliced @records by the
-    # ABSOLUTE offset - (page - 1) * per_page = 40 - against an array that was
-    # already just that page and only 20 elements long, so the slice fell off
-    # the end and came back nil. Every offset fetch in Ruby produced an empty
-    # paginate envelope, and the envelope still reported a page number and a
-    # total, so it looked like a real answer.
-    #
-    # WITH page:/per_page: it slices this result in memory, which is the
-    # behaviour GitHub issue #106 asked for. That is valid ONLY when the result
-    # holds the WHOLE set (records.size >= count). A PARTIAL result cannot be
-    # sliced by page number without lying: MEASURED on 100,000 rows read under
-    # the default cap of 100, pages 1-5 of 20 were right and every page from 6
-    # onward came back EMPTY while total_pages reported 5,000.
-    #
-    # `total` is @count, and @count is now the TRUE total for the filter in all
-    # four frameworks - Database#fetch runs a COUNT probe whenever it applied a
-    # limit. It used to be ROWS RETURNED here and in Node while Python and PHP
-    # probed, so one query answered 20 in two frameworks and 250 in the other
-    # two.
-    def to_paginate(page: nil, per_page: nil)
-      if (page || per_page) && @records.size < @count
+    # (page 3 of 13): the old two-mode method re-sliced @records by the ABSOLUTE
+    # offset (40) against an array already only 20 long and returned ZERO records
+    # for a valid page, while still shipping a page number and total - an envelope
+    # that looked authoritative and was empty.
+    def to_paginate(*args, **kwargs)
+      unless args.empty? && kwargs.empty?
         raise ArgumentError,
-              "to_paginate(page:, per_page:) slices the rows this result holds, but " \
-              "this result holds only #{@records.size} of #{@count} rows - it is a " \
-              "PARTIAL result, so any page past the rows it holds comes back empty " \
-              "while total_pages claims it exists. MEASURED on 100,000 rows read under " \
-              "the default cap of 100: pages 1-5 of 20 were right and pages 6 onward " \
-              "returned NOTHING. Fetch the page you want instead: " \
-              "fetch(sql, limit: per_page, offset: (page - 1) * per_page), then call " \
-              "to_paginate with no arguments."
+              "to_paginate takes no arguments (ADR-0043): it describes the page " \
+              "this result already IS, derived from the query that produced it. A " \
+              "DatabaseResult holds no connection, so an argument could only " \
+              "re-slice rows already in memory and lie about total_pages. To read " \
+              "another page, FETCH it - fetch(sql, limit: per_page, offset: " \
+              "(page - 1) * per_page) - then call to_paginate with no arguments."
       end
 
-      total = @count
-      if page.nil? && per_page.nil?
-        per_page = @limit.to_i > 0 ? @limit.to_i : @records.size
-        page = per_page > 0 ? (@offset.to_i / per_page) + 1 : 1
-        offset = @offset.to_i
-        page_records = @records
-      else
-        page ||= 1
-        per_page ||= @limit.to_i > 0 ? @limit.to_i : 10
-        offset = (page - 1) * per_page
-        page_records = @records[offset, per_page] || []
-      end
-      total_pages = per_page.to_i > 0 ? [1, (total.to_f / per_page).ceil].max : 1
+      per_page    = @limit.to_i > 0 ? @limit.to_i : @records.size
+      page        = per_page > 0 ? (@offset.to_i / per_page) + 1 : 1
+      total       = @count
+      total_pages = per_page > 0 ? [1, (total.to_f / per_page).ceil].max : 1
 
       {
-        records: page_records,
-        data: page_records,
-        count: total,
+        records: @records,
         total: total,
-        limit: per_page,
-        offset: offset,
         page: page,
         per_page: per_page,
-        totalPages: total_pages,
         total_pages: total_pages,
-        has_next: page < total_pages,
-        has_prev: page > 1
+        limit: per_page,
+        offset: @offset.to_i
       }
     end
 

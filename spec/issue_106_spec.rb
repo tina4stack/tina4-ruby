@@ -109,34 +109,54 @@ RSpec.describe "Issue #106 equivalent bugs" do
     end
   end
 
-  # ── 4. to_paginate() slices correctly ───────────────────────────────
-  describe "to_paginate() slices correctly" do
-    it "returns the correct slice for page 2 with per_page 10" do
-      records = (1..50).map { |i| { id: i, name: "item_#{i}" } }
-      result = Tina4::DatabaseResult.new(records, sql: "SELECT * FROM items",
-                                         count: 50, limit: 10, offset: 0)
-
-      paginated = result.to_paginate(page: 2, per_page: 10)
-      expect(paginated[:data].length).to eq(10)
-      expect(paginated[:data].first[:id]).to eq(11)
-      expect(paginated[:data].last[:id]).to eq(20)
-      expect(paginated[:page]).to eq(2)
-      expect(paginated[:per_page]).to eq(10)
-      expect(paginated[:total]).to eq(50)
-      expect(paginated[:total_pages]).to eq(5)
-      expect(paginated[:has_next]).to be true
-      expect(paginated[:has_prev]).to be true
+  # ── 4. to_paginate() describes the fetched page (ADR-0043) ──────────
+  # GitHub #106 asked for in-memory slicing (to_paginate(page:, per_page:)).
+  # ADR-0043 supersedes that: to_paginate takes NO arguments and describes the
+  # page the query returned - to read page N you FETCH page N. Passing an
+  # argument is a hard error, because a DatabaseResult holds no connection and
+  # an argument could only re-slice rows already in memory and lie about
+  # total_pages. Real SQLite, no mocks.
+  describe "to_paginate() describes the fetched page" do
+    def paging_db
+      db_path = File.join(Dir.tmpdir, "tina4_issue106_paging_#{$$}.db")
+      File.delete(db_path) if File.exist?(db_path)
+      db = Tina4::Database.new("sqlite:///" + db_path)
+      db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+      (1..50).each { |i| db.execute("INSERT INTO items (id, name) VALUES (?, ?)", [i, "item_#{i}"]) }
+      [db, db_path]
     end
 
-    it "returns the last page correctly" do
-      records = (1..50).map { |i| { id: i } }
-      result = Tina4::DatabaseResult.new(records, sql: "", count: 50)
+    it "reads page 2 (per_page 10) by fetching it, then to_paginate with no arguments" do
+      db, db_path = paging_db
+      paginated = db.fetch("SELECT * FROM items ORDER BY id", [], limit: 10, offset: 10).to_paginate
+      expect(paginated[:records].length).to eq(10)
+      expect(paginated[:records].first[:id]).to eq(11)
+      expect(paginated[:records].last[:id]).to eq(20)
+      expect(paginated[:page]).to eq(2)          # floor(10 / 10) + 1
+      expect(paginated[:per_page]).to eq(10)
+      expect(paginated[:total]).to eq(50)        # true total, from the COUNT probe
+      expect(paginated[:total_pages]).to eq(5)
+      db.close
+      File.delete(db_path) if File.exist?(db_path)
+    end
 
-      paginated = result.to_paginate(page: 5, per_page: 10)
-      expect(paginated[:data].length).to eq(10)
-      expect(paginated[:data].first[:id]).to eq(41)
-      expect(paginated[:has_next]).to be false
-      expect(paginated[:has_prev]).to be true
+    it "reads the last page by fetching it" do
+      db, db_path = paging_db
+      paginated = db.fetch("SELECT * FROM items ORDER BY id", [], limit: 10, offset: 40).to_paginate
+      expect(paginated[:records].length).to eq(10)
+      expect(paginated[:records].first[:id]).to eq(41)
+      expect(paginated[:page]).to eq(5)
+      expect(paginated[:total_pages]).to eq(5)
+      db.close
+      File.delete(db_path) if File.exist?(db_path)
+    end
+
+    it "rejects the removed in-memory slicing arguments (ADR-0043)" do
+      db, db_path = paging_db
+      full = db.fetch("SELECT * FROM items ORDER BY id", [], limit: 0)
+      expect { full.to_paginate(page: 2, per_page: 10) }.to raise_error(ArgumentError)
+      db.close
+      File.delete(db_path) if File.exist?(db_path)
     end
   end
 
