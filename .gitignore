@@ -8,9 +8,11 @@
 logs/
 sessions/
 
-# Queue storage — data/queue is the canonical store; .queue is the legacy one
-# the lite backend migrates out of on first use, and may still appear locally.
-data/queue/
+# Runtime file-backend storage (all machine-written): queue, cache, sessions,
+# mailbox, rt_storage, docstore. Ignore data/ wholesale to match nodejs — nothing
+# under data/ is tracked in this repo. .queue is the legacy store the lite queue
+# backend migrates out of on first use.
+data/
 .queue/
 
 # Database files
