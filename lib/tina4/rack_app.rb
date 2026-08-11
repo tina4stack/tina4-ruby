@@ -3,6 +3,7 @@ require "json"
 require "securerandom"
 require "time"
 require "uri"
+require "cgi"
 
 module Tina4
   # Middleware wrapper that tags requests arriving on the AI dev port.
@@ -342,7 +343,11 @@ module Tina4
       return render_landing_page if path == "/" && dev_mode?
 
       Tina4::Log.warning("404 Not Found: #{path}")
-      body = Tina4::Template.render_error(404, { "path" => path }) rescue "404 Not Found"
+      # DEVADMIN-DEC-04 (feature 127): the error page reflects the request path
+      # into HTML and the Twig error template does NOT auto-escape, so a crafted
+      # /x<script> path would run script in the response origin. Escape it here
+      # (same reflected-request-path XSS class as the dev-toolbar fix).
+      body = Tina4::Template.render_error(404, { "path" => CGI.escapeHTML(path.to_s) }) rescue "404 Not Found"
       [404, { "content-type" => "text/html" }, [body]]
     end
 
@@ -780,9 +785,15 @@ module Tina4
 
     def inject_dev_overlay(body, request_info, ai_port: false)
       version = Tina4::VERSION
-      method = request_info[:method]
-      path = request_info[:path]
-      matched_pattern = request_info[:matched_pattern]
+      # DEVADMIN-DEC-04 (feature 127): the toolbar is injected into EVERY
+      # text/html response (including 404s), so the reflected request
+      # method/path/matched-pattern MUST be HTML-escaped or a crafted path
+      # reflects <script> that runs in the dev-server origin and can then drive
+      # every ungated /__dev mutation route. (Parity with PHP htmlspecialchars
+      # and the Python master html.escape; Ruby was reflecting them raw.)
+      method = CGI.escapeHTML(request_info[:method].to_s)
+      path = CGI.escapeHTML(request_info[:path].to_s)
+      matched_pattern = CGI.escapeHTML(request_info[:matched_pattern].to_s)
       request_id = Tina4::Log.get_request_id || "-"
       route_count = Tina4::Router.routes.length
 

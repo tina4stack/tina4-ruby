@@ -3070,8 +3070,18 @@ module Tina4
         DEFAULT_PORT
       when :host
         return cli_value if cli_value
+        # Host: CLI flag > TINA4_HOST > HOST > default. TINA4_HOST wins over the
+        # legacy plain HOST so a stray OS-level HOST (shared CI runners) can't
+        # silently override the framework's bind. Parity with Python's
+        # resolve_config.
+        return ENV["TINA4_HOST"] if ENV["TINA4_HOST"] && !ENV["TINA4_HOST"].empty?
         return ENV["HOST"] if ENV["HOST"] && !ENV["HOST"].empty?
-        DEFAULT_HOST
+        # DEVADMIN-DEC-02 (feature 127): in dev/serve mode the dashboard exposes
+        # an unauthenticated file/SQL/RCE surface, so the DEFAULT bind is
+        # loopback, not 0.0.0.0. Only the DEFAULT changes: production
+        # (TINA4_DEBUG off) keeps 0.0.0.0, and a developer who WANTS network
+        # exposure sets TINA4_HOST=0.0.0.0 to override deliberately.
+        Tina4.truthy?(ENV["TINA4_DEBUG"]) ? "127.0.0.1" : DEFAULT_HOST
       end
     end
 
