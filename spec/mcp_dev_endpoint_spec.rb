@@ -5,6 +5,7 @@ require_relative "support/real_env"
 require "json"
 require "tmpdir"
 require "stringio"
+require "fileutils"
 
 # The dev server exposes the default MCP server two ways:
 #   • REST shim   — GET /__dev/api/mcp/tools, POST /__dev/api/mcp/call
@@ -320,6 +321,108 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
         expect(msg).not_to have_key("error"), "#{tool} raised a protocol error: #{msg["error"]}"
         expect(msg["result"]["content"][0]["type"]).to eq("text")
       end
+    end
+  end
+
+  # ── /call REST INVOCATION shim gate (MCP-02 lock-in) ───────────────
+  #
+  # POST /__dev/api/mcp/call is the tool-INVOCATION REST shim: it RUNS a named
+  # tool (database_execute / file_write / …) with caller-supplied arguments.
+  # In the Python master this exact shim shipped UNGATED, so on a
+  # TINA4_DEBUG=true 0.0.0.0-bound server a remote unauthenticated caller could
+  # POST {"name":"database_execute","arguments":{"sql":"INSERT …"}} and mutate
+  # the DB (now fixed). Ruby wraps /call in with_mcp_gate — the SAME gate as
+  # every other MCP surface (lib/tina4/dev_admin.rb: the /call route + gate).
+  #
+  # The remote/spoofed-XFF specs ABOVE drive /__dev/mcp[/message]; the
+  # Python hole survived precisely because no spec drove the /call surface
+  # itself. THESE examples close that gap: they build a REAL Rack env for
+  # POST /__dev/api/mcp/call, dispatch it through the REAL
+  # Tina4::DevAdmin.handle_request, and prove the gate with a REAL SQLite
+  # write-WITNESS — a denied call must not merely 404, it must never reach the
+  # INSERT (assert the actual row count through the same bound connection).
+  context "when a REMOTE caller hits the /call INVOCATION shim (database_execute)" do
+    # Real Rack env for POST /__dev/api/mcp/call — the same shape and the same
+    # dispatch entrypoint the shipping server uses; no mocks, no test double.
+    def post_call(name, arguments, remote_ip:, headers: {})
+      env = {
+        "PATH_INFO"      => "/__dev/api/mcp/call",
+        "REQUEST_METHOD" => "POST",
+        "QUERY_STRING"   => "",
+        "REMOTE_ADDR"    => remote_ip,
+        "rack.input"     => StringIO.new(JSON.generate("name" => name, "arguments" => arguments))
+      }.merge(headers)
+      Tina4::DevAdmin.handle_request(env)
+    end
+
+    # The write-witness: count probe rows through the SAME real connection the
+    # database_execute tool writes to (Tina4.database). A real query, never a
+    # stubbed value — if the INSERT ran, this is 1; if the gate blocked it, 0.
+    def probe_row_count
+      # The sqlite driver returns rows with SYMBOL keys ({ n: 1 }).
+      Tina4.database.fetch_one("SELECT COUNT(*) AS n FROM mcp_probe")[:n].to_i
+    end
+
+    # let, not a bare constant — a constant inside an RSpec block lands on Object
+    # and clobbers other spec files (see the ruby-constants-are-global lesson).
+    let(:insert_sql) { "INSERT INTO mcp_probe (marker) VALUES ('pwned')" }
+
+    before do
+      set_real_env("TINA4_DEBUG" => "true")   # capability ON (mcp_enabled?)
+      set_real_env("TINA4_MCP" => nil)
+      set_real_env("TINA4_MCP_REMOTE" => nil)
+      set_real_env("TINA4_MCP_TOKEN" => nil)
+      set_real_env("TINA4_API_KEY" => nil)
+
+      # Bind a REAL SQLite DB (temp file) with a probe table. database_execute
+      # writes through Tina4.database; spec_helper resets the binding after each
+      # example, and the after-hook below closes the connection + removes the dir.
+      @db_dir = Dir.mktmpdir
+      db = Tina4::Database.new("sqlite:///" + File.join(@db_dir, "probe.db"))
+      db.execute("CREATE TABLE mcp_probe (id INTEGER PRIMARY KEY, marker TEXT)")
+      Tina4.bind_database(db)
+    end
+
+    after do
+      Tina4.database&.close rescue nil
+      FileUtils.remove_entry(@db_dir) if @db_dir && File.directory?(@db_dir)
+    end
+
+    it "404s a remote caller with NO token and never reaches the INSERT" do
+      expect(probe_row_count).to eq(0)
+      status, _headers, body = post_call(
+        "database_execute", { "sql" => insert_sql }, remote_ip: "8.8.8.8"
+      )
+      expect(status).to eq(404)
+      expect(body.first).to include("MCP forbidden")
+      # Write-witness: the gate blocked BEFORE the tool ran — no row inserted.
+      expect(probe_row_count).to eq(0)
+    end
+
+    it "runs the tool and INSERTS the row for a remote caller with TINA4_MCP_REMOTE + a valid bearer token" do
+      set_real_env("TINA4_MCP_REMOTE" => "true")
+      set_real_env("TINA4_MCP_TOKEN" => "s3cr3t-token")
+      expect(probe_row_count).to eq(0)
+      status, _headers, _body = post_call(
+        "database_execute", { "sql" => insert_sql },
+        remote_ip: "8.8.8.8", headers: { "HTTP_AUTHORIZATION" => "Bearer s3cr3t-token" }
+      )
+      expect(status).to eq(200)
+      # Write-witness: the authorised call actually ran the INSERT (positive control —
+      # rules out a gate that simply 404s everything).
+      expect(probe_row_count).to eq(1)
+    end
+
+    it "ignores a spoofed X-Forwarded-For on /call — the raw peer governs, no row inserted" do
+      expect(probe_row_count).to eq(0)
+      status, _headers, body = post_call(
+        "database_execute", { "sql" => insert_sql },
+        remote_ip: "8.8.8.8", headers: { "HTTP_X_FORWARDED_FOR" => "127.0.0.1" }
+      )
+      expect(status).to eq(404)
+      expect(body.first).to include("MCP forbidden")
+      # Proves REMOTE_ADDR governs, not the spoofable XFF — no row inserted.
+      expect(probe_row_count).to eq(0)
     end
   end
 end
