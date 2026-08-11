@@ -85,11 +85,28 @@ module Tina4
       Tina4::Router.websocket("/__dev_reload", &DEV_RELOAD_WS_HANDLER)
     end
 
+    # Rack entry point. Establishes the per-request correlation id (feature 43),
+    # runs the dispatch pipeline, and echoes the id on the response.
+    def call(env)
+      # Honour a sanitized inbound X-Request-ID so a client or upstream service
+      # can thread its own id through - a CR/LF, over-long or illegal-charset
+      # value is rejected (never echoed) - else generate one. Thread it into the
+      # logger NOW (thread-local, so a Puma worker thread never sees another
+      # request's id), so every log line for this request carries it, and echo it
+      # on the response whatever outcome the pipeline produced (200/404/500/413).
+      request_id = Tina4::Log.sanitize_request_id(env["HTTP_X_REQUEST_ID"]) || SecureRandom.hex(4)
+      Tina4::Log.set_request_id(request_id)
+
+      result = dispatch_pipeline(env)
+      result[1]["x-request-id"] = request_id if result.is_a?(Array) && result[1].is_a?(Hash)
+      result
+    end
+
     # Run the dispatch pipeline. See REQUEST_STAGES / RESPONSE_STAGES above.
     #
     # Every branch this used to hold now lives in a named stage, so the only
     # control flow left here is "walk the list, stop when a stage answers".
-    def call(env)
+    def dispatch_pipeline(env)
       ctx = DispatchContext.new(
         env: env,
         method: env["REQUEST_METHOD"],
@@ -740,7 +757,10 @@ module Tina4
         # and reaches observability via the tina4.request.error event.
         body = Tina4::Template.render_error(500, {
           "error_message" => "",
-          "request_id" => SecureRandom.hex(6)
+          # The canonical per-request id (set at the top of #call), so the id a
+          # user reports off the 500 page matches the log lines and the
+          # X-Request-ID response header - not a throwaway.
+          "request_id" => (Tina4::Log.get_request_id || SecureRandom.hex(4))
         }) rescue "500 Internal Server Error"
       end
       [500, { "content-type" => "text/html" }, [body]]

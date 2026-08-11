@@ -192,9 +192,7 @@ module Tina4
         @strict = truthy?(ENV["TINA4_LOG_STRICT"])
 
         @console_level = resolve_level
-        @request_id = nil
         @current_context = {}
-        @mutex = Mutex.new
 
         # v3.13.14: unbuffer stdout so logs reach `docker logs` / k8s
         # immediately. A non-TTY $stdout (every container) is block-buffered
@@ -243,16 +241,47 @@ module Tina4
         @initialized = true
       end
 
+      # Request id for log correlation. Stored THREAD-LOCAL, not in a shared
+      # singleton ivar: Tina4 serves on Puma (a threaded server), so a process
+      # global would let two concurrent requests on different worker threads
+      # clobber each other's id - the first request's later log lines would then
+      # carry the second's id. Thread-local storage scopes the id to the
+      # request's own thread (the Ruby equivalent of Python's ContextVar and
+      # Node's AsyncLocalStorage). See the porting capsule in feature 43. No
+      # mutex is needed - each thread reads and writes only its own slot.
       def set_request_id(id)
-        @mutex.synchronize { @request_id = id }
+        Thread.current[:tina4_request_id] = id
       end
 
       def clear_request_id
-        @mutex.synchronize { @request_id = nil }
+        Thread.current[:tina4_request_id] = nil
       end
 
       def get_request_id
-        @mutex.synchronize { @request_id }
+        Thread.current[:tina4_request_id]
+      end
+
+      # Sanitize an inbound X-Request-ID (feature 43).
+      #
+      # Honours a well-formed inbound id ([A-Za-z0-9._-], 1..128 chars) so a
+      # client or an upstream service can thread its own correlation id through.
+      # Anything else - empty, over 128 chars, or carrying CR/LF, control chars
+      # or any character outside the allow-list - is rejected wholesale (nil), so
+      # nothing attacker-controlled is ever reflected into the response header or
+      # a log line; the caller then generates a fresh id instead of echoing a raw
+      # header.
+      def sanitize_request_id(value)
+        return nil if value.nil? || value.empty?
+        return nil if value.length > 128
+
+        # Match ANY character OUTSIDE the allow-list - CR, LF, space, every other
+        # control char, any non-ASCII byte. Testing for a bad char (not anchoring
+        # ^...$) is the identical rule in all four frameworks, and in Ruby it is
+        # also the SAFE spelling: ^/$ are ALWAYS line anchors, so an anchored
+        # pattern would let "abc\n" through on the trailing newline.
+        return nil if value =~ /[^A-Za-z0-9._-]/
+
+        value
       end
 
       def json_mode?
