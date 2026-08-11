@@ -116,7 +116,10 @@ module Tina4
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
                 :path_params, :ip, :remote_ip
-    attr_accessor :user
+    # :route is the matched Route, attached by the dispatcher before post-match
+    # middleware runs (DispatchPipeline#prepare_route_request). CsrfMiddleware
+    # reads route.auth_required to honour a public write route (.no_auth).
+    attr_accessor :user, :route
 
     # Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var.
     TINA4_MAX_UPLOAD_SIZE = Integer(ENV.fetch("TINA4_MAX_UPLOAD_SIZE", 10_485_760))

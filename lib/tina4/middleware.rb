@@ -567,110 +567,170 @@ module Tina4
 
   # CsrfMiddleware -- validates form tokens on state-changing requests.
   #
-  # Off by default -- only active when TINA4_CSRF=true in .env or when
-  # registered explicitly via Router.use(CsrfMiddleware).
+  # OFF by default: the middleware is NOT attached unless TINA4_CSRF is truthy
+  # (true/1/yes/on -- see .attach_from_env, called once at boot in
+  # Tina4.initialize!) OR it is registered explicitly via
+  # Router.use(CsrfMiddleware). Once attached, TINA4_CSRF=false (or 0/no) is the
+  # kill switch that disables enforcement again.
   #
-  # Behaviour:
-  #   - Skips GET, HEAD, OPTIONS requests.
-  #   - Skips routes marked .no_auth.
-  #   - Skips requests with a valid Authorization: Bearer header (API clients).
-  #   - Checks request.body["formToken"] then request.headers["X-Form-Token"].
-  #   - Rejects if token found in request.query["formToken"] (log warning, 403).
-  #   - Validates token with Auth.valid_token using SECRET env var.
-  #   - If token payload has session_id, verifies it matches request.session.session_id.
-  #   - Returns 403 with response.json({error: "CSRF_INVALID", message: ...}, 403) on failure.
+  # Behaviour (identical to the Python master's CsrfMiddleware.before_csrf):
+  #   - Skips GET, HEAD, OPTIONS (safe methods).
+  #   - Skips a public write route (.no_auth / auth: false -- auth_required
+  #     false). The matched Route is attached to the request before this
+  #     post-match middleware runs, so a genuinely public endpoint (login,
+  #     webhook) is not gated.
+  #   - Fails CLOSED: with TINA4_SECRET unset the signing secret resolves to
+  #     blank (there is NO built-in default), and a blank HMAC key is publicly
+  #     reproducible -- so no token can be trusted and every write is rejected
+  #     (403). This is the SEC-01 no-default-secret guarantee.
+  #   - Skips a request carrying a valid Authorization: Bearer token (API clients).
+  #   - Reads request.body["formToken"] then the X-Form-Token header.
+  #   - Rejects a token sent in the query string (403 + a logged warning) -- a
+  #     URL leaks through logs, referers and history.
+  #   - Validates the token with Auth.valid_token using the resolved secret, and
+  #     enforces that the token's "type" claim is "form" -- a non-form JWT in the
+  #     formToken slot is rejected even when its signature verifies.
+  #   - If the token carries a session_id, it must match the request session's id.
+  #   - Every rejection is HTTP 403 with the CSRF_INVALID envelope
+  #     ({error:true, code:"CSRF_INVALID", message:, status:403}) via
+  #     response.error -- byte-identical to Python/PHP/Node.
   class CsrfMiddleware
     class << self
       def before_csrf(request, response)
-        # Allow disabling CSRF via env var
-        csrf_env = ENV["TINA4_CSRF"].to_s.downcase
+        # 1. Kill switch -- TINA4_CSRF in {false,0,no} disables all CSRF checks,
+        #    even when the middleware is attached explicitly. Unset = enforced.
+        csrf_env = ENV["TINA4_CSRF"].to_s.strip.downcase
         return [request, response] if %w[false 0 no].include?(csrf_env)
 
-        # Skip safe HTTP methods
+        # 2. Safe HTTP methods never change state -- skip.
         method = (request.method || "GET").upcase
         return [request, response] if %w[GET HEAD OPTIONS].include?(method)
 
-        # Skip routes marked no_auth
-        handler = request.respond_to?(:handler) ? request.handler : nil
-        if handler
-          no_auth = if handler.is_a?(Hash)
-                      handler[:no_auth] || handler[:noAuth]
-                    elsif handler.respond_to?(:no_auth)
-                      handler.no_auth
-                    end
-          return [request, response] if no_auth
-        end
-
-        # Skip requests with valid Bearer token (API clients)
-        headers = request.respond_to?(:headers) ? request.headers : {}
-        auth_header = headers["authorization"] || headers["Authorization"] || ""
-        if auth_header.start_with?("Bearer ")
-          bearer_token = auth_header[7..].strip
-          unless bearer_token.empty?
-            return [request, response] if Tina4::Auth.valid_token(bearer_token)
-          end
-        end
-
-        # Reject if token is in query string (security risk)
-        query = if request.respond_to?(:params)
-                  request.params
-                elsif request.respond_to?(:query)
-                  request.query
-                else
-                  {}
-                end
-        query ||= {}
-
-        if query.is_a?(Hash) && query["formToken"] && !query["formToken"].to_s.empty?
-          Tina4::Log.warning("[CSRF] Token found in query string — rejected for security")
-          response.json({ error: "CSRF_INVALID", message: "Form token must not be sent in the URL query string" }, 403)
+        # 3. Public write routes (.no_auth / auth: false) skip CSRF -- a
+        #    genuinely public endpoint has no session to protect. The matched
+        #    Route is attached to the request before this post-match middleware
+        #    runs (DispatchPipeline#prepare_route_request); a public write route
+        #    has auth_required == false -- the SAME signal the auth gate reads.
+        #    (Reading request.handler, as this once did, was dead code: the live
+        #    request never carries a handler, so the no_auth skip never fired.)
+        route = request.respond_to?(:route) ? request.route : nil
+        if route.respond_to?(:auth_required) && route.auth_required == false
           return [request, response]
         end
 
-        # Extract token: body first, then header
+        # 4/5. Resolve the signing secret ONCE, fail-closed. TINA4_SECRET unset
+        #      resolves to blank (there is NO built-in default); a blank HMAC key
+        #      is publicly reproducible, so a token signed with it -- or with the
+        #      retired public 'tina4-default-secret' -- is a forgery. Reject every
+        #      write rather than validate against a guessable key. SEC-01.
+        secret = Tina4::Auth.hmac_secret
+        if secret.to_s.empty?
+          return [request, response.error(
+            "CSRF_INVALID",
+            "CSRF token cannot be validated: TINA4_SECRET is not set",
+            403
+          )]
+        end
+
+        # 6. A valid Bearer JWT means an API client authenticating per request --
+        #    not subject to the cookie-replay attack CSRF defends against.
+        headers = request.respond_to?(:headers) ? request.headers : {}
+        auth_header = (headers["authorization"] || headers["Authorization"] || "").to_s
+        if auth_header.start_with?("Bearer ")
+          bearer_token = auth_header[7..].to_s.strip
+          return [request, response] if !bearer_token.empty? && Tina4::Auth.valid_token(bearer_token)
+        end
+
+        # 7. A token in the query string leaks through logs/referers/history --
+        #    reject it. Read the QUERY STRING only, never request.params, which
+        #    merges the body (a legit body token would false-trip this check).
+        query = request.respond_to?(:query) ? request.query : {}
+        query = {} unless query.is_a?(Hash)
+        if !query["formToken"].to_s.empty?
+          Tina4::Log.warning("[CSRF] Token found in query string — rejected for security")
+          return [request, response.error(
+            "CSRF_INVALID",
+            "Form token must not be sent in the URL query string",
+            403
+          )]
+        end
+
+        # 8. Extract the token: body first, then the X-Form-Token header.
         token = nil
         body = request.respond_to?(:body) ? request.body : nil
-        body ||= {}
         token = body["formToken"] if body.is_a?(Hash)
-
         if token.nil? || token.to_s.empty?
-          token = headers["X-Form-Token"] || headers["x-form-token"] || ""
+          token = headers["X-Form-Token"] || headers["x-form-token"]
         end
 
+        # 9. Missing token -- reject.
         if token.nil? || token.to_s.empty?
-          response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
-          return [request, response]
+          return [request, response.error("CSRF_INVALID", "Invalid or missing form token", 403)]
         end
 
-        # Validate the token
-        unless Tina4::Auth.valid_token(token.to_s)
-          response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
-          return [request, response]
+        # 10. Validate signature + expiry with the resolved secret. valid_token
+        #     returns the verified payload Hash (or nil) in 3.13.0+.
+        payload = Tina4::Auth.valid_token(token.to_s)
+        unless payload
+          return [request, response.error("CSRF_INVALID", "Invalid or missing form token", 403)]
         end
 
-        # Session binding — if token has session_id, verify it matches
-        payload = Tina4::Auth.get_payload(token.to_s) || {}
+        # 11. Enforce the form-token TYPE -- a valid signature is not enough. A
+        #     non-form JWT (e.g. an auth/session token) must never be accepted in
+        #     the formToken slot.
+        payload = {} unless payload.is_a?(Hash)
+        if payload["type"] != "form"
+          return [request, response.error("CSRF_INVALID", "Invalid or missing form token", 403)]
+        end
+
+        # 12. Session binding -- a token minted for one session cannot be replayed
+        #     against another. Read the request session's OWN id: Tina4::Session
+        #     exposes get_session_id (NOT session_id -- reading session_id then
+        #     session.get("session_id") looked up a DATA key, never the id, so
+        #     binding silently never fired against a real session). A plain Hash
+        #     session exposes "session_id".
         token_session_id = payload["session_id"]
         if token_session_id
-          current_session_id = nil
           session = request.respond_to?(:session) ? request.session : nil
-          if session
-            current_session_id = if session.respond_to?(:session_id)
-                                   session.session_id
-                                 elsif session.is_a?(Hash)
-                                   session["session_id"]
-                                 elsif session.respond_to?(:get)
-                                   session.get("session_id")
-                                 end
-          end
+          current_session_id =
+            if session.nil?
+              nil
+            elsif session.respond_to?(:session_id)
+              session.session_id
+            elsif session.respond_to?(:get_session_id)
+              session.get_session_id
+            elsif session.is_a?(Hash)
+              session["session_id"]
+            end
 
           if current_session_id && token_session_id != current_session_id
-            response.json({ error: "CSRF_INVALID", message: "Invalid or missing form token" }, 403)
-            return [request, response]
+            return [request, response.error("CSRF_INVALID", "Invalid or missing form token", 403)]
           end
         end
 
+        # 13. All checks passed.
         [request, response]
+      end
+
+      # Auto-attach CsrfMiddleware when TINA4_CSRF is enabled in the environment.
+      #
+      # CSRF is OFF by default: with TINA4_CSRF unset the middleware is never
+      # attached, so a default app has no CSRF gate. A truthy value
+      # (true/1/yes/on, case-insensitive) attaches it globally so every
+      # state-changing route is gated -- the env flag is the switch, no code
+      # change needed. Idempotent (Middleware.use de-dupes). Returns true when the
+      # middleware is now attached. Mirrors the Python master's
+      # attach_csrf_from_env; the framework calls it once at boot
+      # (Tina4.initialize!). A false/0/no value still lets an explicit
+      # Router.use(CsrfMiddleware) opt-in be disabled at runtime by the kill
+      # switch in before_csrf.
+      def attach_from_env
+        value = ENV["TINA4_CSRF"].to_s.strip.downcase
+        if %w[true 1 yes on].include?(value)
+          Tina4::Middleware.use(Tina4::CsrfMiddleware)
+          return true
+        end
+        false
       end
     end
   end

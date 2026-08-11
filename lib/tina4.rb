@@ -456,6 +456,11 @@ module Tina4
       # Setup auth keys
       Tina4::Auth.setup(root_dir)
 
+      # Auto-attach CSRF protection when TINA4_CSRF is enabled (OFF by default).
+      # Mirrors the Python master's attach_csrf_from_env -- the env flag is the
+      # switch; unset means no CSRF gate. Idempotent, so a re-init is safe.
+      Tina4::CsrfMiddleware.attach_from_env
+
       # Load translations
       Tina4::Localization.load(root_dir)
 
