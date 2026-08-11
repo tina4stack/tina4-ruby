@@ -32,7 +32,11 @@ module Tina4
       attr_accessor :current
     end
 
-    STATIC_DIRS = %w[public src/public src/assets assets].freeze
+    # ONE static search set + order across the four frameworks
+    # (ST-SEARCHDIR-DIVERGE): the app's public then src/public. TINA4_PUBLIC_DIR
+    # is prepended per-request in #try_static, and the framework's bundled public
+    # dir is appended as the fallback in #initialize.
+    STATIC_DIRS = %w[public src/public].freeze
 
     # CORS is now handled by Tina4::CorsMiddleware
 
@@ -189,6 +193,12 @@ module Tina4
     def try_static(path, env = nil)
       return nil if path.include?("..")
 
+      # Security: never serve a dotfile (.env, .git/config, .htpasswd, ...).
+      # Reject any leading-dot segment in the REQUEST path before touching the
+      # filesystem; #confined_static_file re-checks the RESOLVED path so a symlink
+      # pointing AT a dotfile inside the public dir is refused too.
+      return nil if hidden_segment?(path)
+
       # The framework ships the Swagger UI as STATIC assets under
       # lib/tina4/public/swagger/. Static serving is independent of the gated
       # /swagger handler, so without this check the UI stays reachable in
@@ -202,21 +212,50 @@ module Tina4
         return nil
       end
 
-      @static_roots.each do |root|
-        full_path = File.join(root, path)
-        if File.file?(full_path)
-          return serve_static_file(full_path, env)
-        end
+      # TINA4_PUBLIC_DIR override is honoured first (ST-PUBLICDIR-ENV-PARTIAL),
+      # then the pre-computed project + framework roots.
+      roots = @static_roots
+      custom = ENV["TINA4_PUBLIC_DIR"]
+      roots = [custom] + roots if custom && !custom.empty?
+
+      roots.each do |root|
+        served = confined_static_file(root, path, env)
+        return served if served
 
         # Only try index.html for directory-like paths
         if path.end_with?("/") || !path.include?(".")
-          index_path = File.join(full_path, "index.html")
-          if File.file?(index_path)
-            return serve_static_file(index_path, env)
-          end
+          served = confined_static_file(root, File.join(path, "index.html"), env)
+          return served if served
         end
       end
       nil
+    end
+
+    # Serve a file under `root` ONLY when its REAL path stays confined under the
+    # real `root` (realpath + trailing separator, ADR-0050) and names no dotfile
+    # segment. File.realpath follows symlinks and collapses `..`, so a symlink
+    # pointing outside, a sibling-prefix dir (publicsecret) and a `..` escape all
+    # fail the containment a bare string check would miss. Returns the Rack
+    # response triple, or nil when the file is absent, escapes, or is hidden.
+    def confined_static_file(root, rel_path, env)
+      real_dir = File.realpath(root)
+      real_path = File.realpath(File.join(root, rel_path))
+      return nil unless File.file?(real_path)
+      return nil unless real_path.start_with?(real_dir + File::SEPARATOR)
+
+      relative = real_path[(real_dir.length + 1)..] || ""
+      return nil if hidden_segment?(relative)
+
+      serve_static_file(real_path, env)
+    rescue SystemCallError
+      # realpath raises when a path component is missing — a plain 404, not an error.
+      nil
+    end
+
+    # Whether any separator-delimited segment of `path` is hidden (begins with a
+    # dot). Refuses `.env`/`.git`; a `..` segment also begins with a dot.
+    def hidden_segment?(path)
+      path.split(File::SEPARATOR).any? { |segment| !segment.empty? && segment.start_with?(".") }
     end
 
     # Serve a static asset with cache-revalidation semantics (parity with the
