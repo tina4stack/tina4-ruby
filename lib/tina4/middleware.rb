@@ -744,12 +744,32 @@ module Tina4
   #   TINA4_PERMISSIONS_POLICY  — Permissions-Policy (default: camera=(), microphone=(), geolocation=())
   class SecurityHeadersMiddleware
     class << self
+      # Register this middleware in the default chain (secure-by-default).
+      #
+      # Unlike CSRF (opt-in via TINA4_CSRF) this is UNCONDITIONAL: a default app
+      # ships the security headers with no opt-in -- the SECHDR-DEC-01 posture
+      # that closes the SECHDR-OFF-BY-DEFAULT gap (the middleware existed with good
+      # defaults but was never registered). Idempotent (Middleware.use de-dupes).
+      # The framework calls it once at boot (Tina4.initialize!). Returns true.
+      def attach
+        Tina4::Middleware.use(self)
+        true
+      end
+
       def before_security(request, response)
         response.headers["X-Frame-Options"] = ENV["TINA4_FRAME_OPTIONS"] || "SAMEORIGIN"
         response.headers["X-Content-Type-Options"] = "nosniff"
 
+        # HSTS is HTTPS-only (SECHDR-DEC-02): a downgrade-protection header on a
+        # plain-HTTP response is inert at best and ships a bad max-age on an
+        # unencrypted scheme at worst. Emit it ONLY when TINA4_HSTS is set AND the
+        # request is HTTPS -- Request.secure_scheme? honours x-forwarded-proto
+        # (first hop) then rack.url_scheme, the same source of truth the session
+        # cookie's Secure flag uses. Defensive env lookup keeps a non-Request from
+        # turning every response into a 500 now that this runs on every request.
         hsts = ENV["TINA4_HSTS"] || ""
-        unless hsts.empty?
+        env = request.respond_to?(:env) ? request.env : {}
+        if !hsts.empty? && Tina4::Request.secure_scheme?(env)
           response.headers["Strict-Transport-Security"] = "max-age=#{hsts}; includeSubDomains"
         end
 

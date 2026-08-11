@@ -461,6 +461,12 @@ module Tina4
       # switch; unset means no CSRF gate. Idempotent, so a re-init is safe.
       Tina4::CsrfMiddleware.attach_from_env
 
+      # Security headers: register in the default chain UNCONDITIONALLY
+      # (secure-by-default, SECHDR-DEC-01). Unlike CSRF this needs no opt-in -- a
+      # default app ships X-Frame-Options/X-Content-Type-Options/CSP/etc. with no
+      # code change. HSTS stays HTTPS-only. Idempotent.
+      Tina4::SecurityHeadersMiddleware.attach
+
       # Load translations
       Tina4::Localization.load(root_dir)
 
