@@ -70,9 +70,11 @@ module Tina4
           @last_insert_id = result.inserted_id.to_s
           result
         when :update
-          collection.update_many(parsed[:filter] || {}, { "$set" => parsed[:updates] })
+          # parse_update guarantees a scoped filter (or it raised) — no || {} fallback.
+          collection.update_many(parsed[:filter], { "$set" => parsed[:updates] })
         when :delete
-          collection.delete_many(parsed[:filter] || {})
+          # parse_delete guarantees a scoped filter (or it raised) — no || {} fallback.
+          collection.delete_many(parsed[:filter])
         when :create_collection
           begin
             @db.command(create: parsed[:collection].to_s)
@@ -398,8 +400,33 @@ module Tina4
           end
         end
 
-        # Fallback — return as a raw string comment (best-effort)
-        {}
+        # Fail closed. An unrecognised condition must NEVER degrade to an empty
+        # (match-all) filter: on a DELETE/UPDATE that empty filter reaches
+        # delete_many({})/update_many({}) and wipes or rewrites the WHOLE
+        # collection. Raise so the caller sees the unsupported SQL instead of
+        # silently losing data.
+        raise ArgumentError,
+              "Unsupported MongoDB WHERE condition: #{clause.inspect}. The MongoDB " \
+              "SQL provider fails closed rather than matching every document. " \
+              "Supported: = != <> > >= < <= LIKE, NOT LIKE, IN, NOT IN, " \
+              "IS [NOT] NULL, AND, OR."
+      end
+
+      # Fail closed: a DELETE/UPDATE must carry a WHERE clause.
+      #
+      # A missing or blank WHERE translates to an empty MongoDB filter, which
+      # matches EVERY document, so delete_many({})/update_many({}) would wipe or
+      # rewrite the whole collection. Refuse it. The explicit whole-collection
+      # spelling is truncate() (it passes WHERE 1 = 1); the native driver via
+      # #connection is the escape hatch for anything the SQL subset cannot
+      # express. Shared by both write paths so the guard cannot drift.
+      def require_where_for_write(where_str, operation, collection)
+        return unless where_str.nil? || where_str.strip.empty?
+
+        raise ArgumentError,
+              "Refusing to #{operation} every document in '#{collection}': the " \
+              "statement has no WHERE clause, which would affect the whole " \
+              "collection. Add a WHERE, or use truncate() to clear it explicitly."
       end
 
       def parse_value(str)
@@ -474,10 +501,7 @@ module Tina4
 
         m = sql.match(/UPDATE\s+(\w+)\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/im)
         unless m
-          result[:collection] = :unknown
-          result[:updates] = {}
-          result[:filter] = {}
-          return result
+          raise ArgumentError, "MongodbDriver: cannot parse UPDATE statement: #{sql}"
         end
 
         result[:collection] = m[1].to_sym
@@ -497,9 +521,10 @@ module Tina4
         end
         result[:updates] = updates
 
-        # Parse WHERE
+        # Parse WHERE — refuse a filterless UPDATE (would rewrite the whole collection).
         where_str = m[3]&.strip
-        result[:filter] = where_str && !where_str.empty? ? parse_where(where_str) : {}
+        require_where_for_write(where_str, "UPDATE", result[:collection])
+        result[:filter] = parse_where(where_str)
 
         result
       end
@@ -533,14 +558,14 @@ module Tina4
 
         m = sql.match(/DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+))?$/im)
         unless m
-          result[:collection] = :unknown
-          result[:filter] = {}
-          return result
+          raise ArgumentError, "MongodbDriver: cannot parse DELETE statement: #{sql}"
         end
 
         result[:collection] = m[1].to_sym
+        # Refuse a filterless DELETE (would empty the whole collection).
         where_str = m[2]&.strip
-        result[:filter] = where_str && !where_str.empty? ? parse_where(where_str) : {}
+        require_where_for_write(where_str, "DELETE", result[:collection])
+        result[:filter] = parse_where(where_str)
 
         result
       end
