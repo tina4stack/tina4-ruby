@@ -2,6 +2,7 @@
 
 require "optparse"
 require "fileutils"
+require_relative "port_takeover"
 
 module Tina4
   class CLI
@@ -361,77 +362,35 @@ module Tina4
     # `tina4 serve` may still hold it. Inside a container the server IS the
     # container, so there is no stale sibling to reclaim from -- and trying is
     # actively dangerous (see #kill_process_on_port).
+    # Container detection lives in the shared takeover module now; kept as an
+    # instance method so existing callers/specs resolve it on the CLI.
     def in_container?
-      return true if File.exist?("/.dockerenv") || File.exist?("/run/.containerenv")
-
-      blob = File.read("/proc/1/cgroup")
-      blob.include?("docker") || blob.include?("containerd") || blob.include?("kubepods")
-    rescue SystemCallError
-      false
+      Tina4::PortTakeover.in_container?
     end
 
-    # Kill any process listening on `port`. Returns true if anything was killed.
-    #
-    # Every PID is validated before use. `pid.to_i` on a non-numeric field
-    # yields 0, and Process.kill("TERM", 0) signals EVERY process in the
-    # caller's own process group -- the server kills itself. That is exactly
-    # what happened in a container: "Killed existing process on port 7148
-    # (PID: 1 ...)" followed by exit 143.
-    #
-    # So: skip entirely in a container, accept only all-digit PIDs, and never
-    # signal 0 (our process group), 1 (init), or ourselves.
-    # The PIDs from `lsof -ti` output that are safe to signal.
-    #
-    # Pure so the safety rule can be tested directly. An unvalidated parse is a
-    # footgun with real teeth: where lsof prints a different shape than -ti
-    # implies, a non-numeric field becomes 0, and signalling PID 0 hits EVERY
-    # process in the caller's own process group -- the server kills itself.
-    #
-    # Accept only all-digit tokens; never PID 0 (our group), PID 1 (init),
-    # ourselves, or our own process group.
+    # Thin wrapper over the shared Tina4::PortTakeover.selectable_pids so the CLI
+    # and the runtime bind-failure path share ONE implementation.
     def selectable_pids(lsof_output, me, my_group = nil)
-      pids = []
-      lsof_output.split(/\s+/).each do |token|
-        next unless token.match?(/\A\d+\z/)   # never coerce junk into a PID
-
-        pid = token.to_i
-        next if pid <= 1 || pid == me           # 0 = our group, 1 = init, me = suicide
-        next if !my_group.nil? && pid == my_group
-
-        pids << pid unless pids.include?(pid)
-      end
-      pids
+      Tina4::PortTakeover.selectable_pids(lsof_output, me, my_group)
     end
 
+    # Reclaim `port` from a stale Tina4 dev server, only when it is safe.
+    #
+    # Routes through the shared identity-checked takeover (TAKEOVER-DEC-01/02): a
+    # holder is signalled ONLY when a Tina4 dev server recorded its PID in the
+    # per-port PID file. A foreign holder is left running and a clear message is
+    # printed; takeover is also skipped in a container, outside dev mode, and when
+    # opted out (TINA4_NO_TAKEOVER / --no-kill). Returns true only when a Tina4
+    # holder was actually signalled.
     def kill_process_on_port(port)
-      return false if in_container?
-
-      result = `lsof -ti :#{port} 2>/dev/null`.strip
-      return false if result.empty?
-
-      me = Process.pid
-      my_group = begin
-        Process.getpgrp
-      rescue StandardError
-        nil
+      result = Tina4::PortTakeover.take_over_port(
+        port, dev: Tina4::PortTakeover.dev?, no_takeover: Tina4::PortTakeover.no_takeover_opted_out?
+      )
+      if result.reclaimed?
+        puts "  #{result.message}"
+        return true
       end
-
-      killed = []
-      selectable_pids(result, me, my_group).each do |pid|
-        begin
-          Process.kill("TERM", pid)
-          killed << pid.to_s
-        rescue Errno::ESRCH, Errno::EPERM
-          # Process already gone or no permission
-        end
-      end
-
-      return false if killed.empty?
-
-      sleep 0.5
-      puts "  Killed existing process on port #{port} (PID: #{killed.join(', ')})"
-      true
-    rescue Errno::ENOENT
+      puts "  #{result.message}" if result.refused? && !result.message.empty?
       false
     end
 
@@ -485,6 +444,7 @@ module Tina4
         opts.on("--production", "Use production server (Puma)") { options[:production] = true }
         opts.on("--no-browser", "Do not open browser on start") { options[:no_browser] = true }
         opts.on("--no-reload", "Disable file watcher / live-reload") { options[:no_reload] = true }
+        opts.on("--no-kill", "Never take over the port from a stale dev server") { options[:no_kill] = true }
       end
       parser.parse!(argv)
 
@@ -498,6 +458,11 @@ module Tina4
       if options[:no_reload]
         ENV["TINA4_NO_RELOAD"] = "true"
       end
+
+      # --no-kill opts out of port takeover for the whole process, so the CLI
+      # path here AND the runtime bind-failure fallback both honour it
+      # (TAKEOVER-DEC-03).
+      ENV["TINA4_NO_TAKEOVER"] = "true" if options[:no_kill]
 
       # Priority: CLI flag > ENV var > default
       options[:port] = resolve_config(:port, options[:port])
