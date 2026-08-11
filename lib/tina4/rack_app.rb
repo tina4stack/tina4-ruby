@@ -748,26 +748,52 @@ module Tina4
         end
       end
 
-      if dev_mode?
-        # Rich error overlay with stack trace, source context, and line numbers
-        body = Tina4::ErrorOverlay.render_error_overlay(error, request: env)
-      else
-        # v3.13.7 SECURITY (CWE-209): production response body must NOT
-        # contain the stack trace. The trace stays in Log.error above
-        # and reaches observability via the tina4.request.error event.
-        body = Tina4::Template.render_error(500, {
+      # v3.13.7 SECURITY (CWE-209): production response body must NOT contain the
+      # stack trace. The trace stays in Log.error above and reaches observability
+      # via the tina4.request.error event.
+      safe_page = lambda do
+        Tina4::Template.render_error(500, {
           "error_message" => "",
           # The canonical per-request id (set at the top of #call), so the id a
           # user reports off the 500 page matches the log lines and the
           # X-Request-ID response header - not a throwaway.
           "request_id" => (Tina4::Log.get_request_id || SecureRandom.hex(4))
-        }) rescue "500 Internal Server Error"
+        })
+      rescue StandardError
+        "500 Internal Server Error"
+      end
+
+      if dev_mode?
+        # OVERLAY-DEC-03: guard the dev-overlay render. The call site sits INSIDE
+        # this rescue, so if the overlay itself throws (a malformed frame, an
+        # unrenderable request value) it would double-fault out of dispatch. Wrap it
+        # and fall back to the same safe production page, so a broken overlay still
+        # yields a bounded 500 — never a crash.
+        body =
+          begin
+            Tina4::ErrorOverlay.render_error_overlay(error, request: env)
+          rescue StandardError => overlay_err
+            begin
+              Tina4::Log.warning(
+                "Error overlay render failed, serving the safe page: " \
+                "#{overlay_err.class}: #{overlay_err.message}"
+              )
+            rescue StandardError
+              # Log failures must never block the 500 render.
+            end
+            safe_page.call
+          end
+      else
+        body = safe_page.call
       end
       [500, { "content-type" => "text/html" }, [body]]
     end
 
+    # OVERLAY-DEC-04: unify the debug gate on the overlay module's is_debug_mode so
+    # the error-overlay gate (and every other dev gate that reads dev_mode?) has ONE
+    # definition, instead of recomputing Env.is_truthy(TINA4_DEBUG) separately.
     def dev_mode?
-      Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
+      Tina4::ErrorOverlay.is_debug_mode
     end
 
     # Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS

@@ -983,15 +983,14 @@ Tina4::Container.reset                  # remove all (useful in tests)
 ### ErrorOverlay — Rich HTML error page (dev mode)
 
 ```ruby
-# Render a rich, syntax-highlighted HTML error page (Catppuccin Mocha theme)
+# Render a rich HTML error page (Catppuccin Mocha theme) — dev only
 html = Tina4::ErrorOverlay.render_error_overlay(exception, request: rack_env)
-
-# Render a safe, generic error page for production
-html = Tina4::ErrorOverlay.render_production_error(status_code: 500, message: "Internal Server Error")
 
 # Check if the overlay should be shown (TINA4_DEBUG = true)
 Tina4::ErrorOverlay.is_debug_mode  # -> Boolean
 ```
+
+The overlay is dev-only (gated on `is_debug_mode`/`TINA4_DEBUG`). The production 500 is NOT rendered here — the dispatch renders the generic `errors/500` page with an empty `error_message` (CWE-209), so the exception detail stays in the server log only. Sensitive request fields (Authorization / Cookie / Set-Cookie headers and password-like body/param keys) are redacted even in the overlay, the frame count is capped, and the caller guards the render.
 
 ### HtmlElement — Programmatic HTML builder
 
