@@ -826,10 +826,14 @@ keeps the exit code.
   the bad file and re-run.
 - **Each migration FILE is wrapped in its own transaction** (`start_transaction`
   / `commit`, `rollback` on error). On a failure the file rolls back as a unit.
-- **Atomicity caveat:** the per-file transaction is truly atomic only on engines
-  with **transactional DDL (PostgreSQL)**. MySQL, Firebird, and SQLite
-  auto-commit DDL, so a multi-statement migration that fails midway on those
-  engines leaves earlier statements applied — keep one logical change per file.
+- **Atomicity caveat:** the per-file transaction is truly atomic on engines with
+  **transactional DDL (PostgreSQL, and SQLite)**. SQLite's DDL is transactional
+  too (autocommit is off inside `start_transaction`), so a multi-statement
+  migration that fails midway on SQLite rolls back cleanly, including any
+  `CREATE TABLE` that already ran earlier in the same file — proven by
+  `spec/migration_contract_spec.rb`. MySQL and Firebird **auto-commit DDL**, so
+  the same failure on those two engines leaves earlier statements applied —
+  keep one logical change per file there.
 - **Idempotency on engines lacking `IF NOT EXISTS`:** on Firebird, `ALTER TABLE
   … ADD <column>` is existence-checked against `RDB$RELATION_FIELDS`; on Firebird
   AND MSSQL, a raw `CREATE TABLE` is skipped when the table already exists

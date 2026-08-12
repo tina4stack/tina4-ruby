@@ -320,10 +320,13 @@ module Tina4
       Tina4::Log.info("Running migration: #{name}")
       begin
         # Wrap each migration FILE in its own transaction so a multi-statement
-        # file that fails midway rolls back as a unit. Truly atomic only on
-        # engines with transactional DDL (PostgreSQL); MySQL/Firebird/SQLite
-        # auto-commit DDL, so earlier statements may persist there — keep one
-        # logical change per file.
+        # file that fails midway rolls back as a unit. Truly atomic on engines
+        # with transactional DDL (PostgreSQL, and SQLite -- autocommit is off
+        # inside start_transaction, proven by
+        # spec/migration_contract_spec.rb's "a multi-statement failure rolls
+        # back the DDL on SQLite too"). MySQL and Firebird auto-commit DDL, so
+        # earlier statements may persist there -- keep one logical change per
+        # file on those two engines.
         @db.start_transaction
         if file.end_with?(".rb")
           execute_ruby_migration(file, :up)
@@ -349,23 +352,35 @@ module Tina4
 
     def rollback_migration(name)
       Tina4::Log.info("Rolling back: #{name}")
+      # FAIL-SAFE (MIG-DEC-02, reuses the Python reference model): each
+      # rollback is its own transaction, and the ledger row is removed ONLY
+      # once the down artifact actually ran (or was confirmed a deliberate
+      # no-op empty file) -- never on a missing or failed down. A missing
+      # artifact now RAISES instead of Tina4::Log.warning-then-still-deleting,
+      # which was the exact MIG-ROLLBACK-DROPS-LEDGER bug: the schema stayed
+      # applied but the tracking row vanished, so it was silently forgotten.
+      @db.start_transaction
       begin
         file = File.join(@migrations_dir, name)
-        if name.end_with?(".rb") && File.exist?(file)
+        if name.end_with?(".rb")
+          raise "Cannot rollback #{name}: no .rb file found" unless File.exist?(file)
+
           execute_ruby_migration(file, :down)
         elsif name.end_with?(".sql")
-          down_file = File.join(@migrations_dir, name.sub(".sql", ".down.sql"))
-          if File.exist?(down_file)
-            execute_sql_file(down_file)
-          else
-            Tina4::Log.warning("No rollback file for: #{name}")
-          end
+          down_file = File.join(@migrations_dir, name.sub(/\.sql\z/, ".down.sql"))
+          raise "Cannot rollback #{name}: no .down.sql file found" unless File.exist?(down_file)
+
+          execute_sql_file(down_file)
+        else
+          raise "Cannot rollback #{name}: unrecognised migration file type"
         end
         _remove_migration_record(name)
+        @db.commit
         { name: name, status: "rolled_back" }
       rescue => e
+        @db.rollback rescue nil
         Tina4::Log.error("Rollback failed: #{name} - #{e.message}")
-        { name: name, status: "failed", error: e.message }
+        raise
       end
     end
 
