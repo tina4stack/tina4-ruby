@@ -370,15 +370,49 @@ module Tina4
           ORM.instance_variable_set(:@query_cache, QueryCache.new(default_ttl: 0, max_size: 500))
       end
 
+      # Table names a query reads FROM / JOINs -- lowercased, schema-stripped.
+      #
+      # Best-effort: for each FROM/JOIN keyword it takes the following
+      # identifier, drops any quoting (backticks, double quotes, square
+      # brackets) and schema prefix (public.users -> users), and ignores the
+      # alias. A cached query is tagged with these tables so a write to any one
+      # of them invalidates it (CACHE-DEC-01).
+      def tables_in_sql(sql)
+        tables = {}
+        (sql || "").scan(
+          %r{\b(?:FROM|JOIN)\s+([`"\[]?[A-Za-z_][\w$]*[`"\]]?(?:\.[`"\[]?[A-Za-z_][\w$]*[`"\]]?)?)}i
+        ).each do |match|
+          name = match[0].gsub(/[`"\[\]]/, "")
+          name = name.split(".").last if name.include?(".")
+          tables[name.downcase] = true unless name.empty?
+        end
+        tables.keys
+      end
+
+      # Every table a cached query touches: this model's table plus every
+      # FROM/JOIN table in `sql`. A write to any of these busts the entry.
+      def cache_tags(sql)
+        tags = [table_name.to_s.downcase]
+        tables_in_sql(sql).each { |table| tags << table unless tags.include?(table) }
+        tags
+      end
+
       # SQL query with result caching. Returns an array of ORM instances.
       #
-      # Parity with the Python master's `cached` (orm/model.py:1077): same key
-      # shape, same tag, and a miss delegates to `select` so eager loading and the
-      # row cap behave identically to an uncached read.
+      # Parity with the Python master's `cached`: same key shape, and a miss
+      # delegates to `select` so eager loading and the row cap behave
+      # identically to an uncached read.
       #
-      # Entries are tagged with the model name so #clear_cache invalidates only
-      # this model's queries and leaves every other model's cached reads intact.
+      # Invalidation (CACHE-DEC-01): the entry is tagged by every table the query
+      # touches (this model's table plus any FROM/JOIN tables), so a write through
+      # the ORM (save/delete/force_delete/restore) to ANY of those tables busts
+      # it. `ttl <= 0` means NO-CACHE -- the query runs and the rows are returned
+      # but nothing is stored, so every read hits the database (it is NOT an
+      # infinite-lived entry).
       def cached(sql, params = [], ttl: 60, limit: 100, offset: nil, include: nil)
+        # ttl <= 0 is NO-CACHE: run it live, store nothing, read nothing.
+        return select(sql, params, limit: limit, offset: offset, include: include) if ttl <= 0
+
         key = "#{name}:#{QueryCache.query_key(sql, params)}:#{limit}:#{offset || 0}"
 
         # nil-check, NOT a truthiness check: a query that legitimately returns no
@@ -389,15 +423,19 @@ module Tina4
         return hit unless hit.nil?
 
         result = select(sql, params, limit: limit, offset: offset, include: include)
-        query_cache.set(key, result, ttl: ttl, tags: [name])
+        query_cache.set(key, result, ttl: ttl, tags: cache_tags(sql))
         result
       end
 
-      # Invalidate every cached query for THIS model. Tag-scoped, so it never
-      # flushes another model's entries. Mirrors the master's
-      # `_query_cache.clear_tag(cls.__name__)`.
+      # Invalidate every cached query that touches this model's table.
+      #
+      # Tag-scoped, NOT a wholesale flush: a cached JOIN on another model that
+      # reads this table is busted too (it carries this table's tag), while a
+      # query that never touches this table is left intact. Called after every
+      # ORM write (save/delete/force_delete/restore) so a read-after-write never
+      # serves a stale/deleted row (CACHE-DEC-01).
       def clear_cache
-        query_cache.clear_tag(name)
+        query_cache.clear_tag(table_name.to_s.downcase)
         nil
       end
 
@@ -930,6 +968,8 @@ module Tina4
 
       @persisted = true
       @last_error = nil
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       self
     end
 
@@ -958,6 +998,8 @@ module Tina4
         end
       end
       @persisted = false
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       true
     end
 
@@ -970,6 +1012,8 @@ module Tina4
         db.delete(self.class.table_name, pk_filter)
       end
       @persisted = false
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       true
     end
 
@@ -988,6 +1032,8 @@ module Tina4
         )
       end
       __send__("#{self.class.soft_delete_field}=", 0) if respond_to?("#{self.class.soft_delete_field}=")
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       true
     end
 
