@@ -1158,12 +1158,11 @@ module Tina4
     end
 
     def self._read_rack_body(env)
-      input = env["rack.input"]
-      return "" unless input
-      input.rewind if input.respond_to?(:rewind)
-      body = input.read || ""
-      input.rewind if input.respond_to?(:rewind)
-      body
+      # Route through the capped reader so the running per-chunk upload cap is
+      # enforced on the form-token / body path too: an over-limit body raises
+      # PayloadTooLarge (rescued into 413 by dispatch_pipeline) instead of being
+      # read whole.
+      Tina4::Request.read_stream_capped(env["rack.input"])
     end
 
     # Extract a formToken from the request body.

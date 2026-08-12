@@ -2,6 +2,7 @@
 require "uri"
 require "json"
 require "ipaddr"
+require "stringio"
 
 module Tina4
   # A Hash subclass that supports indifferent access (both string and symbol keys).
@@ -126,6 +127,76 @@ module Tina4
 
     class PayloadTooLarge < StandardError; end
 
+    # Effective upload cap in bytes. Read at CALL TIME (not frozen into the
+    # constant at load) so the limit honours a TINA4_MAX_UPLOAD_SIZE set after
+    # this file was required, and so a test can lower it. Falls back to the
+    # constant default when the env var is unset/blank.
+    def self.max_upload_size
+      value = ENV["TINA4_MAX_UPLOAD_SIZE"]
+      value.nil? || value.empty? ? TINA4_MAX_UPLOAD_SIZE : value.to_i
+    end
+
+    # Read an IO in bounded chunks, raising PayloadTooLarge the MOMENT the
+    # running total exceeds the upload cap, so an over-limit body is refused as
+    # it arrives instead of after the whole thing is buffered. Rewinds the input
+    # before and after so a later reader (Rack's parser, form-token extraction)
+    # sees the same stream. Parity with the Python/Node per-chunk body readers.
+    def self.read_stream_capped(input, limit = nil)
+      return "" unless input
+
+      limit = max_upload_size if limit.nil?
+      input.rewind if input.respond_to?(:rewind)
+      buffer = +""
+      if limit&.positive?
+        while (chunk = input.read(65_536))
+          buffer << chunk
+          if buffer.bytesize > limit
+            raise PayloadTooLarge,
+                  "Request body (#{buffer.bytesize}+ bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{limit} bytes)"
+          end
+        end
+      else
+        buffer = input.read || ""
+      end
+      input.rewind if input.respond_to?(:rewind)
+      buffer
+    end
+
+    # Persist an uploaded file's content inside target_dir under a SAFE name.
+    #
+    # The client-supplied filename is untrusted. Directory components are
+    # stripped (so "../../evil" or "/etc/passwd" becomes "evil"/"passwd"), a NUL
+    # byte or an unusable name ("", ".", "..") is refused, and the resolved path
+    # is confined to target_dir (realpath containment) so an upload can never
+    # write outside it. Returns the absolute path written; raises ArgumentError
+    # on an unsafe name.
+    def self.save_upload(file, target_dir, filename: nil)
+      raw = (filename || file["filename"] || file[:filename] || "").to_s
+      raise ArgumentError, "upload filename contains a null byte" if raw.include?("\u0000")
+
+      # Reduce to a single path segment, handling BOTH separators so a Windows
+      # "..\\..\\evil" cannot smuggle a directory part past a POSIX basename.
+      base = raw.tr("\\", "/").split("/").last.to_s
+      if base.empty? || base == "." || base == ".."
+        raise ArgumentError, "upload filename is not a usable name: #{raw.inspect}"
+      end
+
+      require "fileutils"
+      FileUtils.mkdir_p(target_dir)
+      dest = File.join(target_dir, base)
+      # Defence in depth: the resolved parent of the destination must be exactly
+      # the resolved target dir (guards a pre-existing symlink at target/base).
+      real_dir = File.realpath(target_dir)
+      real_parent = File.realpath(File.dirname(dest))
+      unless real_parent == real_dir
+        raise ArgumentError, "refusing to write outside #{target_dir.inspect}: #{raw.inspect}"
+      end
+
+      content = file["content"] || file[:content] || ""
+      File.binwrite(dest, content)
+      dest
+    end
+
     def initialize(env, path_params = {})
       @env = env
       @method = env["REQUEST_METHOD"]
@@ -134,11 +205,14 @@ module Tina4
       @content_type = env["CONTENT_TYPE"] || ""
       @path_params = path_params
 
-      # Check upload size limit
+      # Check upload size limit (DECLARED Content-Length). The running per-chunk
+      # counter in read_stream_capped catches the chunked / under-declared case
+      # this check cannot see.
       content_length = (env["CONTENT_LENGTH"] || 0).to_i
-      if content_length > TINA4_MAX_UPLOAD_SIZE
+      upload_limit = Tina4::Request.max_upload_size
+      if content_length > upload_limit
         raise PayloadTooLarge,
-          "Request body (#{content_length} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{TINA4_MAX_UPLOAD_SIZE} bytes)"
+          "Request body (#{content_length} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{upload_limit} bytes)"
       end
 
       # Raw socket peer — NEVER honours X-Forwarded-For, so it can be trusted
@@ -384,9 +458,17 @@ module Tina4
       existing = @env["rack.request.form_hash"] rescue nil
       return existing if existing
 
+      # Enforce the running per-chunk upload cap BEFORE Rack reads the body, so
+      # an over-limit body is refused as it arrives rather than after Rack has
+      # buffered the whole thing. Outside the begin/rescue below on purpose: the
+      # PayloadTooLarge must propagate to the 413 handler, not be swallowed.
+      Tina4::Request.read_stream_capped(@env["rack.input"])
+
       parsed = begin
         require "rack"
         Rack::Request.new(@env).POST
+      rescue Tina4::Request::PayloadTooLarge
+        raise
       rescue StandardError => e
         Tina4::Log.warning("multipart parse failed: #{e.message}") if defined?(Tina4::Log)
         nil
@@ -406,8 +488,10 @@ module Tina4
         form_hash = multipart_form_hash
         if form_hash
           form_hash.each do |key, value|
-            # Skip file entries (handled by extract_files)
+            # Skip file entries (handled by extract_files) - a single descriptor
+            # or a list of them (repeated field name).
             next if value.is_a?(Hash) && value[:tempfile]
+            next if value.is_a?(Array) && value.any? { |v| v.is_a?(Hash) && v[:tempfile] }
             result[key] = value
           end
         end
@@ -445,30 +529,119 @@ module Tina4
       result = {}
       return result unless @content_type.include?("multipart/form-data")
       begin
+        # LIVE path: hand-scan the raw body so a REPEATED file field name is
+        # preserved as a LIST (Rack's POST collapses a repeated non-bracket name
+        # to last-wins - the multi-file data-loss this fixes). The scan reads the
+        # body through the capped reader, so an over-limit upload is refused as
+        # it arrives. Falls through to the parsed form_hash when there is no raw
+        # body (e.g. a spec injecting rack.request.form_hash).
+        scanned = scan_multipart_files
+        if scanned && !scanned.empty?
+          scanned.each do |key, list|
+            files = list.map { |value| build_file_upload(value) }.compact
+            result[key] = files.length == 1 ? files.first : files unless files.empty?
+          end
+          return result
+        end
+
         form_hash = multipart_form_hash
         if form_hash
           form_hash.each do |key, value|
-            if value.is_a?(Hash) && value[:tempfile]
-              tempfile = value[:tempfile]
-
-              # Indifferent-access per-file hash so file["content"],
-              # file[:content], file["filename"], file[:filename] all work.
-              # `content` (raw bytes, never base64) is materialised lazily on
-              # first access (see FileUpload) — :tempfile-only handlers never
-              # buffer large uploads in memory.
-              file = FileUpload.new
-              file[:filename] = value[:filename]
-              file[:type]     = value[:type]
-              file[:tempfile] = tempfile
-              file[:size]     = tempfile.size
-              result[key] = file
+            if value.is_a?(Array)
+              files = value.map { |v| build_file_upload(v) }.compact
+              result[key] = files.length == 1 ? files.first : files unless files.empty?
+            else
+              file = build_file_upload(value)
+              result[key] = file if file
             end
           end
         end
+      rescue Tina4::Request::PayloadTooLarge
+        raise
       rescue StandardError
         # Multipart parsing failed
       end
       result
+    end
+
+    # Build an indifferent-access per-file hash from a raw descriptor value
+    # ({filename:, type:, tempfile:, [content], [size]}). file["content"],
+    # file[:content], file["filename"] etc. all work; `content` (raw bytes,
+    # never base64) is materialised lazily from the tempfile on first access
+    # (see FileUpload) unless the scan already supplied it.
+    def build_file_upload(value)
+      return nil unless value.is_a?(Hash) && value[:tempfile]
+
+      file = FileUpload.new
+      file[:filename] = value[:filename]
+      file[:type]     = value[:type]
+      file[:tempfile] = value[:tempfile]
+      file[:size]     = value[:size] || (value[:tempfile].size rescue 0)
+      file["content"] = value[:content] if value.key?(:content) && !value[:content].nil?
+      file
+    end
+
+    # Extract the boundary token from a multipart Content-Type header.
+    def multipart_boundary(content_type)
+      content_type.to_s.split(";").each do |part|
+        part = part.strip
+        next unless part.start_with?("boundary=")
+
+        return part[9..].to_s.delete_prefix('"').delete_suffix('"')
+      end
+      nil
+    end
+
+    # Hand-roll the FILE parts out of the raw multipart body, keyed by field
+    # name, each name mapping to a LIST of descriptors so a repeated name keeps
+    # every file. Reads through read_stream_capped, so the running per-chunk
+    # upload cap is enforced here too (raising PayloadTooLarge). Returns {} when
+    # there is no raw body (the injected-form_hash path is used instead). Fields
+    # are handled by parse_body (via Rack) - this scans files only.
+    def scan_multipart_files
+      boundary = multipart_boundary(@content_type)
+      return {} unless boundary
+
+      body = Tina4::Request.read_stream_capped(@env["rack.input"])
+      return {} if body.nil? || body.empty?
+
+      body = body.dup.force_encoding("BINARY")
+      files = {}
+      delimiter = "--#{boundary}"
+      body.split(delimiter).each do |segment|
+        next if segment.empty? || segment.start_with?("--")
+
+        segment = segment.sub(/\A\r\n/, "")
+        header_end = segment.index("\r\n\r\n")
+        next unless header_end
+
+        header_section = segment[0...header_end]
+        content = segment[(header_end + 4)..] || ""
+        content = content.sub(/\r\n\z/, "")
+
+        name = nil
+        filename = nil
+        type = "application/octet-stream"
+        header_section.split("\r\n").each do |line|
+          if line =~ /content-disposition/i
+            name = Regexp.last_match(1) if line =~ /name="([^"]*)"/
+            filename = Regexp.last_match(1) if line =~ /filename="([^"]*)"/
+          elsif line =~ /content-type:\s*(.+)/i
+            type = Regexp.last_match(1).strip
+          end
+        end
+        next if name.nil? || filename.nil?
+
+        bytes = content.dup.force_encoding("BINARY")
+        (files[name] ||= []) << {
+          filename: filename,
+          type: type,
+          content: bytes,
+          size: bytes.bytesize,
+          tempfile: StringIO.new(bytes)
+        }
+      end
+      files
     end
   end
 end
