@@ -760,10 +760,13 @@ Register callbacks that run periodically in a dedicated thread. Tasks integrate 
 # Register a periodic task
 Tina4::Background.register(interval: 2.0) { process_orders(queue) }
 
-# Or pass an explicit callable
+# Or pass an explicit callable. register (and Tina4.background) return a
+# Tina4::Background::Task HANDLE — the ONE surface shared with Python/PHP/Node.
 task = Tina4::Background.register(->{ check_health }, interval: 30.0)
+task.stop                               # -> true first time, false thereafter (idempotent)
 
-Tina4::Background.tasks                 # -> Array of registered tasks
+Tina4::Background.count                 # -> Integer, currently-registered tasks
+Tina4::Background.tasks                 # -> Array of registered task handles
 Tina4::Background.stop_task(task, timeout: 2.0)
 Tina4::Background.stop_all(timeout: 2.0)
 ```
