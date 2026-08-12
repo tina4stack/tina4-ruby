@@ -1188,36 +1188,64 @@ module Tina4
 
     # load — populate this instance from the database.
     #
-    # Three forms (parity with Python's model.load(sql, params, include)):
-    #   user.load                                   # reload by primary key from instance
-    #   user.load(123)                              # load by primary key value
-    #   user.load("email = ?", ["a@b.c"])           # load by filter SQL + params (selectOne)
+    # Signature aligned with Python's model.load(filter, params, include) and
+    # PHP's load(?string $filter, array $params, ?array $include) --
+    # LOAD-RUBY-SIGNATURE (feature 26, 3.13.99). filter is nil or a SQL
+    # WHERE-fragment String, never a bare scalar.
+    #
+    #   user.load                                    # reload by primary key from instance
+    #   user.load("email = ?", ["a@b.c"])            # load by filter SQL + params
+    #   user.load("id = ?", [1], include: [:posts])  # eager-load relations too
+    #
+    # BREAKING: the old load(id) scalar-primary-key shortcut is REMOVED -- it
+    # built the malformed fragment "WHERE <id>" for any other filter argument
+    # style, which is valid-but-wrong SQL (a constant truthy WHERE matches the
+    # table's first row, not the requested id) rather than a clean error. Set
+    # the primary key attribute then call load with no args, or pass an
+    # explicit "pk = ?" filter.
+    #
+    # LOAD-DEC-01/LOAD-RUBY-ASYMMETRY: hydrates via from_hash -- the SAME
+    # coercion every finder uses (a JSON column parses to a native Hash/Array)
+    # -- instead of feeding the raw driver row straight to the setters. Before
+    # this fix, load() left a JSON column as a raw String while
+    # Model.find(id).same_column returned a parsed Hash/Array: the same row,
+    # a different type, purely by which read path you called. ONE hydration
+    # path now (from_hash), not two.
     #
     # Returns true on hit, false on miss. Always clears the relationship cache.
-    def load(arg = nil, params = nil)
+    def load(filter = nil, params = [], include: nil)
+      if !filter.nil? && !filter.is_a?(String)
+        raise ArgumentError,
+          "#{self.class.name}#load expects a filter String or no argument (got #{filter.inspect}). " \
+          "The old load(id) primary-key shortcut was removed (LOAD-RUBY-SIGNATURE, 3.13.99) -- " \
+          "set the primary key attribute then call load with no args, or pass an explicit filter: " \
+          "load(\"id = ?\", [id])."
+      end
+
       @relationship_cache = {} # Clear relationship cache on reload
       pk = self.class.primary_key_field || :id
 
-      if arg.is_a?(String)
-        # Filter-SQL form: user.load("email = ?", ["a@b.c"])
-        sql = "SELECT * FROM #{self.class.table_name} WHERE #{arg} LIMIT 1"
-        result = self.class.db.fetch_one(sql, params || [])
-      else
-        # Primary-key form: user.load OR user.load(123)
-        id = arg || __send__(pk)
+      if filter.nil?
+        # No args — reload by the primary key value already set on this instance
+        id = __send__(pk)
         return false unless id
-        result = self.class.db.fetch_one(
-          "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?", [id]
-        )
+        pk_column = self.class.get_db_column(pk)
+        sql = "SELECT * FROM #{self.class.table_name} WHERE #{pk_column} = ?"
+        result = self.class.db.fetch_one(sql, [id])
+      else
+        # Filter-SQL form: user.load("email = ?", ["a@b.c"])
+        sql = "SELECT * FROM #{self.class.table_name} WHERE #{filter} LIMIT 1"
+        result = self.class.db.fetch_one(sql, params)
       end
       return false unless result
 
-      mapping_reverse = self.class.field_mapping.invert
-      result.each do |key, value|
-        attr_name = mapping_reverse[key.to_s] || key
-        setter = "#{attr_name}="
-        __send__(setter, value) if respond_to?(setter)
+      hydrated = self.class.from_hash(result)
+      self.class.field_definitions.each_key do |name|
+        __send__("#{name}=", hydrated.__send__(name))
       end
+
+      self.class.eager_load([self], include) if include
+
       @persisted = true
       true
     end
