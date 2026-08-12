@@ -199,14 +199,23 @@ module Tina4
           end
           # migration_name is UNIQUE: a migration is "applied" iff a success row
           # exists, so a re-applied name must never duplicate a tracking row.
+          # Firebird's column-definition grammar requires DEFAULT to precede
+          # NOT NULL (<col> <type> [DEFAULT <value>] [NOT NULL]) -- unlike
+          # PostgreSQL/MySQL/SQLite/MSSQL, which accept either order. The
+          # previous "NOT NULL DEFAULT 1" order raised "Invalid token ...
+          # DEFAULT" (SQL error -104) on a real server; never caught before
+          # because no prior test constructed a real Migration against a real
+          # Firebird connection (MIG-FBMSSQL-MOCK, feature 15). Mirrors the
+          # Python reference (_create_v3_table's Firebird branch already uses
+          # this order).
           @db.execute(<<~SQL)
             CREATE TABLE #{TRACKING_TABLE} (
               id INTEGER NOT NULL PRIMARY KEY,
               migration_name VARCHAR(500) NOT NULL UNIQUE,
               description VARCHAR(500),
-              batch INTEGER NOT NULL DEFAULT 1,
+              batch INTEGER DEFAULT 1 NOT NULL,
               executed_at VARCHAR(50) NOT NULL,
-              passed INTEGER NOT NULL DEFAULT 1
+              passed INTEGER DEFAULT 1 NOT NULL
             )
           SQL
         else

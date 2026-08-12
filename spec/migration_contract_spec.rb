@@ -120,6 +120,21 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
     end
   end
 
+  # Best-effort delete of a stale tina4_migration row. On a genuinely fresh
+  # database/engine the tracking table itself may not exist yet (nothing has
+  # called migrate() there before) -- that is not a real failure, just
+  # nothing to clean up. NOTE: no db.commit here -- Ruby's Database#commit
+  # unconditionally forwards to the driver (no "nothing open" no-op guard),
+  # and a bare COMMIT with no matching start_transaction is a hard error on
+  # MSSQL/tiny_tds ("no corresponding BEGIN TRANSACTION"); autoCommit already
+  # commits each standalone execute (see mssqlprovider_contract_spec.rb's own
+  # established convention -- it never calls .commit after a bare .execute).
+  def clean_ledger_row(db, migration_name)
+    db.execute("DELETE FROM tina4_migration WHERE migration_name = ?", [migration_name])
+  rescue StandardError
+    nil
+  end
+
   def write_migration(name, sql)
     File.write(File.join(@mig_dir, name), sql)
   end
@@ -152,8 +167,7 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
     name = "000001_mysql_atomic.sql"
     begin
       db.execute("DROP TABLE IF EXISTS #{table}")
-      db.execute("DELETE FROM tina4_migration WHERE migration_name = ?", [name])
-      db.commit
+      clean_ledger_row(db, name)
 
       write_migration(name, "CREATE TABLE #{table} (id INT PRIMARY KEY);\nTHIS IS NOT VALID SQL;")
 
@@ -166,8 +180,7 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
       expect(row).to be_nil, "the ledger row must never be written for a failed migration, even on non-transactional DDL"
     ensure
       db.execute("DROP TABLE IF EXISTS #{table}")
-      db.execute("DELETE FROM tina4_migration WHERE migration_name = ?", [name])
-      db.commit
+      clean_ledger_row(db, name)
       db.close
     end
   end
@@ -180,8 +193,7 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
     name = "000001_pg_midfile.sql"
     begin
       db.execute("DROP TABLE IF EXISTS #{table}")
-      db.execute("DELETE FROM tina4_migration WHERE migration_name = ?", [name])
-      db.commit
+      clean_ledger_row(db, name)
 
       write_migration(name, "CREATE TABLE #{table} (id SERIAL PRIMARY KEY, name VARCHAR(50));\nTHIS IS NOT VALID SQL;")
 
@@ -195,8 +207,7 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
       expect(row).to be_nil, "no ledger row for a fully-rolled-back file"
     ensure
       db.execute("DROP TABLE IF EXISTS #{table}")
-      db.execute("DELETE FROM tina4_migration WHERE migration_name = ?", [name])
-      db.commit
+      clean_ledger_row(db, name)
       db.close
     end
   end
@@ -333,9 +344,7 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
     table = "nomock_mig_ctr_rb_mssql"
     begin
       db.execute("IF OBJECT_ID('#{table}','U') IS NOT NULL DROP TABLE #{table}")
-      db.commit
       db.execute("CREATE TABLE #{table} (id INT)")
-      db.commit
       expect(db.table_exists?(table)).to be(true), "precondition: the real engine must report the table"
 
       m = Tina4::Migration.new(db, migrations_dir: @mig_dir)
@@ -347,7 +356,6 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
       expect(absent_reason).to be_nil, "an absent table must NOT be skipped -- the migration has to run"
     ensure
       db.execute("IF OBJECT_ID('#{table}','U') IS NOT NULL DROP TABLE #{table}")
-      db.commit
       db.close
     end
   end
@@ -358,12 +366,10 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
     begin
       begin
         db.execute("DROP TABLE #{table}")
-        db.commit
       rescue StandardError
         nil
       end
       db.execute("CREATE TABLE #{table} (id INTEGER NOT NULL PRIMARY KEY)")
-      db.commit
       expect(db.table_exists?(table)).to be(true), "precondition: the real engine must report the table"
 
       m = Tina4::Migration.new(db, migrations_dir: @mig_dir)
@@ -372,7 +378,6 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
 
       # ALTER TABLE ... ADD idempotency (Firebird-only guard).
       db.execute("ALTER TABLE #{table} ADD extra_col VARCHAR(50)")
-      db.commit
       add_reason = m.send(:should_skip_for_firebird, "ALTER TABLE #{table} ADD extra_col VARCHAR(50)")
       expect(add_reason).not_to be_nil, "a really-existing Firebird column must make ALTER ADD skip"
       expect(add_reason).to include("extra_col")
@@ -382,7 +387,6 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
     ensure
       begin
         db.execute("DROP TABLE #{table}")
-        db.commit
       rescue StandardError
         nil
       end
