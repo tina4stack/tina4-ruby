@@ -131,10 +131,14 @@ module Tina4
 
         if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
           first_id = @connection.last_id
-          rows = @affected_rows.to_i
+          # MySQL reports the FIRST id of a multi-row INSERT; normalise to the
+          # LAST via the shared SQLTranslator helper (the one place that knows the
+          # first id and the row count) instead of the inline arithmetic
+          # (MYSQL-BATCH-ID-DUP). Guarded on a positive id so a non-auto-increment
+          # insert keeps whatever the driver reported.
           @last_insert_id =
             if first_id.to_i.positive?
-              first_id.to_i + [rows, 1].max - 1
+              Tina4::SQLTranslator.batch_last_id(first_id, @affected_rows.to_i, "mysql")
             else
               first_id
             end
@@ -199,7 +203,12 @@ module Tina4
       end
 
       def columns(table_name)
-        rows = execute_query("DESCRIBE #{table_name}")
+        # DESCRIBE takes an IDENTIFIER, not a bind parameter, so the table name is
+        # made injection-safe by STRICT backtick-quoting (escaping embedded
+        # backticks) rather than interpolated raw (MYSQL-DESCRIBE-UNPARAM): a
+        # crafted/odd name becomes ONE escaped identifier - a clean "unknown
+        # table", never runnable SQL - and an odd-but-valid name introspects.
+        rows = execute_query("DESCRIBE #{quote_mysql_identifier(table_name)}")
         rows.map do |r|
           {
             name: r[:Field],
@@ -209,6 +218,18 @@ module Tina4
             primary_key: r[:Key] == "PRI"
           }
         end
+      end
+
+      private
+
+      # Strict backtick-quote a (possibly schema-qualified) identifier, ESCAPING
+      # embedded backticks, for use where a bind parameter is not accepted
+      # (DESCRIBE). A crafted/odd name becomes ONE escaped identifier - a clean
+      # "unknown table", never runnable SQL (MYSQL-DESCRIBE-UNPARAM).
+      def quote_mysql_identifier(name)
+        schema, table = split_schema(name.to_s)
+        q = ->(part) { "`#{part.to_s.gsub('`', '``')}`" }
+        schema.nil? ? q.call(table) : "#{q.call(schema)}.#{q.call(table)}"
       end
     end
   end
