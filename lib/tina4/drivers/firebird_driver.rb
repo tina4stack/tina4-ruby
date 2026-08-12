@@ -227,7 +227,7 @@ module Tina4
             @connection.query(:hash, sql, *params)
           end
         end
-        rows.map { |row| decode_blobs(stringify_keys(row)) }
+        rows.map { |row| decode_blobs(symbolize_keys(row)) }
       end
 
       def execute(sql, params = [])
@@ -267,7 +267,7 @@ module Tina4
         return nil if table.nil? || table.empty?
         generator = "GEN_#{table.gsub('"', '').upcase}_ID"
         row = execute_query("SELECT GEN_ID(#{generator}, 0) AS LID FROM RDB\$DATABASE").first
-        row && (row["lid"] || row["LID"])
+        row && (row[:lid] || row[:LID])
       rescue StandardError
         nil
       end
@@ -346,7 +346,7 @@ module Tina4
       def tables
         sql = "SELECT RDB\$RELATION_NAME FROM RDB\$RELATIONS WHERE RDB\$SYSTEM_FLAG = 0 AND RDB\$VIEW_BLR IS NULL"
         rows = execute_query(sql)
-        rows.map { |r| (r["RDB\$RELATION_NAME"] || r["rdb\$relation_name"] || "").strip }
+        rows.map { |r| (r[:"RDB\$RELATION_NAME"] || r[:"rdb\$relation_name"] || "").strip }
       end
 
       def columns(table_name)
@@ -367,7 +367,7 @@ module Tina4
                  "ORDER BY SG.RDB\$FIELD_POSITION"
         pk_names = begin
           execute_query(pk_sql, [table_name.upcase]).map do |r|
-            (r["RDB\$FIELD_NAME"] || r["rdb\$field_name"] || "").strip.upcase
+            (r[:"RDB\$FIELD_NAME"] || r[:"rdb\$field_name"] || "").strip.upcase
           end.reject(&:empty?).to_set
         rescue StandardError
           # A table with no primary key is not an error.
@@ -375,12 +375,12 @@ module Tina4
         end
 
         rows.map do |r|
-          field_name = (r["RDB\$FIELD_NAME"] || r["rdb\$field_name"] || "").strip
+          field_name = (r[:"RDB\$FIELD_NAME"] || r[:"rdb\$field_name"] || "").strip
           {
             name: field_name,
-            type: r["RDB\$FIELD_TYPE"] || r["rdb\$field_type"],
-            nullable: (r["RDB\$NULL_FLAG"] || r["rdb\$null_flag"]).nil?,
-            default: r["RDB\$DEFAULT_SOURCE"] || r["rdb\$default_source"],
+            type: r[:"RDB\$FIELD_TYPE"] || r[:"rdb\$field_type"],
+            nullable: (r[:"RDB\$NULL_FLAG"] || r[:"rdb\$null_flag"]).nil?,
+            default: r[:"RDB\$DEFAULT_SOURCE"] || r[:"rdb\$default_source"],
             primary_key: pk_names.include?(field_name.upcase)
           }
         end
@@ -416,8 +416,17 @@ module Tina4
         yield
       end
 
-      def stringify_keys(hash)
-        hash.each_with_object({}) { |(k, v), h| h[column_name(k.to_s)] = v }
+      # Hydrate a raw fb-gem row into a SYMBOL-keyed Hash — parity with the
+      # sqlite/postgres/mssql drivers (SqliteDriver#symbolize_rows,
+      # PostgresDriver#symbolize_result, MssqlDriver's `symbolize_keys: true`),
+      # all three of which hand back symbol keys. This used to build a
+      # STRING-keyed row (hence the old name `stringify_keys`), the one
+      # Firebird-only divergence in the whole row-hydration contract:
+      # `db.fetch(...).first[:name]` worked on every engine except Firebird,
+      # where only `row["name"]` did. column_name's casing fold-back is
+      # unchanged — only the key TYPE changes here.
+      def symbolize_keys(hash)
+        hash.each_with_object({}) { |(k, v), h| h[column_name(k.to_s).to_sym] = v }
       end
 
       # The target table of an INSERT (so last_insert_id can read its
@@ -432,8 +441,8 @@ module Tina4
       # Firebird's identifier folding is ASYMMETRIC. An unquoted `AS x` is
       # stored UPPERCASE, so the driver hands back "X" where every other engine
       # Tina4 supports gives "x" -- PostgreSQL folds to lower, and MySQL, SQLite
-      # and MSSQL preserve what you wrote. Portable code reading row["x"] broke
-      # on Firebird alone; the live URL examples in this repo asserted row["x"]
+      # and MSSQL preserve what you wrote. Portable code reading row[:x] broke
+      # on Firebird alone; the live URL examples in this repo asserted row[:x]
       # and could never have passed once they actually reached a server.
       #
       # A QUOTED `AS "MyCol"` is stored exactly as written, and that case is

@@ -87,9 +87,10 @@ RSpec.describe "Firebird explicit-transaction rollback undoes writes (real FB)" 
   end
 
   def count(db, id)
-    # Lowercase: an unquoted alias now reads back folded, like every other
-    # engine (see FirebirdDriver#column_name).
-    db.fetch_one("SELECT COUNT(*) AS C FROM #{FB_ROLLBACK_TABLE} WHERE id = ?", [id])["c"].to_i
+    # Lowercase SYMBOL: an unquoted alias reads back folded, like every other
+    # engine (see FirebirdDriver#column_name), and as a Symbol key like every
+    # other Ruby driver (see FirebirdDriver#symbolize_keys).
+    db.fetch_one("SELECT COUNT(*) AS C FROM #{FB_ROLLBACK_TABLE} WHERE id = ?", [id])[:c].to_i
   end
 
   it "rolls back an insert made inside an explicit transaction (NEGATIVE — fails on old code)" do

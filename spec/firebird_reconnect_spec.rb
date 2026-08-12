@@ -94,7 +94,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
     after(:each) { (@drivers || []).each { |d| d.close rescue nil } }
 
     def attachment_id(driver)
-      driver.execute_query("SELECT CURRENT_CONNECTION AS c FROM RDB\$DATABASE").first["c"]
+      driver.execute_query("SELECT CURRENT_CONNECTION AS c FROM RDB\$DATABASE").first[:c]
     end
 
     it "retries once after a real dropped connection and the next query succeeds" do
@@ -104,7 +104,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
       connected_driver.execute("DELETE FROM MON$ATTACHMENTS WHERE MON$ATTACHMENT_ID = ?", [cid])
       # The next query on the dead attachment transparently reconnects + succeeds.
       rows = driver.execute_query("SELECT 1 AS x FROM RDB\$DATABASE")
-      expect(rows.first["x"]).to eq(1)
+      expect(rows.first[:x]).to eq(1)
     end
 
     it "does not retry inside an explicit transaction" do

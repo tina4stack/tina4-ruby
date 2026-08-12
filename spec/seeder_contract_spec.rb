@@ -159,15 +159,14 @@ RSpec.describe "Seeder + fake-data cross-engine contract (feature 28)" do
       rows = db.fetch("SELECT name, score FROM #{table}", [], limit: 100).to_a
       expect(rows.length).to eq(5)
       rows.each do |row|
-        # Firebird's driver (spec/../lib/tina4/drivers/firebird_driver.rb) has
-        # been separately observed returning STRING keys where SQLite/
-        # PostgreSQL/MSSQL return Symbol keys for the identical fetch() call —
-        # a pre-existing cross-engine inconsistency outside feature 28's scope
-        # (it is feature 12's Firebird-adapter contract, not the seeder's).
-        # Accept either so this seeder portability case is not blocked by it;
-        # flagged separately for its own fix.
-        name = row[:name] || row["name"]
-        score = row[:score] || row["score"]
+        # Firebird's driver (lib/tina4/drivers/firebird_driver.rb) used to
+        # return STRING keys where SQLite/PostgreSQL/MSSQL return Symbol keys
+        # for the identical fetch() call (feature 12's Firebird-adapter
+        # contract). Fixed by FirebirdDriver#symbolize_keys — Firebird now
+        # returns Symbol keys like every other engine, so the plain Symbol
+        # access below holds on all four engines with no per-engine fallback.
+        name = row[:name]
+        score = row[:score]
         expect(name).not_to be_nil
         expect(name.to_s).not_to be_empty
         expect(score.to_i).to be_between(1, 100)

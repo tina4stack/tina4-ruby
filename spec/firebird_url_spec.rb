@@ -132,7 +132,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
       url = "firebird://SYSDBA:masterkey@#{FIREBIRD_HOST}:#{FIREBIRD_PORT}#{LIVE_DB_PATH}"
       db = connect_with_env(url)
       row = db.fetch_one("SELECT 1 AS x FROM rdb$database")
-      expect(row["x"] || row[:x]).to eq(1)
+      expect(row[:x]).to eq(1)
       db.close
     end
 
@@ -140,7 +140,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
       url = "firebird://SYSDBA:masterkey@#{FIREBIRD_HOST}:#{FIREBIRD_PORT}/#{LIVE_DB_PATH}"
       db = connect_with_env(url)
       row = db.fetch_one("SELECT 1 AS x FROM rdb$database")
-      expect(row["x"] || row[:x]).to eq(1)
+      expect(row[:x]).to eq(1)
       db.close
     end
 
@@ -150,7 +150,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
       wrong_url = "firebird://SYSDBA:masterkey@#{FIREBIRD_HOST}:#{FIREBIRD_PORT}/this/path/does/not/exist.fdb"
       db = connect_with_env(wrong_url, "TINA4_DATABASE_FIREBIRD_PATH" => LIVE_DB_PATH)
       row = db.fetch_one("SELECT 1 AS x FROM rdb$database")
-      expect(row["x"] || row[:x]).to eq(1)
+      expect(row[:x]).to eq(1)
       db.close
     end
   end

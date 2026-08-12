@@ -78,7 +78,7 @@ RSpec.describe "Firebird provider contract" do
     expect(second.last_id).to eq(2)
     # Durable + correctly keyed, read on a SECOND fresh connection.
     row = fresh_db.fetch_one("SELECT name FROM rbc_gen2 WHERE id = ?", [2])
-    expect(row["name"]).to eq("b")
+    expect(row[:name]).to eq("b")
   end
 
   it "an insert reports affected rows of one" do
@@ -118,7 +118,7 @@ RSpec.describe "Firebird provider contract" do
     db.insert("rbc_blob", { "name" => "b", "payload" => BLOB })
     # Read back on a SECOND fresh connection.
     row = fresh_db.fetch_one("SELECT payload FROM rbc_blob WHERE name = ?", ["b"])
-    got = row["payload"]
+    got = row[:payload]
     got = got.read if got.respond_to?(:read)
     expect(got.b).to eq(BLOB.b)
   end
@@ -131,13 +131,13 @@ RSpec.describe "Firebird provider contract" do
     db.insert("rbc_recon", { "name" => "before" })
     # The adapter's OWN attachment id, then kill it server-side from a SECOND
     # connection -- a genuine forced disconnect, no mock.
-    conn_id = db.fetch_one("SELECT CURRENT_CONNECTION AS c FROM rdb$database")["c"]
+    conn_id = db.fetch_one("SELECT CURRENT_CONNECTION AS c FROM rdb$database")[:c]
     killer = fresh_db
     killer.execute("DELETE FROM MON$ATTACHMENTS WHERE MON$ATTACHMENT_ID = ?", [conn_id])
     killer.close
     # The next query on the dead attachment must transparently reconnect + succeed.
     row = db.fetch_one("SELECT COUNT(*) AS n FROM rbc_recon")
-    expect(row["n"]).to eq(1)
+    expect(row[:n]).to eq(1)
   end
 
   it "a logical sql error does not trigger a reconnect" do
@@ -149,7 +149,7 @@ RSpec.describe "Firebird provider contract" do
     db = fresh_db
     expect { db.fetch_one("SELECT * FROM rbc_table_that_does_not_exist_xyz") }.to raise_error(StandardError)
     # The connection is still usable -- no spurious reconnect churn broke it.
-    expect(db.fetch_one("SELECT 1 AS x FROM rdb$database")["x"]).to eq(1)
+    expect(db.fetch_one("SELECT 1 AS x FROM rdb$database")[:x]).to eq(1)
   end
 
   # ---- FB-DEC-02: non-`id` primary key ----------------------------------
