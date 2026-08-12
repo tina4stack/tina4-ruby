@@ -13,12 +13,21 @@
 #
 # Shipped in 3.11.35: FirebirdDriver caches connection opts and runs a
 # one-shot reconnect+retry on the next execute when those markers appear.
-# Skipped inside an explicit transaction — atomicity wins there.
+# Skipped inside an explicit transaction -- atomicity wins there.
+#
+# FB-DEC-01 (the no-mock rule): the reconnect/retry examples here used to use
+# RSpec doubles (`allow(driver).to receive(:open_connection)`) to fake a Firebird
+# server, so the reconnect path was proven only against a mock -- a direct
+# violation of the project's absolute no-mock rule. They are now REAL: a genuine
+# server-side disconnect (DELETE FROM MON$ATTACHMENTS on the driver's own
+# attachment id, from a second connection) drives the reconnect against a live
+# Firebird. The shared four-way contract lives in firebirdprovider_contract_spec.
 
 require "spec_helper"
 require "tina4/drivers/firebird_driver"
 
 RSpec.describe Tina4::Drivers::FirebirdDriver do
+  # ---- Dead-connection matcher (pure logic, no dependency, no double) ----
   describe ".dead_connection?" do
     [
       "Error writing data to the connection.",
@@ -63,58 +72,49 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
     end
   end
 
-  describe "#with_reconnect" do
-    let(:driver) { described_class.new }
+  # ---- Reconnect + retry against a REAL Firebird (no mocks) ----
+  describe "#with_reconnect (real Firebird)" do
+    before(:all) { @url = ENV["TINA4_TEST_FIREBIRD_URL"] }
 
-    before do
-      # Inject a fake @connect_opts so reconnect! has something to use,
-      # and stub open_connection so we don't hit a real Firebird server.
-      driver.instance_variable_set(:@connect_opts, { database: "stub" })
-      stale_conn = double("conn", close: nil)
-      driver.instance_variable_set(:@connection, stale_conn)
-      allow(driver).to receive(:open_connection) do
-        driver.instance_variable_set(:@connection, double("fresh_conn", close: nil))
+    around(:each) do |example|
+      if @url.nil? || @url.empty?
+        skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)"
+      else
+        example.run
       end
     end
 
-    it "retries once after a dead-connection error and returns the retry result" do
-      attempt = 0
-      result = driver.send(:with_reconnect) do
-        attempt += 1
-        raise "Error writing data to the connection." if attempt == 1
-        :ok
-      end
-      expect(attempt).to eq(2)
-      expect(result).to eq(:ok)
-      expect(driver).to have_received(:open_connection).once
+    def connected_driver
+      driver = described_class.new
+      driver.connect(@url, username: "SYSDBA", password: "masterkey")
+      (@drivers ||= []) << driver
+      driver
     end
 
-    it "does not retry on logical SQL errors" do
-      expect {
-        driver.send(:with_reconnect) { raise "syntax error at line 1, column 17" }
-      }.to raise_error(/syntax error/)
-      expect(driver).not_to have_received(:open_connection)
+    after(:each) { (@drivers || []).each { |d| d.close rescue nil } }
+
+    def attachment_id(driver)
+      driver.execute_query("SELECT CURRENT_CONNECTION AS c FROM RDB\$DATABASE").first["c"]
+    end
+
+    it "retries once after a real dropped connection and the next query succeeds" do
+      driver = connected_driver
+      cid = attachment_id(driver)
+      # Force a genuine server-side disconnect from a SECOND connection.
+      connected_driver.execute("DELETE FROM MON$ATTACHMENTS WHERE MON$ATTACHMENT_ID = ?", [cid])
+      # The next query on the dead attachment transparently reconnects + succeeds.
+      rows = driver.execute_query("SELECT 1 AS x FROM RDB\$DATABASE")
+      expect(rows.first["x"]).to eq(1)
     end
 
     it "does not retry inside an explicit transaction" do
-      driver.instance_variable_set(:@in_transaction, true)
-      expect {
-        driver.send(:with_reconnect) { raise "Error writing data to the connection." }
-      }.to raise_error(/Error writing data/)
-      expect(driver).not_to have_received(:open_connection)
-    end
-
-    it "swallows close errors during reconnect (stale handle already gone)" do
-      bad_conn = double("dead_conn")
-      allow(bad_conn).to receive(:close).and_raise("connection is not active")
-      driver.instance_variable_set(:@connection, bad_conn)
-
-      expect {
-        driver.send(:with_reconnect) do
-          raise "Error writing data to the connection." if driver.instance_variable_get(:@connection) == bad_conn
-          :ok
-        end
-      }.not_to raise_error
+      driver = connected_driver
+      cid = attachment_id(driver)
+      driver.begin_transaction
+      connected_driver.execute("DELETE FROM MON$ATTACHMENTS WHERE MON$ATTACHMENT_ID = ?", [cid])
+      # Inside a transaction, atomicity beats resilience: the dead-connection
+      # error surfaces to the caller instead of a silent reconnect+retry.
+      expect { driver.execute_query("SELECT 1 AS x FROM RDB\$DATABASE") }.to raise_error(StandardError)
     end
   end
 end

@@ -231,13 +231,21 @@ module Tina4
       end
 
       def execute(sql, params = [])
-        with_reconnect do
+        result = with_reconnect do
           if params.empty?
             @connection.execute(sql)
           else
             @connection.execute(sql, *params)
           end
         end
+        # The fb gem's Connection#execute RETURNS the affected row count as an
+        # Integer for DML, so capture it for #affected_rows (FB-AFFECTED-FAB --
+        # the facade used to default it). Remember an INSERT's target table so
+        # #last_insert_id can read its GEN_<TABLE>_ID generator (FB-LASTID-GAP);
+        # a non-INSERT clears it so last_insert_id is nil there.
+        @affected_rows = result.is_a?(Integer) ? result : 0
+        @last_insert_table = insert_target_table(sql)
+        result
       end
 
       # Public so specs (and curious operators) can verify the matcher
@@ -249,8 +257,26 @@ module Tina4
         DEAD_CONN_MARKERS.any? { |m| lower.include?(m) }
       end
 
+      # Firebird has no generic last-insert-id, so read the GEN_<TABLE>_ID
+      # generator the row's BEFORE INSERT trigger drew from (FB-LASTID-GAP). The
+      # generator read is COLUMN-NAME-INDEPENDENT, so it is correct even for a
+      # non-`id` primary key. Returns nil when the last write was not an INSERT
+      # or the table has no such generator (GEN_ID then raises -> rescued).
       def last_insert_id
+        table = @last_insert_table
+        return nil if table.nil? || table.empty?
+        generator = "GEN_#{table.gsub('"', '').upcase}_ID"
+        row = execute_query("SELECT GEN_ID(#{generator}, 0) AS LID FROM RDB\$DATABASE").first
+        row && (row["lid"] || row["LID"])
+      rescue StandardError
         nil
+      end
+
+      # Rows affected by the most recent write, read from the fb gem's execute()
+      # return (an Integer for DML). Best-effort 0 for DDL / a non-count return.
+      # The facade's write_affected reads this when the driver implements it.
+      def affected_rows
+        @affected_rows || 0
       end
 
       def placeholder
@@ -392,6 +418,13 @@ module Tina4
 
       def stringify_keys(hash)
         hash.each_with_object({}) { |(k, v), h| h[column_name(k.to_s)] = v }
+      end
+
+      # The target table of an INSERT (so last_insert_id can read its
+      # GEN_<TABLE>_ID generator), or nil for any other statement.
+      def insert_target_table(sql)
+        match = sql.to_s.match(/\AINSERT\s+INTO\s+([^\s(]+)/i)
+        match && match[1]
       end
 
       # Firebird's stored column name, folded back only when it was folded.
