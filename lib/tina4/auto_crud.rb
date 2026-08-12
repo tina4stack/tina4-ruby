@@ -3,6 +3,14 @@ require "json"
 
 module Tina4
   module AutoCrud
+    # PAGE-DEC-01: the maximum per-page size the list handler will honour, no
+    # matter what a caller asks for via ?limit=/?per_page=. 100 is not an
+    # arbitrary pick - it is the SAME row cap ORM.all/db.fetch already default
+    # to, and the number Node's AutoCrud shares via its own DEFAULT_ROW_CAP
+    # constant. Without this a client could request the whole table in one
+    # query (?limit=1000000).
+    MAX_PER_PAGE = 100
+
     class << self
       # Track registered model classes
       def models
@@ -85,7 +93,16 @@ module Tina4
         Tina4::Router.add("GET", "#{prefix}/#{table}", proc { |req, res|
           begin
             per_page = (req.query["per_page"] || req.query["limit"] || 10).to_i
+            # PAGE-DEC-01: cap an oversized ?per_page=/?limit= BEFORE it is used to
+            # derive offset below, so the offset lines up with the size actually
+            # used (a client can no longer request the whole table in one query).
+            per_page = [per_page, MAX_PER_PAGE].min
             page     = (req.query["page"] || 1).to_i
+            # PAGE-DEC-01: clamp page < 1 -> page 1 BEFORE deriving offset, so
+            # offset=(page-1)*per_page can never go negative (page=0/negative used
+            # to hand PostgreSQL a negative OFFSET - a driver error - and silently
+            # misbehave on SQLite, while the envelope reported page:0).
+            page     = [page, 1].max
             limit    = per_page
             offset   = req.query["offset"] ? req.query["offset"].to_i : (page - 1) * per_page
             order_by = parse_sort(req.query["sort"])
