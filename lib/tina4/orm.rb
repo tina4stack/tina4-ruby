@@ -55,6 +55,18 @@ module Tina4
   class ORM
     include Tina4::FieldTypes
 
+    # REL-EAGER-UNBOUNDED: max parent PKs per eager "WHERE fk IN (...)" query, so
+    # a very large parent set never yields an unbounded IN list (a query-size /
+    # driver parameter-limit risk). Each chunk is one query, each fetched a page
+    # at a time so no relation is ever silently truncated.
+    #
+    # REL-DEC-01: relationships are READ-SIDE-ONLY -- foreign_key_field wires up
+    # traversal accessors but emits NO DB-level FK / ON DELETE clause (consistent
+    # with the no-foreign-key Firebird rule), so deleting a parent does not
+    # cascade to children at the engine level; integrity is the migration's job.
+    EAGER_IN_CHUNK = 500
+    EAGER_PAGE_SIZE = 1000
+
     # When a new model class is defined, resolve any deferred ForeignKeyField
     # wiring that targets it. The string / forward-reference form of
     # `foreign_key_field` (e.g. `references: "Author"`) records the has_many
@@ -286,10 +298,24 @@ module Tina4
             pk_values = instances.map { |inst| inst.__send__(pk) }.compact.uniq
             next if pk_values.empty?
 
-            placeholders = pk_values.map { "?" }.join(",")
-            sql = "SELECT * FROM #{klass.table_name} WHERE #{fk} IN (#{placeholders})"
-            results = klass.db.fetch(sql, pk_values)
-            related_records = results.map { |row| klass.from_hash(row) }
+            # REL-SOFTDELETE-TRAVERSAL: a soft-deleted child must not surface
+            # through eager traversal (parity with lazy + the finders).
+            soft = klass.soft_delete ? " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)" : ""
+            order_col = klass.primary_key_field || :id
+            # REL-EAGER-UNBOUNDED: chunk the parent PKs so the IN list stays
+            # bounded, and page each chunk so no relation is truncated.
+            related_records = []
+            pk_values.each_slice(EAGER_IN_CHUNK) do |chunk|
+              placeholders = chunk.map { "?" }.join(",")
+              sql = "SELECT * FROM #{klass.table_name} WHERE #{fk} IN (#{placeholders})#{soft} ORDER BY #{order_col}"
+              offset = 0
+              loop do
+                batch = klass.db.fetch(sql, chunk, limit: EAGER_PAGE_SIZE, offset: offset).to_a
+                related_records.concat(batch.map { |row| klass.from_hash(row) })
+                break if batch.length < EAGER_PAGE_SIZE
+                offset += EAGER_PAGE_SIZE
+              end
+            end
 
             # Eager load nested
             klass.eager_load(related_records, nested) unless nested.empty?
@@ -319,10 +345,16 @@ module Tina4
             next if fk_values.empty?
 
             related_pk = klass.primary_key_field || :id
-            placeholders = fk_values.map { "?" }.join(",")
-            sql = "SELECT * FROM #{klass.table_name} WHERE #{related_pk} IN (#{placeholders})"
-            results = klass.db.fetch(sql, fk_values)
-            related_records = results.map { |row| klass.from_hash(row) }
+            # REL-SOFTDELETE-TRAVERSAL: exclude a soft-deleted parent (parity with
+            # find). REL-EAGER-UNBOUNDED: chunk the FK values.
+            soft = klass.soft_delete ? " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)" : ""
+            related_records = []
+            fk_values.each_slice(EAGER_IN_CHUNK) do |chunk|
+              placeholders = chunk.map { "?" }.join(",")
+              sql = "SELECT * FROM #{klass.table_name} WHERE #{related_pk} IN (#{placeholders})#{soft}"
+              # One row per distinct PK, so limit == chunk size (default 100 would truncate a full chunk).
+              related_records.concat(klass.db.fetch(sql, chunk, limit: chunk.length).to_a.map { |row| klass.from_hash(row) })
+            end
 
             klass.eager_load(related_records, nested) unless nested.empty?
 
@@ -1357,9 +1389,12 @@ module Tina4
       pk_value = __send__(pk)
       return nil unless pk_value
 
-      result = klass.db.fetch_one(
-        "SELECT * FROM #{klass.table_name} WHERE #{fk} = ?", [pk_value]
-      )
+      where = "#{fk} = ?"
+      # REL-SOFTDELETE-TRAVERSAL: exclude a soft-deleted related row.
+      if klass.soft_delete
+        where += " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)"
+      end
+      result = klass.db.fetch_one("SELECT * FROM #{klass.table_name} WHERE #{where}", [pk_value])
       @relationship_cache[name] = result ? klass.from_hash(result) : nil
     end
 
@@ -1374,10 +1409,25 @@ module Tina4
       pk_value = __send__(pk)
       return [] unless pk_value
 
-      results = klass.db.fetch(
-        "SELECT * FROM #{klass.table_name} WHERE #{fk} = ?", [pk_value]
-      )
-      @relationship_cache[name] = results.map { |row| klass.from_hash(row) }
+      where = "#{fk} = ?"
+      # REL-SOFTDELETE-TRAVERSAL: a soft-deleted child must not surface through
+      # parent.children, consistent with the finders' default exclusion.
+      if klass.soft_delete
+        where += " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)"
+      end
+      order_col = klass.primary_key_field || :id
+      sql = "SELECT * FROM #{klass.table_name} WHERE #{where} ORDER BY #{order_col}"
+      # REL-EAGER-UNBOUNDED: page through ALL children rather than silently capping
+      # at the default fetch limit (was 100), so the tail is never lost.
+      records = []
+      offset = 0
+      loop do
+        batch = klass.db.fetch(sql, [pk_value], limit: EAGER_PAGE_SIZE, offset: offset).to_a
+        records.concat(batch)
+        break if batch.length < EAGER_PAGE_SIZE
+        offset += EAGER_PAGE_SIZE
+      end
+      @relationship_cache[name] = records.map { |row| klass.from_hash(row) }
     end
 
     def load_belongs_to(name)
