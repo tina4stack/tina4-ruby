@@ -1177,6 +1177,15 @@ module Tina4
     def get_next_id(table, pk_column: "id", generator_name: nil)
       drv = current_driver
 
+      # MongoDB — a DEDICATED atomic counter (findOneAndUpdate($inc) keyed by
+      # _id), monotonic and concurrency-safe. NEVER routed through the relational
+      # tina4_sequences path, whose arithmetic '+ 1' UPDATE has no MongoDB
+      # translation (the increment would be silently dropped and every call
+      # return the same id — a duplicate-key generator).
+      if @driver_name == "mongodb"
+        return drv.get_next_id(table, pk_column)
+      end
+
       # Firebird — use generators
       if @driver_name == "firebird"
         gen_name = generator_name || "GEN_#{table.upcase}_ID"
@@ -1197,27 +1206,41 @@ module Tina4
       # PostgreSQL — try sequence first, auto-create if missing
       if @driver_name == "postgres"
         seq_name = generator_name || "#{table.downcase}_#{pk_column.downcase}_seq"
+        # Fast path: the sequence already exists — nextval() is atomic.
         begin
           rows = drv.execute_query("SELECT nextval('#{seq_name}') AS next_id")
           row = rows.is_a?(Array) ? rows.first : nil
           val = row_value(row, :next_id) || row_value(row, :nextval)
           return val.to_i if val
         rescue
-          # Sequence does not exist — auto-create it seeded from MAX
-          begin
-            max_rows = drv.execute_query("SELECT COALESCE(MAX(#{pk_column}), 0) AS max_id FROM #{table}")
-            max_row = max_rows.is_a?(Array) ? max_rows.first : nil
-            max_val = row_value(max_row, :max_id)
-            start_val = max_val ? max_val.to_i + 1 : 1
-            drv.execute("CREATE SEQUENCE #{seq_name} START WITH #{start_val}")
-            drv.commit rescue nil
-            rows = drv.execute_query("SELECT nextval('#{seq_name}') AS next_id")
-            row = rows.is_a?(Array) ? rows.first : nil
-            val = row_value(row, :next_id) || row_value(row, :nextval)
-            return val&.to_i || start_val
-          rescue
-            # Fall through to sequence table fallback
-          end
+          # Sequence missing — create it idempotently below.
+        end
+
+        # First use: create the sequence IDEMPOTENTLY (CREATE SEQUENCE IF NOT
+        # EXISTS), seeded from MAX(pk). Two concurrent first-callers therefore
+        # share ONE counter — the loser's create is a no-op, not an error, so it
+        # never falls to the tina4_sequences table and draws a DUPLICATE id from
+        # a second, independent counter (the first-use race).
+        begin
+          max_rows = drv.execute_query("SELECT COALESCE(MAX(#{pk_column}), 0) AS max_id FROM #{table}")
+          max_row = max_rows.is_a?(Array) ? max_rows.first : nil
+          max_val = row_value(max_row, :max_id)
+          start_val = max_val ? max_val.to_i + 1 : 1
+          drv.execute("CREATE SEQUENCE IF NOT EXISTS #{seq_name} START WITH #{start_val}")
+          drv.commit rescue nil
+        rescue
+          # A concurrent creator won the catalog race — the sequence exists now.
+        end
+
+        # ALWAYS draw from the sequence now that it exists. Never fall to the
+        # sequence table just because our own CREATE lost the race.
+        begin
+          rows = drv.execute_query("SELECT nextval('#{seq_name}') AS next_id")
+          row = rows.is_a?(Array) ? rows.first : nil
+          val = row_value(row, :next_id) || row_value(row, :nextval)
+          return val.to_i if val
+        rescue
+          # Truly cannot use a sequence — last-resort table below.
         end
       end
 
@@ -1498,9 +1521,16 @@ module Tina4
         # Row likely already exists (PK conflict) — fine, keep going.
         drv.rollback rescue nil
       end
-      drv.execute("UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ?", [seq_name])
+      # Single ATOMIC increment-and-return. The old path did the UPDATE then a
+      # SEPARATE SELECT: between them another caller could increment and commit,
+      # so both read the same value and returned a DUPLICATE id (a TOCTOU).
+      # PostgreSQL (the engine that reaches this fallback) supports
+      # UPDATE ... RETURNING, so the value read is exactly the one just written.
+      rows = drv.execute_query(
+        "UPDATE tina4_sequences SET current_value = current_value + 1 WHERE seq_name = ? RETURNING current_value",
+        [seq_name]
+      )
       drv.commit rescue nil
-      rows = drv.execute_query("SELECT current_value FROM tina4_sequences WHERE seq_name = ?", [seq_name])
       row = rows.is_a?(Array) ? rows.first : nil
       val = row_value(row, :current_value)
       raise "get_next_id: sequence row '#{seq_name}' missing" if val.nil?

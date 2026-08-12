@@ -93,6 +93,49 @@ module Tina4
         @last_insert_id
       end
 
+      # Atomic, monotonic, concurrency-safe next id — feature 16. A
+      # findOneAndUpdate($inc) on the tina4_sequences collection, keyed by _id
+      # (its built-in unique index makes concurrent first-use upserts race-safe:
+      # two callers can never create two counters for one table). Seeds from
+      # MAX(pk_column) the FIRST time only ($setOnInsert). Raises on an
+      # impossible empty result rather than returning a fixed id that could
+      # collide with an existing row.
+      def get_next_id(table, pk_column = "id")
+        sequences = @db["tina4_sequences"]
+        seq_name = "#{table}.#{pk_column}"
+
+        if sequences.find("_id" => seq_name).first.nil?
+          seed = 0
+          begin
+            max_doc = @db[table.to_s].find.sort(pk_column => -1).limit(1).first
+            seed = max_doc[pk_column].to_i if max_doc && max_doc[pk_column]
+          rescue StandardError
+            # Collection may not exist yet — seed 0.
+          end
+          begin
+            sequences.update_one(
+              { "_id" => seq_name },
+              { "$setOnInsert" => { "current_value" => seed } },
+              upsert: true
+            )
+          rescue StandardError
+            # Race — another caller seeded first; the atomic $inc below still holds.
+          end
+        end
+
+        doc = sequences.find_one_and_update(
+          { "_id" => seq_name },
+          { "$inc" => { "current_value" => 1 } },
+          return_document: :after,
+          upsert: true
+        )
+        if doc.nil? || doc["current_value"].nil?
+          raise "get_next_id: MongoDB counter '#{seq_name}' produced no value"
+        end
+
+        doc["current_value"].to_i
+      end
+
       def placeholder
         "?"
       end
