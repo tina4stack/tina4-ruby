@@ -200,10 +200,11 @@ RSpec.describe Tina4::FakeData do
   end
 
   describe "#boolean" do
-    it "returns 0 or 1" do
+    it "returns a native true or false (SEED-RUBY-QUIRKS)" do
       fake = described_class.new
       val = fake.boolean
-      expect([0, 1]).to include(val)
+      expect([true, false]).to include(val)
+      expect(val).to satisfy { |v| v == true || v == false }
     end
   end
 
@@ -452,7 +453,7 @@ RSpec.describe Tina4::FakeData do
     it "generates boolean for boolean type" do
       fake = described_class.new(seed: 42)
       val = fake.for_field({ type: :boolean })
-      expect([0, 1]).to include(val)
+      expect([true, false]).to include(val)
     end
 
     it "generates float for float type" do

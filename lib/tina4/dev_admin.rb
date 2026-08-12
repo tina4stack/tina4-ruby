@@ -1362,13 +1362,22 @@ module Tina4
           # which a bare Tina4.seed_table call never trips (mirrors Python's
           # explicit `from tina4_python.seeder import seed_table`).
           require_relative "seeder"
+          # SEED-TABLE-SEED-INERT: seed_table no longer takes seed: (it has no
+          # generators of its own). Build the field map from the introspected
+          # columns using a CALLER-SEEDED FakeData closed over per generator —
+          # the same "auto_field_map(db, table, fake)" pattern Python/Node use
+          # for their dev-admin seed endpoints — so reproducibility comes from
+          # the closure, not a dead keyword.
+          fake = Tina4::FakeData.new(seed: seed)
+          field_map = Tina4._normalize_columns(db.columns(table_name)).each_with_object({}) do |(col_name, type_sym), map|
+            map[col_name] = -> { fake.for_field({ type: type_sym }, col_name) }
+          end
           # Delegate to the shared resilient seed_table helper so the endpoint
           # gets the exact same per-row wrap (P1) — no unhandled row failure can
-          # crash the endpoint — plus clear/seed/strict (P2/P3). _normalize_columns
-          # skips auto-increment id PKs from the introspected column list.
+          # crash the endpoint — plus clear/strict (P2/P1).
           summary = Tina4.seed_table(
-            table_name, db.columns(table_name),
-            count: count, seed: seed, clear: clear, strict: strict
+            table_name, field_map,
+            count: count, clear: clear, strict: strict
           )
           {
             table: table_name,

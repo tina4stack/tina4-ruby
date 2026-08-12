@@ -12,6 +12,20 @@ module Tina4
   #   fake.name        # => "Sarah Johnson"
   #   fake.email       # => "sarah.johnson123@example.com"
   #   fake.integer(1, 100)
+  #
+  # Determinism is PER-LANGUAGE, not cross-language (SEED-DETERMINISM-PERLANG):
+  # +FakeData.new(seed: 42)+ reproduces the identical sequence on every run
+  # *within Ruby*, but the same seed on Python/PHP/Node's +FakeData+ will NOT
+  # produce the same values -- each language uses its own PRNG (Ruby's
+  # +Random+, Python's Mersenne Twister, PHP's per-instance Mt19937, Node's
+  # mulberry32). There is no shared cross-language PRNG, and hand-rolling one
+  # would add cost for no real benefit -- use a seed to make ONE language's
+  # run reproducible, never to compare output across languages.
+  #
+  # NOT FOR SECRETS (SEED-SECRETS-DOC): this is a non-cryptographic PRNG meant
+  # for realistic-looking fixtures and test data. Never use it to generate API
+  # keys, passwords, tokens, or anything else that must be unguessable -- use
+  # +SecureRandom+ (or +Tina4::Auth+ for password hashing) instead.
   class FakeData
     FIRST_NAMES = %w[
       James Mary Robert Patricia John Jennifer Michael Linda David Elizabeth
@@ -171,7 +185,7 @@ module Tina4
     end
 
     def boolean
-      @rng.rand(2)
+      @rng.rand(2) == 1
     end
 
     def datetime(start_year: 2020, end_year: 2026)
@@ -439,12 +453,19 @@ module Tina4
   # @param clear [Boolean] delete existing records before seeding (P2)
   # @param seed [Integer, nil] random seed for reproducible data (P3)
   # @param strict [Boolean] re-raise on the first failed row instead of skipping (P1)
+  # @param idempotent [Boolean] SEED-RUBY-QUIRKS fix (default false, matching
+  #   Python/PHP/Node — none of the other three ever skip seeding based on
+  #   existing row count). When true, opt in to the OLD Ruby-only shortcut:
+  #   skip the run entirely (returning a zero SeedSummary, INFO-logged) when
+  #   the table already holds >= count rows — even rows UNRELATED to this
+  #   seeder. That check used to run unconditionally, which silently dropped
+  #   data a caller explicitly asked to seed; it is now opt-in only.
   # @return [SeedSummary] +{seeded, failed, errors}+ — also usable as the int count
   #
   # @example
   #   Tina4.seed_orm(User, count: 50)
   #   Tina4.seed_orm(Order, count: 200, overrides: { status: ->(f) { f.choice(%w[pending shipped]) } })
-  def self.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil, strict: false)
+  def self.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil, strict: false, idempotent: false)
     fake = FakeData.new(seed: seed)
     fields = orm_class.field_definitions
     table = orm_class.table_name
@@ -460,13 +481,18 @@ module Tina4
       return SeedSummary.new
     end
 
-    # Idempotency short-circuit (Ruby-specific, additive to the Python master):
-    # without an explicit clear, skip when the table already has >= count rows.
-    unless clear
+    # Idempotency short-circuit — OPT-IN (idempotent: true), off by default.
+    # It used to run unconditionally (SEED-RUBY-QUIRKS): any table already
+    # holding >= count rows was skipped silently, even rows with nothing to
+    # do with this seeder, so a caller who explicitly asked to seed could get
+    # zero new rows with only an INFO log to explain it. Python/PHP/Node never
+    # had this behaviour, so the default now matches them; the check itself is
+    # unchanged and still available for a caller who deliberately wants it.
+    if idempotent && !clear
       begin
         result = db.fetch_one("SELECT count(*) as cnt FROM #{table}")
         if result && result[:cnt].to_i >= count
-          Tina4::Log.info("Seeder: #{table} already has #{result[:cnt]} records, skipping")
+          Tina4::Log.info("Seeder: #{table} already has #{result[:cnt]} records, skipping (idempotent: true)")
           return SeedSummary.new
         end
       rescue => e
@@ -544,12 +570,23 @@ module Tina4
   # @param count [Integer] number of records to insert
   # @param overrides [Hash] static values (or callables) set on every row
   # @param clear [Boolean] delete every existing row before seeding (P2)
-  # @param seed [Integer, nil] random seed — seeds the FakeData RNG used for any
-  #   generator that is not an explicit callable (P3 / signature parity)
   # @param strict [Boolean] re-raise on the first failed row instead of skipping (P1)
   # @return [SeedSummary] +{seeded, failed, errors}+ — also usable as the int count
-  def self.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil, strict: false)
-    fake = FakeData.new(seed: seed)
+  #
+  # REMOVED: the +seed:+ keyword (SEED-TABLE-SEED-INERT, SEED-DEC-01, ratified
+  # 2026-08-11 — same principle as the no-op ForeignKeyField +on_delete+).
+  # Passing +seed:+ now raises +ArgumentError: unknown keyword: :seed+ (Ruby's
+  # own signature error — loud and specific, nothing extra to build). For a
+  # reproducible run, build your own seeded +FakeData+ and close over it in
+  # +columns+:
+  #
+  #   fake = Tina4::FakeData.new(seed: 42)
+  #   Tina4.seed_table("users", { name: -> { fake.first_name }, age: -> { fake.integer(min: 18, max: 65) } })
+  #
+  # +seed_orm+/+seed_models+ are unaffected — they build and seed their own
+  # +FakeData+ internally, so their +seed:+ argument is fully deterministic.
+  def self.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, strict: false)
+    fake = FakeData.new
     db = Tina4.database
 
     unless db
@@ -618,8 +655,9 @@ module Tina4
   # @param clear [Boolean] clear each table first (reverse-topo order)
   # @param seed [Integer, nil] PRNG seed (P3) — applied per model
   # @param strict [Boolean] re-raise on the first failed row
+  # @param idempotent [Boolean] see {seed_orm} — default false, opt-in only
   # @return [Hash] +{ "ModelName" => SeedSummary }+ for each model seeded
-  def self.seed_models(orm_classes, count: 10, overrides: {}, clear: false, seed: nil, strict: false)
+  def self.seed_models(orm_classes, count: 10, overrides: {}, clear: false, seed: nil, strict: false, idempotent: false)
     ordered = _topo_sort_models(orm_classes)
 
     if clear
@@ -634,7 +672,7 @@ module Tina4
       end
       results[model.name] = seed_orm(
         model, count: count, overrides: model_overrides || {},
-        clear: false, seed: seed, strict: strict
+        clear: false, seed: seed, strict: strict, idempotent: idempotent
       )
     end
     results
@@ -657,7 +695,7 @@ module Tina4
   #     { orm_class: User, count: 20 },
   #     { orm_class: Order, count: 100, overrides: { status: "pending" } }
   #   ], clear: true)
-  def self.seed_batch(tasks, clear: false, strict: false)
+  def self.seed_batch(tasks, clear: false, strict: false, idempotent: false)
     by_class = {}
     tasks.each { |t| by_class[t[:orm_class]] = t }
     ordered_classes = _topo_sort_models(tasks.map { |t| t[:orm_class] })
@@ -675,7 +713,8 @@ module Tina4
         overrides: task[:overrides] || {},
         clear: false,
         seed: task[:seed],
-        strict: strict
+        strict: strict,
+        idempotent: idempotent
       )
     end
 
@@ -847,16 +886,27 @@ module Tina4
   end
 
   # P4c — when a generated/static value's Ruby type clearly mismatches the
-  # target column's field type, LOG a warning (never hard-fail). bool-in-int
-  # is allowed (Ruby has no bool/int subclass relation, but seeded booleans are
-  # represented as 0/1 integers here, so only flag truly suspicious cases).
+  # target column's field type, LOG a warning (never hard-fail). A :boolean
+  # field expects a native true/false (SEED-RUBY-QUIRKS: FakeData#boolean
+  # returns one, not the old 0/1 Integer) — checked separately since Ruby has
+  # no single Boolean class to key a type map by.
   def self._validate_types(fields, attrs, model_name)
-    expected = { integer: Integer, float: Float, boolean: Integer }
+    expected = { integer: Integer, float: Float }
     attrs.each do |name, value|
       next if value.nil?
 
       field = fields[name]
       next if field.nil?
+
+      if field[:type] == :boolean
+        unless value == true || value == false
+          Tina4::Log.warning(
+            "Seeder: #{model_name}.#{name} expected boolean but generated " \
+            "#{value.class} (#{value.inspect}) — inserting anyway"
+          )
+        end
+        next
+      end
 
       want = expected[field[:type]]
       next if want.nil?
@@ -864,7 +914,6 @@ module Tina4
       # A Float landing in an :integer column (or vice-versa) is the suspicious
       # case; everything that is_a? the expected numeric is fine.
       next if value.is_a?(want)
-      next if want == Integer && value.is_a?(Numeric) && field[:type] == :boolean
 
       Tina4::Log.warning(
         "Seeder: #{model_name}.#{name} expected #{want} but generated " \
