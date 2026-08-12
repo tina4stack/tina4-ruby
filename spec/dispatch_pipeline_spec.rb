@@ -44,7 +44,11 @@ RSpec.describe "Dispatch pipeline contract" do
     # branches, exactly like the HEAD strip. Ruby previously stamped CORS
     # headers on the PREFLIGHT only, so the real response carried none and the
     # browser blocked it.
-    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[head_strip apply_cors])
+    # compress_and_tag and conditional_get (feature 40, CE-DEC-01/02) run
+    # FIRST - before head_strip - so a HEAD response's preserved
+    # Content-Length reflects the (possibly compressed) body the equivalent
+    # GET would have sent.
+    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[compress_and_tag conditional_get head_strip apply_cors])
     expect(Tina4::DispatchPipeline::RESPONSE_STAGES).to eq(%i[
       dev_inspector_capture
       request_log

@@ -291,7 +291,11 @@ module Tina4
       content_type = Tina4::Response::MIME_TYPES[ext] || "application/octet-stream"
 
       stat = File.stat(full_path)
-      etag = %(W/"#{stat.mtime.to_i.to_s(16)}-#{stat.size.to_s(16)}")
+      # Format PINNED across all four frameworks (feature 40, CE-DEC-02):
+      # decimal `W/"<size>-<mtime>"`, integer-second mtime - a client behind
+      # a reverse proxy sees an identical validator for the same file
+      # regardless of backend language.
+      etag = %(W/"#{stat.size}-#{stat.mtime.to_i}")
       last_modified = stat.mtime.httpdate
 
       headers = {
@@ -319,10 +323,10 @@ module Tina4
     def static_not_modified?(env, etag, mtime)
       if_none_match = env["HTTP_IF_NONE_MATCH"]
       if if_none_match && !if_none_match.empty?
-        return true if if_none_match.strip == "*"
-
-        want = weak_etag_value(etag)
-        return if_none_match.split(",").any? { |candidate| weak_etag_value(candidate) == want }
+        # Shared with the dynamic conditional-GET path (#etag_matches? in
+        # DispatchPipeline, feature 40) so both use IDENTICAL RFC-7232
+        # weak-comparison semantics.
+        return etag_matches?(if_none_match, etag)
       end
 
       if_modified_since = env["HTTP_IF_MODIFIED_SINCE"]

@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require "zlib"
+require "stringio"
+require "digest"
+
 module Tina4
   # The dispatch pipeline: the concerns of RackApp#call, named and ordered.
   #
@@ -67,7 +71,15 @@ module Tina4
     # the swagger and static branches - which return early - skipped it, and
     # `HEAD /style.css` shipped the whole file body. Measured 2026-07-31: Ruby
     # returned 15 bytes where PHP, Python and Node all returned 0.
+    #
+    # `compress_and_tag` and `conditional_get` (feature 40, CE-DEC-01/02) run
+    # FIRST - before head_strip - so a HEAD response's preserved
+    # Content-Length reflects the (possibly compressed) body the equivalent
+    # GET would have sent, mirroring the Python master's build_headers() ->
+    # app() ordering (compress -> tag -> 304-decide -> strip-for-HEAD).
     ALWAYS_STAGES = %i[
+      compress_and_tag
+      conditional_get
       head_strip
       apply_cors
     ].freeze
@@ -289,8 +301,118 @@ module Tina4
       handle_404(ctx.path)
     end
 
-    # ── RESPONSE STAGES ──────────────────────────────────────────────
+    # ── ALWAYS STAGES (compression / ETag / conditional-GET) ──────────
     # Each returns a replacement Rack triple, or nil to leave it unchanged.
+
+    # Gzip-compress + attach an ETag (feature 40, CE-DEC-01) - the ONE header
+    # builder every response funnels through (a static asset or a dynamic
+    # route), mirroring the Python master's build_headers(). A streaming body
+    # (an Enumerator, from Response#stream) is never touched - joining it
+    # would drain an SSE generator instead of letting it stream live.
+    #
+    # Compression: the body exceeds 1024 bytes AND Accept-Encoding offers
+    # gzip AND the content type is compressible. Uses stdlib Zlib - zero new
+    # dependency.
+    #
+    # ETag: a strong md5 hash (first 16 hex chars) over the FINAL
+    # (post-compression) body, UNLESS a validator is already set - a
+    # static-file response (#serve_static_file) pins its own weak
+    # size+mtime ETag before this runs (CE-DEC-02), so this never overwrites
+    # it with a content hash.
+    def compress_and_tag(ctx, response)
+      status, headers, body_parts = response
+      return nil unless body_parts.is_a?(Array)
+
+      body = body_parts.join
+      new_headers = headers.dup
+      changed = false
+
+      accept_encoding = ctx.env["HTTP_ACCEPT_ENCODING"] || ""
+      content_type = new_headers["content-type"] || ""
+      if body.bytesize > 1024 && accept_encoding.include?("gzip") && compressible_content_type?(content_type)
+        body = gzip_string(body)
+        new_headers["content-encoding"] = "gzip"
+        new_headers["vary"] = "Accept-Encoding"
+        new_headers["content-length"] = body.bytesize.to_s if new_headers["content-length"]
+        changed = true
+      end
+
+      if !new_headers["etag"] && !body.empty? && status == 200
+        new_headers["etag"] = %("#{Digest::MD5.hexdigest(body)[0, 16]}")
+        changed = true
+      end
+
+      return nil unless changed
+
+      [status, new_headers, [body]]
+    end
+
+    # Answer a matching conditional GET with a 304 that PRESERVES whichever
+    # validators (ETag / Last-Modified) the 200 would have carried (feature
+    # 40). A static-file 304 (#serve_static_file's own short-circuit) is
+    # already terminal by the time this runs (status is 304, not 200), so the
+    # guard below leaves it untouched.
+    def conditional_get(ctx, response)
+      status, headers, body_parts = response
+      return nil unless status == 200 && body_parts.is_a?(Array)
+
+      body = body_parts.join
+      return nil if body.empty?
+
+      etag = headers["etag"]
+      last_modified = headers["last-modified"]
+      if_none_match = ctx.env["HTTP_IF_NONE_MATCH"]
+      if_modified_since = ctx.env["HTTP_IF_MODIFIED_SINCE"]
+
+      not_modified =
+        if if_none_match && !if_none_match.empty?
+          etag_matches?(if_none_match, etag)
+        elsif if_modified_since && !if_modified_since.empty? && last_modified
+          begin
+            Time.httpdate(last_modified).to_i <= Time.httpdate(if_modified_since).to_i
+          rescue ArgumentError
+            false # Unparseable date -> serve the body (never 304 on garbage).
+          end
+        else
+          false
+        end
+
+      return nil unless not_modified
+
+      not_modified_headers = {}
+      not_modified_headers["etag"] = etag if etag
+      not_modified_headers["last-modified"] = last_modified if last_modified
+      [304, not_modified_headers, [""]]
+    end
+
+    # Whether a content type benefits from gzip compression (text-ish, JSON,
+    # XML, JS, SVG). Mirrors the Python master's `_is_compressible`.
+    def compressible_content_type?(content_type)
+      %w[text/ application/json application/xml application/javascript image/svg].any? do |needle|
+        content_type.include?(needle)
+      end
+    end
+
+    # Gzip-compress a string at level 6, in memory. Stdlib Zlib - zero new
+    # dependency.
+    def gzip_string(str)
+      io = StringIO.new
+      writer = Zlib::GzipWriter.new(io, 6)
+      writer.write(str)
+      writer.close
+      io.string
+    end
+
+    # Match an If-None-Match header value against `etag` (RFC 7232 S3.2 weak
+    # comparison). Shared with the static-file conditional-GET
+    # (#static_not_modified?) so BOTH paths use IDENTICAL matching semantics.
+    def etag_matches?(if_none_match, etag)
+      return false if etag.nil? || etag.empty?
+      return true if if_none_match.strip == "*"
+
+      want = weak_etag_value(etag)
+      if_none_match.split(",").any? { |candidate| weak_etag_value(candidate) == want }
+    end
 
     # RFC 9110 s9.3.2: a HEAD response MUST NOT include content. Strip the body
     # unconditionally and record what Content-Length the GET would have sent -
