@@ -396,6 +396,17 @@ module Tina4
       def parse_condition(clause)
         clause = clause.strip.gsub(/^\(+/, "").gsub(/\)+$/, "").strip
 
+        # Explicit 1=1 tautology -- the WHERE clause truncate() passes -- means
+        # MATCH-ALL: translate it to an empty {} filter so truncate() empties the
+        # collection, exactly as PHP already does. Without this, "1 = 1" fell
+        # through to the "=" comparison below and parsed as { "1" => 1 }, which
+        # matches NOTHING, so a truncate() silently deleted 0 documents while the
+        # caller believed the collection was emptied. This does NOT weaken the
+        # fail-closed guard: 1=1 is an EXPLICIT tautology, distinct from an
+        # unparseable WHERE (the raise at the end of this method still fires) and
+        # from a blank/absent WHERE (which require_where_for_write still rejects).
+        return {} if clause.match?(/\A1\s*=\s*1\z/)
+
         # IS NULL / IS NOT NULL
         if (m = clause.match(/^(\w+)\s+IS\s+NOT\s+NULL$/i))
           return { m[1] => { "$ne" => nil } }

@@ -203,4 +203,41 @@ RSpec.describe "MongoDB SQL fail-closed guard" do
     # Only id=2 changed.
     expect(statuses).to eq(%w[changed keep keep])
   end
+
+  # -- Feature 14b: the explicit 1=1 tautology (truncate) empties the collection --
+
+  it "a truncate empties the collection" do
+    # truncate() issues DELETE ... WHERE 1 = 1. The explicit 1=1 tautology must
+    # translate to a MATCH-ALL {} filter so EVERY document is removed - not the
+    # { "1" => 1 } filter that matched nothing and made truncate() a silent
+    # no-op (PHP already special-cased it). Mutation-proved: revert the
+    # 1=1 -> {} translation in parse_condition and this count stays 3.
+    seed([
+           { id: 1, status: "keep" },
+           { id: 2, status: "keep" },
+           { id: 3, status: "gone" }
+         ])
+    expect(count).to eq(3)
+
+    @db.truncate(@collection)
+
+    # The witness: the collection is actually empty.
+    expect(count).to eq(0)
+  end
+
+  it "a scoped equality is not widened to match all" do
+    # The tautology fix must be TIGHT: only a lone "1 = 1" is match-all. An
+    # ordinary numeric equality like "id = 1" - superficially close to "1 = 1" -
+    # must stay SCOPED to its one match, never widening to a delete-all.
+    seed([
+           { id: 1, status: "keep" },
+           { id: 2, status: "keep" }
+         ])
+
+    @db.execute("DELETE FROM #{@collection} WHERE id = 1")
+
+    # Only id=1 was removed; id=2 remains.
+    expect(count).to eq(1)
+    expect(statuses).to eq(%w[keep])
+  end
 end
