@@ -43,31 +43,45 @@ module Tina4
         end
       end
 
-      def integer_field(name, primary_key: false, auto_increment: false, nullable: true, default: nil)
+      # Feature 19: the constraint options (required:, min:/max: for numbers,
+      # min_length:/max_length:/pattern: for strings) are ENFORCED on save() by
+      # ORM#validate -- bringing Ruby up to the shared cross-framework richness
+      # (Ruby used to be null-only). `length:` stays a DDL VARCHAR sizing hint and
+      # is deliberately never validated (parity with PHP's `length`); use
+      # max_length: for a value cap.
+      def integer_field(name, primary_key: false, auto_increment: false, nullable: true, default: nil,
+                        required: false, min: nil, max: nil)
         register_field(name, :integer, primary_key: primary_key, auto_increment: auto_increment,
-                       nullable: nullable, default: default)
+                       nullable: nullable, default: default, required: required, min: min, max: max)
       end
 
-      def string_field(name, length: 255, primary_key: false, nullable: true, default: nil)
+      def string_field(name, length: 255, primary_key: false, nullable: true, default: nil,
+                       required: false, min_length: nil, max_length: nil, pattern: nil)
         register_field(name, :string, length: length, primary_key: primary_key,
-                       nullable: nullable, default: default)
+                       nullable: nullable, default: default, required: required,
+                       min_length: min_length, max_length: max_length, pattern: pattern)
       end
 
-      def text_field(name, nullable: true, default: nil)
-        register_field(name, :text, nullable: nullable, default: default)
+      def text_field(name, nullable: true, default: nil,
+                     required: false, min_length: nil, max_length: nil, pattern: nil)
+        register_field(name, :text, nullable: nullable, default: default, required: required,
+                       min_length: min_length, max_length: max_length, pattern: pattern)
       end
 
-      def float_field(name, nullable: true, default: nil)
-        register_field(name, :float, nullable: nullable, default: default)
+      def float_field(name, nullable: true, default: nil, required: false, min: nil, max: nil)
+        register_field(name, :float, nullable: nullable, default: default,
+                       required: required, min: min, max: max)
       end
 
-      def decimal_field(name, precision: 10, scale: 2, nullable: true, default: nil)
+      def decimal_field(name, precision: 10, scale: 2, nullable: true, default: nil,
+                        required: false, min: nil, max: nil)
         register_field(name, :decimal, precision: precision, scale: scale,
-                       nullable: nullable, default: default)
+                       nullable: nullable, default: default, required: required, min: min, max: max)
       end
 
-      def numeric_field(name, nullable: true, default: nil)
-        register_field(name, :float, nullable: nullable, default: default)
+      def numeric_field(name, nullable: true, default: nil, required: false, min: nil, max: nil)
+        register_field(name, :float, nullable: nullable, default: default,
+                       required: required, min: min, max: max)
       end
 
       def boolean_field(name, nullable: true, default: nil)

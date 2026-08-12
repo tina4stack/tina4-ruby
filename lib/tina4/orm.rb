@@ -1078,12 +1078,63 @@ module Tina4
       true
     end
 
+    # Validate all declared fields; returns a list of error messages (empty =
+    # valid). ENFORCED on save() -- an invalid model never reaches the driver.
+    #
+    # Feature 19 (VALID-RUBY-NULLONLY + VALID-TWO-MESSAGES): Ruby's validate used
+    # to be NULL-ONLY, so an over-length or wrong-format value the other three
+    # frameworks reject was written silently. It now enforces the SHARED richness
+    # -- required, string length, numeric range, format (pattern) and numeric type
+    # -- and emits the CANONICAL request-Validator wording ("<field> is required",
+    # "<field> must be at most N characters", "<field> does not match the required
+    # format") so the ORM validator and the request-body Validator speak ONE
+    # vocabulary. `length:` stays a DDL sizing hint and is never validated.
     def validate
       errors = []
       self.class.field_definitions.each do |name, opts|
         value = __send__(name)
-        if !opts[:nullable] && value.nil? && !opts[:auto_increment] && !opts[:default]
-          errors << "#{name} cannot be null"
+
+        # required: an explicit required: true fails on nil OR blank (user input);
+        # a NOT NULL column (nullable: false, no default, not auto-increment)
+        # fails on nil (the column constraint). required short-circuits -- no
+        # other rule adds signal on a missing value.
+        blank = value.nil? || (value.is_a?(String) && value.strip.empty?)
+        column_not_null = !opts[:nullable] && !opts[:auto_increment] && !opts[:default]
+        if (opts[:required] && blank) || (column_not_null && value.nil?)
+          errors << "#{name} is required"
+          next
+        end
+        next if value.nil?
+
+        # length + format apply to string values (a non-string is a type concern).
+        if value.is_a?(String)
+          if opts[:min_length] && value.length < opts[:min_length]
+            errors << "#{name} must be at least #{opts[:min_length]} characters"
+          end
+          if opts[:max_length] && value.length > opts[:max_length]
+            errors << "#{name} must be at most #{opts[:max_length]} characters"
+          end
+          if opts[:pattern]
+            regexp = opts[:pattern].is_a?(Regexp) ? opts[:pattern] : Regexp.new(opts[:pattern])
+            errors << "#{name} does not match the required format" unless value.match?(regexp)
+          end
+        end
+
+        # a declared numeric field carrying a non-numeric value is a type error;
+        # a numeric string (a form value like "42") is coerced and range-checked.
+        if %i[integer float decimal].include?(opts[:type]) && !value.is_a?(Numeric)
+          coerced = Float(value, exception: false)
+          if coerced.nil?
+            errors << "#{name} must be a number"
+            next
+          end
+          value = coerced
+        end
+
+        # numeric range applies to numeric values.
+        if value.is_a?(Numeric)
+          errors << "#{name} must be at least #{opts[:min]}" if opts[:min] && value < opts[:min]
+          errors << "#{name} must be at most #{opts[:max]}" if opts[:max] && value > opts[:max]
         end
       end
       errors
@@ -1279,15 +1330,6 @@ module Tina4
         hash[db_col.to_sym] = value
       end
       hash
-    end
-
-    def validate_fields
-      self.class.field_definitions.each do |name, opts|
-        value = __send__(name)
-        if !opts[:nullable] && value.nil? && !opts[:auto_increment] && !opts[:default]
-          @errors << "#{name} cannot be null"
-        end
-      end
     end
 
     def load_has_one(name)
