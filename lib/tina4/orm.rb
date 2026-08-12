@@ -33,6 +33,25 @@ module Tina4
     end
   end
 
+  # Pluralize a singular noun -- the inverse of {singularize}, and the SAME
+  # smart-inflection rules the hand-written has_many relies on.
+  #
+  # "post" -> "posts", "category" -> "categories", "box" -> "boxes",
+  # "class" -> "classes", "day" -> "days". foreign_key_field's auto
+  # related_name used a naive downcase + "s" ("Category" -> "categorys" -- a
+  # broken accessor name); it now routes through here so the FK-wired has_many
+  # matches the hand-written one.
+  def self.pluralize(word)
+    s = word.to_s
+    if s =~ /[^aeiou]y\z/i
+      s.sub(/y\z/i, "ies")
+    elsif s =~ /(s|ss|sh|ch|x|z)\z/i
+      "#{s}es"
+    else
+      "#{s}s"
+    end
+  end
+
   class ORM
     include Tina4::FieldTypes
 
@@ -538,7 +557,6 @@ module Tina4
           string: "VARCHAR(255)",
           text: "TEXT",
           float: "REAL",
-          decimal: "REAL",
           boolean: bool_sql,
           date: "DATE",
           datetime: datetime_sql,
@@ -552,6 +570,14 @@ module Tina4
           sql_type = type_map[opts[:type]] || "TEXT"
           if opts[:type] == :string && opts[:length]
             sql_type = "VARCHAR(#{opts[:length]})"
+          elsif opts[:type] == :decimal
+            # decimal_field stores precision/scale -- emit a real DECIMAL(p, s)
+            # (identical on PG/MySQL/MSSQL/Firebird/SQLite) instead of the old
+            # REAL, which silently DROPPED the declared scale. float_field /
+            # numeric_field stay REAL (the documented float default).
+            precision = opts[:precision] || 10
+            scale = opts[:scale] || 2
+            sql_type = "DECIMAL(#{precision},#{scale})"
           end
 
           parts = ["#{name} #{sql_type}"]
@@ -583,7 +609,13 @@ module Tina4
           col_defs << "PRIMARY KEY (#{primary_key_fields.join(', ')})"
         end
 
-        sql = "CREATE TABLE IF NOT EXISTS #{table_name} (#{col_defs.join(', ')})"
+        # MSSQL and Firebird reject `IF NOT EXISTS` on CREATE TABLE (a syntax
+        # error). The db.table_exists?(table_name) guard at the top of
+        # create_table already returns early when the table is present, so
+        # `IF NOT EXISTS` is pure redundancy on every engine and is simply
+        # omitted where it does not parse.
+        if_not_exists = %w[mssql sqlserver firebird].include?(engine) ? "" : "IF NOT EXISTS "
+        sql = "CREATE TABLE #{if_not_exists}#{table_name} (#{col_defs.join(', ')})"
 
         # Translate AUTOINCREMENT to the engine's auto-increment syntax
         # (INTEGER PRIMARY KEY AUTOINCREMENT -> SERIAL PRIMARY KEY on PG, etc.).
@@ -599,7 +631,16 @@ module Tina4
         # still see a clean failure instead of a thrown error.
         begin
           db.execute(sql)
-          db.commit
+          begin
+            db.commit
+          rescue StandardError => ce
+            # execute() auto-commits a standalone DDL. A bare commit then flushes
+            # any implicit transaction, but some drivers (MSSQL/tiny_tds) raise
+            # "COMMIT ... has no corresponding BEGIN TRANSACTION" because there is
+            # no open transaction to commit. The DDL already succeeded, so that
+            # ONE case is benign - re-raise anything else.
+            raise ce unless ce.message.to_s =~ /no corresponding begin/i
+          end
           true
         rescue => e
           Tina4::Log.error("create_table failed for #{table_name}: #{db.get_error || e.message}", { sql: sql })

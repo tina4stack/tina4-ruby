@@ -100,8 +100,11 @@ module Tina4
       #   - Registers an integer field for the column
       #   - Calls belongs_to on this class (strip _id suffix for association name)
       #   - Calls has_many on the referenced class. The accessor name is the
-      #     declaring class name lowercased + "s" (e.g. Post → posts), matching
-      #     Python; override with related_name:. Works whether the referenced
+      #     declaring class name lowercased and SMART-pluralized via
+      #     Tina4.pluralize (e.g. Post → posts, Category → categories -- the same
+      #     inflection the hand-written has_many uses, not a naive + "s" that
+      #     produced "categorys"); override with related_name:. Works whether the
+      #     referenced
       #     class loaded before OR after this one, including the string form
       #     (references: "Author") for forward references — resolution is
       #     deferred via Tina4::ORM.inherited until the target class exists.
@@ -128,7 +131,7 @@ module Tina4
 
         # Wire has_many on referenced class (if already a loaded Class)
         if references.is_a?(Class) && references.respond_to?(:has_many, true)
-          hm_name = (related_name || "#{self.name.split("::").last.downcase}s").to_sym
+          hm_name = (related_name || Tina4.pluralize(self.name.split("::").last.downcase)).to_sym
           references.has_many(hm_name, class_name: self.name.split("::").last, foreign_key: name.to_s)
         end
 
@@ -136,7 +139,7 @@ module Tina4
         @@_fk_registry ||= {}
         ref_name = references.is_a?(Class) ? references.name.split("::").last : references.to_s.split("::").last
         @@_fk_registry[ref_name] ||= []
-        hm_key = (related_name || "#{self.name.split("::").last.downcase}s").to_s
+        hm_key = (related_name || Tina4.pluralize(self.name.split("::").last.downcase)).to_s
         @@_fk_registry[ref_name] << {
           declaring_class: self,
           has_many_name: hm_key.to_sym,
