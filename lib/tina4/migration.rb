@@ -617,9 +617,17 @@ module Tina4
 
     # Check if a column already exists in a Firebird table via RDB$RELATION_FIELDS.
     # Firebird stores unquoted identifiers in upper-case.
+    #
+    # The selected literal is ALIASED ("1 AS FOUND", not a bare "1"): #fetch_one
+    # applies limit: 1, and FirebirdDriver#apply_limit wraps the query in a
+    # derived table ("SELECT FIRST 1 SKIP 0 * FROM (<sql>)") -- Firebird REQUIRES
+    # every derived-table column to have a name, and a bare unaliased literal has
+    # none ("no column name specified for column number 1 in derived table",
+    # SQL error -104). Found on a REAL Firebird 5 (MIG-FBMSSQL-MOCK, feature 15)
+    # -- the old FakeDB-based spec never executed a real query here at all.
     def firebird_column_exists?(table, column)
       row = @db.fetch_one(
-        "SELECT 1 FROM RDB\$RELATION_FIELDS WHERE RDB\$RELATION_NAME = ? AND TRIM(RDB\$FIELD_NAME) = ?",
+        "SELECT 1 AS FOUND FROM RDB\$RELATION_FIELDS WHERE RDB\$RELATION_NAME = ? AND TRIM(RDB\$FIELD_NAME) = ?",
         [table.upcase, column.upcase]
       )
       !row.nil?
