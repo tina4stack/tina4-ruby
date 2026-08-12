@@ -609,6 +609,11 @@ the filesystem must run against the real thing: a real SQLite file, a real temp 
 service the app uses. Trigger the real failure (a real connection error, a real timeout, a real bad
 row), never a simulated one. A green mock test proves nothing.
 
+- **A green test for your change is not proof you broke nothing else.** When you change
+  something SHARED - a validation message, a model's columns, an error shape, an env var - other
+  tests across the same subsystem may still assert the old behaviour. Run the whole relevant suite
+  (the ORM / validation / model tests together), not just your new case, before you call it done.
+
 
 **Ghost tests are not acceptable, in any circumstances.** A ghost test is one
 that LOOKS like coverage and never actually runs, or runs and proves nothing.
