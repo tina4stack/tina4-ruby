@@ -1302,8 +1302,8 @@ module Tina4
 
           # List all #{route_path} with pagination — public read (GET is ungated).
           Tina4::Router.get "/api/#{route_path}" do |request, response|
-            page = (request.params["page"] || 1).to_i
-            per_page = (request.params["per_page"] || 20).to_i
+            page = (request.query["page"] || 1).to_i
+            per_page = (request.query["per_page"] || 20).to_i
             offset = (page - 1) * per_page
             records = #{model}.all(limit: per_page, offset: offset)
             response.json({ data: records.map(&:to_h), count: #{model}.count, page: page, per_page: per_page })

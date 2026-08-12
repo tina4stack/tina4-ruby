@@ -301,7 +301,12 @@ module Tina4
       body = request.body
       return body[name] if body.is_a?(Hash) && body.key?(name)
 
-      (request.query && request.query[name]) || (request.params && request.params[name.to_sym])
+      # Its only caller is on POST #{paths['files']}, a route with no path
+      # segments — a `request.params` fallback here would only ever have
+      # matched a route param that this path can never have, so it is not
+      # carried forward now that `params` is route-only (REQ-PARAM-POLLUTION,
+      # 3.13.99): body, then the query string, is the complete real source list.
+      request.query && request.query[name]
     end
 
     def parse_json(data)

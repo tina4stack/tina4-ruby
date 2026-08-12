@@ -116,7 +116,7 @@ module Tina4
 
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
-                :path_params, :ip, :remote_ip
+                :ip, :remote_ip
     # :route is the matched Route, attached by the dispatcher before post-match
     # middleware runs (DispatchPipeline#prepare_route_request). CsrfMiddleware
     # reads route.auth_required to honour a public write route (.no_auth).
@@ -231,6 +231,11 @@ module Tina4
       @json_body = nil
       @query_hash = nil
       @body_parsed = nil
+      # #body's own memoised RESULT can legitimately be nil (the no-body
+      # sentinel, REQ-BODY-DIVERGE 3.13.99), so "nil = not yet computed" (the
+      # convention above) cannot also mean "computed, and nil" for this one
+      # field — a dedicated flag distinguishes them.
+      @body_parsed_computed = false
     end
 
     # Is this request HTTPS from the CLIENT's point of view?
@@ -303,8 +308,15 @@ module Tina4
     # fields Hash, else the current fallback). This matches Python's
     # `request.body`, PHP's, and Node's: `body` is the PARSED payload, not
     # the raw bytes. For the raw string use `body_raw`.
+    #
+    # No-body is now a real `nil` result (REQ-BODY-DIVERGE, 3.13.99), so this
+    # can no longer memoise with `||=` (nil/false never "stick" — every call
+    # would re-run parse_body). @body_parsed_computed distinguishes "never
+    # computed" from "computed and the answer was nil".
     def body
-      @body_parsed ||= parse_body
+      return @body_parsed if @body_parsed_computed
+      @body_parsed_computed = true
+      @body_parsed = parse_body
     end
 
     # Raw body string — the bytes exactly as the client sent them.
@@ -327,40 +339,58 @@ module Tina4
       @files ||= extract_files
     end
 
-    # Merged params: query + body + path_params (path_params highest priority)
-    # Supports both string and symbol key access (indifferent access).
-    # Attach the matched route's path params AFTER construction.
+    # Route params ONLY — never query or body (REQ-PARAM-POLLUTION, 3.13.99,
+    # a param-pollution/security fix). A route `/{id}` hit with `?id=other`
+    # yields `params["id"]` == the route value; the client value is only ever
+    # in `query`. Supports both string and symbol key access (indifferent
+    # access — matches Route#match_path, which captures path-param names as
+    # SYMBOLS, so `params[:id]` and `params["id"]` both resolve). Renamed
+    # from `path_params` to unify the route-param accessor NAME with
+    # Python/PHP/Node (REQ-ROUTE-PARAM-NAME); the old MERGED `params`
+    # (query + body + path_params, via #build_params) is deleted outright —
+    # no back-compat alias (nothing in the ledger asked for one).
     #
-    # The request is built BEFORE route matching now, so pre-match middleware
-    # has something to read and mutate. Path params are only known once a route
+    # The request is built BEFORE route matching, so pre-match middleware has
+    # something to read and mutate. Path params are only known once a route
     # has matched, so they are set here and the memoised #params is dropped -
     # without that reset a pre-match middleware that touched #params would
     # freeze a param-less copy for the handler.
-    def path_params=(value)
+    def params=(value)
       @path_params = value || {}
       @params = nil
     end
 
-    attr_reader :path_params
-
     def params
-      @params ||= build_params
+      @params ||= begin
+        result = IndifferentHash.new
+        @path_params.each { |k, v| result[k] = v }
+        result
+      end
     end
 
-    # Look up a param by symbol or string key (indifferent access shortcut).
+    # Look up a value by key: the matched ROUTE param first, then the query
+    # string. A read convenience only — `params` and `query` stay separate
+    # collections (REQ-PARAM-POLLUTION); a route value always wins over a
+    # client-supplied query value of the same name. Mirrors PHP's/Node's
+    # `param()`. Accepts a symbol or string key (indifferent, like `params`).
     def param(key, default = nil)
-      params[key.to_s] || params[key.to_sym] || default
+      value = params[key]
+      return value unless value.nil?
+      query[key.to_s] || default
     end
 
     def [](key)
-      params[key.to_s] || params[key.to_sym] || @path_params[key.to_sym]
+      param(key)
     end
 
     def header(name)
       # Headers are stored in a CaseInsensitiveHash keyed by lowercase-
-      # dashed names ("content-type", "x-api-key"). The hash normalises
-      # the lookup case automatically, so pass the dashed form through.
-      headers[name.to_s.tr("_", "-")]
+      # dashed names ("content-type", "x-api-key"). The hash normalises the
+      # lookup CASE automatically; this only translates the DASH convention.
+      # No underscore->dash remap any more (REQ-HEADER-DASH-DIVERGE,
+      # 3.13.99): case-fold only, matching the PHP/Node reference — a caller
+      # passing "content_type" no longer matches "Content-Type".
+      headers[name.to_s]
     end
 
     def json_body
@@ -477,8 +507,24 @@ module Tina4
     end
 
     def parse_body
+      # No-body sentinel (REQ-BODY-DIVERGE, 3.13.99): checked FIRST, before any
+      # content-type-specific parsing, so a request with no body is nil —
+      # Ruby's own "nothing" value, matching Python's None/PHP's null/Node's
+      # undefined (each language's native absence-value; was {} here, the odd
+      # one out).
+      return nil if body_raw.nil? || body_raw.empty?
+
       if @content_type.include?("application/json")
-        json_body
+        # Malformed JSON -> the RAW STRING (REQ-BODY-DIVERGE, 3.13.99 — pinned
+        # to the Python/PHP/Node majority; was {} here via #json_body, which
+        # swallows the distinction between "invalid" and "absent"). Deliberately
+        # NOT delegating to #json_body: that method keeps its own documented
+        # always-a-Hash, {}-on-failure contract for direct callers.
+        begin
+          JSON.parse(body_raw)
+        rescue JSON::ParserError, TypeError
+          body_raw
+        end
       elsif @content_type.include?("application/x-www-form-urlencoded")
         parse_query_to_hash(body_raw)
       elsif @content_type.include?("multipart/form-data")
@@ -499,20 +545,6 @@ module Tina4
       else
         {}
       end
-    end
-
-    def build_params
-      p = IndifferentHash.new
-
-      # Query string params
-      query.each { |k, v| p[k.to_s] = v }
-
-      # Body params
-      body_parsed.each { |k, v| p[k.to_s] = v }
-
-      # Path params (highest priority)
-      @path_params.each { |k, v| p[k.to_s] = v }
-      p
     end
 
     def parse_query_to_hash(qs)

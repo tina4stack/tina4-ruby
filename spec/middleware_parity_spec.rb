@@ -91,11 +91,15 @@ RSpec.describe "Middleware & Header parity (book#141)" do
       expect(req.headers.include?("Authorization")).to be true
     end
 
-    it "header() helper accepts both dashed and underscored names" do
+    it "header() helper is case-insensitive, dash form only (no underscore remap, 3.13.99)" do
+      # REQ-HEADER-DASH-DIVERGE (3.13.99): reconciled to the PHP/Node
+      # reference — case-fold only, matching RFC 7230 Section 3.2, which does
+      # not treat "-"/"_" as equivalent. header("content_type") USED to also
+      # match "Content-Type" via a "_"->"-" remap this release removes.
       req = Tina4::Request.new(env)
       expect(req.header("Content-Type")).to eq("application/json")
-      expect(req.header("content_type")).to eq("application/json")
       expect(req.header("CONTENT-TYPE")).to eq("application/json")
+      expect(req.header("content_type")).to be_nil
     end
 
     it "missing header returns nil for any casing" do

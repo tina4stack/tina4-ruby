@@ -138,10 +138,23 @@ module Tina4
       env["CONTENT_TYPE"] = content_type unless content_type.empty?
       env["CONTENT_LENGTH"] = raw_body.bytesize.to_s unless raw_body.empty?
 
-      # Add custom headers (convert to Rack format: X-Custom → HTTP_X_CUSTOM)
+      # Add custom headers (convert to Rack format: X-Custom → HTTP_X_CUSTOM).
+      # Content-Type and Content-Length are the two CGI/Rack headers that do
+      # NOT get an HTTP_ prefix (Request#content_type reads env["CONTENT_TYPE"]
+      # directly) — without this a caller-supplied `headers: {"Content-Type"
+      # => ...}` silently landed in HTTP_CONTENT_TYPE, which nothing reads, so
+      # #content_type stayed "" and body parsing fell through to the generic
+      # {} branch regardless of what the caller asked for. PHP's/Node's/
+      # Python's TestClient never had this gap (their headers carry no CGI
+      # prefix convention to special-case).
       if headers
         headers.each do |key, value|
-          rack_key = "HTTP_#{key.upcase.tr('-', '_')}"
+          normalised = key.to_s.downcase
+          rack_key = case normalised
+                     when "content-type" then "CONTENT_TYPE"
+                     when "content-length" then "CONTENT_LENGTH"
+                     else "HTTP_#{key.upcase.tr('-', '_')}"
+                     end
           env[rack_key] = value
         end
       end

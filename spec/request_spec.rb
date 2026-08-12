@@ -37,11 +37,23 @@ RSpec.describe Tina4::Request do
     end
   end
 
-  describe "#params" do
+  describe "#query" do
     it "parses query string parameters" do
       request = Tina4::Request.new(build_env(query: "page=1&limit=10"))
-      expect(request.params["page"]).to eq("1")
-      expect(request.params["limit"]).to eq("10")
+      expect(request.query["page"]).to eq("1")
+      expect(request.query["limit"]).to eq("10")
+    end
+  end
+
+  describe "#params" do
+    # REQ-PARAM-POLLUTION (3.13.99, security fix): params is ROUTE-ONLY. A
+    # query string never populates it -- use #query for that.
+    it "is route-only — a query string never populates it" do
+      request = Tina4::Request.new(build_env(query: "page=1&limit=10"), { "id" => "5" })
+      request.params = { "id" => "5" }
+      expect(request.params["page"]).to be_nil
+      expect(request.params["limit"]).to be_nil
+      expect(request.params["id"]).to eq("5")
     end
   end
 

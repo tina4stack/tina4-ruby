@@ -189,8 +189,12 @@ RSpec.describe "Request v3 features" do
     end
   end
 
-  describe "#params (merged)" do
-    it "merges query, body, and path params" do
+  describe "#params (route-only, 3.13.99)" do
+    # REQ-PARAM-POLLUTION (3.13.99, security fix): `params` used to merge
+    # query + body + path params (path highest priority) — a route `id` could
+    # be shadowed BY, or leak INTO, a client-supplied query/body value of the
+    # same name. `params` is now route-only; `query`/`body` stay separate.
+    it "does not merge query or body into params — only the route param survives" do
       json_body = '{"from_body":"yes"}'
       env = make_env(
         "REQUEST_METHOD" => "POST",
@@ -200,23 +204,36 @@ RSpec.describe "Request v3 features" do
       )
       path_params = { from_path: "yes" }
       req = Tina4::Request.new(env, path_params)
+      req.params = path_params
 
-      expect(req.params["from_query"]).to eq("yes")
-      expect(req.params["from_body"]).to eq("yes")
       expect(req.params["from_path"]).to eq("yes")
+      expect(req.params["from_query"]).to be_nil
+      expect(req.params["from_body"]).to be_nil
+      # The client values are still reachable — just not through `params`.
+      expect(req.query["from_query"]).to eq("yes")
+      expect(req.body["from_body"]).to eq("yes")
     end
 
-    it "path params take highest priority" do
-      json_body = '{"name":"from_body"}'
+    it "a route param is never shadowed by a same-named query value (route_param_not_shadowed_by_query)" do
       env = make_env(
-        "REQUEST_METHOD" => "POST",
-        "CONTENT_TYPE" => "application/json",
-        "QUERY_STRING" => "name=from_query",
-        "rack.input" => StringIO.new(json_body)
+        "REQUEST_METHOD" => "GET",
+        "QUERY_STRING" => "name=from_query"
       )
       path_params = { name: "from_path" }
       req = Tina4::Request.new(env, path_params)
+      req.params = path_params
+
       expect(req.params["name"]).to eq("from_path")
+      expect(req.query["name"]).to eq("from_query")
+    end
+
+    it "indifferent access — string and symbol keys both resolve" do
+      env = make_env("REQUEST_METHOD" => "GET")
+      req = Tina4::Request.new(env, { id: "42" })
+      req.params = { id: "42" }
+
+      expect(req.params["id"]).to eq("42")
+      expect(req.params[:id]).to eq("42")
     end
   end
 

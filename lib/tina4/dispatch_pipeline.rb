@@ -458,7 +458,7 @@ module Tina4
     # are only known now, so they are attached here.
     def prepare_route_request(ctx)
       ctx.request = ctx.pre_request || Tina4::Request.new(ctx.env)
-      ctx.request.path_params = ctx.path_params
+      ctx.request.params = ctx.path_params
       # Attach the matched route so post-match middleware (CsrfMiddleware) can
       # read its metadata -- e.g. auth_required to honour a public write route
       # (.no_auth). Without this the CSRF no_auth skip is dead code, because the
