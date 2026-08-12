@@ -17,84 +17,131 @@ module Tina4
   #
   class SQLTranslator
     class << self
-      # Convert LIMIT/OFFSET to Firebird ROWS...TO syntax.
+      # ── Literal-safe rewriting ────────────────────────────────────
       #
-      # LIMIT 10 OFFSET 5  =>  ROWS 6 TO 15
-      # LIMIT 10           =>  ROWS 1 TO 10
+      # A dialect rewrite (|| -> CONCAT, TRUE -> 1, ILIKE -> LOWER LIKE) must NEVER
+      # touch text inside a string literal, a quoted identifier or a comment: a
+      # column value of 'a||b', a label 'TRUE', or a LIKE pattern that mentions
+      # ILIKE is DATA, not SQL. Each transform masks every literal/identifier/
+      # comment to an opaque token, rewrites the masked SQL, then restores the
+      # tokens, so the rewrite only ever sees real SQL structure.
       #
-      # @param sql [String]
-      # @return [String]
-      def limit_to_rows(sql)
-        # Try LIMIT X OFFSET Y first
-        if (m = sql.match(/\bLIMIT\s+(\d+)\s+OFFSET\s+(\d+)\s*$/i))
-          limit = m[1].to_i
-          offset = m[2].to_i
-          start_row = offset + 1
-          end_row = offset + limit
-          return sql[0...m.begin(0)] + "ROWS #{start_row} TO #{end_row}"
-        end
+      # NOTE on the removed methods (SQLTRANS-DEC-02): +limit_to_rows+,
+      # +limit_to_top+ and +placeholder_style+ were deleted here. Ruby's DRIVERS
+      # own pagination and placeholders by design and do it correctly per engine
+      # (Firebird +SELECT FIRST/SKIP+, MSSQL +OFFSET ... FETCH+, Postgres +$1+),
+      # whereas these translator helpers emitted a DIFFERENT and inferior shape
+      # (MSSQL +TOP+, Firebird +ROWS x TO y+) that nothing called. Keeping a dead
+      # public method that also disagrees with the live driver is a footgun, so
+      # they are gone. concat/bool/ilike stay (they fill a real gap - the drivers
+      # do not translate them) and are now WIRED into the MySQL driver.
 
-        # Then try LIMIT X only
-        if (m = sql.match(/\bLIMIT\s+(\d+)\s*$/i))
-          limit = m[1].to_i
-          return sql[0...m.begin(0)] + "ROWS 1 TO #{limit}"
+      # Replace string literals, quoted identifiers and comments with opaque
+      # "\x00N\x00" tokens. Returns [masked_sql, literals]; doubled-quote escapes
+      # ('' "" ``) are handled so an embedded quote never ends the span early.
+      def mask_literals(sql)
+        literals = []
+        out = +""
+        i = 0
+        n = sql.length
+        while i < n
+          ch = sql[i]
+          nxt = sql[i + 1]
+          if ch == "'" || ch == '"' || ch == "`"
+            start = i
+            i += 1
+            while i < n
+              if sql[i] == ch
+                if sql[i + 1] == ch
+                  i += 2
+                  next
+                end
+                i += 1
+                break
+              end
+              i += 1
+            end
+            out << "\x00#{literals.length}\x00"
+            literals << sql[start...i]
+            next
+          end
+          if ch == "-" && nxt == "-"
+            start = i
+            i += 1 while i < n && sql[i] != "\n"
+            out << "\x00#{literals.length}\x00"
+            literals << sql[start...i]
+            next
+          end
+          if ch == "/" && nxt == "*"
+            start = i
+            i += 2
+            i += 1 while i < n && !(sql[i] == "*" && sql[i + 1] == "/")
+            i = [i + 2, n].min
+            out << "\x00#{literals.length}\x00"
+            literals << sql[start...i]
+            next
+          end
+          out << ch
+          i += 1
         end
-
-        sql
+        [out, literals]
       end
 
-      # Convert LIMIT to MSSQL TOP syntax.
-      #
-      # SELECT ... LIMIT 10  =>  SELECT TOP 10 ...
-      # OFFSET queries are left unchanged (not supported by TOP).
-      #
-      # @param sql [String]
-      # @return [String]
-      def limit_to_top(sql)
-        if (m = sql.match(/\bLIMIT\s+(\d+)\s*$/i)) && !sql.match?(/\bOFFSET\b/i)
-          limit = m[1].to_i
-          body = sql[0...m.begin(0)].strip
-          return body.sub(/^(SELECT)\b/i, "\\1 TOP #{limit}")
-        end
-
-        sql
+      # Inverse of #mask_literals.
+      def restore_literals(masked, literals)
+        masked.gsub(/\x00(\d+)\x00/) { literals[::Regexp.last_match(1).to_i] }
       end
 
-      # Convert || concatenation to CONCAT() for MySQL/MSSQL.
+      # Convert || string concatenation to CONCAT() for MySQL/MSSQL. Rewrites ONLY
+      # || operators joining expression operands OUTSIDE any string literal or
+      # comment, and only the operand chain - never the whole statement.
       #
-      # 'a' || 'b' || 'c'  =>  CONCAT('a', 'b', 'c')
+      #   SELECT a || b FROM t   =>  SELECT CONCAT(a, b) FROM t
+      #   WHERE data = 'a||b'    =>  WHERE data = 'a||b'   (literal untouched)
       #
       # @param sql [String]
       # @return [String]
       def concat_pipes_to_func(sql)
         return sql unless sql.include?("||")
 
-        parts = sql.split("||")
-        if parts.length > 1
-          "CONCAT(#{parts.map(&:strip).join(', ')})"
-        else
-          sql
+        masked, literals = mask_literals(sql)
+        return sql unless masked.include?("||")
+
+        chain = /#{SQLTranslator::PRIMARY}(?:\s*\|\|\s*#{SQLTranslator::PRIMARY})+/
+        rewritten = masked.gsub(chain) do |m|
+          "CONCAT(#{m.split(/\s*\|\|\s*/).join(', ')})"
         end
+        restore_literals(rewritten, literals)
       end
 
-      # Convert TRUE/FALSE to 1/0 for engines without boolean type.
+      # Convert a bare TRUE/FALSE to 1/0 for engines without a boolean type. A
+      # TRUE/FALSE INSIDE a string literal is data and is left untouched.
       #
       # @param sql [String]
       # @return [String]
       def boolean_to_int(sql)
-        sql.gsub(/\bTRUE\b/i, "1").gsub(/\bFALSE\b/i, "0")
+        return sql unless sql.match?(/\b(?:TRUE|FALSE)\b/i)
+
+        masked, literals = mask_literals(sql)
+        masked = masked.gsub(/\bTRUE\b/i, "1").gsub(/\bFALSE\b/i, "0")
+        restore_literals(masked, literals)
       end
 
-      # Convert ILIKE to LOWER() LIKE LOWER() for engines without ILIKE.
+      # Convert +col ILIKE pattern+ to +LOWER(col) LIKE LOWER(pattern)+ for engines
+      # without ILIKE. The pattern operand is captured whole (a multi-word
+      # '%two words%' survives), and an ILIKE INSIDE a string literal is untouched.
       #
       # @param sql [String]
       # @return [String]
       def ilike_to_like(sql)
-        sql.gsub(/(\S+)\s+ILIKE\s+(\S+)/i) do
-          col = ::Regexp.last_match(1).strip
-          val = ::Regexp.last_match(2).strip
-          "LOWER(#{col}) LIKE LOWER(#{val})"
+        return sql unless sql =~ /ilike/i
+
+        masked, literals = mask_literals(sql)
+        pattern = /(#{SQLTranslator::PRIMARY})\s+ILIKE\s+(#{SQLTranslator::PRIMARY})/i
+        rewritten = masked.gsub(pattern) do
+          "LOWER(#{::Regexp.last_match(1)}) LIKE LOWER(#{::Regexp.last_match(2)})"
         end
+        restore_literals(rewritten, literals)
       end
 
       # Translate AUTOINCREMENT across engines in DDL.
@@ -107,7 +154,13 @@ module Tina4
         when "mysql"
           sql.gsub("AUTOINCREMENT", "AUTO_INCREMENT")
         when "postgresql"
-          sql.gsub(/INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT/i, "SERIAL PRIMARY KEY")
+          # BIGINT PRIMARY KEY AUTOINCREMENT -> BIGSERIAL (a real 64-bit sequence);
+          # INTEGER -> SERIAL. A plain BIGINT with the keyword merely stripped has
+          # no sequence and cannot auto-increment.
+          sql
+            .gsub(/\bBIGINT\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/i, "BIGSERIAL PRIMARY KEY")
+            .gsub(/\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/i, "SERIAL PRIMARY KEY")
+            .gsub(/\s*\bAUTOINCREMENT\b/i, "")
         when "mssql"
           sql.gsub(/AUTOINCREMENT/i, "IDENTITY(1,1)")
         when "firebird"
@@ -117,42 +170,12 @@ module Tina4
         end
       end
 
-      # Convert ? placeholders to engine-specific style.
-      #
-      # ?  =>  %s       (MySQL, PostgreSQL)
-      # ?  =>  :1, :2   (Oracle, Firebird)
-      #
-      # @param sql [String]
-      # @param style [String] target placeholder style: "%s" or ":"
-      # @return [String]
-      def placeholder_style(sql, style)
-        case style
-        when "%s"
-          sql.gsub("?", "%s")
-        when ":"
-          count = 0
-          sql.chars.map do |ch|
-            if ch == "?"
-              count += 1
-              ":#{count}"
-            else
-              ch
-            end
-          end.join
-        else
-          sql
-        end
-      end
-
-      # Generate a cache key for a query and its parameters.
-      #
-      # @param sql [String]
-      # @param params [Array, nil]
-      # @return [String]
-      def query_key(sql, params = nil)
-        raw = params ? "#{sql}|#{params.inspect}" : sql
-        "query:#{Digest::SHA256.hexdigest(raw)}"
-      end
+      # NOTE (SQLTRANS-DEC-02): +placeholder_style+ was removed - every Ruby
+      # driver owns its own placeholder shape (+?+ for MySQL/SQLite/MSSQL/Firebird,
+      # +$1+ for Postgres), so this helper had zero callers and disagreed with the
+      # live drivers. The cache KEY helper +query_key+ was also removed here: it
+      # duplicated the live +Tina4::QueryCache.query_key+ (lib/tina4/cache.rb),
+      # which the ORM cache path actually uses. One source, not two.
 
       # Collapse a row-at-a-time INSERT batch into chunked multi-row VALUES.
       #
@@ -232,6 +255,11 @@ module Tina4
         end
       end
     end
+
+    # A concat/ilike operand: a masked literal-or-identifier token, a simple
+    # function call, a (qualified) identifier, a placeholder, or a number. The
+    # function-call args exclude +|+ so a nested +||+ never splits the chain.
+    PRIMARY = '(?:\x00\d+\x00|[A-Za-z_][\w$]*\s*\([^()|]*\)|[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*|:[A-Za-z_]\w*|\$\d+|\?|%s|\d+(?:\.\d+)?)'
 
     # Hard per-statement bind-parameter ceiling per engine. 0 = never collapse.
     # Sourced from spec/fixtures/batch_write_contract.json, byte-identical in

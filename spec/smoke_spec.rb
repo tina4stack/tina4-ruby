@@ -513,14 +513,14 @@ RSpec.describe "Tina4 Smoke Test" do
   # 17. SQL Translation
   # ────────────────────────────────────────────────────────────────────────
   describe "SQLTranslator" do
-    it "converts LIMIT/OFFSET to ROWS (Firebird)" do
-      result = Tina4::SQLTranslator.limit_to_rows("SELECT * FROM t LIMIT 10 OFFSET 5")
-      expect(result).to eq("SELECT * FROM t ROWS 6 TO 15")
+    it "converts || to CONCAT (literal-safe operand chain)" do
+      result = Tina4::SQLTranslator.concat_pipes_to_func("SELECT a || b FROM t")
+      expect(result).to eq("SELECT CONCAT(a, b) FROM t")
     end
 
-    it "converts LIMIT to TOP (MSSQL)" do
-      result = Tina4::SQLTranslator.limit_to_top("SELECT * FROM t LIMIT 10")
-      expect(result).to eq("SELECT TOP 10 * FROM t")
+    it "converts ILIKE to LOWER LIKE" do
+      result = Tina4::SQLTranslator.ilike_to_like("name ILIKE '%x%'")
+      expect(result).to eq("LOWER(name) LIKE LOWER('%x%')")
     end
 
     it "converts TRUE/FALSE to 1/0" do

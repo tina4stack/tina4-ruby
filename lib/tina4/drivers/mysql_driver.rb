@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "schema_split"
+require_relative "../sql_translator"
 
 module Tina4
   module Drivers
@@ -64,7 +65,19 @@ module Tina4
         @connection&.close
       end
 
+      # Apply the MySQL dialect rewrites the translator owns: +||+ -> CONCAT and
+      # ILIKE -> LOWER() LIKE LOWER() (both literal-safe). MySQL reads a bare +||+
+      # as logical OR and has no ILIKE, so portable canonical SQL must be rewritten
+      # before it reaches the driver. A statement with neither token short-circuits
+      # unchanged, so ordinary queries are untouched. (SQLTRANS-DEC-02: this is the
+      # wiring that makes the previously-dead concat/ilike helpers live in Ruby.)
+      def translate_dialect(sql)
+        sql = Tina4::SQLTranslator.concat_pipes_to_func(sql)
+        Tina4::SQLTranslator.ilike_to_like(sql)
+      end
+
       def execute_query(sql, params = [])
+        sql = translate_dialect(sql)
         if params.empty?
           results = @connection.query(sql, symbolize_keys: true)
         else
@@ -75,6 +88,7 @@ module Tina4
       end
 
       def execute(sql, params = [])
+        sql = translate_dialect(sql)
         stmt = nil
         result =
           if params.empty?
