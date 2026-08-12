@@ -166,9 +166,17 @@ module Tina4
         # POST /api/{table} -- create record
         post_route = Tina4::Router.add("POST", "#{prefix}/#{table}", proc { |req, res|
           begin
-            attributes = req.body_parsed
-            record = model_class.create(attributes)
-            if record.persisted?
+            # CRUD-MASS-ASSIGNMENT: allow-list before the body ever reaches
+            # the model (guards is_deleted + strips the PK -- see the helper).
+            attributes = allow_listed_attributes(model_class, req.body_parsed, is_create: true)
+            record = model_class.new(attributes)
+            # CRUD-VALIDATION-STATUS (CRUD-DEC-01): build + save directly
+            # (not .create, which returns the literal `false` on failure --
+            # calling .persisted? on that raised NoMethodError, caught by the
+            # generic rescue below as a stray 500). #save already returns
+            # self/false and #errors already carries the field messages, so
+            # this is the SAME safe pattern the PUT handler uses.
+            if record.save
               res.json({ data: record.to_h }, status: 201)
             else
               res.json({ errors: record.errors }, status: 422)
@@ -198,7 +206,9 @@ module Tina4
               next res.json({ error: "Not found" }, status: 404)
             end
 
-            attributes = req.body_parsed
+            # CRUD-MASS-ASSIGNMENT: allow-list -- the row is addressed by the
+            # URL {id}, never by the body (see the helper).
+            attributes = allow_listed_attributes(model_class, req.body_parsed, is_create: false)
             attributes.each do |key, value|
               setter = "#{key}="
               record.__send__(setter, value) if record.respond_to?(setter)
@@ -282,6 +292,37 @@ module Tina4
       alias_method :clear, :clear!
 
       private
+
+      # CRUD-MASS-ASSIGNMENT: filter a write body down to writable columns
+      # before it ever reaches `.new`/the setter loop. Only DECLARED fields
+      # (model_class.field_definitions) pass through; is_deleted is never
+      # client-writable (soft-delete is mutated only by #delete/#restore);
+      # and the primary key is stripped except a genuinely natural
+      # (single-column, non-auto_increment) key on CREATE -- the documented
+      # way to choose one (build_example keeps such a key in the sample
+      # body). Every other case strips it: an auto-increment CREATE (the
+      # database assigns it -- a client-supplied id previously let a POST
+      # silently claim/overwrite an unrelated row), and EVERY update (the
+      # row is addressed by the URL {id} alone; a body PK would otherwise
+      # move #save's own pk_filter WHERE clause off the URL-addressed row).
+      def allow_listed_attributes(model_class, data, is_create:)
+        return {} unless data.is_a?(Hash)
+
+        defs = model_class.respond_to?(:field_definitions) ? model_class.field_definitions : {}
+        pk_fields = model_class.respond_to?(:primary_key_fields) ? model_class.primary_key_fields.map(&:to_s) : []
+        single_pk = pk_fields.length == 1 ? pk_fields.first : nil
+        auto_increment = single_pk && defs[single_pk.to_sym] && defs[single_pk.to_sym][:auto_increment]
+        strip_pk = is_create ? !(single_pk && !auto_increment) : true
+
+        data.each_with_object({}) do |(key, value), allowed|
+          key_s = key.to_s
+          next unless defs.key?(key_s.to_sym)
+          next if key_s == "is_deleted"
+          next if strip_pk && pk_fields.include?(key_s)
+
+          allowed[key] = value
+        end
+      end
 
       # Parse sort parameter: "-name,created_at" => "name DESC, created_at ASC"
       def parse_sort(sort_str)
