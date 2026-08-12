@@ -603,6 +603,20 @@ module Tina4
           col_defs << parts.join(" ")
         end
 
+        # SOFTDEL-DEC-02: a soft_delete model needs its flag column, but
+        # create_table only knew about DECLARED fields -- so a soft_delete model
+        # that never declared the flag built a table with NO such column, and
+        # every soft-delete read/write then errored on the missing column. Inject
+        # it here (INTEGER 0/1, default 0), honouring the CONFIGURABLE
+        # soft_delete_field (default :is_deleted -- NOT a hard-coded is_deleted),
+        # unless the model already declares it, so the generated schema always
+        # matches the soft-delete behaviour.
+        if soft_delete
+          sd_field = soft_delete_field.to_s
+          declared = field_definitions.keys.map(&:to_s)
+          col_defs << "#{soft_delete_field} INTEGER DEFAULT 0" unless declared.include?(sd_field)
+        end
+
         # A COMPOSITE key is declared ONCE, at table level; the per-column inline
         # form above is suppressed for it.
         if primary_key_fields.length > 1
