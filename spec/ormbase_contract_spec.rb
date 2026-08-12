@@ -103,4 +103,25 @@ RSpec.describe "ORM base class contract (feature 17)" do
     expect(BaseWidgetModel.find(1)).to be_nil
     expect(BaseWidgetModel.count).to eq(0)
   end
+
+  # ── Invariant: save returns false, never raises, on a real constraint
+  # violation -- characterises the write-path fail-loud fix's ripple boundary.
+  # Ruby's Database#insert already raises on a driver error (SQLite has no
+  # driver-level #insert override, so it falls through the generic
+  # drv.execute() path, which never rescues), and ORM#save already wraps its
+  # db.insert call in begin/rescue and converts the raise to false; this pins
+  # that contract so it can never silently regress into #save raising. ──────
+
+  it "save on constraint violation returns false" do
+    db.execute("CREATE UNIQUE INDEX idx_basewidget_name_unique ON basewidget (name)")
+    new_widget("alpha", 1)
+    expect(BaseWidgetModel.count).to eq(1)
+
+    duplicate = BaseWidgetModel.new(name: "alpha", qty: 2) # UNIQUE(name) collides
+    result = duplicate.save # must NOT raise
+
+    expect(result).to be(false)
+    expect(BaseWidgetModel.count).to eq(1)         # nothing written
+    expect(duplicate.last_error).not_to be_nil     # cause recorded
+  end
 end
