@@ -1049,7 +1049,12 @@ module Tina4
         url = grounding_env_value("TINA4_MCP_URL").to_s
         url = "https://mcp.tina4.com" if url.empty?
         configured = !token.empty?
-        { configured: configured, last4: configured ? token[-4..].to_s : "", url: url }
+        # source: the developer's own token → "personal"; otherwise the coder
+        # runs on the shared FREE-TOKEN trial the Rust agent falls back to →
+        # "free", which drives the "register" nudge. (Disabling the free rung
+        # is an agent-side concern.)
+        source = configured ? "personal" : "free"
+        { configured: configured, source: source, last4: configured ? token[-4..].to_s : "", url: url }
       end
 
       # POST /__dev/api/grounding/token — upsert TINA4_MCP_TOKEN into the
