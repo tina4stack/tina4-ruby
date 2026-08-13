@@ -173,10 +173,22 @@ module Tina4
         scheme && !scheme.empty? ? scheme : "bearerAuth"
       end
 
-      # Path filtering. Framework internals (/swagger, /__dev) are ALWAYS
+      # Framework-internal route prefixes that are NEVER part of an
+      # application's public API document. SHARED across all four frameworks
+      # (SWAG-EXCLUSION-NOT-SHARED, ADR-0004) so the exclusion is one rule
+      # everywhere, not three mechanisms: the dev tools (/swagger, /__dev),
+      # the feedback widget (/__feedback), and the built-in AI/RAG service
+      # probes (/ai, /rag, /vision, /embed, /image). Ruby dispatches these
+      # OUTSIDE Tina4::Router today, so most never reach included? in
+      # practice — the list is here so the RULE holds regardless of how a
+      # given route got registered, not because of where each internal
+      # happens to be wired.
+      INTERNAL_PREFIXES = ["/swagger", "/__dev", "/__feedback", "/ai", "/rag", "/vision", "/embed", "/image"].freeze
+
+      # Path filtering. Framework internals (INTERNAL_PREFIXES) are ALWAYS
       # excluded; then TINA4_SWAGGER_INCLUDE (allow-list) / _EXCLUDE apply.
       def included?(raw_path)
-        ["/swagger", "/__dev"].each do |internal|
+        INTERNAL_PREFIXES.each do |internal|
           return false if raw_path == internal || raw_path.start_with?("#{internal}/")
         end
 
@@ -240,11 +252,15 @@ module Tina4
         operation = {
           "operationId" => unique_operation_id(method, path, ctx[:seen_ids]),
           "summary" => meta[:summary] || "#{method.upcase} #{route.path}",
-          "description" => meta[:description] || "",
           "tags" => tags,
           "parameters" => build_parameters(route),
           "responses" => build_responses(meta, ref, ctx)
         }
+        # description is OMITTED when unset (SWAG-SHAPE-DRIFT, ADR-0004) —
+        # python/php/node never fabricate a description key either; Ruby used
+        # to always stamp "" on every undecorated operation, the one shape
+        # drift where Ruby (not Python) was the odd one out.
+        operation["description"] = meta[:description] if meta[:description]
 
         operation["deprecated"] = true if meta[:deprecated]
         operation["security"] = security unless security.nil?
