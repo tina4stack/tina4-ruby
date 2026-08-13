@@ -3026,11 +3026,24 @@ module Tina4
     DEFAULT_PORT = 7147
     DEFAULT_HOST = "0.0.0.0"
 
-    # Priority: CLI flag > ENV var > default
+    # Priority: CLI flag > TINA4_PORT > PORT (deprecated) > default.
+    #
+    # This used to read bare PORT only, ignoring TINA4_PORT entirely, while
+    # Tina4.resolve_bind_port (which WebServer/Tina4.run! use) and
+    # Tina4.mcp_port (the +2000 supervisor port) both already read
+    # TINA4_PORT first. So under `tina4ruby serve` with only TINA4_PORT set,
+    # this method alone fell through to bare PORT/DEFAULT_PORT while the
+    # AI port (base+1000, derived from THIS resolved base) and the supervisor
+    # port derived from a DIFFERENT base -- three ports, two answers for the
+    # same knob (DUALPORT-DEC-02, DUALPORT-BASE-PRECEDENCE). Not delegated to
+    # Tina4.resolve_bind_port itself: this runs before `require_relative
+    # "../tina4"` below, so the Tina4 module is not loaded yet at this point.
     def resolve_config(key, cli_value)
       case key
       when :port
         return cli_value if cli_value
+        tina4_port = ENV["TINA4_PORT"]
+        return tina4_port.to_i if tina4_port && tina4_port.match?(/\A\d+\z/)
         return ENV["PORT"].to_i if ENV["PORT"] && !ENV["PORT"].empty?
         DEFAULT_PORT
       when :host
