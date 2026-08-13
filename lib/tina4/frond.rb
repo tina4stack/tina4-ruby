@@ -701,10 +701,29 @@ module Tina4
       render_tokens(tokens, context)
     end
 
+    # Return this template's OWN {% extends %} parent name, or nil.
+    #
+    # A template may extend at most one parent. Before 3.13.100 a SECOND
+    # {% extends %} tag anywhere in the source was silently invisible: only
+    # the first occurrence was ever matched, and the rest of the child's
+    # non-block content -- including the second extends tag -- was already
+    # discarded the same way ordinary non-block child content always is
+    # during inheritance. That hid what is almost always a mistake (a
+    # copy-paste, a bad merge) with zero signal. Raise clearly instead, the
+    # same policy 3.13.89 applied to an unknown tag.
+    def extends_target(source)
+      matches = source.scan(EXTENDS_RE)
+      if matches.length > 1
+        raise "Frond: template has #{matches.length} \"{% extends %}\" tags -- " \
+              "a template can extend only one parent"
+      end
+      source =~ EXTENDS_RE ? Regexp.last_match(1) : nil
+    end
+
     def execute_with_tokens(source, tokens, context)
       # Handle extends first
-      if source =~ EXTENDS_RE
-        parent_name = Regexp.last_match(1)
+      parent_name = extends_target(source)
+      if parent_name
         parent_source = load_template(parent_name)
         child_blocks = extract_blocks(source)
         return render_with_blocks(parent_source, context, child_blocks)
@@ -715,8 +734,8 @@ module Tina4
 
     def execute(source, context)
       # Handle extends first
-      if source =~ EXTENDS_RE
-        parent_name = Regexp.last_match(1)
+      parent_name = extends_target(source)
+      if parent_name
         parent_source = load_template(parent_name)
         child_blocks = extract_blocks(source)
         return render_with_blocks(parent_source, context, child_blocks)

@@ -629,6 +629,37 @@ RSpec.describe Tina4::Frond do
       expect(result).to eq("Default Title")
     end
 
+    it "renders correctly with a single extends tag (positive lock-in)" do
+      File.write(File.join(tpl_dir, "base_solo.html"), "<h1>{% block title %}Default{% endblock %}</h1>")
+      File.write(File.join(tpl_dir, "child_solo.html"), '{% extends "base_solo.html" %}{% block title %}Solo{% endblock %}')
+      result = file_engine.render("child_solo.html", {})
+      expect(result).to eq("<h1>Solo</h1>")
+    end
+
+    it "raises when a template has two {% extends %} tags" do
+      # 3.13.100: a SECOND {% extends %} tag raises instead of being silently
+      # discarded. Before the fix, only the first {% extends %} occurrence was
+      # ever matched by the source-level regex; the second tag -- along with
+      # the rest of the child's non-block content -- was silently dropped the
+      # same way ordinary child content outside a block always is. Mirrors the
+      # unknown-tag-raises policy (3.13.89): fail loud instead of guessing.
+      File.write(File.join(tpl_dir, "base_a.html"), "A {% block content %}{% endblock %}")
+      File.write(File.join(tpl_dir, "base_b.html"), "B {% block content %}{% endblock %}")
+      File.write(
+        File.join(tpl_dir, "double.html"),
+        "{% extends \"base_a.html\" %}\n{% extends \"base_b.html\" %}\n{% block content %}X{% endblock %}"
+      )
+      expect { file_engine.render("double.html", {}) }.to raise_error(/2 "\{% extends %\}" tags/)
+    end
+
+    it "raises when a render_string source has two {% extends %} tags" do
+      File.write(File.join(tpl_dir, "base_a2.html"), "A")
+      File.write(File.join(tpl_dir, "base_b2.html"), "B")
+      expect {
+        file_engine.render_string('{% extends "base_a2.html" %}{% extends "base_b2.html" %}', {})
+      }.to raise_error(/2 "\{% extends %\}" tags/)
+    end
+
     it "handles extends with leading whitespace" do
       File.write(File.join(tpl_dir, "base.html"), '<html><body>{% block content %}default{% endblock %}</body></html>')
       File.write(File.join(tpl_dir, "page.html"), "  {% extends \"base.html\" %}\n{% block content %}<h1>Hello</h1>{% endblock %}")
