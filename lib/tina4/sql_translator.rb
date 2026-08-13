@@ -174,8 +174,9 @@ module Tina4
       # driver owns its own placeholder shape (+?+ for MySQL/SQLite/MSSQL/Firebird,
       # +$1+ for Postgres), so this helper had zero callers and disagreed with the
       # live drivers. The cache KEY helper +query_key+ was also removed here: it
-      # duplicated the live +Tina4::QueryCache.query_key+ (lib/tina4/cache.rb),
-      # which the ORM cache path actually uses. One source, not two.
+      # duplicated the live +.query_key+ class method the ORM cache path (defined
+      # in lib/tina4/cache.rb, per spec/docs_truth_spec.rb's D12 lock-in that this
+      # file stays free of that class's name) actually uses. One source, not two.
 
       # Collapse a row-at-a-time INSERT batch into chunked multi-row VALUES.
       #

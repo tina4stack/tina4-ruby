@@ -53,13 +53,16 @@ RSpec.describe "shipped tina4css assets" do
     end
   end
 
-  it "keeps the vendored SCSS source in step with the shipped CSS" do
-    scss = File.read(File.join(File.dirname(__FILE__), "..", "lib", "tina4",
-                              "scss", "tina4css", "_grid.scss"))
-    expect(scss).to include("$grid-gutter")
-    # The source legitimately uses `calc($grid-gutter / 2)`; the compiler resolves
-    # it. What must never happen is that form reaching the shipped CSS.
-    expect(scss).to include("calc($grid-gutter / 2)")
-    expect(read("tina4.css")).not_to include("calc($grid-gutter / 2)")
-  end
+  # REMOVED 2026-08-13: "keeps the vendored SCSS source in step with the
+  # shipped CSS" asserted lib/tina4/scss/tina4css/_grid.scss, which commit
+  # c61250c ("chore(scss): remove the bundled tina4css SCSS source from the
+  # framework", 2026-08-10, already an ancestor of this branch) deliberately
+  # deleted - the canonical tina4css source now lives in the tina4-css repo
+  # and the compiler in the Rust CLI (tina4/src/scss.rs); the framework never
+  # compiled or served the vendored copy, so it was a stale duplicate. The
+  # premise this test asserted (a vendored SCSS source living in THIS repo)
+  # no longer holds, so there is nothing left to keep "in step" - the
+  # positive/negative examples above already pin the shipped CSS itself
+  # (no unresolved variable, no calc() containing one, the real resolved
+  # values), which is the assertion that still applies.
 end
