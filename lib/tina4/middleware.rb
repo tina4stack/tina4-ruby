@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "cgi"
+
 module Tina4
   class Middleware
     class << self
@@ -218,8 +220,8 @@ module Tina4
       # per-route "filter" middleware (a 2-arg callable returning false, see
       # Tina4::Route#run_middleware) must obey the SAME row as a before_* hook,
       # and the rule should exist exactly once.
-      def refuse(response)
-        forbid(response) if default_response?(response)
+      def refuse(request, response)
+        forbid(request, response) if default_response?(response)
         response
       end
 
@@ -263,7 +265,7 @@ module Tina4
         elsif result.is_a?(Array) && result.length == 2
           request, response = result
         elsif result == false
-          refuse(response)
+          refuse(request, response)
           return [true, request, response]
         end
 
@@ -294,16 +296,47 @@ module Tina4
         body.to_s.empty?
       end
 
-      # The canonical refusal, in the same shape as #middleware_500 so the two
-      # framework-generated error bodies match byte for byte across all four
-      # frameworks.
-      def forbid(response)
+      # The canonical refusal (ERR-DEC-01/ERR-DEC-02): routed through the SAME
+      # negotiated renderer 404/500 use, so a middleware refusal looks like
+      # every other error page - a user template if the app ships one, the
+      # framework's 403.twig otherwise, negotiated JSON for an API client -
+      # instead of the old bare/un-negotiated `{"error":"Forbidden","status":403}`.
+      def forbid(request, response)
+        request_id = Tina4::Log.get_request_id || ""
+        accept = request.respond_to?(:headers) ? (request.headers["accept"] || "") : ""
+
+        if Tina4::Template.wants_json?(accept)
+          set_response_json(response, error_json_body(request_id))
+          return response
+        end
+
+        path = request.respond_to?(:path) ? request.path.to_s : ""
+        html = begin
+          Tina4::Template.render_error(403, { "path" => CGI.escapeHTML(path), "request_id" => request_id })
+        rescue StandardError
+          nil
+        end
+
+        if html && response.respond_to?(:html)
+          response.html(html, 403)
+        else
+          set_response_json(response, error_json_body(request_id))
+        end
+        response
+      end
+
+      # The canonical JSON error envelope (ERR-DEC-02) - the SAME shape
+      # Python/PHP/Node build: {error: true, code, message, status, request_id}.
+      def error_json_body(request_id)
+        { error: true, code: "FORBIDDEN", message: "Forbidden", status: 403, request_id: request_id }
+      end
+
+      def set_response_json(response, body)
         if response.respond_to?(:json)
-          response.json({ error: "Forbidden", status: 403 }, 403)
+          response.json(body, 403)
         elsif response.respond_to?(:status_code=)
           response.status_code = 403
         end
-        response
       end
 
       # Copy a response's state onto the object the CALLER still holds.

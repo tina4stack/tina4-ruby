@@ -387,12 +387,42 @@ module Tina4
       [200, { "content-type" => "application/json; charset=utf-8" }, [JSON.generate(Tina4::Swagger.generate)]]
     end
 
-    def handle_403(path = "")
-      body = Tina4::Template.render_error(403, { "path" => path }) rescue "403 Forbidden"
+    # The ONE JSON error envelope for a negotiated 403/404/500 (ERR-DEC-02).
+    #
+    # Reuses the existing Tina4::Response.error_response envelope
+    # (error: true, code, message, status) already shared by app-level
+    # response.error() calls, plus request_id for correlation (feature 43,
+    # ERR-404-REQUESTID) - the SAME shape Python/PHP/Node build.
+    ERROR_CODE_NAMES = { 403 => "FORBIDDEN", 404 => "NOT_FOUND", 500 => "INTERNAL_SERVER_ERROR" }.freeze
+
+    def error_json_body(status, message, request_id)
+      Tina4::Response.error_response(
+        ERROR_CODE_NAMES[status] || "HTTP_#{status}", message, status
+      ).merge(request_id: request_id)
+    end
+
+    # Build the 403 a legacy per-route auth_handler gets. ERR-DEC-01/
+    # ERR-DEC-02: negotiated on Accept - a JSON API client gets the canonical
+    # JSON envelope directly (no template attempt at all); a browser gets the
+    # SAME errors/403.twig-or-fallback HTML path 404/500 use. The path is
+    # escaped before it ever reaches the template (Ruby's Frond does not
+    # auto-escape {{ }} output - same reflected-path XSS class feature 127
+    # already fixed for #handle_404; this closes the SAME gap on 403).
+    def handle_403(path = "", accept = "")
+      request_id = Tina4::Log.get_request_id || "-"
+      if Tina4::Template.wants_json?(accept)
+        return [403, { "content-type" => "application/json" }, [JSON.generate(error_json_body(403, "Forbidden", request_id))]]
+      end
+
+      body = begin
+        Tina4::Template.render_error(403, { "path" => CGI.escapeHTML(path.to_s), "request_id" => request_id })
+      rescue StandardError
+        "403 Forbidden"
+      end
       [403, { "content-type" => "text/html" }, [body]]
     end
 
-    def handle_404(path)
+    def handle_404(path, accept = "")
       # Try serving a template file (e.g. /hello -> src/templates/pages/hello.twig)
       template_response = try_serve_template(path)
       return template_response if template_response
@@ -403,11 +433,25 @@ module Tina4
       return render_landing_page if path == "/" && dev_mode?
 
       Tina4::Log.warning("404 Not Found: #{path}")
+      request_id = Tina4::Log.get_request_id || "-"
+
+      # ERR-DEC-02: a JSON API client gets the JSON error body directly - no
+      # need to even try the HTML template. ERR-404-REQUESTID: the id now
+      # rides in the body too (the response header already carries it
+      # unconditionally, feature 43).
+      if Tina4::Template.wants_json?(accept)
+        return [404, { "content-type" => "application/json" }, [JSON.generate(error_json_body(404, "Not Found", request_id))]]
+      end
+
       # DEVADMIN-DEC-04 (feature 127): the error page reflects the request path
       # into HTML and the Twig error template does NOT auto-escape, so a crafted
       # /x<script> path would run script in the response origin. Escape it here
       # (same reflected-request-path XSS class as the dev-toolbar fix).
-      body = Tina4::Template.render_error(404, { "path" => CGI.escapeHTML(path.to_s) }) rescue "404 Not Found"
+      body = begin
+        Tina4::Template.render_error(404, { "path" => CGI.escapeHTML(path.to_s), "request_id" => request_id })
+      rescue StandardError
+        "404 Not Found"
+      end
       [404, { "content-type" => "text/html" }, [body]]
     end
 
@@ -752,19 +796,28 @@ module Tina4
         end
       end
 
+      # The canonical per-request id (set at the top of #call), so the id a
+      # user reports off the 500 page matches the log lines and the
+      # X-Request-ID response header - not a throwaway.
+      request_id = Tina4::Log.get_request_id || SecureRandom.hex(4)
+      accept = env && env["HTTP_ACCEPT"]
+
       # v3.13.7 SECURITY (CWE-209): production response body must NOT contain the
       # stack trace. The trace stays in Log.error above and reaches observability
-      # via the tina4.request.error event.
-      safe_page = lambda do
-        Tina4::Template.render_error(500, {
-          "error_message" => "",
-          # The canonical per-request id (set at the top of #call), so the id a
-          # user reports off the 500 page matches the log lines and the
-          # X-Request-ID response header - not a throwaway.
-          "request_id" => (Tina4::Log.get_request_id || SecureRandom.hex(4))
-        })
-      rescue StandardError
-        "500 Internal Server Error"
+      # via the tina4.request.error event. error_message is ALWAYS empty here -
+      # never touch this: a JSON client's message field stays the generic
+      # "Server Error" too, never the real exception (ERR-DEC-02).
+      safe_response = lambda do
+        if Tina4::Template.wants_json?(accept)
+          next [500, { "content-type" => "application/json" }, [JSON.generate(error_json_body(500, "Server Error", request_id))]]
+        end
+
+        body = begin
+          Tina4::Template.render_error(500, { "error_message" => "", "request_id" => request_id })
+        rescue StandardError
+          "500 Internal Server Error"
+        end
+        [500, { "content-type" => "text/html" }, [body]]
       end
 
       if dev_mode?
@@ -772,25 +825,25 @@ module Tina4
         # this rescue, so if the overlay itself throws (a malformed frame, an
         # unrenderable request value) it would double-fault out of dispatch. Wrap it
         # and fall back to the same safe production page, so a broken overlay still
-        # yields a bounded 500 — never a crash.
-        body =
+        # yields a bounded 500 — never a crash. The overlay itself is unaffected by
+        # content negotiation (feature 126, out of scope here; CWE-209 stays locked).
+        begin
+          body = Tina4::ErrorOverlay.render_error_overlay(error, request: env)
+          return [500, { "content-type" => "text/html" }, [body]]
+        rescue StandardError => overlay_err
           begin
-            Tina4::ErrorOverlay.render_error_overlay(error, request: env)
-          rescue StandardError => overlay_err
-            begin
-              Tina4::Log.warning(
-                "Error overlay render failed, serving the safe page: " \
-                "#{overlay_err.class}: #{overlay_err.message}"
-              )
-            rescue StandardError
-              # Log failures must never block the 500 render.
-            end
-            safe_page.call
+            Tina4::Log.warning(
+              "Error overlay render failed, serving the safe page: " \
+              "#{overlay_err.class}: #{overlay_err.message}"
+            )
+          rescue StandardError
+            # Log failures must never block the 500 render.
           end
-      else
-        body = safe_page.call
+          return safe_response.call
+        end
       end
-      [500, { "content-type" => "text/html" }, [body]]
+
+      safe_response.call
     end
 
     # OVERLAY-DEC-04: unify the debug gate on the overlay module's is_debug_mode so

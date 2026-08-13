@@ -5,6 +5,50 @@ module Tina4
     TEMPLATE_DIRS = %w[templates src/templates src/views views].freeze
 
     class << self
+      # Content negotiation for an error response (feature 42, ERR-DEC-02): does
+      # an Accept header prefer application/json over text/html?
+      #
+      # `Accept: application/json` (an API client) prefers JSON; a browser
+      # Accept (`text/html`, `*/*`, or no header at all) prefers HTML. A mixed
+      # Accept header - a real browser's
+      # `text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8` - is
+      # resolved by q-value: whichever of the two media types this method cares
+      # about is weighted higher wins; a tie or neither present defaults to
+      # HTML, the historical/back-compatible behaviour for an unspecified
+      # client. This is the ONE shared decision reused by the 403/404/500 error
+      # paths (#render_error's callers in rack_app.rb and middleware.rb), so a
+      # JSON API client sees the SAME negotiated shape everywhere
+      # (ERR-403-SPLIT) - ported with the same algorithm to Python/PHP/Node.
+      def wants_json?(accept)
+        accept = accept.to_s
+        return false if accept.empty?
+
+        best_json = -1.0
+        best_html = -1.0
+        accept.split(",").each do |part|
+          segments = part.strip.split(";")
+          media = segments[0].to_s.strip.downcase
+          q = 1.0
+          segments[1..].each do |param|
+            param = param.strip
+            next unless param.start_with?("q=")
+
+            q_str = param[2..]
+            q = q_str.to_f if q_str =~ /\A-?\d+(\.\d+)?\z/
+          end
+          if media == "application/json"
+            best_json = q if q > best_json
+          elsif ["text/html", "*/*", "application/xhtml+xml"].include?(media)
+            best_html = q if q > best_html
+          end
+        end
+
+        return false if best_json.negative?
+        return true if best_html.negative?
+
+        best_json > best_html
+      end
+
       def globals
         @globals ||= {}
       end
@@ -19,7 +63,7 @@ module Tina4
           raise "Template not found: #{template_path}"
         end
 
-        content = File.read(full_path)
+        content = File.read(full_path, encoding: "utf-8")
         ext = File.extname(full_path).downcase
         context = globals.merge(data.transform_keys(&:to_s))
 
@@ -43,7 +87,18 @@ module Tina4
           %w[.twig .html .erb].each do |ext|
             path = File.join(dir, "#{code}#{ext}")
             if File.exist?(path)
-              content = File.read(path)
+              # encoding: "utf-8" (feature 42, ERR-DEC-01): 403.twig ships an
+              # em-dash. Without a forced encoding, File.read tags the string
+              # with Encoding.default_external, which is UTF-8 on a typical
+              # dev machine but US-ASCII on a bare/minimal locale (no LANG/
+              # LC_ALL - common in a container) - and Ruby's regex engine then
+              # raises ArgumentError: invalid byte sequence in US-ASCII the
+              # moment TwigEngine tries to match against it. render_error's
+              # caller used to `rescue` broadly and silently fall back to a
+              # bare string, so every 403 request on such a host rendered NO
+              # template at all and nobody noticed. Matches lib/tina4/frond.rb,
+              # which already reads its templates this way.
+              content = File.read(path, encoding: "utf-8")
               return TwigEngine.new(context, dir).render(content)
             end
           end
@@ -123,7 +178,7 @@ module Tina4
 
       def error_overlay_source(file, line)
         return "" unless file && line && File.exist?(file)
-        lines = File.readlines(file)
+        lines = File.readlines(file, encoding: "utf-8")
         start = [line.to_i - 4, 0].max
         finish = [line.to_i + 3, lines.length - 1].min
         snippet = lines[start..finish].each_with_index.map do |l, i|
@@ -230,7 +285,7 @@ module Tina4
           parent_path = Regexp.last_match(1)
           full_parent = resolve_template(parent_path)
           if full_parent && File.exist?(full_parent)
-            parent_source = File.read(full_parent)
+            parent_source = File.read(full_parent, encoding: "utf-8")
             child_blocks = extract_blocks(content)
             @blocks.merge!(child_blocks)
             content = render_with_blocks(parent_source, @blocks)
@@ -296,7 +351,7 @@ module Tina4
           grandparent_name = Regexp.last_match(1)
           full_grandparent = resolve_template(grandparent_name)
           if full_grandparent && File.exist?(full_grandparent)
-            grandparent_source = File.read(full_grandparent)
+            grandparent_source = File.read(full_grandparent, encoding: "utf-8")
 
             # Extract block defaults defined in the parent template
             parent_blocks = extract_blocks(parent_source)
@@ -349,7 +404,7 @@ module Tina4
           inc_path = Regexp.last_match(1)
           full_path = resolve_template(inc_path)
           if full_path && File.exist?(full_path)
-            inc_content = File.read(full_path)
+            inc_content = File.read(full_path, encoding: "utf-8")
             TwigEngine.new(@context.dup, File.dirname(full_path)).render(inc_content)
           else
             "<!-- include not found: #{inc_path} -->"

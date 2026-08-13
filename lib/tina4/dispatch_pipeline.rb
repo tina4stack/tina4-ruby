@@ -298,7 +298,7 @@ module Tina4
         return static_response
       end
 
-      handle_404(ctx.path)
+      handle_404(ctx.path, ctx.env["HTTP_ACCEPT"])
     end
 
     # ── ALWAYS STAGES (compression / ETag / conditional-GET) ──────────
@@ -612,7 +612,7 @@ module Tina4
       return nil unless ctx.route.auth_handler
       return nil if ctx.route.auth_handler.call(ctx.env)
 
-      handle_403(ctx.env["PATH_INFO"] || "/")
+      handle_403(ctx.env["PATH_INFO"] || "/", ctx.env["HTTP_ACCEPT"])
     end
 
     # Secure-by-default: enforce bearer-token auth on write routes.

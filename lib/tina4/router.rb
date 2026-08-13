@@ -130,7 +130,7 @@ module Tina4
 
           # Same `false` row of the return-value table a before_* hook gets:
           # keep the response the filter set, 403 only if it set nothing.
-          Tina4::Middleware.refuse(response)
+          Tina4::Middleware.refuse(request, response)
           return false
         else
           return false unless Tina4::Middleware.run_before([mw], request, response)
