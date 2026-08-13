@@ -111,4 +111,34 @@ RSpec.describe "Route groups contract - slash normalization" do
     expect(response.status).to eq(401),
       "group middleware silently opened a secured write route under the normalized join"
   end
+
+  it "literal_regex_metacharacters_in_a_route_path_match_themselves" do
+    # Real-bug audit (3.13.99): CONFIRMED broken in PHP, CODE WINS here.
+    # Ruby's own Route#compile_pattern / WebSocketRoute#compile_pattern
+    # (lib/tina4/router.rb) already Regexp.escape() every literal path
+    # segment before it reaches the compiled regex, so a route path
+    # containing a literal regex metacharacter matches ONLY that literal
+    # path. This case is a lock-in against a future regression, proven
+    # with the SAME real dispatch/TestClient every other case in this
+    # file uses, not merely read from source.
+    Tina4::Router.get("/__router_literal/blocked-xss(1)") { |_req, res| res.json({ ok: true }) }
+    Tina4::Router.get("/__router_literal/files/report.pdf") { |_req, res| res.json({ ok: true }) }
+    Tina4::Router.get("/__router_literal/products/{id}") { |req, res| res.json({ id: req.params["id"] }) }
+
+    expect(client.get("/__router_literal/blocked-xss(1)").status).to eq(200),
+      "a literal ( ) in a route path must match its own exact path"
+    expect(client.get("/__router_literal/blocked-xss1").status).to eq(404),
+      "the de-parenthesised form must NOT also match - the parens are literal, not a capture group"
+
+    expect(client.get("/__router_literal/files/report.pdf").status).to eq(200),
+      "a literal . in a route path must match its own exact path"
+    expect(client.get("/__router_literal/files/reportXpdf").status).to eq(404),
+      "a literal . must not behave as a regex any-char wildcard"
+
+    # Negative control: an ordinary {param} route must keep capturing.
+    param_response = client.get("/__router_literal/products/42")
+    expect(param_response.status).to eq(200)
+    expect(param_response.json["id"]).to eq("42"),
+      "a genuine {param} route must still capture correctly alongside the escaping fix"
+  end
 end
