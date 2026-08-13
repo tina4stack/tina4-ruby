@@ -201,9 +201,23 @@ RSpec.describe "cache provider selection" do
     ENV["TINA4_CACHE_DIR"] = File.join(@tmp, "warned")
     port = CacheProviderContract.closed_port
 
-    logged = CacheProviderContract.capture_stdout do
-      Tina4::CacheBackends.create_backend(backend: "redis", url: "redis://127.0.0.1:#{port}")
-    end.downcase
+    # Tina4::Log memoises its console threshold in @snapshot, and
+    # spec_helper.rb pins the WHOLE suite to TINA4_LOG_LEVEL=NONE (console
+    # silent) so unrelated specs stay quiet. Raise it locally for this one
+    # assertion instead of depending on ambient state some earlier spec left
+    # behind - mirrors with_console_logging in
+    # spec/database_connect_timeout_spec.rb. Without this the warning is
+    # real (Tina4::Log.warning does fire) but NEVER reaches stdout under the
+    # suite's own baseline, so capture_stdout always returns "" - a false
+    # negative that only an isolation fix (not a flaky leak) can produce.
+    logged = begin
+      Tina4::Log.configure(output: "stdout", level: "debug")
+      CacheProviderContract.capture_stdout do
+        Tina4::CacheBackends.create_backend(backend: "redis", url: "redis://127.0.0.1:#{port}")
+      end.downcase
+    ensure
+      Tina4::Log.reset
+    end
 
     expect(logged).to include("redis"),
                       "the fallback was silent, or the warning does not say WHICH backend went away. " \
