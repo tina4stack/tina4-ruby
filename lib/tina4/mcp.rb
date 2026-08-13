@@ -590,7 +590,15 @@ module Tina4
   # share one fully-populated tool registry.
   def self._default_mcp_server
     @_default_mcp_server ||= begin
-      server = McpServer.new("/__dev/mcp", name: "Tina4 Dev Tools")
+      # VERSION-DEC-01 (feature 130): the built-in dev server's serverInfo
+      # must report the SAME version every other surface does (health,
+      # banner, dashboard), not the constructor's generic "1.0.0" default --
+      # found by direct verification against this live source, not assumed
+      # correct from the "Ruby is the reference" default. A user's OWN custom
+      # McpServer.new(path, name: ...) (no version: kwarg) is unaffected --
+      # that default stays "1.0.0" for app authors who have not set their own
+      # tool-server version.
+      server = McpServer.new("/__dev/mcp", name: "Tina4 Dev Tools", version: Tina4::VERSION)
       McpDevTools.register(server)
       server
     end
