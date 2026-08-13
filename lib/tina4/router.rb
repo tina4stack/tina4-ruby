@@ -674,6 +674,24 @@ module Tina4
         GroupContext.new(prefix, auth_handler, middleware).instance_eval(&block)
       end
 
+      # Join a route-group prefix with a route's own path.
+      #
+      # Feature 32 (RG-DEC-01): ports PHP's normalization grammar verbatim
+      # (Tina4/Router.php addRoute - the reference) so Ruby converges with
+      # PHP/Python/Node instead of GroupContext's old bare concatenation. One
+      # separator between prefix and path, a single leading slash, no
+      # trailing slash, and any run of slashes collapsed to one - so
+      # group("/api") + get("users"), get("/users"), and group("/api/") +
+      # get("/users") all resolve to the SAME "/api/users". Before this fix,
+      # "#{@prefix}#{path}" bare-concatenated, so group("/api") +
+      # get("users") silently mis-registered at "/apiusers" (and a doubled
+      # trailing slash on a prefix could leave "/api//users").
+      def join_group_path(prefix, path)
+        full = "#{prefix}/#{path.sub(%r{\A/+}, '')}"
+        full = "/#{full.gsub(%r{\A/+|/+\z}, '')}"
+        full.gsub(%r{/+}, "/")
+      end
+
       # Load route files from a directory (file-based route discovery).
       #
       # mtime-tracked & re-runnable so re-discovery on /__dev/api/reload is
@@ -782,7 +800,7 @@ module Tina4
 
       %w[get post put patch delete any].each do |m|
         define_method(m) do |path, middleware: [], swagger_meta: {}, template: nil, &handler|
-          full_path = "#{@prefix}#{path}"
+          full_path = Tina4::Router.join_group_path(@prefix, path)
           combined_middleware = @middleware + middleware
           Tina4::Router.add(m, full_path, handler,
                                   auth_handler: @auth_handler,
