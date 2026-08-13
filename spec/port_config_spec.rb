@@ -74,10 +74,25 @@ RSpec.describe "Port/Host configuration" do
     end
 
     describe "host" do
-      after { ENV.delete("HOST") }
+      # resolve_config(:host, nil)'s DEFAULT is itself gated on TINA4_DEBUG
+      # (DEVADMIN-DEC-02: dev mode binds loopback, not 0.0.0.0, for the
+      # unauthenticated dashboard surface) - see lib/tina4/cli.rb:3062. 27
+      # OTHER spec files set ENV["TINA4_DEBUG"] for their own purposes, so
+      # this describe block is immune to whichever one runs first under the
+      # suite's random order, not just to itself - the same reason
+      # with_console_logging (spec/database_connect_timeout_spec.rb) pins
+      # Log's console state locally rather than trusting ambient cleanliness.
+      # TINA4_HOST is pinned too: resolve_config checks it BEFORE bare HOST.
+      around do |example|
+        saved = %w[HOST TINA4_HOST TINA4_DEBUG].to_h { |k| [k, ENV[k]] }
+        ENV.delete("HOST")
+        ENV.delete("TINA4_HOST")
+        ENV.delete("TINA4_DEBUG")
+        example.run
+        saved.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+      end
 
       it "defaults to 0.0.0.0 when no CLI flag and no ENV var" do
-        ENV.delete("HOST")
         expect(resolve(:host, nil)).to eq("0.0.0.0")
       end
 
@@ -95,6 +110,13 @@ RSpec.describe "Port/Host configuration" do
         ENV["HOST"] = ""
         expect(resolve(:host, nil)).to eq("0.0.0.0")
       end
+
+      # DEVADMIN-DEC-02 itself: TINA4_DEBUG truthy changes the DEFAULT to
+      # loopback. Proves the gate this describe block now isolates against.
+      it "defaults to loopback instead when TINA4_DEBUG is truthy" do
+        ENV["TINA4_DEBUG"] = "true"
+        expect(resolve(:host, nil)).to eq("127.0.0.1")
+      end
     end
   end
 
@@ -111,10 +133,19 @@ RSpec.describe "Port/Host configuration" do
   end
 
   describe "DEFAULT_HOST" do
-    after { ENV.delete("HOST") }
+    # Same TINA4_DEBUG/TINA4_HOST isolation as the "host" describe block
+    # above - resolve_config's fallback is DEFAULT_HOST only when
+    # TINA4_DEBUG is falsy (lib/tina4/cli.rb:3062).
+    around do |example|
+      saved = %w[HOST TINA4_HOST TINA4_DEBUG].to_h { |k| [k, ENV[k]] }
+      ENV.delete("HOST")
+      ENV.delete("TINA4_HOST")
+      ENV.delete("TINA4_DEBUG")
+      example.run
+      saved.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+    end
 
     it "is the host resolution actually falls back to (no CLI flag, no ENV)" do
-      ENV.delete("HOST")
       resolved = cli.send(:resolve_config, :host, nil)
       expect(resolved).to eq(Tina4::CLI.const_get(:DEFAULT_HOST))
       # and it is the documented value (bind-all default)
