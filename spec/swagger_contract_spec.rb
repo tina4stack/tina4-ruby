@@ -362,4 +362,83 @@ RSpec.describe "Tina4 Swagger contract (3.13.96)" do
     duplicates = ids.tally.select { |_id, count| count > 1 }.keys
     expect(duplicates).to be_empty, "duplicate operationIds: #{duplicates.inspect}"
   end
+
+  # ── #11 spec-reflects-a-route-added-after-boot ───────────────────────────
+  # The document reflects a route registered AFTER an earlier fetch — the spec
+  # must re-read the LIVE route table every time, never a snapshot frozen at
+  # server boot. Node's generator closed over a boot-time `router.getRoutes()`
+  # capture (SWAG-NODE-BOOT-SNAPSHOT); Ruby's Swagger.generate already reads
+  # Tina4::Router.routes live on every call, and this pins that.
+  it "spec reflects a route added after boot: a route registered after an earlier fetch is documented" do
+    with_env("TINA4_SWAGGER_ENABLED" => "true") do
+      Tina4.get("/contract/before-boot") { |_req, res| res.json({}) }
+
+      before_doc = fetch("/swagger/openapi.json").json
+      expect(before_doc["paths"]).to have_key("/contract/before-boot")
+      expect(before_doc["paths"]).not_to have_key("/contract/late-added"),
+        "premise broken: the late route must not exist before it is registered"
+
+      # Simulate a hot-reload registering a NEW route after the first fetch —
+      # exactly what DevReload does mid-process.
+      Tina4.get("/contract/late-added") { |_req, res| res.json({}) }
+
+      after_doc = fetch("/swagger/openapi.json").json
+      expect(after_doc["paths"]).to have_key("/contract/late-added"),
+        "the document must reflect a route registered after an earlier fetch, not a frozen boot snapshot"
+      expect(after_doc["paths"]).to have_key("/contract/before-boot")
+    end
+  end
+
+  # ── #12 internal-feedback-route-is-never-in-the-spec ─────────────────────
+  # /__feedback/* is excluded by the SAME shared internal-prefix rule as
+  # /swagger and /__dev, regardless of how or when it was registered. Node's
+  # /__feedback/* was kept out of the spec only by BOOT ORDERING (swagger
+  # snapshotted routes before DevAdmin registered the feedback routes), not by
+  # its exclusion list — a reorder would have published
+  # `POST /__feedback/api/turn` as a secured route (SWAG-NODE-FEEDBACK-LEAK).
+  # Ruby dispatches /__feedback outside Tina4::Router in production (like
+  # Python), so this registers it directly through the real public Router API
+  # (the same synthetic-internal-route pattern invariant #9 already uses for
+  # /__dev and /swagger) to prove the RULE catches it, not registration luck.
+  it "internal feedback route is never in the spec: /__feedback excluded regardless of registration" do
+    Tina4.get("/contract/app-route") { |_req, res| res.json([]) }
+    Tina4::Router.get("/__feedback/widget.js") { |_req, res| res.json({}) }
+    Tina4::Router.post("/__feedback/api/turn") { |_req, res| res.json({}) }
+
+    spec = Tina4::Swagger.generate
+
+    expect(spec["paths"]).to have_key("/contract/app-route")
+    expect(spec["paths"].keys).not_to include("/__feedback/widget.js", "/__feedback/api/turn")
+    leaked = spec["paths"].keys.select { |p| p.start_with?("/__feedback") }
+    expect(leaked).to be_empty, "framework-internal /__feedback routes leaked into the document: #{leaked.inspect}"
+  end
+
+  # ── #13 secured-op-per-op-shape-is-identical ──────────────────────────────
+  # A secured operation's security + 401 + summary/tags shape is
+  # byte-identical across all four frameworks (SWAG-401-SHAPE +
+  # SWAG-SHAPE-DRIFT). Ruby always populated summary/tags (unlike Python) but
+  # also always stamped a fabricated `description: ""` on every undecorated
+  # operation, the one shape drift where Ruby (not Python) was the odd one
+  # out. The negative control proves summary/tags populate regardless of
+  # security, and that no description is fabricated either way.
+  it "secured op per-op shape is identical: security + 401 + summary/tags converge across all four" do
+    Tina4::Router.post("/contract/shape-item") { |_req, res| res.json({}) }        # secured by default, undecorated
+    Tina4::Router.post("/contract/shape-public") { |_req, res| res.json({}) }.no_auth
+
+    spec = Tina4::Swagger.generate
+
+    secured = spec.dig("paths", "/contract/shape-item", "post")
+    expect(secured["security"]).to eq([{ "bearerAuth" => [] }])
+    expect(secured["responses"]["401"]).to eq("description" => "Unauthorized")
+    expect(secured["summary"]).to eq("POST /contract/shape-item")
+    expect(secured["tags"]).to eq(["contract"])
+    expect(secured).not_to have_key("description"), "an undecorated operation must not fabricate a description"
+
+    public_op = spec.dig("paths", "/contract/shape-public", "post")
+    expect(public_op).not_to have_key("security")
+    expect(public_op["responses"]).not_to have_key("401")
+    expect(public_op["summary"]).to eq("POST /contract/shape-public"), "summary populates regardless of security"
+    expect(public_op["tags"]).to eq(["contract"]), "tags populate regardless of security"
+    expect(public_op).not_to have_key("description")
+  end
 end

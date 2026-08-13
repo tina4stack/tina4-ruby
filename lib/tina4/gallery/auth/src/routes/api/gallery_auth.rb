@@ -108,7 +108,7 @@ Tina4::Router.post("/api/gallery/auth/login") do |request, response|
 end
 
 Tina4::Router.get("/api/gallery/auth/verify") do |request, response|
-  token = request.params["token"].to_s
+  token = request.query["token"].to_s
   result = Tina4::Auth.validate_token(token)
   response.json({ valid: result[:valid] })
 end

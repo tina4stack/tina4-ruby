@@ -651,11 +651,33 @@ module Tina4
     # Template loading
     # -----------------------------------------------------------------------
 
+    # Load a template's source, CONFINED under the templates directory.
+    #
+    # Every path-taking tag ({% include %}, {% extends %}, {% import %},
+    # {% from ... import %}) funnels through this one loader, so this single guard
+    # confines them all (TAG-DEC-01): a name that is absolute, climbs out with a
+    # +..+ up-level segment, or resolves through a symlink to a location OUTSIDE
+    # the templates root is REFUSED -- the outside file is never read. Template
+    # -side analogue of the static-asset confinement (feature 41 / ADR-0050).
     def load_template(name)
+      # Lexical belt: refuse an absolute path or a `..` up-level segment before
+      # touching the filesystem (defense in depth in front of the realpath check).
+      if name.start_with?("/", "\\") || name =~ %r{\A[A-Za-z]:} ||
+         name.split(%r{[\\/]}).include?("..")
+        raise "Template path escapes the templates directory: #{name}"
+      end
       path = File.join(@template_dir, name)
-      raise "Template not found: #{path}" unless File.exist?(path)
+      raise "Template not found: #{path}" unless File.file?(path)
 
-      File.read(path, encoding: "utf-8")
+      # Realpath containment: a symlink INSIDE the templates dir whose target
+      # resolves OUTSIDE it is refused (the lexical belt cannot see a symlink).
+      root = File.realpath(@template_dir)
+      real = File.realpath(path)
+      unless real == root || real.start_with?(root + File::SEPARATOR)
+        raise "Template path escapes the templates directory: #{name}"
+      end
+
+      File.read(real, encoding: "utf-8")
     end
 
     # -----------------------------------------------------------------------

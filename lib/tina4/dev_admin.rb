@@ -383,6 +383,16 @@ module Tina4
         path = env["PATH_INFO"] || "/"
         method = env["REQUEST_METHOD"]
 
+        # DEVADMIN-DEC-01/02 (feature 127): fail-closed same-origin + loopback
+        # gate on every /__dev write, before ANY handler runs. Closes drive-by
+        # CSRF (a page the developer also has open POSTing to /file/save then
+        # /reload) and a network-exposed debug box. GET/HEAD/OPTIONS skip it;
+        # the MCP surface keeps its own richer 404 gate (with_mcp_gate), so the
+        # loopback arm skips the mcp prefixes. Mirrors Python's
+        # dev_admin._dev_mutation_denial wired into _handle_dev_admin.
+        denial = dev_mutation_denial(env)
+        return denial if denial
+
         # Dynamic-path routes can't live in the case-tuple below — match
         # them up front. /__dev/api/threads/{id}[/messages] is forwarded
         # verbatim to the Rust agent's /threads/{id}[/messages] surface
@@ -665,7 +675,10 @@ module Tina4
         when ["GET", "/__dev/api/files"]
           json_response(files_list(env))
         when ["GET", "/__dev/api/file"]
-          json_response(file_read_payload(query_param(env, "path")))
+          rel = query_param(env, "path")
+          # DEVADMIN-DEC-03: a secret path refuses with 403 (parity with Python);
+          # file_read_payload also guards so the body never carries the content.
+          json_response(file_read_payload(rel), secret_path?(rel) ? 403 : 200)
         when ["GET", "/__dev/api/file/raw"]
           file_raw_response(query_param(env, "path"))
         when ["POST", "/__dev/api/file/save"]
@@ -758,9 +771,9 @@ module Tina4
         JSON.parse(raw) rescue nil
       end
 
-      def json_response(data)
+      def json_response(data, status = 200)
         body = JSON.generate(data)
-        [200, { "content-type" => "application/json; charset=utf-8" }, [body]]
+        [status, { "content-type" => "application/json; charset=utf-8" }, [body]]
       end
 
       def version_check_payload
@@ -1036,7 +1049,12 @@ module Tina4
         url = grounding_env_value("TINA4_MCP_URL").to_s
         url = "https://mcp.tina4.com" if url.empty?
         configured = !token.empty?
-        { configured: configured, last4: configured ? token[-4..].to_s : "", url: url }
+        # source: the developer's own token → "personal"; otherwise the coder
+        # runs on the shared FREE-TOKEN trial the Rust agent falls back to →
+        # "free", which drives the "register" nudge. (Disabling the free rung
+        # is an agent-side concern.)
+        source = configured ? "personal" : "free"
+        { configured: configured, source: source, last4: configured ? token[-4..].to_s : "", url: url }
       end
 
       # POST /__dev/api/grounding/token — upsert TINA4_MCP_TOKEN into the
@@ -1349,13 +1367,22 @@ module Tina4
           # which a bare Tina4.seed_table call never trips (mirrors Python's
           # explicit `from tina4_python.seeder import seed_table`).
           require_relative "seeder"
+          # SEED-TABLE-SEED-INERT: seed_table no longer takes seed: (it has no
+          # generators of its own). Build the field map from the introspected
+          # columns using a CALLER-SEEDED FakeData closed over per generator —
+          # the same "auto_field_map(db, table, fake)" pattern Python/Node use
+          # for their dev-admin seed endpoints — so reproducibility comes from
+          # the closure, not a dead keyword.
+          fake = Tina4::FakeData.new(seed: seed)
+          field_map = Tina4._normalize_columns(db.columns(table_name)).each_with_object({}) do |(col_name, type_sym), map|
+            map[col_name] = -> { fake.for_field({ type: type_sym }, col_name) }
+          end
           # Delegate to the shared resilient seed_table helper so the endpoint
           # gets the exact same per-row wrap (P1) — no unhandled row failure can
-          # crash the endpoint — plus clear/seed/strict (P2/P3). _normalize_columns
-          # skips auto-increment id PKs from the introspected column list.
+          # crash the endpoint — plus clear/strict (P2/P1).
           summary = Tina4.seed_table(
-            table_name, db.columns(table_name),
-            count: count, seed: seed, clear: clear, strict: strict
+            table_name, field_map,
+            count: count, clear: clear, strict: strict
           )
           {
             table: table_name,
@@ -1718,7 +1745,10 @@ module Tina4
 
       def dev_files_hidden?(name)
         return true if DEV_FILES_IGNORED.include?(name)
-        name.start_with?(".") && name != ".env" && name != ".env.example"
+        # DEVADMIN-DEC-03: hide dotfiles INCLUDING .env (it carries TINA4_SECRET,
+        # the DB password and the MCP token). The .env.example template is
+        # placeholder-only and stays visible.
+        name.start_with?(".") && name != ".env.example"
       end
 
       # Same 4-status mapping Python/PHP use for a porcelain code.
@@ -1792,6 +1822,10 @@ module Tina4
           next if dev_files_hidden?(name)
           full = File.join(target, name)
           entry_rel = full[root.length..].to_s.sub(%r{\A/+}, "").tr("\\", "/")
+          # DEVADMIN-DEC-03: never surface secret material in the listing
+          # (.pem/.key, id_rsa, secrets/, .git/). The dotfile filter above
+          # already drops .env; this covers non-dotfile secrets too.
+          next if secret_path?(entry_rel)
           is_dir = File.directory?(full)
 
           # git status for this entry (same mapping PHP/Python use)
@@ -1856,6 +1890,12 @@ module Tina4
 
       def file_read_payload(rel)
         return { error: "path required" } if rel.nil? || rel.empty?
+        # DEVADMIN-DEC-03: never serve secret material (.env, keys, secrets/).
+        # The dispatch statuses this 403; the guard here keeps the helper safe
+        # for any other caller too. The secret content never enters the payload.
+        if secret_path?(rel)
+          return { error: "Refused: secret file", path: rel.to_s, content: "", language: "text", bytes: 0 }
+        end
         begin
           target = safe_project_path(rel)
           return { error: "Not found" } unless File.exist?(target)
@@ -1869,6 +1909,8 @@ module Tina4
 
       def file_raw_response(rel)
         return json_response({ error: "path required" }) if rel.nil? || rel.empty?
+        # DEVADMIN-DEC-03: never serve secret material (.env, keys, secrets/).
+        return json_response({ error: "Refused: secret file" }, 403) if secret_path?(rel)
         begin
           target = safe_project_path(rel)
           return json_response({ error: "Not found" }) unless File.file?(target)
@@ -2066,6 +2108,92 @@ module Tina4
         res = 0
         expected.bytes.zip(provided.bytes) { |a, b| res |= (a ^ b.to_i) }
         res.zero?
+      end
+
+      # ── Dev-admin mutation security (feature 127, DEVADMIN-DEC-01/02/03) ──
+      # The dashboard writes files, runs SQL and installs gems, so it must
+      # assume the developer ALSO browses the web. Two fail-closed gates guard
+      # every /__dev write, and a secret denylist guards the file-read surface.
+      # Mirrors tina4_python/dev_admin _dev_same_origin_ok / _dev_mutation_denial
+      # / _is_secret_path.
+      DEV_SAFE_METHODS = %w[GET HEAD OPTIONS].freeze
+      # The MCP surface carries its own richer loopback+token gate
+      # (with_mcp_gate -> 404), so the REST loopback arm skips these prefixes and
+      # lets the MCP gate govern (keeps a disallowed mcp/call a 404, not a 403).
+      DEV_MCP_PREFIXES = ["/__dev/api/mcp", "/__dev/mcp"].freeze
+      # Private-key / credential basenames the file endpoints must never serve.
+      DEV_SECRET_BASENAMES = %w[.env .envrc id_rsa id_dsa id_ecdsa id_ed25519].freeze
+      DEV_SECRET_SUFFIXES = %w[.pem .key .pfx .p12 .keystore .jks].freeze
+
+      # DEVADMIN-DEC-01: fail-closed same-origin check for a dev-admin mutation.
+      #
+      # A drive-by CSRF is a BROWSER cross-origin request, and a modern browser
+      # always sends Sec-Fetch-Site (and any browser sends Origin on a
+      # cross-origin POST), so:
+      #   - Sec-Fetch-Site present -> trust the browser's own classification
+      #     (cross-site refused; same-origin / same-site / none allowed).
+      #   - else Origin present -> require its host to match the request Host.
+      #   - else neither -> not a browser cross-origin request at all (curl, a
+      #     test client, a server-side caller); it cannot be a drive-by, so it
+      #     is allowed here and the loopback gate still constrains the peer.
+      def dev_same_origin_ok?(env)
+        sfs = (env["HTTP_SEC_FETCH_SITE"] || "").strip.downcase
+        return %w[same-origin same-site none].include?(sfs) unless sfs.empty?
+
+        origin = (env["HTTP_ORIGIN"] || "").strip
+        unless origin.empty?
+          netloc = origin.include?("://") ? origin.split("://", 2)[1] : origin
+          host = (env["HTTP_HOST"] || "").strip
+          return !host.empty? && netloc.downcase == host.downcase
+        end
+        true
+      end
+
+      # Return a 403 Rack triple to REFUSE a dev-admin write, or nil to allow.
+      #
+      # Two independent fail-closed gates on every /__dev mutation:
+      #   DEC-01  same-origin (all writes, incl. mcp/call) - drive-by CSRF.
+      #   DEC-02  loopback peer (all writes EXCEPT the MCP surface, which carries
+      #           its own gate) - a network-exposed debug box.
+      # Uses the RAW socket peer (env["REMOTE_ADDR"]), never X-Forwarded-For.
+      def dev_mutation_denial(env)
+        method = (env["REQUEST_METHOD"] || "").to_s.upcase
+        return nil if DEV_SAFE_METHODS.include?(method)
+        path = (env["PATH_INFO"] || "").to_s
+        return nil unless path.start_with?("/__dev")
+
+        return dev_refused("dev-admin: refused (cross-origin request)") unless dev_same_origin_ok?(env)
+
+        unless path.start_with?(*DEV_MCP_PREFIXES)
+          remote_ip = (env["REMOTE_ADDR"] || "").to_s
+          unless Tina4.is_loopback?(remote_ip) || mcp_token_ok?(env)
+            return dev_refused("dev-admin: refused (non-loopback peer)")
+          end
+        end
+        nil
+      end
+
+      def dev_refused(message)
+        [403, { "content-type" => "application/json; charset=utf-8" },
+         [JSON.generate({ "ok" => false, "error" => message })]]
+      end
+
+      # DEVADMIN-DEC-03: true when +rel+ names secret material the file endpoints
+      # must never serve - .env / .env.* (the .env.example template is allowed),
+      # anything under .git/ or secrets/, and private-key material.
+      def secret_path?(rel)
+        norm = rel.to_s.tr("\\", "/").gsub(%r{\A/+|/+\z}, "").downcase
+        return false if norm.empty?
+
+        parts = norm.split("/")
+        return true if parts.any? { |p| p == ".git" || p == "secrets" }
+
+        base = parts.last
+        return false if base == ".env.example"
+        return true if base == ".env" || base.start_with?(".env.")
+        return true if DEV_SECRET_BASENAMES.include?(base)
+
+        base.end_with?(*DEV_SECRET_SUFFIXES)
       end
 
       def mcp_tools_list

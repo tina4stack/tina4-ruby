@@ -160,7 +160,7 @@ module GracefulShutdownProbe
       "TINA4_OVERRIDE_CLIENT" => "true",
       "TINA4_DEBUG" => "false",
       "TINA4_NO_AI_PORT" => "true",
-      "TINA4_LOG_LEVEL" => "[TINA4_LOG_INFO]",
+      "TINA4_LOG_LEVEL" => "INFO",
       "TINA4_DEBUG_LEVEL" => nil,
       "TINA4_SHUTDOWN_TIMEOUT" => shutdown_timeout&.to_s,
       "PROBE_PORT" => port.to_s,
@@ -404,7 +404,12 @@ RSpec.describe "Graceful shutdown", :slow do
                                    "an invalid timeout silently became a 0s drain and cut the " \
                                    "in-flight request: #{response.inspect}\n#{server.log}"
       expect(status&.exitstatus).to eq(0)
-      expect(server.log).to include("TINA4_SHUTDOWN_TIMEOUT=\"not-a-number\""),
+      # Format-agnostic (Decision 3): with TINA4_DEBUG=false this server logs
+      # JSON by default, where the value's quotes are JSON-escaped
+      # (\"not-a-number\") rather than literal — check for the setting name
+      # and the bad value as two substrings rather than one literal-quoted
+      # string, so this doesn't pin one specific log format.
+      expect(server.log).to include("TINA4_SHUTDOWN_TIMEOUT").and(include("not-a-number")),
                             "the fallback must name the bad value\n#{server.log}"
     ensure
       server.destroy!

@@ -33,8 +33,39 @@ module Tina4
     end
   end
 
+  # Pluralize a singular noun -- the inverse of {singularize}, and the SAME
+  # smart-inflection rules the hand-written has_many relies on.
+  #
+  # "post" -> "posts", "category" -> "categories", "box" -> "boxes",
+  # "class" -> "classes", "day" -> "days". foreign_key_field's auto
+  # related_name used a naive downcase + "s" ("Category" -> "categorys" -- a
+  # broken accessor name); it now routes through here so the FK-wired has_many
+  # matches the hand-written one.
+  def self.pluralize(word)
+    s = word.to_s
+    if s =~ /[^aeiou]y\z/i
+      s.sub(/y\z/i, "ies")
+    elsif s =~ /(s|ss|sh|ch|x|z)\z/i
+      "#{s}es"
+    else
+      "#{s}s"
+    end
+  end
+
   class ORM
     include Tina4::FieldTypes
+
+    # REL-EAGER-UNBOUNDED: max parent PKs per eager "WHERE fk IN (...)" query, so
+    # a very large parent set never yields an unbounded IN list (a query-size /
+    # driver parameter-limit risk). Each chunk is one query, each fetched a page
+    # at a time so no relation is ever silently truncated.
+    #
+    # REL-DEC-01: relationships are READ-SIDE-ONLY -- foreign_key_field wires up
+    # traversal accessors but emits NO DB-level FK / ON DELETE clause (consistent
+    # with the no-foreign-key Firebird rule), so deleting a parent does not
+    # cascade to children at the engine level; integrity is the migration's job.
+    EAGER_IN_CHUNK = 500
+    EAGER_PAGE_SIZE = 1000
 
     # When a new model class is defined, resolve any deferred ForeignKeyField
     # wiring that targets it. The string / forward-reference form of
@@ -267,10 +298,24 @@ module Tina4
             pk_values = instances.map { |inst| inst.__send__(pk) }.compact.uniq
             next if pk_values.empty?
 
-            placeholders = pk_values.map { "?" }.join(",")
-            sql = "SELECT * FROM #{klass.table_name} WHERE #{fk} IN (#{placeholders})"
-            results = klass.db.fetch(sql, pk_values)
-            related_records = results.map { |row| klass.from_hash(row) }
+            # REL-SOFTDELETE-TRAVERSAL: a soft-deleted child must not surface
+            # through eager traversal (parity with lazy + the finders).
+            soft = klass.soft_delete ? " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)" : ""
+            order_col = klass.primary_key_field || :id
+            # REL-EAGER-UNBOUNDED: chunk the parent PKs so the IN list stays
+            # bounded, and page each chunk so no relation is truncated.
+            related_records = []
+            pk_values.each_slice(EAGER_IN_CHUNK) do |chunk|
+              placeholders = chunk.map { "?" }.join(",")
+              sql = "SELECT * FROM #{klass.table_name} WHERE #{fk} IN (#{placeholders})#{soft} ORDER BY #{order_col}"
+              offset = 0
+              loop do
+                batch = klass.db.fetch(sql, chunk, limit: EAGER_PAGE_SIZE, offset: offset).to_a
+                related_records.concat(batch.map { |row| klass.from_hash(row) })
+                break if batch.length < EAGER_PAGE_SIZE
+                offset += EAGER_PAGE_SIZE
+              end
+            end
 
             # Eager load nested
             klass.eager_load(related_records, nested) unless nested.empty?
@@ -300,10 +345,16 @@ module Tina4
             next if fk_values.empty?
 
             related_pk = klass.primary_key_field || :id
-            placeholders = fk_values.map { "?" }.join(",")
-            sql = "SELECT * FROM #{klass.table_name} WHERE #{related_pk} IN (#{placeholders})"
-            results = klass.db.fetch(sql, fk_values)
-            related_records = results.map { |row| klass.from_hash(row) }
+            # REL-SOFTDELETE-TRAVERSAL: exclude a soft-deleted parent (parity with
+            # find). REL-EAGER-UNBOUNDED: chunk the FK values.
+            soft = klass.soft_delete ? " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)" : ""
+            related_records = []
+            fk_values.each_slice(EAGER_IN_CHUNK) do |chunk|
+              placeholders = chunk.map { "?" }.join(",")
+              sql = "SELECT * FROM #{klass.table_name} WHERE #{related_pk} IN (#{placeholders})#{soft}"
+              # One row per distinct PK, so limit == chunk size (default 100 would truncate a full chunk).
+              related_records.concat(klass.db.fetch(sql, chunk, limit: chunk.length).to_a.map { |row| klass.from_hash(row) })
+            end
 
             klass.eager_load(related_records, nested) unless nested.empty?
 
@@ -370,15 +421,49 @@ module Tina4
           ORM.instance_variable_set(:@query_cache, QueryCache.new(default_ttl: 0, max_size: 500))
       end
 
+      # Table names a query reads FROM / JOINs -- lowercased, schema-stripped.
+      #
+      # Best-effort: for each FROM/JOIN keyword it takes the following
+      # identifier, drops any quoting (backticks, double quotes, square
+      # brackets) and schema prefix (public.users -> users), and ignores the
+      # alias. A cached query is tagged with these tables so a write to any one
+      # of them invalidates it (CACHE-DEC-01).
+      def tables_in_sql(sql)
+        tables = {}
+        (sql || "").scan(
+          %r{\b(?:FROM|JOIN)\s+([`"\[]?[A-Za-z_][\w$]*[`"\]]?(?:\.[`"\[]?[A-Za-z_][\w$]*[`"\]]?)?)}i
+        ).each do |match|
+          name = match[0].gsub(/[`"\[\]]/, "")
+          name = name.split(".").last if name.include?(".")
+          tables[name.downcase] = true unless name.empty?
+        end
+        tables.keys
+      end
+
+      # Every table a cached query touches: this model's table plus every
+      # FROM/JOIN table in `sql`. A write to any of these busts the entry.
+      def cache_tags(sql)
+        tags = [table_name.to_s.downcase]
+        tables_in_sql(sql).each { |table| tags << table unless tags.include?(table) }
+        tags
+      end
+
       # SQL query with result caching. Returns an array of ORM instances.
       #
-      # Parity with the Python master's `cached` (orm/model.py:1077): same key
-      # shape, same tag, and a miss delegates to `select` so eager loading and the
-      # row cap behave identically to an uncached read.
+      # Parity with the Python master's `cached`: same key shape, and a miss
+      # delegates to `select` so eager loading and the row cap behave
+      # identically to an uncached read.
       #
-      # Entries are tagged with the model name so #clear_cache invalidates only
-      # this model's queries and leaves every other model's cached reads intact.
+      # Invalidation (CACHE-DEC-01): the entry is tagged by every table the query
+      # touches (this model's table plus any FROM/JOIN tables), so a write through
+      # the ORM (save/delete/force_delete/restore) to ANY of those tables busts
+      # it. `ttl <= 0` means NO-CACHE -- the query runs and the rows are returned
+      # but nothing is stored, so every read hits the database (it is NOT an
+      # infinite-lived entry).
       def cached(sql, params = [], ttl: 60, limit: 100, offset: nil, include: nil)
+        # ttl <= 0 is NO-CACHE: run it live, store nothing, read nothing.
+        return select(sql, params, limit: limit, offset: offset, include: include) if ttl <= 0
+
         key = "#{name}:#{QueryCache.query_key(sql, params)}:#{limit}:#{offset || 0}"
 
         # nil-check, NOT a truthiness check: a query that legitimately returns no
@@ -389,15 +474,19 @@ module Tina4
         return hit unless hit.nil?
 
         result = select(sql, params, limit: limit, offset: offset, include: include)
-        query_cache.set(key, result, ttl: ttl, tags: [name])
+        query_cache.set(key, result, ttl: ttl, tags: cache_tags(sql))
         result
       end
 
-      # Invalidate every cached query for THIS model. Tag-scoped, so it never
-      # flushes another model's entries. Mirrors the master's
-      # `_query_cache.clear_tag(cls.__name__)`.
+      # Invalidate every cached query that touches this model's table.
+      #
+      # Tag-scoped, NOT a wholesale flush: a cached JOIN on another model that
+      # reads this table is busted too (it carries this table's tag), while a
+      # query that never touches this table is left intact. Called after every
+      # ORM write (save/delete/force_delete/restore) so a read-after-write never
+      # serves a stale/deleted row (CACHE-DEC-01).
       def clear_cache
-        query_cache.clear_tag(name)
+        query_cache.clear_tag(table_name.to_s.downcase)
         nil
       end
 
@@ -500,7 +589,6 @@ module Tina4
           string: "VARCHAR(255)",
           text: "TEXT",
           float: "REAL",
-          decimal: "REAL",
           boolean: bool_sql,
           date: "DATE",
           datetime: datetime_sql,
@@ -514,6 +602,14 @@ module Tina4
           sql_type = type_map[opts[:type]] || "TEXT"
           if opts[:type] == :string && opts[:length]
             sql_type = "VARCHAR(#{opts[:length]})"
+          elsif opts[:type] == :decimal
+            # decimal_field stores precision/scale -- emit a real DECIMAL(p, s)
+            # (identical on PG/MySQL/MSSQL/Firebird/SQLite) instead of the old
+            # REAL, which silently DROPPED the declared scale. float_field /
+            # numeric_field stay REAL (the documented float default).
+            precision = opts[:precision] || 10
+            scale = opts[:scale] || 2
+            sql_type = "DECIMAL(#{precision},#{scale})"
           end
 
           parts = ["#{name} #{sql_type}"]
@@ -539,13 +635,33 @@ module Tina4
           col_defs << parts.join(" ")
         end
 
+        # SOFTDEL-DEC-02: a soft_delete model needs its flag column, but
+        # create_table only knew about DECLARED fields -- so a soft_delete model
+        # that never declared the flag built a table with NO such column, and
+        # every soft-delete read/write then errored on the missing column. Inject
+        # it here (INTEGER 0/1, default 0), honouring the CONFIGURABLE
+        # soft_delete_field (default :is_deleted -- NOT a hard-coded is_deleted),
+        # unless the model already declares it, so the generated schema always
+        # matches the soft-delete behaviour.
+        if soft_delete
+          sd_field = soft_delete_field.to_s
+          declared = field_definitions.keys.map(&:to_s)
+          col_defs << "#{soft_delete_field} INTEGER DEFAULT 0" unless declared.include?(sd_field)
+        end
+
         # A COMPOSITE key is declared ONCE, at table level; the per-column inline
         # form above is suppressed for it.
         if primary_key_fields.length > 1
           col_defs << "PRIMARY KEY (#{primary_key_fields.join(', ')})"
         end
 
-        sql = "CREATE TABLE IF NOT EXISTS #{table_name} (#{col_defs.join(', ')})"
+        # MSSQL and Firebird reject `IF NOT EXISTS` on CREATE TABLE (a syntax
+        # error). The db.table_exists?(table_name) guard at the top of
+        # create_table already returns early when the table is present, so
+        # `IF NOT EXISTS` is pure redundancy on every engine and is simply
+        # omitted where it does not parse.
+        if_not_exists = %w[mssql sqlserver firebird].include?(engine) ? "" : "IF NOT EXISTS "
+        sql = "CREATE TABLE #{if_not_exists}#{table_name} (#{col_defs.join(', ')})"
 
         # Translate AUTOINCREMENT to the engine's auto-increment syntax
         # (INTEGER PRIMARY KEY AUTOINCREMENT -> SERIAL PRIMARY KEY on PG, etc.).
@@ -561,7 +677,16 @@ module Tina4
         # still see a clean failure instead of a thrown error.
         begin
           db.execute(sql)
-          db.commit
+          begin
+            db.commit
+          rescue StandardError => ce
+            # execute() auto-commits a standalone DDL. A bare commit then flushes
+            # any implicit transaction, but some drivers (MSSQL/tiny_tds) raise
+            # "COMMIT ... has no corresponding BEGIN TRANSACTION" because there is
+            # no open transaction to commit. The DDL already succeeded, so that
+            # ONE case is benign - re-raise anything else.
+            raise ce unless ce.message.to_s =~ /no corresponding begin/i
+          end
           true
         rescue => e
           Tina4::Log.error("create_table failed for #{table_name}: #{db.get_error || e.message}", { sql: sql })
@@ -930,6 +1055,8 @@ module Tina4
 
       @persisted = true
       @last_error = nil
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       self
     end
 
@@ -958,6 +1085,8 @@ module Tina4
         end
       end
       @persisted = false
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       true
     end
 
@@ -970,6 +1099,8 @@ module Tina4
         db.delete(self.class.table_name, pk_filter)
       end
       @persisted = false
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       true
     end
 
@@ -988,15 +1119,68 @@ module Tina4
         )
       end
       __send__("#{self.class.soft_delete_field}=", 0) if respond_to?("#{self.class.soft_delete_field}=")
+      # Bust cached reads of any table this write touched (CACHE-DEC-01).
+      self.class.clear_cache
       true
     end
 
+    # Validate all declared fields; returns a list of error messages (empty =
+    # valid). ENFORCED on save() -- an invalid model never reaches the driver.
+    #
+    # Feature 19 (VALID-RUBY-NULLONLY + VALID-TWO-MESSAGES): Ruby's validate used
+    # to be NULL-ONLY, so an over-length or wrong-format value the other three
+    # frameworks reject was written silently. It now enforces the SHARED richness
+    # -- required, string length, numeric range, format (pattern) and numeric type
+    # -- and emits the CANONICAL request-Validator wording ("<field> is required",
+    # "<field> must be at most N characters", "<field> does not match the required
+    # format") so the ORM validator and the request-body Validator speak ONE
+    # vocabulary. `length:` stays a DDL sizing hint and is never validated.
     def validate
       errors = []
       self.class.field_definitions.each do |name, opts|
         value = __send__(name)
-        if !opts[:nullable] && value.nil? && !opts[:auto_increment] && !opts[:default]
-          errors << "#{name} cannot be null"
+
+        # required: an explicit required: true fails on nil OR blank (user input);
+        # a NOT NULL column (nullable: false, no default, not auto-increment)
+        # fails on nil (the column constraint). required short-circuits -- no
+        # other rule adds signal on a missing value.
+        blank = value.nil? || (value.is_a?(String) && value.strip.empty?)
+        column_not_null = !opts[:nullable] && !opts[:auto_increment] && !opts[:default]
+        if (opts[:required] && blank) || (column_not_null && value.nil?)
+          errors << "#{name} is required"
+          next
+        end
+        next if value.nil?
+
+        # length + format apply to string values (a non-string is a type concern).
+        if value.is_a?(String)
+          if opts[:min_length] && value.length < opts[:min_length]
+            errors << "#{name} must be at least #{opts[:min_length]} characters"
+          end
+          if opts[:max_length] && value.length > opts[:max_length]
+            errors << "#{name} must be at most #{opts[:max_length]} characters"
+          end
+          if opts[:pattern]
+            regexp = opts[:pattern].is_a?(Regexp) ? opts[:pattern] : Regexp.new(opts[:pattern])
+            errors << "#{name} does not match the required format" unless value.match?(regexp)
+          end
+        end
+
+        # a declared numeric field carrying a non-numeric value is a type error;
+        # a numeric string (a form value like "42") is coerced and range-checked.
+        if %i[integer float decimal].include?(opts[:type]) && !value.is_a?(Numeric)
+          coerced = Float(value, exception: false)
+          if coerced.nil?
+            errors << "#{name} must be a number"
+            next
+          end
+          value = coerced
+        end
+
+        # numeric range applies to numeric values.
+        if value.is_a?(Numeric)
+          errors << "#{name} must be at least #{opts[:min]}" if opts[:min] && value < opts[:min]
+          errors << "#{name} must be at most #{opts[:max]}" if opts[:max] && value > opts[:max]
         end
       end
       errors
@@ -1004,36 +1188,64 @@ module Tina4
 
     # load — populate this instance from the database.
     #
-    # Three forms (parity with Python's model.load(sql, params, include)):
-    #   user.load                                   # reload by primary key from instance
-    #   user.load(123)                              # load by primary key value
-    #   user.load("email = ?", ["a@b.c"])           # load by filter SQL + params (selectOne)
+    # Signature aligned with Python's model.load(filter, params, include) and
+    # PHP's load(?string $filter, array $params, ?array $include) --
+    # LOAD-RUBY-SIGNATURE (feature 26, 3.13.99). filter is nil or a SQL
+    # WHERE-fragment String, never a bare scalar.
+    #
+    #   user.load                                    # reload by primary key from instance
+    #   user.load("email = ?", ["a@b.c"])            # load by filter SQL + params
+    #   user.load("id = ?", [1], include: [:posts])  # eager-load relations too
+    #
+    # BREAKING: the old load(id) scalar-primary-key shortcut is REMOVED -- it
+    # built the malformed fragment "WHERE <id>" for any other filter argument
+    # style, which is valid-but-wrong SQL (a constant truthy WHERE matches the
+    # table's first row, not the requested id) rather than a clean error. Set
+    # the primary key attribute then call load with no args, or pass an
+    # explicit "pk = ?" filter.
+    #
+    # LOAD-DEC-01/LOAD-RUBY-ASYMMETRY: hydrates via from_hash -- the SAME
+    # coercion every finder uses (a JSON column parses to a native Hash/Array)
+    # -- instead of feeding the raw driver row straight to the setters. Before
+    # this fix, load() left a JSON column as a raw String while
+    # Model.find(id).same_column returned a parsed Hash/Array: the same row,
+    # a different type, purely by which read path you called. ONE hydration
+    # path now (from_hash), not two.
     #
     # Returns true on hit, false on miss. Always clears the relationship cache.
-    def load(arg = nil, params = nil)
+    def load(filter = nil, params = [], include: nil)
+      if !filter.nil? && !filter.is_a?(String)
+        raise ArgumentError,
+          "#{self.class.name}#load expects a filter String or no argument (got #{filter.inspect}). " \
+          "The old load(id) primary-key shortcut was removed (LOAD-RUBY-SIGNATURE, 3.13.99) -- " \
+          "set the primary key attribute then call load with no args, or pass an explicit filter: " \
+          "load(\"id = ?\", [id])."
+      end
+
       @relationship_cache = {} # Clear relationship cache on reload
       pk = self.class.primary_key_field || :id
 
-      if arg.is_a?(String)
-        # Filter-SQL form: user.load("email = ?", ["a@b.c"])
-        sql = "SELECT * FROM #{self.class.table_name} WHERE #{arg} LIMIT 1"
-        result = self.class.db.fetch_one(sql, params || [])
-      else
-        # Primary-key form: user.load OR user.load(123)
-        id = arg || __send__(pk)
+      if filter.nil?
+        # No args — reload by the primary key value already set on this instance
+        id = __send__(pk)
         return false unless id
-        result = self.class.db.fetch_one(
-          "SELECT * FROM #{self.class.table_name} WHERE #{pk} = ?", [id]
-        )
+        pk_column = self.class.get_db_column(pk)
+        sql = "SELECT * FROM #{self.class.table_name} WHERE #{pk_column} = ?"
+        result = self.class.db.fetch_one(sql, [id])
+      else
+        # Filter-SQL form: user.load("email = ?", ["a@b.c"])
+        sql = "SELECT * FROM #{self.class.table_name} WHERE #{filter} LIMIT 1"
+        result = self.class.db.fetch_one(sql, params)
       end
       return false unless result
 
-      mapping_reverse = self.class.field_mapping.invert
-      result.each do |key, value|
-        attr_name = mapping_reverse[key.to_s] || key
-        setter = "#{attr_name}="
-        __send__(setter, value) if respond_to?(setter)
+      hydrated = self.class.from_hash(result)
+      self.class.field_definitions.each_key do |name|
+        __send__("#{name}=", hydrated.__send__(name))
       end
+
+      self.class.eager_load([self], include) if include
+
       @persisted = true
       true
     end
@@ -1194,15 +1406,6 @@ module Tina4
       hash
     end
 
-    def validate_fields
-      self.class.field_definitions.each do |name, opts|
-        value = __send__(name)
-        if !opts[:nullable] && value.nil? && !opts[:auto_increment] && !opts[:default]
-          @errors << "#{name} cannot be null"
-        end
-      end
-    end
-
     def load_has_one(name)
       return @relationship_cache[name] if @relationship_cache.key?(name)
       rel = self.class.relationship_definitions[name]
@@ -1214,9 +1417,12 @@ module Tina4
       pk_value = __send__(pk)
       return nil unless pk_value
 
-      result = klass.db.fetch_one(
-        "SELECT * FROM #{klass.table_name} WHERE #{fk} = ?", [pk_value]
-      )
+      where = "#{fk} = ?"
+      # REL-SOFTDELETE-TRAVERSAL: exclude a soft-deleted related row.
+      if klass.soft_delete
+        where += " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)"
+      end
+      result = klass.db.fetch_one("SELECT * FROM #{klass.table_name} WHERE #{where}", [pk_value])
       @relationship_cache[name] = result ? klass.from_hash(result) : nil
     end
 
@@ -1231,10 +1437,25 @@ module Tina4
       pk_value = __send__(pk)
       return [] unless pk_value
 
-      results = klass.db.fetch(
-        "SELECT * FROM #{klass.table_name} WHERE #{fk} = ?", [pk_value]
-      )
-      @relationship_cache[name] = results.map { |row| klass.from_hash(row) }
+      where = "#{fk} = ?"
+      # REL-SOFTDELETE-TRAVERSAL: a soft-deleted child must not surface through
+      # parent.children, consistent with the finders' default exclusion.
+      if klass.soft_delete
+        where += " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)"
+      end
+      order_col = klass.primary_key_field || :id
+      sql = "SELECT * FROM #{klass.table_name} WHERE #{where} ORDER BY #{order_col}"
+      # REL-EAGER-UNBOUNDED: page through ALL children rather than silently capping
+      # at the default fetch limit (was 100), so the tail is never lost.
+      records = []
+      offset = 0
+      loop do
+        batch = klass.db.fetch(sql, [pk_value], limit: EAGER_PAGE_SIZE, offset: offset).to_a
+        records.concat(batch)
+        break if batch.length < EAGER_PAGE_SIZE
+        offset += EAGER_PAGE_SIZE
+      end
+      @relationship_cache[name] = records.map { |row| klass.from_hash(row) }
     end
 
     def load_belongs_to(name)

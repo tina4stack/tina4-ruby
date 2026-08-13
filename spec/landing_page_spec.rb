@@ -20,7 +20,7 @@ RSpec.describe "Issue #39 — landing page, template auto-routing, 404 status li
 
   before(:each) do
     Tina4::Router.clear!
-    Tina4::Log.configure(tmp_dir) if Tina4::Log.respond_to?(:configure)
+    Tina4::Log.configure(log_dir: tmp_dir) if Tina4::Log.respond_to?(:configure)
     FileUtils.mkdir_p(File.join(tmp_dir, "src", "templates", "pages"))
     FileUtils.mkdir_p(File.join(tmp_dir, "src", "templates", "partials"))
     FileUtils.mkdir_p(File.join(tmp_dir, "src", "public"))

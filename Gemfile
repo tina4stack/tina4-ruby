@@ -51,3 +51,14 @@ end
 group :firebird, optional: true do
   gem "fb", "~> 0.10.0"
 end
+
+# The `ruby-odbc` gem (native ODBC driver) lives in its OWN optional group, kept
+# SEPARATE like :firebird: its C extension links against unixODBC (libodbc), which
+# the main `test` job does NOT apt-install, so folding it into :databases would
+# break that job's `bundle install`. A machine with unixODBC + a driver opts in
+# (`bundle config set --local with odbc`; the lab sets BUNDLE_WITH=odbc), and the
+# ODBC-provider spec runs against a REAL ODBC source. Everywhere else this group
+# is absent and the spec skips cleanly.
+group :odbc, optional: true do
+  gem "ruby-odbc", "~> 0.9"
+end

@@ -84,7 +84,7 @@ RSpec.describe "ORM & auth footguns (doc lock-in)" do
       bad = FDocUser.new(email: "no-name@x.com")   # name is required
       expect { @result = bad.save }.not_to raise_error
       expect(@result).to be false
-      expect(bad.get_error.to_s.downcase).to include("null")
+      expect(bad.get_error.to_s.downcase).to include("required")
     end
   end
 

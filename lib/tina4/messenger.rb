@@ -193,6 +193,22 @@ module Tina4
         )
       end
 
+      # TINA4_MAIL_REDIRECT_TO (MAIL-DEC-01): the REAL-SEND path only --
+      # capture already returned above, so this never touches the capture
+      # branch. When the list is non-empty, replace every recipient with the
+      # redirect list (so ONLY the dev list receives the mail, never the real
+      # recipients) and preserve the originals in a header. Subject/body/
+      # attachments are untouched; #send's return shape is unchanged. Read
+      # fresh per call, matching should_capture?'s own env-read style.
+      redirect_to = parse_mail_redirect_list(ENV["TINA4_MAIL_REDIRECT_TO"])
+      unless redirect_to.empty?
+        original_to = (normalize_recipients(to) + normalize_recipients(cc) + normalize_recipients(bcc)).join(", ")
+        to = redirect_to
+        cc = []
+        bcc = []
+        headers = (headers || {}).merge("X-Tina4-Original-To" => original_to)
+      end
+
       message_id = "<#{SecureRandom.uuid}@#{@host}>"
       raw = build_message(
         to: to, subject: subject, body: body, html: html, text: text,
@@ -474,6 +490,15 @@ module Tina4
       when Array then value.flatten.compact
       else [value.to_s]
       end
+    end
+
+    # Parse TINA4_MAIL_REDIRECT_TO (MAIL-DEC-01): comma-separated addresses,
+    # each trimmed, blanks dropped. Empty/unset -> [] (redirect off, no
+    # behaviour change).
+    def parse_mail_redirect_list(raw)
+      return [] if raw.nil? || raw.empty?
+
+      raw.split(",").map(&:strip).reject(&:empty?)
     end
 
     def format_address(address, name = nil)

@@ -134,7 +134,7 @@ RSpec.describe "dev-admin queue store (live server, real job files)", :slow, ord
 
     File.write(File.join(@project, ".env"), <<~ENV)
       TINA4_DEBUG=true
-      TINA4_LOG_LEVEL=[TINA4_LOG_NONE]
+      TINA4_LOG_LEVEL=NONE
       TINA4_AUTO_MIGRATE=false
     ENV
 
@@ -150,7 +150,7 @@ RSpec.describe "dev-admin queue store (live server, real job files)", :slow, ord
     @pid = spawn(
       {
         "TINA4_DEBUG" => "true",
-        "TINA4_LOG_LEVEL" => "[TINA4_LOG_NONE]",
+        "TINA4_LOG_LEVEL" => "NONE",
         "TINA4_AUTO_MIGRATE" => "false",
         "TINA4_QUEUE_PATH" => @store,
         "TINA4_NO_AI_PORT" => "true",

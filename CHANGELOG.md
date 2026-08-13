@@ -6,6 +6,90 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+### Breaking: `request.params` is route-params-only, and `path_params` is renamed `params`
+
+Ruby had the worst version of the param-pollution bug: `params` used to merge the query
+string, the parsed body, AND the route params, so `request.params["id"]` could silently
+return a client-supplied value that shadowed the real route parameter. Client input now
+lives only in `request.query` and `request.body`. **The route-param accessor itself is
+renamed: `path_params` becomes `params`, with no alias.** A malformed JSON body used to parse
+to `{}`; it now returns the raw string it failed to parse. An empty body used to parse to
+`{}`; it now returns `nil`. `header()` lookup is case-fold only now (it no longer also
+converts `_` to `-`).
+
+**Migration.** Rename every `path_params` call site to `params`. Replace any `params[...]`
+read of a client-supplied value with `query[...]` or `body[...]`.
+
+### Breaking: security headers, CSRF, and the dev server default on
+
+`Content-Security-Policy: default-src 'self'` and the other security headers now emit by
+default (relax with `TINA4_CSP`; HSTS on HTTPS via `TINA4_HSTS`). The CSRF `403` body is
+unified to `{error, code, message, status}`, where Ruby used to send
+`{error: "CSRF_INVALID"}`. `TINA4_CSRF=true` now actually attaches the CSRF middleware, and a
+blank `TINA4_SECRET` fails closed instead of minting a forgeable public-default token. The
+dev server binds `127.0.0.1` by default (`TINA4_HOST=0.0.0.0` to expose it), refuses a
+cross-origin `/__dev` mutation, and never serves `.env` through the file endpoints. Static
+asset serving drops the `src/assets`/`assets` search directories and now honours
+`TINA4_PUBLIC_DIR`. A reflected XSS in the `403` error page is closed
+(`CGI.escapeHTML`-escaped now).
+
+**Migration.** Move assets under the configured public directory. Set `TINA4_CSP` if you
+depend on inline scripts or a third-party CDN.
+
+### Breaking: Mongo, MSSQL, and file-upload footguns closed
+
+An unparseable/unsupported MongoDB WHERE now raises instead of silently matching every
+document (a DELETE/UPDATE with no WHERE is rejected); `truncate()` on Mongo now actually
+empties the collection. The MSSQL adapter now raises on a genuinely unbindable parameter type
+instead of silently stringifying it (was preventing an injection/corruption risk). A repeated
+multipart file field now yields a list instead of silently dropping every upload but the
+last; an over-limit upload now answers `413` mid-stream instead of after buffering the whole
+body. Frond `{% include %}`/`{% extends %}`/`{% import %}` now raise on a path that escapes
+the templates directory.
+
+**Migration.** Add an explicit WHERE to any Mongo query relying on the old match-all
+fallback, or call `truncate()`. Handle `request.files[x]` as a list when multiple files can
+share a field name.
+
+### Breaking: ORM write-path and AutoCrud parity fixes
+
+`decimal_field` now emits a real `DECIMAL(p,s)` column instead of `REAL`, dropping precision
+and scale. A foreign-key auto `related_name` is now smart-pluralized (`Category` ->
+`categories`, not `categorys`). `validate()` on save now enforces length/type/format, where it
+used to check only for `null` -- a model that previously saved an over-length or
+wrong-format value now returns `false` from `save()` and writes nothing. `create_table()`
+injects the configured `soft_delete_field` automatically. `load()`'s signature changes to
+`load(filter, params, include)`, from `load(arg, params)` with no `include`, and it now
+JSON-coerces json columns. AutoCrud returns `422` (was `500`) on an invalid create/update, and
+never accepts `is_deleted` or a client-supplied primary key in the write body. `seed_table`'s
+`seed:` keyword is dropped, `FakeData#boolean` returns a native `true`/`false` (was `0`/`1`),
+and `seed_orm`'s idempotency skip is opt-in now via `idempotent:` (was unconditional -- it
+silently returned `seeded: 0` when the table already held enough rows).
+
+**Migration.** Update any accessor using the misspelled `categorys` name. Pass the RNG seed to
+your own `FakeData` instance instead of `seed_table(seed: ...)`. Update any `load()` call
+using the old positional shape.
+
+### Breaking: response, database-adapter, and dev-tooling fixes
+
+Responses gzip-compress when eligible; a cacheable 200 gets a strong ETag, and the
+static-file ETag format is unified to `W/"<size>-<mtime>"` across all four frameworks. Error
+pages can emit JSON now, not only HTML: `403`/`404`/`500` all negotiate `Accept`, and `404`
+carries a `request_id`. An undecorated route emits only `200` in the OpenAPI spec;
+`description` is omitted when unset instead of `description:""`. A route group's prefix join
+is normalized to match PHP. `tina4ruby serve` now honours `TINA4_PORT`, where it used to read
+only the bare `PORT` variable. `serverInfo.version` over MCP now reports the real framework
+version instead of `1.0.0`. The inline `@tests` descriptor builders are renamed
+`Tina4::Testing.assert_*` -> `expect_*`. `DatabaseAdapter::CONTRACT` was fictional (it named
+methods no driver implemented, and omitted `execute_many`/`fetch_one`); `get_database_type`
+existed on none of the seven drivers and is added to all of them. A legacy bracket-wrapped
+log-level spelling that duplicated the variable name inside the brackets is rejected now; use
+the plain level name (for example `TINA4_LOG_LEVEL=ALL`).
+
+**Migration.** Rename any `assert_*` descriptor call to `expect_*`. Reconcile `TINA4_PORT` vs
+bare `PORT` if your app set both. Expect every cache to revalidate once after upgrade, since
+the static-file ETag format changed.
+
 ### Breaking: Messenger `inbox()` / `read()` item shapes (3.13.96 parity)
 
 The IMAP read path is aligned to the settled cross-framework shape (Python is the

@@ -70,7 +70,15 @@ module Tina4
           dsn_string = "#{dsn_string};PWD=#{password}"
         end
 
-        @connection = ODBC::Database.new(dsn_string)
+        # ODBC::Database.new(string) routes to SQLConnect, which takes a DSN NAME
+        # (data source), NOT a connection string - so a DRIVER={...} / DSN=...
+        # string (exactly what Tina4's odbc:/// URL produces) raised "Invalid
+        # string or buffer length" against a real driver. SQLDriverConnect is the
+        # call that parses a connection string; reach it via #drvconnect on an
+        # unconnected handle. MEASURED against a real psqlodbc source: this adapter
+        # could never connect with a connection string until now.
+        @connection = ODBC::Database.new
+        @connection.drvconnect(dsn_string)
         @in_transaction = false
         self
       end
@@ -177,6 +185,11 @@ module Tina4
       end
 
       # List all user tables via ODBC metadata.
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'odbc'
+      end
+
       def tables
         stmt = @connection.tables
         rows = []
@@ -194,6 +207,7 @@ module Tina4
 
       # Return column metadata for a table via ODBC metadata.
       def columns(table_name)
+        pk = primary_key_columns(table_name)
         stmt = @connection.columns(table_name.to_s)
         result = []
         while (row = stmt.fetch_hash)
@@ -206,7 +220,10 @@ module Tina4
             type: type.to_s,
             nullable: nullable_val.to_i == 1,
             default: default,
-            primary_key: false  # ODBC metadata does not reliably expose PK flag here
+            # Real PK, from the ODBC catalog (SQLPrimaryKeys) - not the old
+            # `false` stub. The write-guard reads primary_key, so without this a
+            # PK-keyed update(table, data) on ODBC could not introspect the key.
+            primary_key: pk.include?(name.to_s.downcase)
           }
         end
         stmt.drop
@@ -214,6 +231,23 @@ module Tina4
       rescue => e
         stmt&.drop rescue nil
         raise e
+      end
+
+      # The table's primary-key columns from the ODBC catalog (SQLPrimaryKeys),
+      # down-cased for case-insensitive matching. Empty on any target that does
+      # not report them - the write-guard then requires an explicit filter.
+      def primary_key_columns(table_name)
+        stmt = @connection.primary_keys(table_name.to_s)
+        cols = []
+        while (row = stmt.fetch_hash)
+          col = row["COLUMN_NAME"] || row[:COLUMN_NAME]
+          cols << col.to_s.downcase if col
+        end
+        stmt.drop
+        cols
+      rescue StandardError
+        stmt&.drop rescue nil
+        []
       end
 
       private

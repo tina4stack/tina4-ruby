@@ -3,180 +3,115 @@
 require "spec_helper"
 
 RSpec.describe Tina4::SQLTranslator do
-  describe ".limit_to_rows" do
-    it "converts LIMIT/OFFSET to Firebird ROWS X TO Y" do
-      sql = "SELECT * FROM users LIMIT 10 OFFSET 5"
-      result = Tina4::SQLTranslator.limit_to_rows(sql)
-      expect(result).to eq("SELECT * FROM users ROWS 6 TO 15")
+  # SQLTRANS-DEC-01/02/03. limit_to_rows / limit_to_top / placeholder_style and
+  # the duplicate query_key were REMOVED (the drivers own pagination/placeholders,
+  # and QueryCache.query_key is the live cache key) - see the design note in
+  # lib/tina4/sql_translator.rb. concat/bool/ilike are now literal-safe.
+
+  describe ".concat_pipes_to_func" do
+    it "converts a bare || chain to CONCAT()" do
+      expect(Tina4::SQLTranslator.concat_pipes_to_func("'hello' || ' ' || 'world'"))
+        .to eq("CONCAT('hello', ' ', 'world')")
     end
 
-    it "handles LIMIT without OFFSET" do
-      sql = "SELECT * FROM users LIMIT 10"
-      result = Tina4::SQLTranslator.limit_to_rows(sql)
-      expect(result).to eq("SELECT * FROM users ROWS 1 TO 10")
+    it "rewrites only the operand chain in a full statement (no whole-statement split)" do
+      sql = "SELECT first_name || ' ' || last_name AS fullname FROM users WHERE id = ?"
+      expect(Tina4::SQLTranslator.concat_pipes_to_func(sql))
+        .to eq("SELECT CONCAT(first_name, ' ', last_name) AS fullname FROM users WHERE id = ?")
     end
 
-    it "leaves SQL without LIMIT unchanged" do
-      sql = "SELECT * FROM users WHERE id = 1"
-      result = Tina4::SQLTranslator.limit_to_rows(sql)
-      expect(result).to eq(sql)
+    it "leaves a || that is INSIDE a string literal untouched" do
+      sql = "SELECT id FROM t WHERE data = 'a||b'"
+      expect(Tina4::SQLTranslator.concat_pipes_to_func(sql)).to eq(sql)
     end
 
-    it "handles LIMIT 1 OFFSET 0 correctly" do
-      sql = "SELECT * FROM users LIMIT 1 OFFSET 0"
-      result = Tina4::SQLTranslator.limit_to_rows(sql)
-      expect(result).to eq("SELECT * FROM users ROWS 1 TO 1")
+    it "rewrites a real || while preserving a || inside a literal" do
+      sql = "SELECT a || b FROM t WHERE note = 'x||y'"
+      expect(Tina4::SQLTranslator.concat_pipes_to_func(sql))
+        .to eq("SELECT CONCAT(a, b) FROM t WHERE note = 'x||y'")
     end
 
-    it "is case-insensitive" do
-      sql = "SELECT * FROM users limit 5 offset 10"
-      result = Tina4::SQLTranslator.limit_to_rows(sql)
-      expect(result).to eq("SELECT * FROM users ROWS 11 TO 15")
-    end
-  end
-
-  describe ".limit_to_top" do
-    it "converts LIMIT to MSSQL TOP N" do
-      sql = "SELECT * FROM users LIMIT 10"
-      result = Tina4::SQLTranslator.limit_to_top(sql)
-      expect(result).to eq("SELECT TOP 10 * FROM users")
-    end
-
-    it "leaves queries with OFFSET unchanged" do
-      sql = "SELECT * FROM users LIMIT 10 OFFSET 5"
-      result = Tina4::SQLTranslator.limit_to_top(sql)
-      expect(result).to eq(sql)
-    end
-
-    it "leaves SQL without LIMIT unchanged" do
-      sql = "SELECT * FROM users WHERE id = 1"
-      result = Tina4::SQLTranslator.limit_to_top(sql)
-      expect(result).to eq(sql)
+    it "leaves SQL without || unchanged" do
+      expect(Tina4::SQLTranslator.concat_pipes_to_func("SELECT * FROM users"))
+        .to eq("SELECT * FROM users")
     end
   end
 
   describe ".boolean_to_int" do
-    it "converts TRUE to 1" do
-      sql = "SELECT * FROM users WHERE active = TRUE"
-      result = Tina4::SQLTranslator.boolean_to_int(sql)
-      expect(result).to eq("SELECT * FROM users WHERE active = 1")
-    end
-
-    it "converts FALSE to 0" do
-      sql = "UPDATE users SET active = FALSE WHERE id = 1"
-      result = Tina4::SQLTranslator.boolean_to_int(sql)
-      expect(result).to eq("UPDATE users SET active = 0 WHERE id = 1")
-    end
-
-    it "converts both TRUE and FALSE in the same query" do
-      sql = "SELECT * FROM users WHERE active = TRUE AND deleted = FALSE"
-      result = Tina4::SQLTranslator.boolean_to_int(sql)
-      expect(result).to eq("SELECT * FROM users WHERE active = 1 AND deleted = 0")
+    it "converts bare TRUE/FALSE to 1/0" do
+      expect(Tina4::SQLTranslator.boolean_to_int("SELECT * FROM users WHERE active = TRUE AND deleted = FALSE"))
+        .to eq("SELECT * FROM users WHERE active = 1 AND deleted = 0")
     end
 
     it "is case-insensitive" do
-      sql = "SELECT * FROM users WHERE active = true"
-      result = Tina4::SQLTranslator.boolean_to_int(sql)
-      expect(result).to eq("SELECT * FROM users WHERE active = 1")
+      expect(Tina4::SQLTranslator.boolean_to_int("SELECT * FROM users WHERE active = true"))
+        .to eq("SELECT * FROM users WHERE active = 1")
+    end
+
+    it "leaves a TRUE/FALSE that is INSIDE a string literal untouched" do
+      sql = "SELECT id FROM t WHERE label = 'TRUE' AND active = TRUE"
+      expect(Tina4::SQLTranslator.boolean_to_int(sql))
+        .to eq("SELECT id FROM t WHERE label = 'TRUE' AND active = 1")
     end
   end
 
   describe ".ilike_to_like" do
     it "converts ILIKE to LOWER() LIKE LOWER()" do
-      sql = "name ILIKE '%john%'"
-      result = Tina4::SQLTranslator.ilike_to_like(sql)
-      expect(result).to eq("LOWER(name) LIKE LOWER('%john%')")
+      expect(Tina4::SQLTranslator.ilike_to_like("name ILIKE '%john%'"))
+        .to eq("LOWER(name) LIKE LOWER('%john%')")
     end
 
     it "is case-insensitive" do
-      sql = "name ilike '%test%'"
-      result = Tina4::SQLTranslator.ilike_to_like(sql)
-      expect(result).to eq("LOWER(name) LIKE LOWER('%test%')")
-    end
-  end
-
-  describe ".concat_pipes_to_func" do
-    it "converts || to CONCAT()" do
-      sql = "'hello' || ' ' || 'world'"
-      result = Tina4::SQLTranslator.concat_pipes_to_func(sql)
-      expect(result).to eq("CONCAT('hello', ' ', 'world')")
+      expect(Tina4::SQLTranslator.ilike_to_like("name ilike '%test%'"))
+        .to eq("LOWER(name) LIKE LOWER('%test%')")
     end
 
-    it "leaves SQL without || unchanged" do
-      sql = "SELECT * FROM users"
-      result = Tina4::SQLTranslator.concat_pipes_to_func(sql)
-      expect(result).to eq(sql)
-    end
-  end
-
-  describe ".placeholder_style" do
-    it "converts ? to %s" do
-      sql = "SELECT * FROM users WHERE id = ? AND name = ?"
-      result = Tina4::SQLTranslator.placeholder_style(sql, "%s")
-      expect(result).to eq("SELECT * FROM users WHERE id = %s AND name = %s")
+    it "captures a multi-word pattern WHOLE (no greedy truncation)" do
+      sql = "SELECT id FROM t WHERE bio ILIKE '%two words%'"
+      expect(Tina4::SQLTranslator.ilike_to_like(sql))
+        .to eq("SELECT id FROM t WHERE LOWER(bio) LIKE LOWER('%two words%')")
     end
 
-    it "converts ? to numbered placeholders :1, :2" do
-      sql = "SELECT * FROM users WHERE id = ? AND name = ?"
-      result = Tina4::SQLTranslator.placeholder_style(sql, ":")
-      expect(result).to eq("SELECT * FROM users WHERE id = :1 AND name = :2")
-    end
-
-    it "returns original SQL for unknown style" do
-      sql = "SELECT * FROM users WHERE id = ?"
-      result = Tina4::SQLTranslator.placeholder_style(sql, "unknown")
-      expect(result).to eq(sql)
+    it "leaves an ILIKE that is INSIDE a string literal untouched" do
+      sql = "SELECT id FROM t WHERE note = 'do it ILIKE this'"
+      expect(Tina4::SQLTranslator.ilike_to_like(sql)).to eq(sql)
     end
   end
 
   describe ".auto_increment_syntax" do
     it "converts AUTOINCREMENT to AUTO_INCREMENT for MySQL" do
-      sql = "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)"
-      result = Tina4::SQLTranslator.auto_increment_syntax(sql, "mysql")
+      result = Tina4::SQLTranslator.auto_increment_syntax("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)", "mysql")
       expect(result).to include("AUTO_INCREMENT")
     end
 
-    it "converts to SERIAL PRIMARY KEY for PostgreSQL" do
-      sql = "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)"
-      result = Tina4::SQLTranslator.auto_increment_syntax(sql, "postgresql")
+    it "converts INTEGER PRIMARY KEY AUTOINCREMENT to SERIAL for PostgreSQL" do
+      result = Tina4::SQLTranslator.auto_increment_syntax("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)", "postgresql")
       expect(result).to include("SERIAL PRIMARY KEY")
     end
 
+    it "converts BIGINT PRIMARY KEY AUTOINCREMENT to BIGSERIAL for PostgreSQL" do
+      result = Tina4::SQLTranslator.auto_increment_syntax("CREATE TABLE t (id BIGINT PRIMARY KEY AUTOINCREMENT, name VARCHAR(50))", "postgresql")
+      expect(result).to eq("CREATE TABLE t (id BIGSERIAL PRIMARY KEY, name VARCHAR(50))")
+    end
+
+    it "preserves BIGINT for MySQL (BIGINT ... AUTO_INCREMENT)" do
+      result = Tina4::SQLTranslator.auto_increment_syntax("CREATE TABLE t (id BIGINT PRIMARY KEY AUTOINCREMENT)", "mysql")
+      expect(result).to eq("CREATE TABLE t (id BIGINT PRIMARY KEY AUTO_INCREMENT)")
+    end
+
     it "converts to IDENTITY(1,1) for MSSQL" do
-      sql = "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)"
-      result = Tina4::SQLTranslator.auto_increment_syntax(sql, "mssql")
+      result = Tina4::SQLTranslator.auto_increment_syntax("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)", "mssql")
       expect(result).to include("IDENTITY(1,1)")
     end
 
     it "removes AUTOINCREMENT for Firebird" do
-      sql = "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)"
-      result = Tina4::SQLTranslator.auto_increment_syntax(sql, "firebird")
+      result = Tina4::SQLTranslator.auto_increment_syntax("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)", "firebird")
       expect(result).not_to include("AUTOINCREMENT")
     end
 
     it "leaves SQL unchanged for SQLite (default)" do
       sql = "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT)"
-      result = Tina4::SQLTranslator.auto_increment_syntax(sql, "sqlite")
-      expect(result).to eq(sql)
-    end
-  end
-
-  describe ".query_key" do
-    it "returns a string starting with 'query:'" do
-      key = Tina4::SQLTranslator.query_key("SELECT 1")
-      expect(key).to start_with("query:")
-    end
-
-    it "produces different keys for different SQL" do
-      key1 = Tina4::SQLTranslator.query_key("SELECT 1")
-      key2 = Tina4::SQLTranslator.query_key("SELECT 2")
-      expect(key1).not_to eq(key2)
-    end
-
-    it "produces different keys when params differ" do
-      key1 = Tina4::SQLTranslator.query_key("SELECT ?", [1])
-      key2 = Tina4::SQLTranslator.query_key("SELECT ?", [2])
-      expect(key1).not_to eq(key2)
+      expect(Tina4::SQLTranslator.auto_increment_syntax(sql, "sqlite")).to eq(sql)
     end
   end
 end

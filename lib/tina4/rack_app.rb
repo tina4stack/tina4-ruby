@@ -3,6 +3,7 @@ require "json"
 require "securerandom"
 require "time"
 require "uri"
+require "cgi"
 
 module Tina4
   # Middleware wrapper that tags requests arriving on the AI dev port.
@@ -31,7 +32,11 @@ module Tina4
       attr_accessor :current
     end
 
-    STATIC_DIRS = %w[public src/public src/assets assets].freeze
+    # ONE static search set + order across the four frameworks
+    # (ST-SEARCHDIR-DIVERGE): the app's public then src/public. TINA4_PUBLIC_DIR
+    # is prepended per-request in #try_static, and the framework's bundled public
+    # dir is appended as the fallback in #initialize.
+    STATIC_DIRS = %w[public src/public].freeze
 
     # CORS is now handled by Tina4::CorsMiddleware
 
@@ -80,11 +85,36 @@ module Tina4
       Tina4::Router.websocket("/__dev_reload", &DEV_RELOAD_WS_HANDLER)
     end
 
+    # Rack entry point. Establishes the per-request correlation id (feature 43),
+    # runs the dispatch pipeline, and echoes the id on the response.
+    def call(env)
+      # Honour a sanitized inbound X-Request-ID so a client or upstream service
+      # can thread its own id through - a CR/LF, over-long or illegal-charset
+      # value is rejected (never echoed) - else generate one. Thread it into the
+      # logger NOW (thread-local, so a Puma worker thread never sees another
+      # request's id), so every log line for this request carries it, and echo it
+      # on the response whatever outcome the pipeline produced (200/404/500/413).
+      request_id = Tina4::Log.sanitize_request_id(env["HTTP_X_REQUEST_ID"]) || SecureRandom.hex(4)
+      Tina4::Log.set_request_id(request_id)
+
+      begin
+        result = dispatch_pipeline(env)
+        result[1]["x-request-id"] = request_id if result.is_a?(Array) && result[1].is_a?(Hash)
+        result
+      ensure
+        # The request pipeline installs the id before its first log and
+        # clears it in `finally`/`ensure` after its last (Decision 12 /
+        # LOG-Q03), so an overlapping request on another thread can never
+        # observe a stale id from a request that already finished.
+        Tina4::Log.clear_request_id
+      end
+    end
+
     # Run the dispatch pipeline. See REQUEST_STAGES / RESPONSE_STAGES above.
     #
     # Every branch this used to hold now lives in a named stage, so the only
     # control flow left here is "walk the list, stop when a stage answers".
-    def call(env)
+    def dispatch_pipeline(env)
       ctx = DispatchContext.new(
         env: env,
         method: env["REQUEST_METHOD"],
@@ -188,6 +218,12 @@ module Tina4
     def try_static(path, env = nil)
       return nil if path.include?("..")
 
+      # Security: never serve a dotfile (.env, .git/config, .htpasswd, ...).
+      # Reject any leading-dot segment in the REQUEST path before touching the
+      # filesystem; #confined_static_file re-checks the RESOLVED path so a symlink
+      # pointing AT a dotfile inside the public dir is refused too.
+      return nil if hidden_segment?(path)
+
       # The framework ships the Swagger UI as STATIC assets under
       # lib/tina4/public/swagger/. Static serving is independent of the gated
       # /swagger handler, so without this check the UI stays reachable in
@@ -201,21 +237,50 @@ module Tina4
         return nil
       end
 
-      @static_roots.each do |root|
-        full_path = File.join(root, path)
-        if File.file?(full_path)
-          return serve_static_file(full_path, env)
-        end
+      # TINA4_PUBLIC_DIR override is honoured first (ST-PUBLICDIR-ENV-PARTIAL),
+      # then the pre-computed project + framework roots.
+      roots = @static_roots
+      custom = ENV["TINA4_PUBLIC_DIR"]
+      roots = [custom] + roots if custom && !custom.empty?
+
+      roots.each do |root|
+        served = confined_static_file(root, path, env)
+        return served if served
 
         # Only try index.html for directory-like paths
         if path.end_with?("/") || !path.include?(".")
-          index_path = File.join(full_path, "index.html")
-          if File.file?(index_path)
-            return serve_static_file(index_path, env)
-          end
+          served = confined_static_file(root, File.join(path, "index.html"), env)
+          return served if served
         end
       end
       nil
+    end
+
+    # Serve a file under `root` ONLY when its REAL path stays confined under the
+    # real `root` (realpath + trailing separator, ADR-0050) and names no dotfile
+    # segment. File.realpath follows symlinks and collapses `..`, so a symlink
+    # pointing outside, a sibling-prefix dir (publicsecret) and a `..` escape all
+    # fail the containment a bare string check would miss. Returns the Rack
+    # response triple, or nil when the file is absent, escapes, or is hidden.
+    def confined_static_file(root, rel_path, env)
+      real_dir = File.realpath(root)
+      real_path = File.realpath(File.join(root, rel_path))
+      return nil unless File.file?(real_path)
+      return nil unless real_path.start_with?(real_dir + File::SEPARATOR)
+
+      relative = real_path[(real_dir.length + 1)..] || ""
+      return nil if hidden_segment?(relative)
+
+      serve_static_file(real_path, env)
+    rescue SystemCallError
+      # realpath raises when a path component is missing — a plain 404, not an error.
+      nil
+    end
+
+    # Whether any separator-delimited segment of `path` is hidden (begins with a
+    # dot). Refuses `.env`/`.git`; a `..` segment also begins with a dot.
+    def hidden_segment?(path)
+      path.split(File::SEPARATOR).any? { |segment| !segment.empty? && segment.start_with?(".") }
     end
 
     # Serve a static asset with cache-revalidation semantics (parity with the
@@ -234,7 +299,11 @@ module Tina4
       content_type = Tina4::Response::MIME_TYPES[ext] || "application/octet-stream"
 
       stat = File.stat(full_path)
-      etag = %(W/"#{stat.mtime.to_i.to_s(16)}-#{stat.size.to_s(16)}")
+      # Format PINNED across all four frameworks (feature 40, CE-DEC-02):
+      # decimal `W/"<size>-<mtime>"`, integer-second mtime - a client behind
+      # a reverse proxy sees an identical validator for the same file
+      # regardless of backend language.
+      etag = %(W/"#{stat.size}-#{stat.mtime.to_i}")
       last_modified = stat.mtime.httpdate
 
       headers = {
@@ -262,10 +331,10 @@ module Tina4
     def static_not_modified?(env, etag, mtime)
       if_none_match = env["HTTP_IF_NONE_MATCH"]
       if if_none_match && !if_none_match.empty?
-        return true if if_none_match.strip == "*"
-
-        want = weak_etag_value(etag)
-        return if_none_match.split(",").any? { |candidate| weak_etag_value(candidate) == want }
+        # Shared with the dynamic conditional-GET path (#etag_matches? in
+        # DispatchPipeline, feature 40) so both use IDENTICAL RFC-7232
+        # weak-comparison semantics.
+        return etag_matches?(if_none_match, etag)
       end
 
       if_modified_since = env["HTTP_IF_MODIFIED_SINCE"]
@@ -326,12 +395,42 @@ module Tina4
       [200, { "content-type" => "application/json; charset=utf-8" }, [JSON.generate(Tina4::Swagger.generate)]]
     end
 
-    def handle_403(path = "")
-      body = Tina4::Template.render_error(403, { "path" => path }) rescue "403 Forbidden"
+    # The ONE JSON error envelope for a negotiated 403/404/500 (ERR-DEC-02).
+    #
+    # Reuses the existing Tina4::Response.error_response envelope
+    # (error: true, code, message, status) already shared by app-level
+    # response.error() calls, plus request_id for correlation (feature 43,
+    # ERR-404-REQUESTID) - the SAME shape Python/PHP/Node build.
+    ERROR_CODE_NAMES = { 403 => "FORBIDDEN", 404 => "NOT_FOUND", 500 => "INTERNAL_SERVER_ERROR" }.freeze
+
+    def error_json_body(status, message, request_id)
+      Tina4::Response.error_response(
+        ERROR_CODE_NAMES[status] || "HTTP_#{status}", message, status
+      ).merge(request_id: request_id)
+    end
+
+    # Build the 403 a legacy per-route auth_handler gets. ERR-DEC-01/
+    # ERR-DEC-02: negotiated on Accept - a JSON API client gets the canonical
+    # JSON envelope directly (no template attempt at all); a browser gets the
+    # SAME errors/403.twig-or-fallback HTML path 404/500 use. The path is
+    # escaped before it ever reaches the template (Ruby's Frond does not
+    # auto-escape {{ }} output - same reflected-path XSS class feature 127
+    # already fixed for #handle_404; this closes the SAME gap on 403).
+    def handle_403(path = "", accept = "")
+      request_id = Tina4::Log.get_request_id || "-"
+      if Tina4::Template.wants_json?(accept)
+        return [403, { "content-type" => "application/json" }, [JSON.generate(error_json_body(403, "Forbidden", request_id))]]
+      end
+
+      body = begin
+        Tina4::Template.render_error(403, { "path" => CGI.escapeHTML(path.to_s), "request_id" => request_id })
+      rescue StandardError
+        "403 Forbidden"
+      end
       [403, { "content-type" => "text/html" }, [body]]
     end
 
-    def handle_404(path)
+    def handle_404(path, accept = "")
       # Try serving a template file (e.g. /hello -> src/templates/pages/hello.twig)
       template_response = try_serve_template(path)
       return template_response if template_response
@@ -342,7 +441,25 @@ module Tina4
       return render_landing_page if path == "/" && dev_mode?
 
       Tina4::Log.warning("404 Not Found: #{path}")
-      body = Tina4::Template.render_error(404, { "path" => path }) rescue "404 Not Found"
+      request_id = Tina4::Log.get_request_id || "-"
+
+      # ERR-DEC-02: a JSON API client gets the JSON error body directly - no
+      # need to even try the HTML template. ERR-404-REQUESTID: the id now
+      # rides in the body too (the response header already carries it
+      # unconditionally, feature 43).
+      if Tina4::Template.wants_json?(accept)
+        return [404, { "content-type" => "application/json" }, [JSON.generate(error_json_body(404, "Not Found", request_id))]]
+      end
+
+      # DEVADMIN-DEC-04 (feature 127): the error page reflects the request path
+      # into HTML and the Twig error template does NOT auto-escape, so a crafted
+      # /x<script> path would run script in the response origin. Escape it here
+      # (same reflected-request-path XSS class as the dev-toolbar fix).
+      body = begin
+        Tina4::Template.render_error(404, { "path" => CGI.escapeHTML(path.to_s), "request_id" => request_id })
+      rescue StandardError
+        "404 Not Found"
+      end
       [404, { "content-type" => "text/html" }, [body]]
     end
 
@@ -352,12 +469,6 @@ module Tina4
     def template_auto_routing_enabled?
       val = ENV.fetch("TINA4_TEMPLATE_ROUTING", "on").to_s.strip.downcase
       !%w[off false 0 no disabled].include?(val)
-    end
-
-    def should_show_landing_page?
-      # Check if any index template exists in src/templates/
-      templates_dir = File.join(@root_dir, "src", "templates")
-      %w[index.html index.twig index.erb].none? { |f| File.file?(File.join(templates_dir, f)) }
     end
 
     def try_serve_template(path)
@@ -429,18 +540,6 @@ module Tina4
         cache[url_path] ||= rel_from_templates
       end
       cache
-    end
-
-    def try_serve_index_template
-      templates_dir = File.join(@root_dir, "src", "templates")
-      %w[index.html index.twig index.erb].each do |f|
-        path = File.join(templates_dir, f)
-        if File.file?(path)
-          body = Tina4::Template.render(f, {}) rescue File.read(path)
-          return [200, { "content-type" => "text/html" }, [body]]
-        end
-      end
-      nil
     end
 
     def render_landing_page
@@ -687,23 +786,61 @@ module Tina4
         end
       end
 
-      if dev_mode?
-        # Rich error overlay with stack trace, source context, and line numbers
-        body = Tina4::ErrorOverlay.render_error_overlay(error, request: env)
-      else
-        # v3.13.7 SECURITY (CWE-209): production response body must NOT
-        # contain the stack trace. The trace stays in Log.error above
-        # and reaches observability via the tina4.request.error event.
-        body = Tina4::Template.render_error(500, {
-          "error_message" => "",
-          "request_id" => SecureRandom.hex(6)
-        }) rescue "500 Internal Server Error"
+      # The canonical per-request id (set at the top of #call), so the id a
+      # user reports off the 500 page matches the log lines and the
+      # X-Request-ID response header - not a throwaway.
+      request_id = Tina4::Log.get_request_id || SecureRandom.hex(4)
+      accept = env && env["HTTP_ACCEPT"]
+
+      # v3.13.7 SECURITY (CWE-209): production response body must NOT contain the
+      # stack trace. The trace stays in Log.error above and reaches observability
+      # via the tina4.request.error event. error_message is ALWAYS empty here -
+      # never touch this: a JSON client's message field stays the generic
+      # "Server Error" too, never the real exception (ERR-DEC-02).
+      safe_response = lambda do
+        if Tina4::Template.wants_json?(accept)
+          next [500, { "content-type" => "application/json" }, [JSON.generate(error_json_body(500, "Server Error", request_id))]]
+        end
+
+        body = begin
+          Tina4::Template.render_error(500, { "error_message" => "", "request_id" => request_id })
+        rescue StandardError
+          "500 Internal Server Error"
+        end
+        [500, { "content-type" => "text/html" }, [body]]
       end
-      [500, { "content-type" => "text/html" }, [body]]
+
+      if dev_mode?
+        # OVERLAY-DEC-03: guard the dev-overlay render. The call site sits INSIDE
+        # this rescue, so if the overlay itself throws (a malformed frame, an
+        # unrenderable request value) it would double-fault out of dispatch. Wrap it
+        # and fall back to the same safe production page, so a broken overlay still
+        # yields a bounded 500 — never a crash. The overlay itself is unaffected by
+        # content negotiation (feature 126, out of scope here; CWE-209 stays locked).
+        begin
+          body = Tina4::ErrorOverlay.render_error_overlay(error, request: env)
+          return [500, { "content-type" => "text/html" }, [body]]
+        rescue StandardError => overlay_err
+          begin
+            Tina4::Log.warning(
+              "Error overlay render failed, serving the safe page: " \
+              "#{overlay_err.class}: #{overlay_err.message}"
+            )
+          rescue StandardError
+            # Log failures must never block the 500 render.
+          end
+          return safe_response.call
+        end
+      end
+
+      safe_response.call
     end
 
+    # OVERLAY-DEC-04: unify the debug gate on the overlay module's is_debug_mode so
+    # the error-overlay gate (and every other dev gate that reads dev_mode?) has ONE
+    # definition, instead of recomputing Env.is_truthy(TINA4_DEBUG) separately.
     def dev_mode?
-      Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
+      Tina4::ErrorOverlay.is_debug_mode
     end
 
     # Whether to emit a per-request log line (v3.13.14). TINA4_LOG_REQUESTS
@@ -780,9 +917,15 @@ module Tina4
 
     def inject_dev_overlay(body, request_info, ai_port: false)
       version = Tina4::VERSION
-      method = request_info[:method]
-      path = request_info[:path]
-      matched_pattern = request_info[:matched_pattern]
+      # DEVADMIN-DEC-04 (feature 127): the toolbar is injected into EVERY
+      # text/html response (including 404s), so the reflected request
+      # method/path/matched-pattern MUST be HTML-escaped or a crafted path
+      # reflects <script> that runs in the dev-server origin and can then drive
+      # every ungated /__dev mutation route. (Parity with PHP htmlspecialchars
+      # and the Python master html.escape; Ruby was reflecting them raw.)
+      method = CGI.escapeHTML(request_info[:method].to_s)
+      path = CGI.escapeHTML(request_info[:path].to_s)
+      matched_pattern = CGI.escapeHTML(request_info[:matched_pattern].to_s)
       request_id = Tina4::Log.get_request_id || "-"
       route_count = Tina4::Router.routes.length
 
@@ -1062,12 +1205,11 @@ module Tina4
     end
 
     def self._read_rack_body(env)
-      input = env["rack.input"]
-      return "" unless input
-      input.rewind if input.respond_to?(:rewind)
-      body = input.read || ""
-      input.rewind if input.respond_to?(:rewind)
-      body
+      # Route through the capped reader so the running per-chunk upload cap is
+      # enforced on the form-token / body path too: an over-limit body raises
+      # PayloadTooLarge (rescued into 413 by dispatch_pipeline) instead of being
+      # read whole.
+      Tina4::Request.read_stream_capped(env["rack.input"])
     end
 
     # Extract a formToken from the request body.

@@ -388,7 +388,7 @@ module Tina4
       reset = is_tty ? "\e[0m" : ""
 
       is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
-      log_level = (ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]").upcase
+      log_level = (ENV["TINA4_LOG_LEVEL"] || "ALL").upcase
       display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
 
       # Auto-detect server name if not provided
@@ -455,6 +455,17 @@ module Tina4
 
       # Setup auth keys
       Tina4::Auth.setup(root_dir)
+
+      # Auto-attach CSRF protection when TINA4_CSRF is enabled (OFF by default).
+      # Mirrors the Python master's attach_csrf_from_env -- the env flag is the
+      # switch; unset means no CSRF gate. Idempotent, so a re-init is safe.
+      Tina4::CsrfMiddleware.attach_from_env
+
+      # Security headers: register in the default chain UNCONDITIONALLY
+      # (secure-by-default, SECHDR-DEC-01). Unlike CSRF this needs no opt-in -- a
+      # default app ships X-Frame-Options/X-Content-Type-Options/CSP/etc. with no
+      # code change. HSTS stays HTTPS-only. Idempotent.
+      Tina4::SecurityHeadersMiddleware.attach
 
       # Load translations
       Tina4::Localization.load(root_dir)

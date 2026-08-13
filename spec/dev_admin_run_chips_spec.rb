@@ -85,7 +85,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     # pending when POST /migrate is called.
     File.write(File.join(proj, ".env"), <<~ENV)
       TINA4_DEBUG=true
-      TINA4_LOG_LEVEL=[TINA4_LOG_NONE]
+      TINA4_LOG_LEVEL=NONE
       TINA4_AUTO_MIGRATE=false
       TINA4_DATABASE_URL=sqlite:app.db
     ENV
@@ -137,7 +137,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     @log_path = File.join(proj, "puma.log")
     child_env = {
       "TINA4_DEBUG" => "true",
-      "TINA4_LOG_LEVEL" => "[TINA4_LOG_NONE]",
+      "TINA4_LOG_LEVEL" => "NONE",
       "TINA4_AUTO_MIGRATE" => "false",
       "TINA4_QUEUE_PATH" => ENV["TINA4_QUEUE_PATH"],
       "TINA4_DATABASE_URL" => "sqlite:app.db",
@@ -243,10 +243,11 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
   # ── Tier 2 ───────────────────────────────────────────────────
 
   it "grounding status + token upsert round-trips through .env" do
-    # Baseline — no token configured.
+    # Baseline — no personal token → the panel advertises the FREE-TOKEN trial.
     code, status = get_json("/__dev/api/grounding/status")
     expect(code).to eq(200)
     expect(status["configured"]).to be(false)
+    expect(status["source"]).to eq("free")
     expect(status["last4"]).to eq("")
     expect(status["url"]).to eq("https://mcp.tina4.com")
 
@@ -259,9 +260,10 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     env_body = File.read(File.join(PROJECT, ".env"))
     expect(env_body).to include("TINA4_MCP_TOKEN=wxyz1234")
 
-    # Status now flips to configured.
+    # Status now flips to configured — the developer's own token.
     _, status2 = get_json("/__dev/api/grounding/status")
     expect(status2["configured"]).to be(true)
+    expect(status2["source"]).to eq("personal")
     expect(status2["last4"]).to eq("1234")
 
     # Clearing empties the value and flips configured back off.
@@ -269,6 +271,10 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     expect(cleared["configured"]).to be(false)
     expect(cleared["last4"]).to eq("")
     expect(File.read(File.join(PROJECT, ".env"))).to match(/^TINA4_MCP_TOKEN=$/)
+
+    # And the status endpoint is back to advertising the free trial.
+    _, status3 = get_json("/__dev/api/grounding/status")
+    expect(status3["source"]).to eq("free")
   end
 
   # ── Tier 3 ───────────────────────────────────────────────────

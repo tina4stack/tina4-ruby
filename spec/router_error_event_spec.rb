@@ -129,8 +129,8 @@ RSpec.describe "Router error event (v3.13.7)" do
       register_failing_route
       _status, _headers, body_parts = app.call(mock_env("GET", "/api/widgets"))
       body = body_parts.join
-      # SecureRandom.hex(6) → 12 hex chars
-      expect(body).to match(/[a-f0-9]{12}/)
+      # SecureRandom.hex(4) → 8 hex chars (rack_app.rb request_id minting)
+      expect(body).to match(/[a-f0-9]{8}/)
     end
   end
 

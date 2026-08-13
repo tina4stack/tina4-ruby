@@ -5,7 +5,11 @@ require "tmpdir"
 require "json"
 
 # Set test environment
-ENV["TINA4_DEBUG_LEVEL"] = "[TINA4_LOG_NONE]"
+# TINA4_DEBUG_LEVEL was the pre-3.14 spelling and is now a REMOVED setting
+# (Decision 19) -- it hard-fails configuration rather than being silently
+# ignored. TINA4_LOG_LEVEL=NONE is the current canonical way to keep the
+# console silent for the whole suite (log-level cases override it per spec).
+ENV["TINA4_LOG_LEVEL"] = "NONE"
 ENV["ENVIRONMENT"] = "test"
 
 # Add lib to load path
@@ -142,7 +146,14 @@ end
 # Found by seed 55555 (cache_provider_selection_spec "an unreachable backend
 # logs a warning", Captured: "") after seeds 777/31337/1111/2468/13579/4242 all
 # passed. Two seeds is a floor, not a proof.
-TINA4_LOG_CONSOLE_MEMO_IVARS = %i[@output @console_level @json_mode @strict].freeze
+#
+# 2026-08-13: Log's internal state shrank to two ivars (@snapshot, @pid) in
+# the logger_contract.json conformance rewrite -- @snapshot is REPLACED
+# atomically on every configure() rather than a handful of ivars memoised
+# piecemeal, so restoring just @snapshot (and @pid, to avoid a spurious
+# fork-detection reset firing on a restored snapshot) is the direct analog of
+# the old per-ivar restoration below.
+TINA4_LOG_STATE_IVARS = %i[@snapshot @pid].freeze
 
 RSpec.configure do |config|
   config.after(:suite) do
@@ -196,8 +207,8 @@ RSpec.configure do |config|
   tina4_log_console_baseline = nil
 
   config.before(:suite) do
-    Tina4::Log.configure unless Tina4::Log.instance_variable_get(:@initialized)
-    tina4_log_console_baseline = TINA4_LOG_CONSOLE_MEMO_IVARS.to_h do |ivar|
+    Tina4::Log.configure if Tina4::Log.instance_variable_get(:@snapshot).nil?
+    tina4_log_console_baseline = TINA4_LOG_STATE_IVARS.to_h do |ivar|
       [ivar, Tina4::Log.instance_variable_get(ivar)]
     end
   end

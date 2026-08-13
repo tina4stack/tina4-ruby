@@ -1,6 +1,6 @@
 # Tina4 Ruby
 
-Version 3.13.97 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.99 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 
@@ -760,10 +760,13 @@ Register callbacks that run periodically in a dedicated thread. Tasks integrate 
 # Register a periodic task
 Tina4::Background.register(interval: 2.0) { process_orders(queue) }
 
-# Or pass an explicit callable
+# Or pass an explicit callable. register (and Tina4.background) return a
+# Tina4::Background::Task HANDLE — the ONE surface shared with Python/PHP/Node.
 task = Tina4::Background.register(->{ check_health }, interval: 30.0)
+task.stop                               # -> true first time, false thereafter (idempotent)
 
-Tina4::Background.tasks                 # -> Array of registered tasks
+Tina4::Background.count                 # -> Integer, currently-registered tasks
+Tina4::Background.tasks                 # -> Array of registered task handles
 Tina4::Background.stop_task(task, timeout: 2.0)
 Tina4::Background.stop_all(timeout: 2.0)
 ```
@@ -823,10 +826,14 @@ keeps the exit code.
   the bad file and re-run.
 - **Each migration FILE is wrapped in its own transaction** (`start_transaction`
   / `commit`, `rollback` on error). On a failure the file rolls back as a unit.
-- **Atomicity caveat:** the per-file transaction is truly atomic only on engines
-  with **transactional DDL (PostgreSQL)**. MySQL, Firebird, and SQLite
-  auto-commit DDL, so a multi-statement migration that fails midway on those
-  engines leaves earlier statements applied — keep one logical change per file.
+- **Atomicity caveat:** the per-file transaction is truly atomic on engines with
+  **transactional DDL (PostgreSQL, and SQLite)**. SQLite's DDL is transactional
+  too (autocommit is off inside `start_transaction`), so a multi-statement
+  migration that fails midway on SQLite rolls back cleanly, including any
+  `CREATE TABLE` that already ran earlier in the same file — proven by
+  `spec/migration_contract_spec.rb`. MySQL and Firebird **auto-commit DDL**, so
+  the same failure on those two engines leaves earlier statements applied —
+  keep one logical change per file there.
 - **Idempotency on engines lacking `IF NOT EXISTS`:** on Firebird, `ALTER TABLE
   … ADD <column>` is existence-checked against `RDB$RELATION_FIELDS`; on Firebird
   AND MSSQL, a raw `CREATE TABLE` is skipped when the table already exists
@@ -983,15 +990,14 @@ Tina4::Container.reset                  # remove all (useful in tests)
 ### ErrorOverlay — Rich HTML error page (dev mode)
 
 ```ruby
-# Render a rich, syntax-highlighted HTML error page (Catppuccin Mocha theme)
+# Render a rich HTML error page (Catppuccin Mocha theme) — dev only
 html = Tina4::ErrorOverlay.render_error_overlay(exception, request: rack_env)
-
-# Render a safe, generic error page for production
-html = Tina4::ErrorOverlay.render_production_error(status_code: 500, message: "Internal Server Error")
 
 # Check if the overlay should be shown (TINA4_DEBUG = true)
 Tina4::ErrorOverlay.is_debug_mode  # -> Boolean
 ```
+
+The overlay is dev-only (gated on `is_debug_mode`/`TINA4_DEBUG`). The production 500 is NOT rendered here — the dispatch renders the generic `errors/500` page with an empty `error_message` (CWE-209), so the exception detail stays in the server log only. Sensitive request fields (Authorization / Cookie / Set-Cookie headers and password-like body/param keys) are redacted even in the overlay, the frame count is capped, and the caller guards the render.
 
 ### HtmlElement — Programmatic HTML builder
 
@@ -1222,8 +1228,8 @@ mode and protected for remote callers. Environment variables (read by
 - SSE/Streaming via `response.stream()` — Server-Sent Events support for real-time data push. Pass a generator/Enumerator; framework handles chunked transfer encoding, `text/event-stream` content type, and connection keep-alive. Hardened: a streaming source that raises mid-stream (generator/block error) or a client disconnect (IOError/EPIPE/ECONNRESET on the socket) is caught — chunks emitted before the failure are still delivered, the error is logged, and the stream ends cleanly so the worker never crashes
 - WSDL/SOAP security (`lib/tina4/wsdl.rb`): a SOAP message containing a `<!DOCTYPE>` (DTD) is rejected with a `Client` fault ("DOCTYPE declarations are not allowed in SOAP messages") **before** parsing — SOAP 1.1 §3 forbids DTDs, and rejecting up front closes the REXML internal-entity-expansion (billion-laughs) and XXE attack surface (enforced on both `process_soap` and the legacy `Service#handle_soap_request`). An operation that raises returns a `Server` fault whose `<faultstring>` is the real cause **only** in debug mode (`TINA4_DEBUG`); in production it is a generic "Internal server error" and the real cause is logged via `Tina4::Log.error` — a resolver exception never leaks internal state to a SOAP client
 - GraphQL security (`lib/tina4/graphql.rb`): **depth guard** — selection-set nesting is bounded by `TINA4_GRAPHQL_MAX_DEPTH` (default `50`; set `<= 0` to disable). An over-deep query or a circular fragment fails with a `"Query exceeds maximum depth of N"` error instead of overflowing the stack (depth counts sub-selections AND fragment spreads AND inline fragments; top-level starts at 1). **Resolver errors** are masked: the message is the real cause only in debug mode (`TINA4_DEBUG`), else a generic "Internal server error" (the real cause is logged via `Tina4::Log.error`, path preserved). **Directives are honored** — `parse_field` parses leading `@directive(args)` tokens into `:directives`, so `@skip`/`@include`/`@auth`/`@role`/`@guest` actually fire (previously the parser never populated directives, so they were silently ignored)
-- Tests: 5,046 examples, 0 failures, 0 pending - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Ruby 3.2.3) against live services with TINA4_REQUIRE_SERVICES=1, at seeds 1111, 4242, 9999 and 55555. Seeds are varied because ORDER-DEPENDENT state leaks between spec files and a single seed hides them. A bare constant declared inside an `RSpec.describe` block is the classic one (it lands on Object and clobbers another spec file), but it is NOT the only one: **`Tina4::Log` memoises WHERE it writes in class ivars**, and `Log#log` gates its console branch on `@output != "file"`, so a spec that configures Log for its own purposes silently sends every later `Log.warning` to the log FILE instead of `$stdout` and any spec capturing `$stdout` captures `""`. That is not a spec forgetting to tidy up - all eight sites that do it save and restore `TINA4_LOG_OUTPUT` correctly; **restoring the ENV VAR is not restoring the MEMO**, which is private. It is now impossible by construction: `spec/spec_helper.rb` snapshots the sink at `before(:suite)` and restores it in a `prepend_before(:each)`, so every example starts at the baseline no matter what ran before it (see `TINA4_LOG_CONSOLE_MEMO_IVARS`). A spec that must also be immune to the AMBIENT setting (someone running with `TINA4_LOG_OUTPUT=file`) pins the sink locally too - see `with_console_logging` in `spec/database_connect_timeout_spec.rb`. **Two seeds is a floor, not a proof:** this bug survived six seeds, and the first version of that line was written one seed before a seventh found it again in a different spec. **Firebird is NOT excluded** - `spec/firebird_*.rb` runs against a REAL Firebird 5.0.2; the Gemfile's `firebird` group is what makes `fb` compile, and the lab sets `BUNDLE_WITH=firebird`. A machine without `firebird-dev` is the case that skips, not the design.
-- Version: 3.13.97
+- Tests: 5,046 examples, 0 failures, 0 pending - measured 2026-08-06 on the lab host (Ubuntu 24.04.4 LTS x86_64, Ruby 3.2.3) against live services with TINA4_REQUIRE_SERVICES=1, at seeds 1111, 4242, 9999 and 55555. Seeds are varied because ORDER-DEPENDENT state leaks between spec files and a single seed hides them. A bare constant declared inside an `RSpec.describe` block is the classic one (it lands on Object and clobbers another spec file), but it is NOT the only one: **`Tina4::Log` memoises WHERE it writes in class ivars**, and `Log#log` gates its console branch on `@output != "file"`, so a spec that configures Log for its own purposes silently sends every later `Log.warning` to the log FILE instead of `$stdout` and any spec capturing `$stdout` captures `""`. That is not a spec forgetting to tidy up - all eight sites that do it save and restore `TINA4_LOG_OUTPUT` correctly; **restoring the ENV VAR is not restoring the MEMO**, which is private. It is now impossible by construction: `spec/spec_helper.rb` snapshots the sink at `before(:suite)` and restores it in a `prepend_before(:each)`, so every example starts at the baseline no matter what ran before it (see `TINA4_LOG_CONSOLE_MEMO_IVARS`). A spec that must also be immune to the AMBIENT setting (someone running with `TINA4_LOG_OUTPUT=file`) pins the sink locally too - see `with_console_logging` in `spec/database_connect_timeout_spec.rb`. **Two seeds is a floor, not a proof:** this bug survived six seeds, and the first version of that line was written one seed before a seventh found it again in a different spec. **Firebird runs on the lab but IS excluded from the require-services gate** - `spec/spec_helper.rb`'s `TINA4_GATE_SERVICE_KEYWORDS` omits firebird because CI provisions none, so a Firebird skip stays green there; the lab provisions a live Firebird 5 and `spec/firebird_*.rb` (plus the feature-12 `spec/firebirdprovider_contract_spec.rb`) run against it - the Gemfile's `firebird` group makes `fb` compile and the lab sets `BUNDLE_WITH=firebird`. Real-Firebird coverage is enforced on the LAB, not by CI (FB-GATE-EXCLUDED); a machine without `firebird-dev` is the case that skips, not the design.
+- Version: 3.13.99
 
 ## Links
 

@@ -73,6 +73,10 @@ module Tina4
         release_resources
 
         Tina4::Log.info("Shutdown complete")
+        # Graceful shutdown owns the final call to reset() (Decision 24 /
+        # LOG-I02): flush+close owned sinks AFTER the shutdown record above,
+        # exactly once.
+        Tina4::Log.reset
         @shutdown_complete = true
         return if drained
 

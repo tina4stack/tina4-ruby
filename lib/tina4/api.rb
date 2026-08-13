@@ -107,7 +107,12 @@ module Tina4
       end
 
       @base_url = base_url.chomp("/")
+      # VERSION-DEC-03 (feature 130): every outbound request carries a
+      # default `Tina4/<version>` User-Agent. `headers` (the caller's own,
+      # from the constructor kwarg) is merged in LAST, so a caller-supplied
+      # "User-Agent" always wins -- this is a default, never a clobber.
       @headers = {
+        "User-Agent" => "Tina4/#{Tina4::VERSION}",
         "Content-Type" => "application/json",
         "Accept" => "application/json"
       }.merge(headers)

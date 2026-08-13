@@ -11,8 +11,14 @@
 #     Tina4::ErrorOverlay.render_error_overlay(e, request: env)
 #   end
 #
-# Only activate when TINA4_DEBUG is true.
-# In production, call Tina4::ErrorOverlay.render_production_error instead.
+# Only activate when TINA4_DEBUG is true. The production 500 is NOT rendered here —
+# the dispatch renders the generic errors/500 page with an empty error_message
+# (CWE-209), so the exception detail stays in the server log only, never in the body.
+#
+# Sensitive request fields (Authorization / Cookie / Set-Cookie headers and
+# password-like body/param keys) are redacted even in the dev overlay, the frame count
+# is capped, and the caller wraps this render in a rescue, so a broken overlay or a
+# recursive stack still yields a bounded, safe 500.
 
 module Tina4
   module ErrorOverlay
@@ -32,6 +38,18 @@ module Tina4
 
     CONTEXT_LINES = 7
 
+    # OVERLAY-DEC-03: cap the rendered frames so a deep/recursive stack yields a
+    # bounded page, not one source-file read per frame.
+    MAX_FRAMES = 50
+
+    # OVERLAY-DEC-02: request fields whose KEY matches this are masked in the dev
+    # overlay (Authorization/Cookie/Set-Cookie headers via authorization|cookie —
+    # Rack spells them HTTP_AUTHORIZATION / HTTP_COOKIE; password/token/secret/api_key
+    # body/param keys via the rest). Over-matching a benign field is the SAFE direction
+    # in a dev tool — over-masking leaks nothing; under-masking leaks a secret.
+    SENSITIVE_KEY_RE = /password|passwd|secret|token|authorization|cookie|key/i
+    REDACTED = "[redacted]"
+
     class << self
       # Render a rich HTML error overlay.
       #
@@ -50,25 +68,36 @@ module Tina4
         # what actually raised the error.
         captured_at = Time.now.to_f
 
-        # ── Stack trace ──
+        # ── Stack trace (OVERLAY-DEC-03: capped) ──
+        # A recursive stack of thousands of frames would otherwise do one source-file
+        # read per frame and emit an unbounded page; render only the innermost
+        # MAX_FRAMES and note the rest.
         frames_html = +""
         backtrace = exception.backtrace || []
-        backtrace.each do |line|
+        backtrace.first(MAX_FRAMES).each do |line|
           file, lineno, method = parse_backtrace_line(line)
           frames_html << format_frame(file, lineno, method, captured_at: captured_at)
         end
+        hidden = backtrace.length - [backtrace.length, MAX_FRAMES].min
+        if hidden.positive?
+          frames_html << "<div style=\"color:#{SUBTEXT};padding:8px 0;font-size:13px;\">" \
+            "&#8230; #{hidden} more stack frames hidden (truncated at #{MAX_FRAMES})</div>"
+        end
 
-        # ── Request info ──
+        # ── Request info (OVERLAY-DEC-02: sensitive fields redacted) ──
         request_pairs = []
         if request.is_a?(Hash)
           request.each do |k, v|
             key = k.to_s
             if v.is_a?(Hash)
-              v.each { |hk, hv| request_pairs << ["#{key}.#{hk}", hv.to_s] }
+              v.each do |hk, hv|
+                pair_key = "#{key}.#{hk}"
+                request_pairs << [pair_key, redact(pair_key, hv.to_s)]
+              end
             elsif key.start_with?("HTTP_") || %w[REQUEST_METHOD REQUEST_URI SERVER_PROTOCOL
               REMOTE_ADDR SERVER_PORT QUERY_STRING CONTENT_TYPE CONTENT_LENGTH
               method url path].include?(key)
-              request_pairs << [key, v.to_s]
+              request_pairs << [key, redact(key, v.to_s)]
             end
           end
         end
@@ -120,54 +149,19 @@ module Tina4
         HTML
       end
 
-      # Render a safe, generic error page for production.
-      def render_production_error(status_code: 500, message: "Internal Server Error", path: "")
-        # Determine color based on status code
-        code_color = case status_code
-                     when 403 then "#f59e0b"
-                     when 404 then "#3b82f6"
-                     else "#ef4444"
-                     end
-
-        <<~HTML
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>#{status_code} — #{esc(message)}</title>
-          <style>
-          * { box-sizing: border-box; margin: 0; padding: 0; }
-          body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-          .error-card { background: #1e293b; border: 1px solid #334155; border-radius: 1rem; padding: 3rem; text-align: center; max-width: 520px; width: 90%; }
-          .error-code { font-size: 8rem; font-weight: 900; color: #{code_color}; opacity: 0.6; line-height: 1; margin-bottom: 0.5rem; }
-          .error-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
-          .error-msg { color: #94a3b8; font-size: 1rem; margin-bottom: 1.5rem; line-height: 1.5; }
-          .error-path { font-family: 'SF Mono', monospace; background: #0f172a; color: #{code_color}; padding: 0.5rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; word-break: break-all; margin-bottom: 1.5rem; display: inline-block; }
-          .error-home { display: inline-block; padding: 0.6rem 2rem; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 0.5rem; font-size: 0.9rem; font-weight: 600; }
-          .error-home:hover { opacity: 0.9; }
-          .logo { font-size: 1.5rem; margin-bottom: 1rem; opacity: 0.5; }
-          </style>
-          </head>
-          <body>
-          <div class="error-card">
-              <div class="error-code">#{status_code}</div>
-              <div class="error-title">#{esc(message)}</div>
-              <div class="error-msg">Something went wrong while processing your request.</div>
-              #{path.to_s.empty? ? '' : "<div class=\"error-path\">#{esc(path)}</div><br>"}
-              <a href="/" class="error-home">Go Home</a>
-          </div>
-          </body>
-          </html>
-        HTML
-      end
-
       # Return true if TINA4_DEBUG is enabled.
       def is_debug_mode
         Tina4::Env.is_truthy(ENV.fetch("TINA4_DEBUG", ""))
       end
 
       private
+
+      # Mask a sensitive request value (OVERLAY-DEC-02). Returns "[redacted]" when
+      # +key+ names a secret field (an Authorization/Cookie/Set-Cookie header or a
+      # password/token/secret/key-like body/param key), otherwise the value unchanged.
+      def redact(key, value)
+        key.to_s.match?(SENSITIVE_KEY_RE) ? REDACTED : value
+      end
 
       def esc(text)
         text.to_s

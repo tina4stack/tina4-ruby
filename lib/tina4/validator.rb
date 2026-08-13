@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Tina4
   # Request body validator with chainable rules.
   #
@@ -140,7 +142,11 @@ module Tina4
       return self if value.nil?
 
       unless allowed.include?(value)
-        @validation_errors << { field: key, message: "#{key} must be one of #{allowed}" }
+        # Canonical wording (VALID-TWO-MESSAGES): render the allowed set as
+        # compact JSON so every framework prints the SAME list -- Node
+        # JSON.stringify, PHP json_encode, Python json.dumps and this to_json all
+        # emit ["admin","user","guest"] (no spaces), never a language repr.
+        @validation_errors << { field: key, message: "#{key} must be one of #{allowed.to_json}" }
       end
       self
     end

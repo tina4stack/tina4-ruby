@@ -41,32 +41,37 @@ module Tina4
       end
 
       # ── Inline testing (parity with Python/PHP/Node decorator pattern) ──
+      #
+      # The builders are named expect_* — DESCRIPTORS that record an expectation
+      # for run_all to execute later — deliberately distinct from the immediate
+      # xUnit-style TestContext#assert_* used inside describe/it blocks, so the two
+      # surfaces never collide on a name with an incompatible signature.
 
-      # Assertion builder: assert_equal(args, expected)
-      def assert_equal(args, expected)
+      # Expectation builder: expect_equal(args, expected)
+      def expect_equal(args, expected)
         { type: :equal, args: args, expected: expected }
       end
 
-      # Assertion builder: assert_raises(exception_class, args)
-      def assert_raises(exception_class, args)
+      # Expectation builder: expect_raises(exception_class, args)
+      def expect_raises(exception_class, args)
         { type: :raises, exception: exception_class, args: args }
       end
 
-      # Assertion builder: assert_true(args)
-      def assert_true(args)
+      # Expectation builder: expect_true(args)
+      def expect_true(args)
         { type: :true, args: args }
       end
 
-      # Assertion builder: assert_false(args)
-      def assert_false(args)
+      # Expectation builder: expect_false(args)
+      def expect_false(args)
         { type: :false, args: args }
       end
 
-      # Register a callable with inline assertions (mirrors Python's @tests decorator).
+      # Register a callable with inline expectations (mirrors Python's @tests decorator).
       #
       #   Tina4::Testing.tests(
-      #     Tina4::Testing.assert_equal([5, 3], 8),
-      #     Tina4::Testing.assert_raises(ArgumentError, [nil]),
+      #     Tina4::Testing.expect_equal([5, 3], 8),
+      #     Tina4::Testing.expect_raises(ArgumentError, [nil]),
       #   ) { |a, b| raise ArgumentError, "b required" if b.nil?; a + b }
       #
       def tests(*assertions, name: nil, &block)

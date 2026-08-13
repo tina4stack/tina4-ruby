@@ -10,25 +10,9 @@
 require "spec_helper"
 
 RSpec.describe "Tina4::Migration footguns" do
-  # A migration instance with no real DB — the helpers under test never touch
-  # @db except should_skip_create_table, which we exercise via a fake below.
+  # A migration instance with no real DB — every helper exercised in this file
+  # is a pure string/regex function that never touches @db.
   let(:migration) { Tina4::Migration.allocate.tap { |m| m.instance_variable_set(:@migrations_dir, "migrations") } }
-
-  # Minimal fake DB for the CREATE TABLE idempotency guard.
-  class FakeDB
-    def initialize(engine, table_exists)
-      @engine = engine
-      @exists = table_exists
-    end
-
-    def get_database_type
-      @engine
-    end
-
-    def table_exists?(_name)
-      @exists
-    end
-  end
 
   # ── [10] `//` delimiter must not swallow a URL ──────────────────────────
 
@@ -83,37 +67,18 @@ RSpec.describe "Tina4::Migration footguns" do
   end
 
   # ── [9] CREATE TABLE idempotency on Firebird/MSSQL ──────────────────────
-
-  describe "should_skip_create_table" do
-    def skip_reason(engine, exists, stmt)
-      m = Tina4::Migration.allocate
-      m.instance_variable_set(:@db, FakeDB.new(engine, exists))
-      m.send(:should_skip_create_table, stmt)
-    end
-
-    it "skips on MSSQL when the table exists" do
-      reason = skip_reason("mssql", true, "CREATE TABLE users (id INT)")
-      expect(reason).to include("users")
-    end
-
-    it "skips on Firebird (quoted name) when the table exists" do
-      reason = skip_reason("firebird", true, 'CREATE TABLE "Orders" (id INT)')
-      expect(reason).to include("Orders")
-    end
-
-    it "does NOT skip when the table is absent" do
-      expect(skip_reason("firebird", false, "CREATE TABLE users (id INT)")).to be_nil
-    end
-
-    it "does NOT skip on sqlite/postgres (IF NOT EXISTS engines)" do
-      expect(skip_reason("sqlite", true, "CREATE TABLE users (id INT)")).to be_nil
-      expect(skip_reason("postgres", true, "CREATE TABLE users (id INT)")).to be_nil
-    end
-
-    it "ignores a non-CREATE statement" do
-      expect(skip_reason("mssql", true, "INSERT INTO users VALUES (1)")).to be_nil
-    end
-  end
+  #
+  # MIG-FBMSSQL-MOCK (feature 15, MIG-DEC-03): this describe block used to
+  # exercise should_skip_create_table against a hand-rolled FakeDB (a
+  # two-method stand-in whose get_database_type/table_exists? were scripted
+  # return values, never a real engine's catalogue). NO DOUBLES -- moved to
+  # spec/migration_contract_spec.rb's "firebird_mssql_create_add_idempotency_real",
+  # which drives the SAME guard against a REAL Firebird 5 and a REAL MSSQL
+  # (PHP's MigrationFootgunsLiveEngineTest is the model this release aligned
+  # Ruby and Node to). The sqlite/postgres negative branch (never touches the
+  # database at all -- should_skip_create_table returns nil before calling
+  # table_exists? for either engine) is proven there too, on a real SQLite
+  # connection.
 
   # ── [#54] a ';' inside a comment or string literal must NOT split a statement ──
 

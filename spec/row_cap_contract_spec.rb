@@ -236,15 +236,30 @@ RSpec.describe "raw fetch row-cap contract" do
       expect(result.records.length).to eq(cap) # 100 - capped, not 150
     end
 
-    it "applies the cap at the wrapper - the SQLite driver has no fetch of its own" do
+    it "applies the cap at the wrapper only - a direct driver-level fetch is NOT capped" do
       # Ruby's divergence from PHP, pinned rather than papered over. PHP caps in
-      # its wrapper AND its adapter; here `fetch` is an unoverridden
-      # Tina4::DatabaseAdapter CONTRACT stub on SqliteDriver, so there is no
-      # driver-level read to cap. If this ever stops raising, a real driver
-      # fetch exists and its cap behaviour needs its own assertion.
+      # its wrapper AND its adapter; SqliteDriver still has no #fetch OF ITS
+      # OWN (implemented_by? stays false - Object#instance_method(:fetch).owner
+      # is Tina4::DatabaseAdapter, not SqliteDriver).
+      #
+      # UPDATED 2026-08-13 (ADR-0044, commit 2f56a8e closing the adapter_contract
+      # owed invariants): this used to raise NotImplementedError here, because
+      # #fetch was in ABSTRACT_CONTRACT with no usable default. It has since
+      # moved to the "real, usable generic default" tier -
+      # DatabaseAdapter#fetch now delegates to #execute_query, which every
+      # driver (including SqliteDriver) already implements. So a driver-level
+      # fetch WORKS - and, exactly as this file's header predicts, it is
+      # uncapped: the LIMIT/OFFSET text is appended by Database#fetch (the
+      # wrapper) and this call never reaches that wrapper, so every one of the
+      # 150 rows comes back. Measured directly (spec/spec_helper.rb has no
+      # mocks to consult): `driver.fetch(sql)` returns a plain Array of
+      # Symbol-keyed Hashes, not a DatabaseResult - there is no pagination
+      # envelope to ask a count/limit/offset of at this layer.
       driver = @db.current_driver
       expect(Tina4::DatabaseAdapter.implemented_by?(driver, :fetch)).to be(false)
-      expect { driver.fetch("SELECT * FROM #{table}") }.to raise_error(NotImplementedError)
+      result = driver.fetch("SELECT * FROM #{table}")
+      expect(result).to be_a(Array)
+      expect(result.length).to eq(rows)
     end
   end
 end

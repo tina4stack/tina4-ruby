@@ -70,9 +70,11 @@ module Tina4
           @last_insert_id = result.inserted_id.to_s
           result
         when :update
-          collection.update_many(parsed[:filter] || {}, { "$set" => parsed[:updates] })
+          # parse_update guarantees a scoped filter (or it raised) — no || {} fallback.
+          collection.update_many(parsed[:filter], { "$set" => parsed[:updates] })
         when :delete
-          collection.delete_many(parsed[:filter] || {})
+          # parse_delete guarantees a scoped filter (or it raised) — no || {} fallback.
+          collection.delete_many(parsed[:filter])
         when :create_collection
           begin
             @db.command(create: parsed[:collection].to_s)
@@ -89,6 +91,49 @@ module Tina4
 
       def last_insert_id
         @last_insert_id
+      end
+
+      # Atomic, monotonic, concurrency-safe next id — feature 16. A
+      # findOneAndUpdate($inc) on the tina4_sequences collection, keyed by _id
+      # (its built-in unique index makes concurrent first-use upserts race-safe:
+      # two callers can never create two counters for one table). Seeds from
+      # MAX(pk_column) the FIRST time only ($setOnInsert). Raises on an
+      # impossible empty result rather than returning a fixed id that could
+      # collide with an existing row.
+      def get_next_id(table, pk_column = "id")
+        sequences = @db["tina4_sequences"]
+        seq_name = "#{table}.#{pk_column}"
+
+        if sequences.find("_id" => seq_name).first.nil?
+          seed = 0
+          begin
+            max_doc = @db[table.to_s].find.sort(pk_column => -1).limit(1).first
+            seed = max_doc[pk_column].to_i if max_doc && max_doc[pk_column]
+          rescue StandardError
+            # Collection may not exist yet — seed 0.
+          end
+          begin
+            sequences.update_one(
+              { "_id" => seq_name },
+              { "$setOnInsert" => { "current_value" => seed } },
+              upsert: true
+            )
+          rescue StandardError
+            # Race — another caller seeded first; the atomic $inc below still holds.
+          end
+        end
+
+        doc = sequences.find_one_and_update(
+          { "_id" => seq_name },
+          { "$inc" => { "current_value" => 1 } },
+          return_document: :after,
+          upsert: true
+        )
+        if doc.nil? || doc["current_value"].nil?
+          raise "get_next_id: MongoDB counter '#{seq_name}' produced no value"
+        end
+
+        doc["current_value"].to_i
       end
 
       def placeholder
@@ -124,6 +169,11 @@ module Tina4
 
       def rollback
         # no-op
+      end
+
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'mongodb'
       end
 
       def tables
@@ -351,6 +401,17 @@ module Tina4
       def parse_condition(clause)
         clause = clause.strip.gsub(/^\(+/, "").gsub(/\)+$/, "").strip
 
+        # Explicit 1=1 tautology -- the WHERE clause truncate() passes -- means
+        # MATCH-ALL: translate it to an empty {} filter so truncate() empties the
+        # collection, exactly as PHP already does. Without this, "1 = 1" fell
+        # through to the "=" comparison below and parsed as { "1" => 1 }, which
+        # matches NOTHING, so a truncate() silently deleted 0 documents while the
+        # caller believed the collection was emptied. This does NOT weaken the
+        # fail-closed guard: 1=1 is an EXPLICIT tautology, distinct from an
+        # unparseable WHERE (the raise at the end of this method still fires) and
+        # from a blank/absent WHERE (which require_where_for_write still rejects).
+        return {} if clause.match?(/\A1\s*=\s*1\z/)
+
         # IS NULL / IS NOT NULL
         if (m = clause.match(/^(\w+)\s+IS\s+NOT\s+NULL$/i))
           return { m[1] => { "$ne" => nil } }
@@ -398,8 +459,33 @@ module Tina4
           end
         end
 
-        # Fallback — return as a raw string comment (best-effort)
-        {}
+        # Fail closed. An unrecognised condition must NEVER degrade to an empty
+        # (match-all) filter: on a DELETE/UPDATE that empty filter reaches
+        # delete_many({})/update_many({}) and wipes or rewrites the WHOLE
+        # collection. Raise so the caller sees the unsupported SQL instead of
+        # silently losing data.
+        raise ArgumentError,
+              "Unsupported MongoDB WHERE condition: #{clause.inspect}. The MongoDB " \
+              "SQL provider fails closed rather than matching every document. " \
+              "Supported: = != <> > >= < <= LIKE, NOT LIKE, IN, NOT IN, " \
+              "IS [NOT] NULL, AND, OR."
+      end
+
+      # Fail closed: a DELETE/UPDATE must carry a WHERE clause.
+      #
+      # A missing or blank WHERE translates to an empty MongoDB filter, which
+      # matches EVERY document, so delete_many({})/update_many({}) would wipe or
+      # rewrite the whole collection. Refuse it. The explicit whole-collection
+      # spelling is truncate() (it passes WHERE 1 = 1); the native driver via
+      # #connection is the escape hatch for anything the SQL subset cannot
+      # express. Shared by both write paths so the guard cannot drift.
+      def require_where_for_write(where_str, operation, collection)
+        return unless where_str.nil? || where_str.strip.empty?
+
+        raise ArgumentError,
+              "Refusing to #{operation} every document in '#{collection}': the " \
+              "statement has no WHERE clause, which would affect the whole " \
+              "collection. Add a WHERE, or use truncate() to clear it explicitly."
       end
 
       def parse_value(str)
@@ -474,10 +560,7 @@ module Tina4
 
         m = sql.match(/UPDATE\s+(\w+)\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/im)
         unless m
-          result[:collection] = :unknown
-          result[:updates] = {}
-          result[:filter] = {}
-          return result
+          raise ArgumentError, "MongodbDriver: cannot parse UPDATE statement: #{sql}"
         end
 
         result[:collection] = m[1].to_sym
@@ -497,9 +580,10 @@ module Tina4
         end
         result[:updates] = updates
 
-        # Parse WHERE
+        # Parse WHERE — refuse a filterless UPDATE (would rewrite the whole collection).
         where_str = m[3]&.strip
-        result[:filter] = where_str && !where_str.empty? ? parse_where(where_str) : {}
+        require_where_for_write(where_str, "UPDATE", result[:collection])
+        result[:filter] = parse_where(where_str)
 
         result
       end
@@ -533,14 +617,14 @@ module Tina4
 
         m = sql.match(/DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+))?$/im)
         unless m
-          result[:collection] = :unknown
-          result[:filter] = {}
-          return result
+          raise ArgumentError, "MongodbDriver: cannot parse DELETE statement: #{sql}"
         end
 
         result[:collection] = m[1].to_sym
+        # Refuse a filterless DELETE (would empty the whole collection).
         where_str = m[2]&.strip
-        result[:filter] = where_str && !where_str.empty? ? parse_where(where_str) : {}
+        require_where_for_write(where_str, "DELETE", result[:collection])
+        result[:filter] = parse_where(where_str)
 
         result
       end

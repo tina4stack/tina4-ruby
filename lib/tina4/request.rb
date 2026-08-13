@@ -2,6 +2,7 @@
 require "uri"
 require "json"
 require "ipaddr"
+require "stringio"
 
 module Tina4
   # A Hash subclass that supports indifferent access (both string and symbol keys).
@@ -115,13 +116,86 @@ module Tina4
 
   class Request
     attr_reader :env, :method, :path, :query_string, :content_type,
-                :path_params, :ip, :remote_ip
-    attr_accessor :user
+                :ip, :remote_ip
+    # :route is the matched Route, attached by the dispatcher before post-match
+    # middleware runs (DispatchPipeline#prepare_route_request). CsrfMiddleware
+    # reads route.auth_required to honour a public write route (.no_auth).
+    attr_accessor :user, :route
 
     # Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var.
     TINA4_MAX_UPLOAD_SIZE = Integer(ENV.fetch("TINA4_MAX_UPLOAD_SIZE", 10_485_760))
 
     class PayloadTooLarge < StandardError; end
+
+    # Effective upload cap in bytes. Read at CALL TIME (not frozen into the
+    # constant at load) so the limit honours a TINA4_MAX_UPLOAD_SIZE set after
+    # this file was required, and so a test can lower it. Falls back to the
+    # constant default when the env var is unset/blank.
+    def self.max_upload_size
+      value = ENV["TINA4_MAX_UPLOAD_SIZE"]
+      value.nil? || value.empty? ? TINA4_MAX_UPLOAD_SIZE : value.to_i
+    end
+
+    # Read an IO in bounded chunks, raising PayloadTooLarge the MOMENT the
+    # running total exceeds the upload cap, so an over-limit body is refused as
+    # it arrives instead of after the whole thing is buffered. Rewinds the input
+    # before and after so a later reader (Rack's parser, form-token extraction)
+    # sees the same stream. Parity with the Python/Node per-chunk body readers.
+    def self.read_stream_capped(input, limit = nil)
+      return "" unless input
+
+      limit = max_upload_size if limit.nil?
+      input.rewind if input.respond_to?(:rewind)
+      buffer = +""
+      if limit&.positive?
+        while (chunk = input.read(65_536))
+          buffer << chunk
+          if buffer.bytesize > limit
+            raise PayloadTooLarge,
+                  "Request body (#{buffer.bytesize}+ bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{limit} bytes)"
+          end
+        end
+      else
+        buffer = input.read || ""
+      end
+      input.rewind if input.respond_to?(:rewind)
+      buffer
+    end
+
+    # Persist an uploaded file's content inside target_dir under a SAFE name.
+    #
+    # The client-supplied filename is untrusted. Directory components are
+    # stripped (so "../../evil" or "/etc/passwd" becomes "evil"/"passwd"), a NUL
+    # byte or an unusable name ("", ".", "..") is refused, and the resolved path
+    # is confined to target_dir (realpath containment) so an upload can never
+    # write outside it. Returns the absolute path written; raises ArgumentError
+    # on an unsafe name.
+    def self.save_upload(file, target_dir, filename: nil)
+      raw = (filename || file["filename"] || file[:filename] || "").to_s
+      raise ArgumentError, "upload filename contains a null byte" if raw.include?("\u0000")
+
+      # Reduce to a single path segment, handling BOTH separators so a Windows
+      # "..\\..\\evil" cannot smuggle a directory part past a POSIX basename.
+      base = raw.tr("\\", "/").split("/").last.to_s
+      if base.empty? || base == "." || base == ".."
+        raise ArgumentError, "upload filename is not a usable name: #{raw.inspect}"
+      end
+
+      require "fileutils"
+      FileUtils.mkdir_p(target_dir)
+      dest = File.join(target_dir, base)
+      # Defence in depth: the resolved parent of the destination must be exactly
+      # the resolved target dir (guards a pre-existing symlink at target/base).
+      real_dir = File.realpath(target_dir)
+      real_parent = File.realpath(File.dirname(dest))
+      unless real_parent == real_dir
+        raise ArgumentError, "refusing to write outside #{target_dir.inspect}: #{raw.inspect}"
+      end
+
+      content = file["content"] || file[:content] || ""
+      File.binwrite(dest, content)
+      dest
+    end
 
     def initialize(env, path_params = {})
       @env = env
@@ -131,11 +205,14 @@ module Tina4
       @content_type = env["CONTENT_TYPE"] || ""
       @path_params = path_params
 
-      # Check upload size limit
+      # Check upload size limit (DECLARED Content-Length). The running per-chunk
+      # counter in read_stream_capped catches the chunked / under-declared case
+      # this check cannot see.
       content_length = (env["CONTENT_LENGTH"] || 0).to_i
-      if content_length > TINA4_MAX_UPLOAD_SIZE
+      upload_limit = Tina4::Request.max_upload_size
+      if content_length > upload_limit
         raise PayloadTooLarge,
-          "Request body (#{content_length} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{TINA4_MAX_UPLOAD_SIZE} bytes)"
+          "Request body (#{content_length} bytes) exceeds TINA4_MAX_UPLOAD_SIZE (#{upload_limit} bytes)"
       end
 
       # Raw socket peer — NEVER honours X-Forwarded-For, so it can be trusted
@@ -154,6 +231,11 @@ module Tina4
       @json_body = nil
       @query_hash = nil
       @body_parsed = nil
+      # #body's own memoised RESULT can legitimately be nil (the no-body
+      # sentinel, REQ-BODY-DIVERGE 3.13.99), so "nil = not yet computed" (the
+      # convention above) cannot also mean "computed, and nil" for this one
+      # field — a dedicated flag distinguishes them.
+      @body_parsed_computed = false
     end
 
     # Is this request HTTPS from the CLIENT's point of view?
@@ -226,8 +308,15 @@ module Tina4
     # fields Hash, else the current fallback). This matches Python's
     # `request.body`, PHP's, and Node's: `body` is the PARSED payload, not
     # the raw bytes. For the raw string use `body_raw`.
+    #
+    # No-body is now a real `nil` result (REQ-BODY-DIVERGE, 3.13.99), so this
+    # can no longer memoise with `||=` (nil/false never "stick" — every call
+    # would re-run parse_body). @body_parsed_computed distinguishes "never
+    # computed" from "computed and the answer was nil".
     def body
-      @body_parsed ||= parse_body
+      return @body_parsed if @body_parsed_computed
+      @body_parsed_computed = true
+      @body_parsed = parse_body
     end
 
     # Raw body string — the bytes exactly as the client sent them.
@@ -250,40 +339,58 @@ module Tina4
       @files ||= extract_files
     end
 
-    # Merged params: query + body + path_params (path_params highest priority)
-    # Supports both string and symbol key access (indifferent access).
-    # Attach the matched route's path params AFTER construction.
+    # Route params ONLY — never query or body (REQ-PARAM-POLLUTION, 3.13.99,
+    # a param-pollution/security fix). A route `/{id}` hit with `?id=other`
+    # yields `params["id"]` == the route value; the client value is only ever
+    # in `query`. Supports both string and symbol key access (indifferent
+    # access — matches Route#match_path, which captures path-param names as
+    # SYMBOLS, so `params[:id]` and `params["id"]` both resolve). Renamed
+    # from `path_params` to unify the route-param accessor NAME with
+    # Python/PHP/Node (REQ-ROUTE-PARAM-NAME); the old MERGED `params`
+    # (query + body + path_params, via #build_params) is deleted outright —
+    # no back-compat alias (nothing in the ledger asked for one).
     #
-    # The request is built BEFORE route matching now, so pre-match middleware
-    # has something to read and mutate. Path params are only known once a route
+    # The request is built BEFORE route matching, so pre-match middleware has
+    # something to read and mutate. Path params are only known once a route
     # has matched, so they are set here and the memoised #params is dropped -
     # without that reset a pre-match middleware that touched #params would
     # freeze a param-less copy for the handler.
-    def path_params=(value)
+    def params=(value)
       @path_params = value || {}
       @params = nil
     end
 
-    attr_reader :path_params
-
     def params
-      @params ||= build_params
+      @params ||= begin
+        result = IndifferentHash.new
+        @path_params.each { |k, v| result[k] = v }
+        result
+      end
     end
 
-    # Look up a param by symbol or string key (indifferent access shortcut).
+    # Look up a value by key: the matched ROUTE param first, then the query
+    # string. A read convenience only — `params` and `query` stay separate
+    # collections (REQ-PARAM-POLLUTION); a route value always wins over a
+    # client-supplied query value of the same name. Mirrors PHP's/Node's
+    # `param()`. Accepts a symbol or string key (indifferent, like `params`).
     def param(key, default = nil)
-      params[key.to_s] || params[key.to_sym] || default
+      value = params[key]
+      return value unless value.nil?
+      query[key.to_s] || default
     end
 
     def [](key)
-      params[key.to_s] || params[key.to_sym] || @path_params[key.to_sym]
+      param(key)
     end
 
     def header(name)
       # Headers are stored in a CaseInsensitiveHash keyed by lowercase-
-      # dashed names ("content-type", "x-api-key"). The hash normalises
-      # the lookup case automatically, so pass the dashed form through.
-      headers[name.to_s.tr("_", "-")]
+      # dashed names ("content-type", "x-api-key"). The hash normalises the
+      # lookup CASE automatically; this only translates the DASH convention.
+      # No underscore->dash remap any more (REQ-HEADER-DASH-DIVERGE,
+      # 3.13.99): case-fold only, matching the PHP/Node reference — a caller
+      # passing "content_type" no longer matches "Content-Type".
+      headers[name.to_s]
     end
 
     def json_body
@@ -381,9 +488,17 @@ module Tina4
       existing = @env["rack.request.form_hash"] rescue nil
       return existing if existing
 
+      # Enforce the running per-chunk upload cap BEFORE Rack reads the body, so
+      # an over-limit body is refused as it arrives rather than after Rack has
+      # buffered the whole thing. Outside the begin/rescue below on purpose: the
+      # PayloadTooLarge must propagate to the 413 handler, not be swallowed.
+      Tina4::Request.read_stream_capped(@env["rack.input"])
+
       parsed = begin
         require "rack"
         Rack::Request.new(@env).POST
+      rescue Tina4::Request::PayloadTooLarge
+        raise
       rescue StandardError => e
         Tina4::Log.warning("multipart parse failed: #{e.message}") if defined?(Tina4::Log)
         nil
@@ -392,8 +507,24 @@ module Tina4
     end
 
     def parse_body
+      # No-body sentinel (REQ-BODY-DIVERGE, 3.13.99): checked FIRST, before any
+      # content-type-specific parsing, so a request with no body is nil —
+      # Ruby's own "nothing" value, matching Python's None/PHP's null/Node's
+      # undefined (each language's native absence-value; was {} here, the odd
+      # one out).
+      return nil if body_raw.nil? || body_raw.empty?
+
       if @content_type.include?("application/json")
-        json_body
+        # Malformed JSON -> the RAW STRING (REQ-BODY-DIVERGE, 3.13.99 — pinned
+        # to the Python/PHP/Node majority; was {} here via #json_body, which
+        # swallows the distinction between "invalid" and "absent"). Deliberately
+        # NOT delegating to #json_body: that method keeps its own documented
+        # always-a-Hash, {}-on-failure contract for direct callers.
+        begin
+          JSON.parse(body_raw)
+        rescue JSON::ParserError, TypeError
+          body_raw
+        end
       elsif @content_type.include?("application/x-www-form-urlencoded")
         parse_query_to_hash(body_raw)
       elsif @content_type.include?("multipart/form-data")
@@ -403,8 +534,10 @@ module Tina4
         form_hash = multipart_form_hash
         if form_hash
           form_hash.each do |key, value|
-            # Skip file entries (handled by extract_files)
+            # Skip file entries (handled by extract_files) - a single descriptor
+            # or a list of them (repeated field name).
             next if value.is_a?(Hash) && value[:tempfile]
+            next if value.is_a?(Array) && value.any? { |v| v.is_a?(Hash) && v[:tempfile] }
             result[key] = value
           end
         end
@@ -412,20 +545,6 @@ module Tina4
       else
         {}
       end
-    end
-
-    def build_params
-      p = IndifferentHash.new
-
-      # Query string params
-      query.each { |k, v| p[k.to_s] = v }
-
-      # Body params
-      body_parsed.each { |k, v| p[k.to_s] = v }
-
-      # Path params (highest priority)
-      @path_params.each { |k, v| p[k.to_s] = v }
-      p
     end
 
     def parse_query_to_hash(qs)
@@ -442,30 +561,119 @@ module Tina4
       result = {}
       return result unless @content_type.include?("multipart/form-data")
       begin
+        # LIVE path: hand-scan the raw body so a REPEATED file field name is
+        # preserved as a LIST (Rack's POST collapses a repeated non-bracket name
+        # to last-wins - the multi-file data-loss this fixes). The scan reads the
+        # body through the capped reader, so an over-limit upload is refused as
+        # it arrives. Falls through to the parsed form_hash when there is no raw
+        # body (e.g. a spec injecting rack.request.form_hash).
+        scanned = scan_multipart_files
+        if scanned && !scanned.empty?
+          scanned.each do |key, list|
+            files = list.map { |value| build_file_upload(value) }.compact
+            result[key] = files.length == 1 ? files.first : files unless files.empty?
+          end
+          return result
+        end
+
         form_hash = multipart_form_hash
         if form_hash
           form_hash.each do |key, value|
-            if value.is_a?(Hash) && value[:tempfile]
-              tempfile = value[:tempfile]
-
-              # Indifferent-access per-file hash so file["content"],
-              # file[:content], file["filename"], file[:filename] all work.
-              # `content` (raw bytes, never base64) is materialised lazily on
-              # first access (see FileUpload) — :tempfile-only handlers never
-              # buffer large uploads in memory.
-              file = FileUpload.new
-              file[:filename] = value[:filename]
-              file[:type]     = value[:type]
-              file[:tempfile] = tempfile
-              file[:size]     = tempfile.size
-              result[key] = file
+            if value.is_a?(Array)
+              files = value.map { |v| build_file_upload(v) }.compact
+              result[key] = files.length == 1 ? files.first : files unless files.empty?
+            else
+              file = build_file_upload(value)
+              result[key] = file if file
             end
           end
         end
+      rescue Tina4::Request::PayloadTooLarge
+        raise
       rescue StandardError
         # Multipart parsing failed
       end
       result
+    end
+
+    # Build an indifferent-access per-file hash from a raw descriptor value
+    # ({filename:, type:, tempfile:, [content], [size]}). file["content"],
+    # file[:content], file["filename"] etc. all work; `content` (raw bytes,
+    # never base64) is materialised lazily from the tempfile on first access
+    # (see FileUpload) unless the scan already supplied it.
+    def build_file_upload(value)
+      return nil unless value.is_a?(Hash) && value[:tempfile]
+
+      file = FileUpload.new
+      file[:filename] = value[:filename]
+      file[:type]     = value[:type]
+      file[:tempfile] = value[:tempfile]
+      file[:size]     = value[:size] || (value[:tempfile].size rescue 0)
+      file["content"] = value[:content] if value.key?(:content) && !value[:content].nil?
+      file
+    end
+
+    # Extract the boundary token from a multipart Content-Type header.
+    def multipart_boundary(content_type)
+      content_type.to_s.split(";").each do |part|
+        part = part.strip
+        next unless part.start_with?("boundary=")
+
+        return part[9..].to_s.delete_prefix('"').delete_suffix('"')
+      end
+      nil
+    end
+
+    # Hand-roll the FILE parts out of the raw multipart body, keyed by field
+    # name, each name mapping to a LIST of descriptors so a repeated name keeps
+    # every file. Reads through read_stream_capped, so the running per-chunk
+    # upload cap is enforced here too (raising PayloadTooLarge). Returns {} when
+    # there is no raw body (the injected-form_hash path is used instead). Fields
+    # are handled by parse_body (via Rack) - this scans files only.
+    def scan_multipart_files
+      boundary = multipart_boundary(@content_type)
+      return {} unless boundary
+
+      body = Tina4::Request.read_stream_capped(@env["rack.input"])
+      return {} if body.nil? || body.empty?
+
+      body = body.dup.force_encoding("BINARY")
+      files = {}
+      delimiter = "--#{boundary}"
+      body.split(delimiter).each do |segment|
+        next if segment.empty? || segment.start_with?("--")
+
+        segment = segment.sub(/\A\r\n/, "")
+        header_end = segment.index("\r\n\r\n")
+        next unless header_end
+
+        header_section = segment[0...header_end]
+        content = segment[(header_end + 4)..] || ""
+        content = content.sub(/\r\n\z/, "")
+
+        name = nil
+        filename = nil
+        type = "application/octet-stream"
+        header_section.split("\r\n").each do |line|
+          if line =~ /content-disposition/i
+            name = Regexp.last_match(1) if line =~ /name="([^"]*)"/
+            filename = Regexp.last_match(1) if line =~ /filename="([^"]*)"/
+          elsif line =~ /content-type:\s*(.+)/i
+            type = Regexp.last_match(1).strip
+          end
+        end
+        next if name.nil? || filename.nil?
+
+        bytes = content.dup.force_encoding("BINARY")
+        (files[name] ||= []) << {
+          filename: filename,
+          type: type,
+          content: bytes,
+          size: bytes.bytesize,
+          tempfile: StringIO.new(bytes)
+        }
+      end
+      files
     end
   end
 end

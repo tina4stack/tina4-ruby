@@ -71,7 +71,10 @@ RSpec.describe Tina4::ErrorOverlay do
 
     it "contains the debug mode footer" do
       html = described_class.render_error_overlay(make_exception)
-      expect(html).to include("TINA4_DEBUG_LEVEL")
+      # The footer emits the literal "Set TINA4_DEBUG=false in production." — the old
+      # assertion looked for "TINA4_DEBUG_LEVEL", a string the overlay never emits
+      # (OVERLAY-TESTS-SUSPECT).
+      expect(html).to include("Set TINA4_DEBUG=false in production.")
     end
 
     it "escapes HTML in the exception message" do
@@ -125,30 +128,6 @@ RSpec.describe Tina4::ErrorOverlay do
         html = described_class.render_error_overlay(synthetic_exception(src))
         expect(html).not_to include("FILE MODIFIED")
       end
-    end
-  end
-
-  describe ".render_production_error" do
-    it "returns an HTML string" do
-      html = described_class.render_production_error
-      expect(html).to start_with("<!DOCTYPE html>")
-    end
-
-    it "contains the status code" do
-      html = described_class.render_production_error(status_code: 404, message: "Not Found")
-      expect(html).to include("404")
-      expect(html).to include("Not Found")
-    end
-
-    it "does not contain stack trace" do
-      html = described_class.render_production_error
-      expect(html).not_to include("Stack Trace")
-    end
-
-    it "defaults to 500" do
-      html = described_class.render_production_error
-      expect(html).to include("500")
-      expect(html).to include("Internal Server Error")
     end
   end
 

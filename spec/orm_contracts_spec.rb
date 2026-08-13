@@ -117,7 +117,10 @@ RSpec.describe "ORM fail-loud contracts (v3.13.39)" do
 
       expect(result).to be false
       expect(invalid.get_error).to be_truthy       # cause recoverable
-      expect(invalid.get_error.downcase).to include("null")
+      # Feature 19: the message is now the canonical "name is required" (the ORM
+      # validator and the request Validator speak one vocabulary), not the old
+      # "cannot be null".
+      expect(invalid.get_error.downcase).to include("required")
       expect(CUser.count).to eq(before)            # the write never happened
     end
   end

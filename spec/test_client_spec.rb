@@ -30,7 +30,9 @@ RSpec.describe Tina4::TestClient do
     end.no_auth
 
     Tina4::Router.get("/api/test/query") do |request, response|
-      response.json({ search: request.params["q"], page: request.params["page"] })
+      # Query-string values live in `query`, not the route-only `params`
+      # (REQ-PARAM-POLLUTION, 3.13.99) -- this route has no {} segments.
+      response.json({ search: request.query["q"], page: request.query["page"] })
     end
 
     Tina4::Router.get("/api/test/headers") do |request, response|

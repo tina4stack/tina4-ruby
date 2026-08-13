@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "port_takeover"
+
 module Tina4
   class WebServer
     DEFAULT_HOST = "0.0.0.0"
@@ -17,49 +19,29 @@ module Tina4
       @port = port || Tina4.resolve_bind_port(DEFAULT_PORT)
     end
 
-    # Kill whatever process is listening on *port*.
-    # Uses lsof on macOS/Linux and netstat + taskkill on Windows.
-    # Raises RuntimeError if the port cannot be freed.
+    # Reclaim *port* from a stale Tina4 dev server via the shared, guarded path.
+    #
+    # This is the runtime bind-failure fallback. It used to SIGTERM whatever held
+    # the port with NONE of the CLI's guards -- no identity check, no container
+    # guard, no PID-safety filter -- so a foreign holder (another dev server, a
+    # database) was killed on any bind failure. It now routes through the SAME
+    # identity-checked helper the CLI uses (TAKEOVER-DEC-02), so only a
+    # PID-file-confirmed Tina4 dev server is ever signalled.
+    #
+    # Raises RuntimeError when the port is held by a non-Tina4 process (or
+    # takeover is opted out / disabled outside dev), so the bind fails loudly with
+    # a clear message instead of killing an innocent process.
     def free_port(port)
-      puts "  Port #{port} in use — killing existing process..."
-
-      if RUBY_PLATFORM =~ /mswin|mingw|cygwin/
-        output = `netstat -ano 2>&1`
-        pid = nil
-        output.each_line do |line|
-          if line.include?(":#{port}") && (line.include?("LISTENING") || line.include?("ESTABLISHED"))
-            parts = line.strip.split(/\s+/)
-            candidate = parts.last
-            if candidate =~ /^\d+$/
-              pid = candidate
-              break
-            end
-          end
-        end
-        if pid
-          system("taskkill /PID #{pid} /F")
-        else
-          raise "Could not free port #{port}: no PID found"
-        end
-      else
-        pids = `lsof -ti :#{port} 2>/dev/null`.strip.split("\n")
-        if pids.empty?
-          return # Nothing found — port may have freed itself
-        end
-        pids.each do |pid|
-          pid = pid.strip
-          next unless pid =~ /^\d+$/
-          begin
-            Process.kill("TERM", pid.to_i)
-          rescue Errno::ESRCH
-            # Process already gone
-          end
-        end
+      result = Tina4::PortTakeover.take_over_port(
+        port, dev: Tina4::PortTakeover.dev?, no_takeover: Tina4::PortTakeover.no_takeover_opted_out?
+      )
+      if result.reclaimed?
+        puts "  #{result.message}"
+        return
       end
+      raise result.message if result.refused?
 
-      # Give the OS a moment to reclaim the port
-      sleep(0.5)
-      puts "  Port #{port} freed"
+      # NOTHING / container: nothing to reclaim -- let the real bind decide.
     end
 
     def start
@@ -114,6 +96,10 @@ module Tina4
         Logger: WEBrick::Log.new(File::NULL),
         AccessLog: []
       )
+
+      # Record THIS process as the Tina4 dev server on the main port, so a later
+      # `tina4 serve` can identify it as reclaimable (TAKEOVER-DEC-01).
+      Tina4::PortTakeover.write_pidfile(@port)
 
       # Setup graceful shutdown with WEBrick server reference
       Tina4::Shutdown.setup(server: @server)
@@ -327,6 +313,8 @@ module Tina4
       @ai_server&.shutdown
       @ai_thread&.join(5)
       @server&.shutdown
+      # Drop our identity marker so a later takeover does not match a dead PID.
+      Tina4::PortTakeover.remove_pidfile(@port)
     end
 
     # Dispatch a Rack-style env through the Tina4 app and return [status, headers, body].

@@ -140,8 +140,9 @@ module Tina4
       @mutex.synchronize { @store.size }
     end
 
-    # Generate a stable cache key from a SQL query and params.
-    # Mirrors SQLTranslator.query_key for direct use on QueryCache.
+    # Generate a stable cache key from a SQL query and params. This is the ONE
+    # query-key source used by the ORM cache path (the former duplicate on
+    # SQLTranslator was removed - SQLTRANS-DEC-02).
     #
     # @param sql [String]
     # @param params [Array, nil]

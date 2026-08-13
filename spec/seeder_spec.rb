@@ -147,9 +147,10 @@ RSpec.describe Tina4::FakeData do
       end
     end
 
-    it "#boolean returns 0 or 1" do
+    it "#boolean returns a native true or false" do
       vals = Set.new(100.times.map { fake.boolean })
-      expect(vals).to eq(Set[0, 1])
+      expect(vals).to eq(Set[true, false])
+      vals.each { |v| expect(v).to be(true).or be(false) }
     end
   end
 
@@ -351,10 +352,25 @@ RSpec.describe "Tina4.seed_orm" do
     expect(result[:cnt]).to eq(3)
   end
 
-  it "skips when enough records exist (idempotent)" do
+  it "does NOT skip by default even when enough records already exist (SEED-RUBY-QUIRKS fix)" do
+    # Parity fix: the idempotency short-circuit used to run unconditionally,
+    # silently dropping a caller's explicit seed request. Python/PHP/Node
+    # never had this behaviour, so the default is now "always seed" like them.
     Tina4.seed_orm(SeedTestUser, count: 5, seed: 42)
     count2 = Tina4.seed_orm(SeedTestUser, count: 5, seed: 99)
+    expect(count2).to eq(5)
+
+    result = db.fetch_one("SELECT count(*) as cnt FROM seed_users")
+    expect(result[:cnt]).to eq(10)
+  end
+
+  it "skips when enough records exist WITH idempotent: true (opt-in)" do
+    Tina4.seed_orm(SeedTestUser, count: 5, seed: 42)
+    count2 = Tina4.seed_orm(SeedTestUser, count: 5, seed: 99, idempotent: true)
     expect(count2).to eq(0)
+
+    result = db.fetch_one("SELECT count(*) as cnt FROM seed_users")
+    expect(result[:cnt]).to eq(5)
   end
 
   it "is deterministic with same seed" do
@@ -403,7 +419,7 @@ RSpec.describe "Tina4.seed_table" do
   end
 
   it "seeds correct number of records" do
-    count = Tina4.seed_table("raw_test", { name: :string, score: :integer }, count: 10, seed: 42)
+    count = Tina4.seed_table("raw_test", { name: :string, score: :integer }, count: 10)
     expect(count).to eq(10)
 
     result = db.fetch_one("SELECT count(*) as cnt FROM raw_test")
@@ -411,7 +427,7 @@ RSpec.describe "Tina4.seed_table" do
   end
 
   it "supports overrides" do
-    Tina4.seed_table("raw_test", { name: :string, score: :integer }, count: 5, overrides: { score: 99 }, seed: 42)
+    Tina4.seed_table("raw_test", { name: :string, score: :integer }, count: 5, overrides: { score: 99 })
 
     results = db.fetch("SELECT score FROM raw_test")
     results.each do |row|
@@ -420,8 +436,8 @@ RSpec.describe "Tina4.seed_table" do
   end
 
   it "clears before seeding" do
-    Tina4.seed_table("raw_test", { name: :string }, count: 10, seed: 1)
-    Tina4.seed_table("raw_test", { name: :string }, count: 3, clear: true, seed: 2)
+    Tina4.seed_table("raw_test", { name: :string }, count: 10)
+    Tina4.seed_table("raw_test", { name: :string }, count: 3, clear: true)
 
     result = db.fetch_one("SELECT count(*) as cnt FROM raw_test")
     expect(result[:cnt]).to eq(3)
@@ -760,10 +776,10 @@ RSpec.describe "Seeding overhaul — P2 idempotency (seed_table clear)" do
   end
 
   it "test_clear_avoids_duplicates_on_rerun" do
-    Tina4.seed_table("idem_test", { name: :string, score: :integer }, count: 10, clear: true, seed: 1)
+    Tina4.seed_table("idem_test", { name: :string, score: :integer }, count: 10, clear: true)
     first = db.fetch_one("SELECT count(*) as cnt FROM idem_test")[:cnt]
 
-    Tina4.seed_table("idem_test", { name: :string, score: :integer }, count: 10, clear: true, seed: 1)
+    Tina4.seed_table("idem_test", { name: :string, score: :integer }, count: 10, clear: true)
     second = db.fetch_one("SELECT count(*) as cnt FROM idem_test")[:cnt]
 
     expect(first).to eq(10)

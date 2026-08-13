@@ -263,4 +263,69 @@ RSpec.describe "Static file serving" do
       expect(body.join).to eq("fresh bytes")
     end
   end
+
+  # ── Feature 41 shared contract (static_contract.json) ──────────
+  # ADR-0050 realpath + separator confinement, dotfile block, and the
+  # TINA4_PUBLIC_DIR override — driven through the real Rack pipeline with REAL
+  # files and a REAL symlink, no mocks.
+
+  describe "static contract (feature 41)" do
+    it "a legit asset is served with its content type" do
+      FileUtils.mkdir_p(File.join(pub_dir, "css"))
+      File.write(File.join(pub_dir, "css", "app.css"), "body{color:green}")
+      status, headers, body = app.call(mock_env("GET", "/css/app.css"))
+      expect(status).to eq(200)
+      expect(body.join).to eq("body{color:green}")
+      expect(headers["content-type"]).to eq("text/css")
+    end
+
+    it "a dot dot traversal path is refused" do
+      # A real secret one level ABOVE the public root.
+      File.write(File.join(tmp_dir, "secret.env"), "TINA4_SECRET=leaked")
+      status, _headers, _body = app.call(mock_env("GET", "/css/../../secret.env"))
+      expect(status).to eq(404)
+    end
+
+    it "a symlink escaping the public dir is refused" do
+      # A real secret OUTSIDE the public dir, reached by a real symlink placed
+      # INSIDE it. A lexical `..` check cannot see this; realpath containment must.
+      secret = File.join(tmp_dir, "outside-secret.txt")
+      File.write(secret, "SUPER SECRET")
+      File.symlink(secret, File.join(pub_dir, "leak.txt"))
+
+      status, _headers, body = app.call(mock_env("GET", "/leak.txt"))
+      expect(status).to eq(404)
+      expect(body.join).not_to include("SUPER SECRET")
+    end
+
+    it "a dotenv file is refused" do
+      File.write(File.join(pub_dir, ".env"), "TINA4_SECRET=leaked")
+      status, _headers, body = app.call(mock_env("GET", "/.env"))
+      expect(status).to eq(404)
+      expect(body.join).not_to include("leaked")
+    end
+
+    it "a dotgit file is refused" do
+      FileUtils.mkdir_p(File.join(pub_dir, ".git"))
+      File.write(File.join(pub_dir, ".git", "config"), "[core]")
+      status, _headers, _body = app.call(mock_env("GET", "/.git/config"))
+      expect(status).to eq(404)
+    end
+
+    it "tina4 public dir env relocates the root" do
+      # A separate public root selected purely by TINA4_PUBLIC_DIR; the app's
+      # own public/ deliberately lacks the asset, so a hit proves the override.
+      custom = Dir.mktmpdir("tina4_static_custom")
+      File.write(File.join(custom, "brand.css"), ".brand{color:teal}")
+      ENV["TINA4_PUBLIC_DIR"] = custom
+      begin
+        status, _headers, body = app.call(mock_env("GET", "/brand.css"))
+        expect(status).to eq(200)
+        expect(body.join).to eq(".brand{color:teal}")
+      ensure
+        ENV.delete("TINA4_PUBLIC_DIR")
+        FileUtils.rm_rf(custom)
+      end
+    end
+  end
 end

@@ -39,32 +39,186 @@ module Tina4
   # distinction is the whole point: including this module makes every driver
   # respond to everything, so +respond_to?+ stopped being able to tell the
   # difference.
+  # ADR-0044 / DBA-S02: a registered adapter does not satisfy the Tina4
+  # database adapter contract. Raised at registration time, naming the
+  # adapter and the missing capability.
+  class AdapterContractError < StandardError; end
+
+  # ADR-0044 / DBA-P02: a provider/deployment cannot guarantee an atomic
+  # multi-row batch. Raised by the shared execute_many default (or a driver's
+  # own override) before any row is written.
+  class UnsupportedAtomicBatchError < StandardError; end
+
+  # ADR-0044 / DBA-B05: a ragged/mismatched parameter set in a batch. Raised
+  # before any row of the batch is written.
+  class BindingCountMismatchError < StandardError; end
+
   module DatabaseAdapter
-    # Methods a driver MUST override. Kept as data so the conformance spec can
-    # read it instead of maintaining a second copy of the list.
-    # The REDESIGNED contract: only what genuinely differs per engine.
+    # The exact fourteen capabilities every driver must provide (ADR-0044,
+    # plan/v3/fixtures/adapter_contract.json). None is optional. Kept as data
+    # so the conformance spec can read it instead of maintaining a second copy.
     #
-    # CRUD (insert/update/delete), executeMany, fetchOne and DDL
-    # (create_table/add_column) are NOT here. They are composable above the
-    # adapter from execute + fetch + get_database_type, and Ruby was already
-    # doing exactly that in the facade - which is why Ruby's driver layer is
-    # 1335 LOC against PHP's 5823 for the same job. The first contract this row
-    # produced would have made Ruby write those seven more times; this one keeps
-    # the shape Ruby already had and asks the other three to adopt it.
+    # CRUD (insert/update/delete) and DDL (create_table/add_column) are NOT
+    # here - they are composable above the adapter from execute +
+    # get_database_type, and Ruby was already doing exactly that in the
+    # facade, which is why Ruby's driver layer is 1335 LOC against PHP's 5823
+    # for the same job. executeMany and fetchOne, by contrast, ARE required
+    # adapter primitives under ADR-0044 (superseding the original redesign
+    # that placed them above the adapter) - see execute_many/fetch_one below.
     CONTRACT = %i[
-      open close get_database_type
-      execute fetch
+      connect close get_database_type
+      execute execute_many fetch fetch_one
       start_transaction commit rollback autocommit
-      get_tables get_columns table_exists
-      last_insert_id error
+      tables columns table_exists?
     ].freeze
 
-    CONTRACT.each do |name|
+    # The subset with NO usable generic default - a driver MUST override
+    # these or the raising stub is inherited verbatim.
+    ABSTRACT_CONTRACT = %i[
+      connect close get_database_type
+      execute commit rollback
+      tables columns
+    ].freeze
+
+    ABSTRACT_CONTRACT.each do |name|
       define_method(name) do |*_args, **_kwargs, &_block|
         raise NotImplementedError,
               "#{self.class} does not implement ##{name}, which the Tina4 " \
               "database adapter contract requires. See Tina4::DatabaseAdapter."
       end
+    end
+
+    # `open` is the pre-3.14 spelling every Ruby driver's constructor already
+    # calls; `connect` is the ADR-0044 canonical lifecycle name. A temporary
+    # forwarding alias, to be removed or explicitly deprecated before 3.14.
+    def open(*args, **kwargs)
+      connect(*args, **kwargs)
+    end
+
+    # `begin_transaction` is every existing driver's real spelling;
+    # `start_transaction` is the ADR-0044 canonical name (matches Python/PHP/
+    # Node). A thin forwarding default, exactly like `open` above.
+    def start_transaction(*args, **kwargs)
+      begin_transaction(*args, **kwargs)
+    end
+
+    # -- Capabilities with a REAL, usable generic default -------------------
+    # Every driver already implements execute_query/tables (required above)
+    # with identical spelling, so these compose safely for any driver that
+    # does not provide its own optimized override.
+
+    # ADR-0044: the adapter-level read-many primitive. Returns a native list
+    # of records with NO pagination envelope and NO count probe - the
+    # facade (Database#fetch) owns pagination and the true-total count.
+    def fetch(sql, params = [])
+      execute_query(sql, params)
+    end
+
+    # ADR-0044: one native record or nil. No pagination count probe.
+    def fetch_one(sql, params = [])
+      fetch(sql, params).first
+    end
+
+    # ADR-0044: table_exists? is required on the adapter. Drivers that expose
+    # a native, efficient check (SQLite, MySQL, MSSQL) override this; the rest
+    # get a correct, if less efficient, default from the required `tables`.
+    def table_exists?(name)
+      tables.any? { |t| t.to_s.downcase == name.to_s.downcase }
+    end
+
+    # ADR-0044: readable and writable native boolean, defaulting true.
+    def autocommit
+      @tina4_autocommit.nil? ? true : @tina4_autocommit
+    end
+
+    def autocommit=(value)
+      @tina4_autocommit = value
+    end
+
+    # ADR-0044 / DBA-P02: whether this adapter's deployment can guarantee an
+    # atomic multi-row batch write. Every built-in driver defaults to true; a
+    # deployment that genuinely cannot (a standalone MongoDB without a
+    # replica set is the motivating real case) sets this false so
+    # execute_many rejects BEFORE the first write.
+    def supports_atomic_batch
+      @tina4_supports_atomic_batch.nil? ? true : @tina4_supports_atomic_batch
+    end
+
+    def supports_atomic_batch=(value)
+      @tina4_supports_atomic_batch = value
+    end
+
+    # ADR-0044: one aggregate result for the whole batch - {affected_rows:,
+    # last_id:}. Transaction OWNERSHIP is deliberately NOT here: the facade
+    # (Database#execute_many) brackets begin/commit/rollback around exactly
+    # one call to this method, exactly as it already does for a standalone
+    # start_transaction()/execute()/commit() sequence, so a driver that
+    # overrides this for native batching never has to duplicate that policy.
+    def execute_many(sql, params_list = [])
+      rows = params_list || []
+      return { affected_rows: 0, last_id: nil } if rows.empty?
+
+      # ADR-0044 (DBA-B05): a ragged parameter set must fail BEFORE any
+      # durable partial success. Checked generically (every row's length must
+      # match the first) rather than parsing the SQL's own placeholder count,
+      # so it holds for every driver without a dialect-specific parser.
+      expected = rows.first.length
+      rows.each do |params|
+        next if params.length == expected
+
+        raise Tina4::BindingCountMismatchError,
+              "execute_many binding count mismatch - expected #{expected} " \
+              "parameters, got #{params.length}"
+      end
+
+      if !supports_atomic_batch && rows.length > 1
+        raise Tina4::UnsupportedAtomicBatchError,
+              "provider #{get_database_type.inspect} cannot guarantee an atomic " \
+              "batch write on this deployment (required deployment capability: " \
+              "a transaction-capable configuration) - rejected before the first " \
+              "write rather than risking partial durability"
+      end
+
+      # ONE round-trip per CHUNK instead of one per ROW - see
+      # Tina4::SQLTranslator.build_batch_inserts for the measured 121x-625x.
+      batched = Tina4::SQLTranslator.build_batch_inserts(sql, rows, get_database_type)
+      if batched.empty?
+        rows.each { |params| execute(sql, params) }
+      else
+        batched.each { |chunk_sql, chunk_params| execute(chunk_sql, chunk_params) }
+      end
+
+      last_id = begin
+        last_insert_id
+      rescue StandardError
+        nil
+      end
+      { affected_rows: rows.length, last_id: last_id }
+    end
+
+    # Fail loud when a class does not declare every required capability.
+    #
+    # For ABSTRACT_CONTRACT this checks the method was actually OVERRIDDEN
+    # (implemented_by?, below) rather than merely inherited as the raising
+    # stub. For the capabilities with a real generic default (execute_many,
+    # fetch, fetch_one, table_exists?, autocommit, supports_atomic_batch),
+    # simple presence is sufficient - the module's own default IS a complete,
+    # correct implementation.
+    def self.validate!(adapter_object, name = nil)
+      label = name || adapter_object.class.name
+      missing = CONTRACT.select do |capability|
+        if ABSTRACT_CONTRACT.include?(capability)
+          !implemented_by?(adapter_object, capability)
+        else
+          !adapter_object.respond_to?(capability)
+        end
+      end
+      return if missing.empty?
+
+      raise Tina4::AdapterContractError,
+            "adapter #{label.inspect} does not implement the required Tina4 " \
+            "database adapter contract capabilities: #{missing.join(', ')} " \
+            "(ADR-0044 / plan/v3/fixtures/adapter_contract.json)"
     end
 
     # == Bounding the connect

@@ -43,31 +43,45 @@ module Tina4
         end
       end
 
-      def integer_field(name, primary_key: false, auto_increment: false, nullable: true, default: nil)
+      # Feature 19: the constraint options (required:, min:/max: for numbers,
+      # min_length:/max_length:/pattern: for strings) are ENFORCED on save() by
+      # ORM#validate -- bringing Ruby up to the shared cross-framework richness
+      # (Ruby used to be null-only). `length:` stays a DDL VARCHAR sizing hint and
+      # is deliberately never validated (parity with PHP's `length`); use
+      # max_length: for a value cap.
+      def integer_field(name, primary_key: false, auto_increment: false, nullable: true, default: nil,
+                        required: false, min: nil, max: nil)
         register_field(name, :integer, primary_key: primary_key, auto_increment: auto_increment,
-                       nullable: nullable, default: default)
+                       nullable: nullable, default: default, required: required, min: min, max: max)
       end
 
-      def string_field(name, length: 255, primary_key: false, nullable: true, default: nil)
+      def string_field(name, length: 255, primary_key: false, nullable: true, default: nil,
+                       required: false, min_length: nil, max_length: nil, pattern: nil)
         register_field(name, :string, length: length, primary_key: primary_key,
-                       nullable: nullable, default: default)
+                       nullable: nullable, default: default, required: required,
+                       min_length: min_length, max_length: max_length, pattern: pattern)
       end
 
-      def text_field(name, nullable: true, default: nil)
-        register_field(name, :text, nullable: nullable, default: default)
+      def text_field(name, nullable: true, default: nil,
+                     required: false, min_length: nil, max_length: nil, pattern: nil)
+        register_field(name, :text, nullable: nullable, default: default, required: required,
+                       min_length: min_length, max_length: max_length, pattern: pattern)
       end
 
-      def float_field(name, nullable: true, default: nil)
-        register_field(name, :float, nullable: nullable, default: default)
+      def float_field(name, nullable: true, default: nil, required: false, min: nil, max: nil)
+        register_field(name, :float, nullable: nullable, default: default,
+                       required: required, min: min, max: max)
       end
 
-      def decimal_field(name, precision: 10, scale: 2, nullable: true, default: nil)
+      def decimal_field(name, precision: 10, scale: 2, nullable: true, default: nil,
+                        required: false, min: nil, max: nil)
         register_field(name, :decimal, precision: precision, scale: scale,
-                       nullable: nullable, default: default)
+                       nullable: nullable, default: default, required: required, min: min, max: max)
       end
 
-      def numeric_field(name, nullable: true, default: nil)
-        register_field(name, :float, nullable: nullable, default: default)
+      def numeric_field(name, nullable: true, default: nil, required: false, min: nil, max: nil)
+        register_field(name, :float, nullable: nullable, default: default,
+                       required: required, min: min, max: max)
       end
 
       def boolean_field(name, nullable: true, default: nil)
@@ -100,8 +114,11 @@ module Tina4
       #   - Registers an integer field for the column
       #   - Calls belongs_to on this class (strip _id suffix for association name)
       #   - Calls has_many on the referenced class. The accessor name is the
-      #     declaring class name lowercased + "s" (e.g. Post → posts), matching
-      #     Python; override with related_name:. Works whether the referenced
+      #     declaring class name lowercased and SMART-pluralized via
+      #     Tina4.pluralize (e.g. Post → posts, Category → categories -- the same
+      #     inflection the hand-written has_many uses, not a naive + "s" that
+      #     produced "categorys"); override with related_name:. Works whether the
+      #     referenced
       #     class loaded before OR after this one, including the string form
       #     (references: "Author") for forward references — resolution is
       #     deferred via Tina4::ORM.inherited until the target class exists.
@@ -128,7 +145,7 @@ module Tina4
 
         # Wire has_many on referenced class (if already a loaded Class)
         if references.is_a?(Class) && references.respond_to?(:has_many, true)
-          hm_name = (related_name || "#{self.name.split("::").last.downcase}s").to_sym
+          hm_name = (related_name || Tina4.pluralize(self.name.split("::").last.downcase)).to_sym
           references.has_many(hm_name, class_name: self.name.split("::").last, foreign_key: name.to_s)
         end
 
@@ -136,7 +153,7 @@ module Tina4
         @@_fk_registry ||= {}
         ref_name = references.is_a?(Class) ? references.name.split("::").last : references.to_s.split("::").last
         @@_fk_registry[ref_name] ||= []
-        hm_key = (related_name || "#{self.name.split("::").last.downcase}s").to_s
+        hm_key = (related_name || Tina4.pluralize(self.name.split("::").last.downcase)).to_s
         @@_fk_registry[ref_name] << {
           declaring_class: self,
           has_many_name: hm_key.to_sym,

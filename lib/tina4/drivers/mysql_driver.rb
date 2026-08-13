@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "schema_split"
+require_relative "../sql_translator"
 
 module Tina4
   module Drivers
@@ -64,7 +65,19 @@ module Tina4
         @connection&.close
       end
 
+      # Apply the MySQL dialect rewrites the translator owns: +||+ -> CONCAT and
+      # ILIKE -> LOWER() LIKE LOWER() (both literal-safe). MySQL reads a bare +||+
+      # as logical OR and has no ILIKE, so portable canonical SQL must be rewritten
+      # before it reaches the driver. A statement with neither token short-circuits
+      # unchanged, so ordinary queries are untouched. (SQLTRANS-DEC-02: this is the
+      # wiring that makes the previously-dead concat/ilike helpers live in Ruby.)
+      def translate_dialect(sql)
+        sql = Tina4::SQLTranslator.concat_pipes_to_func(sql)
+        Tina4::SQLTranslator.ilike_to_like(sql)
+      end
+
       def execute_query(sql, params = [])
+        sql = translate_dialect(sql)
         if params.empty?
           results = @connection.query(sql, symbolize_keys: true)
         else
@@ -75,6 +88,7 @@ module Tina4
       end
 
       def execute(sql, params = [])
+        sql = translate_dialect(sql)
         stmt = nil
         result =
           if params.empty?
@@ -117,10 +131,14 @@ module Tina4
 
         if sql.to_s.lstrip[0, 6].casecmp?("INSERT")
           first_id = @connection.last_id
-          rows = @affected_rows.to_i
+          # MySQL reports the FIRST id of a multi-row INSERT; normalise to the
+          # LAST via the shared SQLTranslator helper (the one place that knows the
+          # first id and the row count) instead of the inline arithmetic
+          # (MYSQL-BATCH-ID-DUP). Guarded on a positive id so a non-auto-increment
+          # insert keeps whatever the driver reported.
           @last_insert_id =
             if first_id.to_i.positive?
-              first_id.to_i + [rows, 1].max - 1
+              Tina4::SQLTranslator.batch_last_id(first_id, @affected_rows.to_i, "mysql")
             else
               first_id
             end
@@ -179,13 +197,23 @@ module Tina4
         !rows.empty?
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'mysql'
+      end
+
       def tables
         rows = execute_query("SHOW TABLES")
         rows.map { |r| r.values.first }
       end
 
       def columns(table_name)
-        rows = execute_query("DESCRIBE #{table_name}")
+        # DESCRIBE takes an IDENTIFIER, not a bind parameter, so the table name is
+        # made injection-safe by STRICT backtick-quoting (escaping embedded
+        # backticks) rather than interpolated raw (MYSQL-DESCRIBE-UNPARAM): a
+        # crafted/odd name becomes ONE escaped identifier - a clean "unknown
+        # table", never runnable SQL - and an odd-but-valid name introspects.
+        rows = execute_query("DESCRIBE #{quote_mysql_identifier(table_name)}")
         rows.map do |r|
           {
             name: r[:Field],
@@ -195,6 +223,18 @@ module Tina4
             primary_key: r[:Key] == "PRI"
           }
         end
+      end
+
+      private
+
+      # Strict backtick-quote a (possibly schema-qualified) identifier, ESCAPING
+      # embedded backticks, for use where a bind parameter is not accepted
+      # (DESCRIBE). A crafted/odd name becomes ONE escaped identifier - a clean
+      # "unknown table", never runnable SQL (MYSQL-DESCRIBE-UNPARAM).
+      def quote_mysql_identifier(name)
+        schema, table = split_schema(name.to_s)
+        q = ->(part) { "`#{part.to_s.gsub('`', '``')}`" }
+        schema.nil? ? q.call(table) : "#{q.call(schema)}.#{q.call(table)}"
       end
     end
   end

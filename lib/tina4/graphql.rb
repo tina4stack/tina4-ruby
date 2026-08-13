@@ -1091,9 +1091,9 @@ module Tina4
 
       # Optional: GET for GraphiQL/introspection
       Tina4.get path, auth: false do |request, response|
-        query = request.params["query"]
+        query = request.query["query"]
         if query
-          variables = request.params["variables"]
+          variables = request.query["variables"]
           variables = JSON.parse(variables) if variables.is_a?(String) && !variables.empty?
           result = graphql.execute(query, variables: variables || {}, context: { request: request })
           response.json(result)

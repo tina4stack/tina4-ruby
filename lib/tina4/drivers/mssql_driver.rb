@@ -153,6 +153,11 @@ module Tina4
         !rows.empty?
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'mssql'
+      end
+
       def tables
         rows = execute_query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
         rows.map { |r| r[:TABLE_NAME] || r[:table_name] }
@@ -224,13 +229,45 @@ module Tina4
             elsif param.is_a?(Time) || param.is_a?(DateTime)
               "'#{(param.respond_to?(:iso8601) ? param.iso8601 : param.to_s).gsub("'", "''")}'"
             elsif param.is_a?(String)
-              "'#{param.gsub("'", "''")}'"
-            else
+              interpolate_string(param)
+            elsif param.is_a?(Integer)
               param.to_s
+            elsif param.is_a?(Float)
+              # A finite Float is a valid numeric literal; NaN/Infinity are not
+              # representable in T-SQL and would stringify to a bareword.
+              raise ArgumentError, "MssqlDriver cannot bind a non-finite Float (#{param})" unless param.finite?
+
+              param.to_s
+            elsif param.is_a?(Numeric)
+              # BigDecimal / Rational -> a plain decimal literal.
+              param.to_s
+            else
+              # MSSQL-INTERP-RUBY: the old `else param.to_s` emitted a BAREWORD for
+              # any unrecognised type (a Symbol became `WHERE x = active`, invalid
+              # or unintended SQL - a breakage / injection vector). Refuse it loudly
+              # instead of splicing an arbitrary object's #to_s into the statement.
+              raise ArgumentError,
+                    "MssqlDriver cannot safely bind a #{param.class} parameter to MSSQL " \
+                    "(#{param.inspect}); pass nil, true/false, a Time, a String " \
+                    "(text, or ASCII-8BIT bytes), or a Numeric - never a bareword"
             end
           result = result.sub("?", escaped)
         end
         result
+      end
+
+      # Bind a String parameter. ASCII-8BIT (binary) bytes become a T-SQL
+      # varbinary literal `0x...`, NOT a quoted string: FreeTDS (tiny_tds) cannot
+      # carry raw binary through a quoted literal - a NUL byte breaks the TDS
+      # stream / truncates the value - whereas a `0x` literal round-trips
+      # byte-for-byte (MEASURED against real SQL Server). A text String keeps the
+      # quote-doubled literal (correct T-SQL escaping).
+      def interpolate_string(param)
+        if param.encoding == Encoding::BINARY
+          param.empty? ? "0x" : "0x#{param.unpack1('H*')}"
+        else
+          "'#{param.gsub("'", "''")}'"
+        end
       end
     end
   end
