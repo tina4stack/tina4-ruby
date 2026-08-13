@@ -22,10 +22,43 @@ module Tina4
     # Build from a Rack response tuple [status, headers, body_array]
     def initialize(rack_response)
       @status = rack_response[0]
-      @headers = rack_response[1] || {}
+      raw_headers = rack_response[1] || {}
+
+      # Rack folds a genuinely repeated header (Tina4::Response#to_rack only
+      # ever repeats Set-Cookie, joined "\n" — the Rack 2/3 convention for a
+      # multi-value header carried in a single hash slot) into ONE value; a
+      # header value can never legitimately contain a raw newline (RFC 7230),
+      # so splitting on "\n" is safe and general, not a Set-Cookie special
+      # case. @header_list keeps every occurrence, in emission order, so a
+      # duplicate is assertable via get_all(); @headers stays the back-compat
+      # single-value view — the LAST occurrence, the "last wins" contract the
+      # other three frameworks converge on — so nothing that reads a plain
+      # (never-repeated) header sees any change (TC-HEADER-COLLAPSE,
+      # TC-DEC-02).
+      @header_list = {}
+      flat = {}
+      raw_headers.each do |name, value|
+        key = name.to_s.downcase
+        values = value.is_a?(Array) ? value.map(&:to_s) : value.to_s.split("\n")
+        values = [""] if values.empty?
+        @header_list[key] = values
+        flat[key] = values.last
+      end
+      @headers = flat
+
       @content_type = @headers["content-type"] || ""
       raw_body = rack_response[2]
       @body = raw_body.is_a?(Array) ? raw_body.join : raw_body.to_s
+    end
+
+    # Every value sent for +name+ (case-insensitive), in emission order.
+    #
+    # A header sent once returns a one-item array; a header never sent
+    # returns an empty array. This is the one place a duplicate response
+    # header (two Set-Cookie) is visible — headers[name] always collapses to
+    # the LAST value, same as before (TC-HEADER-COLLAPSE, TC-DEC-02).
+    def get_all(name)
+      (@header_list[name.to_s.downcase] || []).dup
     end
 
     # Parse body as JSON.
