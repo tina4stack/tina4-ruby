@@ -209,7 +209,21 @@ module Tina4
     # exists for the workload that genuinely grows without limit for the life
     # of a worker: +render_string+ keys on md5(source), so an app that builds
     # template strings dynamically adds an entry per distinct string.
+    #
+    # Also reused for @fragment_cache (the {% cache %} tag's runtime store):
+    # a rendered fragment is a whole HTML string, the same order of magnitude
+    # as a compiled template, not a small per-expression descriptor.
     TEMPLATE_CACHE_MAX = 256
+
+    # Hard cap on every per-expression memo cache in this engine (ADR-0004):
+    # @filter_chain_cache, @resolve_cache, @dotted_split_cache. Mirrors PHP's
+    # MEMO_CACHE_MAX and the Python master's `@lru_cache(maxsize=1024)` on the
+    # equivalent module-level parsers. A template that builds expression
+    # strings dynamically would otherwise grow a plain instance Hash without
+    # limit for the lifetime of the engine — a memory footgun on a long-lived
+    # worker. Deliberately higher than TEMPLATE_CACHE_MAX: one entry here is a
+    # small parsed-path array, orders of magnitude smaller than a token list.
+    MEMO_CACHE_MAX = 1024
 
     # -- Lazy context overlay for for-loops (avoids full Hash#dup) --
     class LoopContext
@@ -580,6 +594,29 @@ module Tina4
       return if cache.size < max_entries
 
       cache.keys.first(max_entries / 2).each { |key| cache.delete(key) }
+    end
+
+    # Drop every TTL-expired entry from the {% cache %} fragment store.
+    #
+    # cap_cache bounds @fragment_cache by SIZE (insertion order, oldest
+    # first) but says nothing about STALENESS: a key that expired and is
+    # never visited again would otherwise sit in the Hash, still counted
+    # against the cap, until something else finally evicts it. An app
+    # keying fragments on a dynamic value (a page id, a user id) can churn
+    # through many such keys, so staleness has to be swept on its own
+    # schedule, not just bounded by count.
+    #
+    # Called on every {% cache %} render (cheap: bounded by TEMPLATE_CACHE_MAX
+    # entries, so at most 256 comparisons) rather than only for the key being
+    # read, so an unrelated key's expiry is cleaned up as a side effect of
+    # ANY fragment-cache render, not just a future hit on that same key.
+    #
+    # @param cache [Hash] fragment cache to sweep, mutated in place —
+    #   key => [html, expires_at_unix_float]
+    # @return [void]
+    def sweep_expired_cache(cache)
+      now = Time.now.to_f
+      cache.delete_if { |_key, (_html, expires_at)| expires_at <= now }
     end
 
     # -----------------------------------------------------------------------
@@ -1126,6 +1163,7 @@ module Tina4
         root_var = @dotted_split_cache[var_name]
         unless root_var
           root_var = var_name.split(".")[0].split("[")[0].strip
+          cap_cache(@dotted_split_cache, MEMO_CACHE_MAX)
           @dotted_split_cache[var_name] = root_var
         end
         return "" if !root_var.empty? && !@allowed_vars.include?(root_var) && root_var != "loop"
@@ -1371,6 +1409,7 @@ module Tina4
       end
 
       result = [variable, filters].freeze
+      cap_cache(@filter_chain_cache, MEMO_CACHE_MAX)
       @filter_chain_cache[expr] = result
       result
     end
@@ -1895,6 +1934,7 @@ module Tina4
       parts = @resolve_cache[expr]
       unless parts
         parts = expr.split(RESOLVE_SPLIT_RE).reject(&:empty?)
+        cap_cache(@resolve_cache, MEMO_CACHE_MAX)
         @resolve_cache[expr] = parts
       end
 
@@ -2376,6 +2416,8 @@ module Tina4
       cache_key = m ? m[1] : "default"
       ttl = m && m[2] ? m[2].to_i : 60
 
+      sweep_expired_cache(@fragment_cache)
+
       # Check cache
       cached = @fragment_cache[cache_key]
       if cached
@@ -2428,6 +2470,7 @@ module Tina4
       end
 
       rendered = render_tokens(body_tokens.dup, context)
+      cap_cache(@fragment_cache, TEMPLATE_CACHE_MAX)
       @fragment_cache[cache_key] = [rendered, Time.now.to_f + ttl]
       [rendered, i]
     end
