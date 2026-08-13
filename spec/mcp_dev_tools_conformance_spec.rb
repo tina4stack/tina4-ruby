@@ -66,7 +66,7 @@ RSpec.describe "Dev-MCP tools conformance (invoke every tool)" do
 
     Dir.chdir(ARGV[0])
     ENV["TINA4_DEBUG"]       = "true"
-    ENV["TINA4_DEBUG_LEVEL"] = "[TINA4_LOG_NONE]"
+    ENV["TINA4_LOG_LEVEL"]   = "NONE"
     ENV["TINA4_SECRET"]      = "test-secret-do-not-use-in-prod-0000000000000000"
     ENV["TINA4_AI_URL"]      = "http://127.0.0.1:9/api/chat"  # dead port -> plan_flesh degrades
     ENV["TINA4_ENV"]         = "development"
@@ -251,7 +251,7 @@ RSpec.describe "Dev-MCP tools conformance (invoke every tool)" do
         require "tina4"   # NOT tina4/dev — keep the seeder unloaded until the tool needs it
         require "json"
         Dir.chdir(ARGV[0])
-        ENV["TINA4_DEBUG_LEVEL"] = "[TINA4_LOG_NONE]"
+        ENV["TINA4_LOG_LEVEL"] = "NONE"
         db = Tina4::Database.new("sqlite://seed.db")
         Tina4.bind_database(db)
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, qty INTEGER)")
@@ -280,7 +280,7 @@ RSpec.describe "Dev-MCP tools conformance (invoke every tool)" do
     Dir.mktmpdir("tina4-cleanboot-devseed") do |dir|
       body = <<~'RUBY'
         ENV["TINA4_DEBUG"] = "true"           # DevAdmin.handle_request is gated on debug
-        ENV["TINA4_DEBUG_LEVEL"] = "[TINA4_LOG_NONE]"
+        ENV["TINA4_LOG_LEVEL"] = "NONE"
         require "tina4"   # NOT tina4/dev — keep the seeder unloaded until the endpoint needs it
         require "json"
         require "stringio" # test-side: to build the Rack env's rack.input (unrelated to the seeder bug)

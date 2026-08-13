@@ -185,7 +185,7 @@ RSpec.describe Tina4::RackApp do
     it "logs every request through Tina4::Log in dev" do
       ENV["TINA4_DEBUG"] = "true"
       ENV.delete("TINA4_LOG_REQUESTS")
-      Tina4::Log.configure(File.join(tmp_dir, "logs")) # configure() takes the LOG DIR now
+      Tina4::Log.configure(log_dir: File.join(tmp_dir, "logs")) # configure() takes the LOG DIR now
       Tina4.get("/hello") { |_req, res| res.json({ ok: true }) }
       app.call(mock_env("GET", "/hello"))
       log = File.read(File.join(tmp_dir, "logs", "tina4.log"))

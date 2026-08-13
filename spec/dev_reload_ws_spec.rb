@@ -192,7 +192,7 @@ RSpec.describe "DevReload WebSocket" do
         routes = File.join(proj, "src", "routes")
         FileUtils.mkdir_p(routes)
         File.write(File.join(proj, ".env"),
-                   "TINA4_DEBUG=true\nTINA4_LOG_LEVEL=[TINA4_LOG_NONE]\nTINA4_OVERRIDE_CLIENT=true\nTINA4_NO_AI_PORT=true\n")
+                   "TINA4_DEBUG=true\nTINA4_LOG_LEVEL=NONE\nTINA4_OVERRIDE_CLIENT=true\nTINA4_NO_AI_PORT=true\n")
 
         index = File.join(routes, "index.rb")
         File.write(index, <<~RB)
@@ -221,7 +221,7 @@ RSpec.describe "DevReload WebSocket" do
         # values delete the keys from the child environment.
         child_env = {
           "TINA4_DEBUG" => "true", "TINA4_OVERRIDE_CLIENT" => "true",
-          "TINA4_LOG_LEVEL" => "[TINA4_LOG_NONE]", "TINA4_NO_AI_PORT" => "true",
+          "TINA4_LOG_LEVEL" => "NONE", "TINA4_NO_AI_PORT" => "true",
           "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "BUNDLER_SETUP" => nil,
           # Force a UTF-8 locale: with the Bundler env stripped the child can
           # default to US-ASCII, and Rack::Builder.load_file then raises

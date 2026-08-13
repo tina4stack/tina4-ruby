@@ -388,7 +388,7 @@ module Tina4
       reset = is_tty ? "\e[0m" : ""
 
       is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
-      log_level = (ENV["TINA4_LOG_LEVEL"] || "[TINA4_LOG_ALL]").upcase
+      log_level = (ENV["TINA4_LOG_LEVEL"] || "ALL").upcase
       display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
 
       # Auto-detect server name if not provided

@@ -97,9 +97,17 @@ module Tina4
       request_id = Tina4::Log.sanitize_request_id(env["HTTP_X_REQUEST_ID"]) || SecureRandom.hex(4)
       Tina4::Log.set_request_id(request_id)
 
-      result = dispatch_pipeline(env)
-      result[1]["x-request-id"] = request_id if result.is_a?(Array) && result[1].is_a?(Hash)
-      result
+      begin
+        result = dispatch_pipeline(env)
+        result[1]["x-request-id"] = request_id if result.is_a?(Array) && result[1].is_a?(Hash)
+        result
+      ensure
+        # The request pipeline installs the id before its first log and
+        # clears it in `finally`/`ensure` after its last (Decision 12 /
+        # LOG-Q03), so an overlapping request on another thread can never
+        # observe a stale id from a request that already finished.
+        Tina4::Log.clear_request_id
+      end
     end
 
     # Run the dispatch pipeline. See REQUEST_STAGES / RESPONSE_STAGES above.

@@ -89,7 +89,7 @@ module Tina4
       "TINA4_SWAGGER_VERSION" => "1.0.0",
       "TINA4_LOCALE" => "en",
       "TINA4_DEBUG" => "true",
-      "TINA4_LOG_LEVEL" => "[TINA4_LOG_ALL]"
+      "TINA4_LOG_LEVEL" => "ALL"
     }.freeze
 
     # The ONE env truthiness table. Every env boolean in every Tina4 framework

@@ -144,15 +144,20 @@ RSpec.describe "Session backend failure on the REAL request path" do
     Tina4.bind_database(saved)
   end
 
-  # Split the REAL error.log into RECORDS. A record starts at a timestamped
-  # level line; a stack trace continues the record it belongs to. Splitting on
-  # records rather than lines matters: a backtrace frame reading "session.rb"
-  # would otherwise be miscounted as a session error and make the negative
-  # control pass for the wrong reason.
+  # Split the REAL error.log into RECORDS. A record starts at either a
+  # complete JSON object (the logger's format default outside TINA4_DEBUG,
+  # Decision 3 / logger_contract_spec.rb L1 - one self-contained line per
+  # record, never a continuation) or a timestamped TEXT level line; a stack
+  # trace continues the TEXT record it belongs to. Splitting on records rather
+  # than lines matters: a backtrace frame reading "session.rb" would otherwise
+  # be miscounted as a session error and make the negative control pass for
+  # the wrong reason. Recognising BOTH shapes keeps this file agnostic to
+  # which format TINA4_LOG_FORMAT/TINA4_DEBUG resolve to in the run - it does
+  # not pin one, unlike logger_contract_spec.rb's L1 examples.
   def error_records(log_text)
     records = []
     log_text.each_line do |line|
-      if line.match?(/\A\d{4}-\d{2}-\d{2}T[\d:.]+Z \[[A-Z]+\s*\]/)
+      if line.start_with?("{") || line.match?(/\A\d{4}-\d{2}-\d{2}T[\d:.]+Z \[[A-Z]+\s*\]/)
         records << +line
       elsif !records.empty?
         records.last << line

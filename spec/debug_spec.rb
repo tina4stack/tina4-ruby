@@ -17,7 +17,7 @@ RSpec.describe "Tina4::Debug backward compatibility" do
   ensure
     saved_debug == :__unset__ ? ENV.delete("TINA4_DEBUG") : ENV["TINA4_DEBUG"] = saved_debug
     saved_level == :__unset__ ? ENV.delete("TINA4_LOG_LEVEL") : ENV["TINA4_LOG_LEVEL"] = saved_level
-    Tina4::Log.close_file_logger
+    Tina4::Log.reset
     FileUtils.rm_rf(tmpdir)
   end
 
@@ -28,7 +28,7 @@ RSpec.describe "Tina4::Debug backward compatibility" do
     # line emitted via the alias lands in it at ERROR level.
     expect(Tina4::Debug).to equal(Tina4::Log) # same object, so a write here = a write there
 
-    Tina4::Log.configure(File.join(tmpdir, "logs"))
+    Tina4::Log.configure(log_dir: File.join(tmpdir, "logs"))
     Tina4::Debug.error("via-debug-alias")
 
     log_file = File.join(tmpdir, "logs", "tina4.log")
@@ -44,7 +44,7 @@ RSpec.describe "Tina4::Debug backward compatibility" do
     # each forwarded level (warning + error pass, info + debug are below the
     # gate) must record its message in the file the same as a direct Log call.
     ENV["TINA4_LOG_LEVEL"] = "warning"
-    Tina4::Log.configure(File.join(tmpdir, "logs"))
+    Tina4::Log.configure(log_dir: File.join(tmpdir, "logs"))
 
     # enabled? reflects the real console gate, reached via the alias.
     expect(Tina4::Debug.enabled?("warning")).to be true

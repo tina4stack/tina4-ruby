@@ -42,7 +42,7 @@ RSpec.describe "Feature 43 - request id / correlation id" do
 
   before do
     Tina4::Router.clear!
-    Tina4::Log.configure(File.join(tmpdir, "logs"))
+    Tina4::Log.configure(log_dir: File.join(tmpdir, "logs"))
 
     Tina4::Router.get("/rid-echo") do |_request, response|
       # Return the id the framework threaded into the request context, so the

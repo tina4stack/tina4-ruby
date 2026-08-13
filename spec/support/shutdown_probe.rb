@@ -34,7 +34,7 @@ module ShutdownProbe
     {
       "TINA4_DEBUG" => "false",
       "TINA4_NO_AI_PORT" => "true",
-      "TINA4_LOG_LEVEL" => "[TINA4_LOG_INFO]",
+      "TINA4_LOG_LEVEL" => "INFO",
       "TINA4_DEBUG_LEVEL" => nil,
       "TINA4_NO_BROWSER" => "true",
       "TINA4_SHUTDOWN_TIMEOUT" => nil,

@@ -256,7 +256,7 @@ RSpec.describe "Tina4::Mqtt authentication and TLS" do
       saved_output = ENV.key?("TINA4_LOG_OUTPUT") ? ENV["TINA4_LOG_OUTPUT"] : :unset
       begin
         ENV["TINA4_LOG_OUTPUT"] = "file"
-        Tina4::Log.configure(File.join(log_root, "logs"))
+        Tina4::Log.configure(log_dir: File.join(log_root, "logs"))
 
         insecure = track(Tina4::Mqtt.new(url: mqtt_tls_test_url, client_id: "#{run_id}-tls-insecure",
                                          tls_verify: false, timeout: 5))

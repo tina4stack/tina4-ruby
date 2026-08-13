@@ -111,16 +111,20 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
   # previous values go back afterwards, so this neither depends on nor changes
   # global logger state - restoring by re-configuring would swap one leak for
   # another.
+  # Rewritten 2026-08-13 alongside the shared logger_contract.json conformance
+  # pass: Log's internal state shrank to two ivars (@snapshot, @pid), so the
+  # old direct instance_variable_set(:@output, ...) / (:@console_level, ...)
+  # pokes silently stopped doing anything (@output/@console_level are gone) -
+  # spec_helper.rb's global TINA4_LOG_LEVEL=NONE pin (which keeps the console
+  # quiet across the whole suite) then went un-countered here and every
+  # "warns on stdout" assertion in this file saw zero bytes. configure() is
+  # the real public API and ALWAYS resolves a fresh snapshot, so this drives
+  # the console open through it instead of the ivars behind it.
   def with_console_logging
-    Tina4::Log.configure unless Tina4::Log.instance_variable_get(:@initialized)
-    previous_output = Tina4::Log.instance_variable_get(:@output)
-    previous_level = Tina4::Log.instance_variable_get(:@console_level)
-    Tina4::Log.instance_variable_set(:@output, "stdout")
-    Tina4::Log.instance_variable_set(:@console_level, 0)
+    Tina4::Log.configure(output: "stdout", level: "debug")
     yield
   ensure
-    Tina4::Log.instance_variable_set(:@output, previous_output)
-    Tina4::Log.instance_variable_set(:@console_level, previous_level)
+    Tina4::Log.reset
   end
 
   # Prove a connect is REALLY unbounded without hanging the suite: run it in a

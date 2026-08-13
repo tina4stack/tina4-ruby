@@ -85,7 +85,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     # pending when POST /migrate is called.
     File.write(File.join(proj, ".env"), <<~ENV)
       TINA4_DEBUG=true
-      TINA4_LOG_LEVEL=[TINA4_LOG_NONE]
+      TINA4_LOG_LEVEL=NONE
       TINA4_AUTO_MIGRATE=false
       TINA4_DATABASE_URL=sqlite:app.db
     ENV
@@ -137,7 +137,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     @log_path = File.join(proj, "puma.log")
     child_env = {
       "TINA4_DEBUG" => "true",
-      "TINA4_LOG_LEVEL" => "[TINA4_LOG_NONE]",
+      "TINA4_LOG_LEVEL" => "NONE",
       "TINA4_AUTO_MIGRATE" => "false",
       "TINA4_QUEUE_PATH" => ENV["TINA4_QUEUE_PATH"],
       "TINA4_DATABASE_URL" => "sqlite:app.db",
