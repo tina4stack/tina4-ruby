@@ -842,19 +842,16 @@ RSpec.describe "the structured logger shared-fixture contract" do
   # ═══════════════════════════════════════════════════════════════════
 
   it "inaccessible selected sink fails configuration" do
+    # Parent is a FILE, so a sink dir under it is ENOTDIR -- fails even as root
+    # (a chmod 0o500 dir is bypassed by root's CAP_DAC_OVERRIDE; the lab runs as root).
     unwritable = File.join(tmpdir, "unwritable")
-    Dir.mkdir(unwritable)
-    File.chmod(0o500, unwritable)
+    File.write(unwritable, "")
     begin
-      begin
-        Tina4::Log.configure(output: "file", log_dir: File.join(unwritable, "nested"))
-        raise "expected LogConfigurationError"
-      rescue Tina4::LogConfigurationError => e
-        expect(e.operation).to eq("open")
-        expect(e.sink).not_to be_nil
-      end
-    ensure
-      File.chmod(0o700, unwritable)
+      Tina4::Log.configure(output: "file", log_dir: File.join(unwritable, "nested"))
+      raise "expected LogConfigurationError"
+    rescue Tina4::LogConfigurationError => e
+      expect(e.operation).to eq("open")
+      expect(e.sink).not_to be_nil
     end
   end
 
