@@ -463,12 +463,6 @@ module Tina4
       !%w[off false 0 no disabled].include?(val)
     end
 
-    def should_show_landing_page?
-      # Check if any index template exists in src/templates/
-      templates_dir = File.join(@root_dir, "src", "templates")
-      %w[index.html index.twig index.erb].none? { |f| File.file?(File.join(templates_dir, f)) }
-    end
-
     def try_serve_template(path)
       tpl_file = resolve_template(path)
       return nil unless tpl_file
@@ -538,18 +532,6 @@ module Tina4
         cache[url_path] ||= rel_from_templates
       end
       cache
-    end
-
-    def try_serve_index_template
-      templates_dir = File.join(@root_dir, "src", "templates")
-      %w[index.html index.twig index.erb].each do |f|
-        path = File.join(templates_dir, f)
-        if File.file?(path)
-          body = Tina4::Template.render(f, {}) rescue File.read(path)
-          return [200, { "content-type" => "text/html" }, [body]]
-        end
-      end
-      nil
     end
 
     def render_landing_page
