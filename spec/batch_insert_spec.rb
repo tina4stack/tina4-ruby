@@ -55,7 +55,7 @@ end
 # Defined file-local (the _BI suffix) so `rspec spec/batch_insert_spec.rb` runs
 # standalone — it must not depend on constants/helpers another spec file defines.
 # Mirrors the reachability + driver-gem gating in database_mysql_mssql_live_spec.
-MYSQL_BI_HOST = ENV.fetch("TINA4_TEST_MYSQL_HOST", "localhost")
+MYSQL_BI_HOST = ENV.fetch("TINA4_TEST_MYSQL_HOST", "127.0.0.1")
 MYSQL_BI_PORT = ENV.fetch("TINA4_TEST_MYSQL_PORT", "3306").to_i
 MYSQL_BI_USER = ENV.fetch("TINA4_TEST_MYSQL_USERNAME", "tina4")
 MYSQL_BI_PASS = ENV.fetch("TINA4_TEST_MYSQL_PASSWORD", "tina4")

@@ -31,7 +31,7 @@ require "spec_helper"
 require "socket"
 
 # ── MySQL connection config (canonical TINA4_TEST_MYSQL_* convention) ─────────
-MYSQL_LIVE_HOST = ENV.fetch("TINA4_TEST_MYSQL_HOST", "localhost")
+MYSQL_LIVE_HOST = ENV.fetch("TINA4_TEST_MYSQL_HOST", "127.0.0.1")
 MYSQL_LIVE_PORT = ENV.fetch("TINA4_TEST_MYSQL_PORT", "3306").to_i
 MYSQL_LIVE_USER = ENV.fetch("TINA4_TEST_MYSQL_USERNAME", "tina4")
 MYSQL_LIVE_PASS = ENV.fetch("TINA4_TEST_MYSQL_PASSWORD", "tina4")

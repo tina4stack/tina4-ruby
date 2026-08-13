@@ -356,7 +356,7 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
     end
 
     it "does NOT fire on a healthy connect to the live MySQL" do
-      host = ENV.fetch("TINA4_TEST_MYSQL_HOST", "localhost")
+      host = ENV.fetch("TINA4_TEST_MYSQL_HOST", "127.0.0.1")
       port = ENV.fetch("TINA4_TEST_MYSQL_PORT", "3306").to_i
       reachable = begin
         Socket.tcp(host, port, connect_timeout: 2, &:close)

@@ -139,7 +139,19 @@ jobs:
       # (spec/bind_database_spec.rb). A later step creates it once PG is healthy.
       TINA4_TEST_PG_DB_2: tina4_rb2
       # MySQL + MSSQL (#262) — match spec/database_mysql_mssql_live_spec.rb defaults.
-      TINA4_TEST_MYSQL_HOST: localhost
+      # HOST IS 127.0.0.1, NOT "localhost" — mysql2/libmysqlclient special-case the
+      # literal string "localhost" to mean "connect via the local UNIX socket"
+      # (/var/run/mysqld/mysqld.sock), ignoring the port entirely. The mysql
+      # service container below is TCP-only (there is no socket file on the
+      # runner), so "localhost" fails with "Can't connect to local MySQL server
+      # through socket '/var/run/mysqld/mysqld.sock'" even though the port mapping
+      # is correct. "127.0.0.1" forces the TCP path. Tina4::Drivers::MysqlDriver
+      # already rewrites "localhost"+port to "127.0.0.1" internally (see
+      # lib/tina4/drivers/mysql_driver.rb), but spec/session_database_engines_spec.rb
+      # deliberately re-reads every engine OUT OF BAND through the raw mysql2 gem
+      # (bypassing Tina4::Database) to prove writes really landed, so the env var
+      # itself has to name the TCP host.
+      TINA4_TEST_MYSQL_HOST: 127.0.0.1
       TINA4_TEST_MYSQL_PORT: '3306'
       TINA4_TEST_MYSQL_USERNAME: tina4
       TINA4_TEST_MYSQL_PASSWORD: tina4
@@ -149,6 +161,24 @@ jobs:
       TINA4_TEST_MSSQL_USERNAME: sa
       TINA4_TEST_MSSQL_PASSWORD: 'TinaSQL123!Secure'
       TINA4_TEST_MSSQL_DB: tina4_test
+      # ODBC (feature 13) — reuses the postgres service above (127.0.0.1:55432)
+      # through the unixODBC "PostgreSQL Unicode" driver instead of a second
+      # database container. odbcprovider_contract_spec.rb reads exactly these
+      # four TINA4_TEST_ODBC_* names (spec/odbcprovider_contract_spec.rb).
+      # DSN is the connection-string BODY, after "odbc:///" — DatabaseUrl#parse
+      # passes it through verbatim (no URI.parse), so the "{" / ";" are safe.
+      # A dedicated "tina4_odbc" database is created below (the postgres service
+      # only auto-creates POSTGRES_DB=tina4_rb), and /etc/odbcinst.ini registers
+      # the driver nickname "PostgreSQL Unicode" the DSN references.
+      TINA4_TEST_ODBC_DSN: 'DRIVER={PostgreSQL Unicode};SERVER=127.0.0.1;PORT=55432;DATABASE=tina4_odbc;UID=tina4;PWD=tina4'
+      # AUTH_DSN carries NO UID/PWD — the credentials case (spec's "credentials
+      # passed as params are honoured" / "a wrong password fails loud") supplies
+      # them separately via Tina4::Database.new(username:, password:) so the
+      # test proves the ADAPTER appends UID=/PWD=, not that they were already
+      # embedded in the string.
+      TINA4_TEST_ODBC_AUTH_DSN: 'DRIVER={PostgreSQL Unicode};SERVER=127.0.0.1;PORT=55432;DATABASE=tina4_odbc'
+      TINA4_TEST_ODBC_USERNAME: tina4
+      TINA4_TEST_ODBC_PASSWORD: tina4
       TINA4_TEST_KAFKA_URL: localhost:9092
       TINA4_TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672
       # MQTT brokers, all started by spec/support/mqtt-infra.sh below. The client
@@ -163,9 +193,14 @@ jobs:
       TINA4_MONGO_URI: mongodb://localhost:27017
       TINA4_TEST_MONGO_URI: mongodb://localhost:27017
       # Compile + load the optional MySQL/MSSQL driver gems (mysql2 + tiny_tds)
-      # for the live #262 specs. The :databases group is OPTIONAL, so it is only
-      # installed where BUNDLE_WITH names it (here) plus the native client libs.
-      BUNDLE_WITH: databases
+      # for the live #262 specs, PLUS the optional ruby-odbc gem (feature 13) for
+      # the live ODBC specs. Both groups are OPTIONAL, so each is only installed
+      # where BUNDLE_WITH names it (here) plus the native client libs — the
+      # Gemfile's own comment on the :odbc group warns that `bundle config set
+      # --local with` REPLACES rather than appends, so this stays colon-joined
+      # ("databases:odbc"), never a bare "odbc" that would silently drop mysql2/
+      # tiny_tds.
+      BUNDLE_WITH: databases:odbc
       # Turn a missing provisioned service into a hard failure (no green skips).
       TINA4_REQUIRE_SERVICES: '1'
 
@@ -191,11 +226,14 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # Second Postgres database for the two-DB named-connection test
-      # (spec/bind_database_spec.rb uses TINA4_TEST_PG_DB_2=tina4_rb2). The
-      # postgres service container only creates POSTGRES_DB=tina4_rb, so create
-      # the second database from the runner's psql client once PG is healthy.
-      - name: Create second Postgres database (tina4_rb2)
+      # Extra Postgres databases beyond the service's own POSTGRES_DB=tina4_rb:
+      #   tina4_rb2 - the two-DB named-connection test (spec/bind_database_spec.rb,
+      #               TINA4_TEST_PG_DB_2=tina4_rb2).
+      #   tina4_odbc - the ODBC provider contract spec (feature 13), reached
+      #               through unixODBC's "PostgreSQL Unicode" driver rather than
+      #               Tina4's native postgres driver, so it needs its own database
+      #               to avoid the two suites tripping over each other's tables.
+      - name: Create second Postgres database (tina4_rb2, tina4_odbc)
         run: |
           for i in $(seq 1 30); do
             if PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_rb -c "SELECT 1" >/dev/null 2>&1; then
@@ -205,6 +243,8 @@ jobs:
           done
           PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_rb \
             -c "CREATE DATABASE tina4_rb2" || echo "tina4_rb2 may already exist"
+          PGPASSWORD=tina4 psql -h localhost -p 55432 -U tina4 -d tina4_rb \
+            -c "CREATE DATABASE tina4_odbc" || echo "tina4_odbc may already exist"
 
       # Password-protected Redis (requirepass s3cret) on 6381 — verifies the
       # AUTH round-trip and the wrong-password file-fallback path. Run as a
@@ -298,6 +338,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y librdkafka-dev default-libmysqlclient-dev freetds-dev
 
+      # unixODBC + the PostgreSQL ODBC driver (feature 13), installed BEFORE
+      # bundle install so ruby-odbc's C extension compiles and links against
+      # libodbc (unixodbc-dev). odbc-postgresql ships the driver .so under a
+      # multiarch path that differs by Ubuntu release/arch, so it is discovered
+      # via `dpkg -L` rather than hardcoded, and registered under the nickname
+      # "PostgreSQL Unicode" via `odbcinst -i -d` (the standard unixODBC way to
+      # write /etc/odbcinst.ini) — the DSN in TINA4_TEST_ODBC_DSN above references
+      # that exact nickname with DRIVER={PostgreSQL Unicode}.
+      - name: Install unixODBC + PostgreSQL ODBC driver
+        run: |
+          sudo apt-get install -y unixodbc unixodbc-dev odbc-postgresql
+          driver_so=$(dpkg -L odbc-postgresql | grep -E 'psqlodbcw\.so$' | head -1)
+          if [ -z "$driver_so" ]; then
+            echo "::error::psqlodbcw.so not found in odbc-postgresql package contents"; exit 1
+          fi
+          echo "Found PostgreSQL ODBC driver at $driver_so"
+          # printf, not a heredoc: a YAML block scalar ("run: |") fixes its
+          # indentation from the step's FIRST line, and every later line must
+          # stay AT OR ABOVE it or YAML treats the block as having ended early —
+          # so a heredoc body flush against the left margin breaks the YAML
+          # parse, while one indented to match the script becomes literal
+          # leading spaces inside the ini file and breaks odbcinst's parse of
+          # "Driver=...". A single printf with explicit \n sidesteps both.
+          printf '[PostgreSQL Unicode]\nDescription=PostgreSQL ODBC driver (Unicode)\nDriver=%s\n' "$driver_so" > /tmp/psql-odbc-driver.ini
+          sudo odbcinst -i -d -f /tmp/psql-odbc-driver.ini
+          odbcinst -q -d | grep -q "PostgreSQL Unicode" || { echo "::error::driver registration failed"; exit 1; }
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.2'
@@ -305,6 +372,24 @@ jobs:
 
       - name: Install dependencies
         run: bundle install
+
+      # PROVE the ruby-odbc gem actually loads AND can drive a real connection
+      # through the driver registered above, so a broken DSN / missing driver
+      # degrades to a LOUD failure here rather than a quiet, permanent pending
+      # skip in the main spec run (the same no-silent-skip guard the dedicated
+      # firebird job below uses for the fb gem).
+      - name: Verify ruby-odbc gem loads and reaches Postgres (no-silent-skip guard)
+        run: |
+          bundle exec ruby -e '
+            require "odbc"
+            db = ODBC::Database.new
+            db.drvconnect(ENV.fetch("TINA4_TEST_ODBC_DSN"))
+            statement = db.run("SELECT 1")
+            statement.fetch
+            statement.drop
+            db.disconnect
+            puts "ruby-odbc loaded OK and reached PostgreSQL through the ODBC driver"
+          '
 
       # Metrics is measured by the NATIVE engine in the tina4 Rust CLI (ADR-0002)
       # and has no in-framework fallback, so these specs need that binary on PATH
@@ -474,9 +559,31 @@ jobs:
           fi
           echo "firebird_rollback_spec RAN its examples against live Firebird and passed (0 pending)."
 
-      # The remaining firebird specs run here too: charset resolver + URL
-      # normaliser are pure-logic; the url spec's live-connectivity block and the
-      # reconnect matcher spec also run (fb gem present + server up). rspec exits
-      # non-zero on any failure.
-      - name: Run remaining Firebird specs
-        run: bundle exec rspec spec/firebird_charset_spec.rb spec/firebird_url_spec.rb spec/firebird_reconnect_spec.rb --format documentation
+      # The remaining firebird-dedicated specs run here too: charset resolver +
+      # URL normaliser are pure-logic; the url spec's live-connectivity block,
+      # the reconnect matcher spec, primary-key introspection and column-name
+      # case, and the provider contract (feature 12) all need the live server
+      # (fb gem present + server up). Before this these three files (primary_key,
+      # provider contract, column_case) ran NOWHERE in CI — they gate purely on
+      # TINA4_TEST_FIREBIRD_URL (same as the rollback spec above), which the main
+      # `test` job never sets by design (see spec/spec_helper.rb's
+      # TINA4_GATE_SERVICE_KEYWORDS), so they sat permanently pending there with
+      # no live run anywhere. This job already provisions the exact live Firebird
+      # + fb gem they need, so reuse it instead of standing up a second server.
+      #
+      # Same no-silent-skip guard as the rollback step above: PROVE every file
+      # actually ran (0 pending) rather than trusting a green exit code, which
+      # rspec also returns when every example silently skipped.
+      - name: Run remaining Firebird specs (no-silent-skip guard)
+        run: |
+          set -o pipefail
+          out=$(bundle exec rspec spec/firebird_charset_spec.rb spec/firebird_url_spec.rb \
+            spec/firebird_reconnect_spec.rb spec/firebird_primary_key_spec.rb \
+            spec/firebird_column_case_spec.rb spec/firebirdprovider_contract_spec.rb \
+            --format documentation 2>&1 | tee /dev/stderr)
+          printf '%s\n' "$out" | grep -qE "[1-9][0-9]* examples?, 0 failures" || {
+            echo "::error::the remaining Firebird specs did not report examples with 0 failures."; exit 1; }
+          if printf '%s\n' "$out" | grep -qE "[1-9][0-9]* pending"; then
+            echo "::error::the remaining Firebird specs had pending (skipped) examples — some live-FB coverage did not run."; exit 1
+          fi
+          echo "remaining Firebird specs RAN against live Firebird and passed (0 pending)."
