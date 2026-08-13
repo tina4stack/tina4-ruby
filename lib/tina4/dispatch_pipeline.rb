@@ -327,9 +327,7 @@ module Tina4
       new_headers = headers.dup
       changed = false
 
-      accept_encoding = ctx.env["HTTP_ACCEPT_ENCODING"] || ""
-      content_type = new_headers["content-type"] || ""
-      if body.bytesize > 1024 && accept_encoding.include?("gzip") && compressible_content_type?(content_type)
+      if should_gzip?(ctx, body, new_headers)
         body = gzip_string(body)
         new_headers["content-encoding"] = "gzip"
         new_headers["vary"] = "Accept-Encoding"
@@ -337,7 +335,7 @@ module Tina4
         changed = true
       end
 
-      if !new_headers["etag"] && !body.empty? && status == 200
+      if should_tag_etag?(new_headers, body, status)
         new_headers["etag"] = %("#{Digest::MD5.hexdigest(body)[0, 16]}")
         changed = true
       end
@@ -345,6 +343,21 @@ module Tina4
       return nil unless changed
 
       [status, new_headers, [body]]
+    end
+
+    # Split out of compress_and_tag (metrics/6b) to hold the complexity gate:
+    # the body-size / Accept-Encoding / content-type gzip decision, named so
+    # the caller reads as one line per concern instead of one three-way &&.
+    def should_gzip?(ctx, body, headers)
+      accept_encoding = ctx.env["HTTP_ACCEPT_ENCODING"] || ""
+      content_type = headers["content-type"] || ""
+      body.bytesize > 1024 && accept_encoding.include?("gzip") && compressible_content_type?(content_type)
+    end
+
+    # Split out of compress_and_tag (metrics/6b): whether this response earns
+    # a content-hash ETag - no validator set already, a non-empty body, a 200.
+    def should_tag_etag?(headers, body, status)
+      !headers["etag"] && !body.empty? && status == 200
     end
 
     # Answer a matching conditional GET with a 304 that PRESERVES whichever
@@ -361,28 +374,29 @@ module Tina4
 
       etag = headers["etag"]
       last_modified = headers["last-modified"]
-      if_none_match = ctx.env["HTTP_IF_NONE_MATCH"]
-      if_modified_since = ctx.env["HTTP_IF_MODIFIED_SINCE"]
-
-      not_modified =
-        if if_none_match && !if_none_match.empty?
-          etag_matches?(if_none_match, etag)
-        elsif if_modified_since && !if_modified_since.empty? && last_modified
-          begin
-            Time.httpdate(last_modified).to_i <= Time.httpdate(if_modified_since).to_i
-          rescue ArgumentError
-            false # Unparseable date -> serve the body (never 304 on garbage).
-          end
-        else
-          false
-        end
-
-      return nil unless not_modified
+      return nil unless request_not_modified?(ctx, etag, last_modified)
 
       not_modified_headers = {}
       not_modified_headers["etag"] = etag if etag
       not_modified_headers["last-modified"] = last_modified if last_modified
       [304, not_modified_headers, [""]]
+    end
+
+    # Split out of conditional_get (metrics/6b) to hold the complexity gate.
+    # RFC 7232 S6: If-None-Match, when present, decides it alone; only when
+    # the request sends no If-None-Match does If-Modified-Since apply.
+    def request_not_modified?(ctx, etag, last_modified)
+      if_none_match = ctx.env["HTTP_IF_NONE_MATCH"]
+      return etag_matches?(if_none_match, etag) if if_none_match && !if_none_match.empty?
+
+      if_modified_since = ctx.env["HTTP_IF_MODIFIED_SINCE"]
+      return false unless if_modified_since && !if_modified_since.empty? && last_modified
+
+      begin
+        Time.httpdate(last_modified).to_i <= Time.httpdate(if_modified_since).to_i
+      rescue ArgumentError
+        false # Unparseable date -> serve the body (never 304 on garbage).
+      end
     end
 
     # Whether a content type benefits from gzip compression (text-ish, JSON,
