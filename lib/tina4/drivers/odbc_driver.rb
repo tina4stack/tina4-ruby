@@ -185,6 +185,11 @@ module Tina4
       end
 
       # List all user tables via ODBC metadata.
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'odbc'
+      end
+
       def tables
         stmt = @connection.tables
         rows = []

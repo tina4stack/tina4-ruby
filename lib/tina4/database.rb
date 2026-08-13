@@ -745,7 +745,12 @@ module Tina4
       @pk_cache ||= {}
       unless @pk_cache.key?(table)
         @pk_cache[table] = begin
-          columns(table).select { |c| c[:primary_key] }.map { |c| c[:name].to_s }
+          pk_columns = columns(table).select { |c| c[:primary_key] }
+          # ADR-0044 amendment: sort by primary_key_position so a composite
+          # PRIMARY KEY (b, a) returns ["b", "a"] (declared key order), not
+          # table-column order. A column with no reported position sorts last.
+          pk_columns.sort_by! { |c| [c[:primary_key_position].nil? ? 1 : 0, c[:primary_key_position] || 0] }
+          pk_columns.map { |c| c[:name].to_s }
         rescue StandardError
           []
         end
@@ -958,37 +963,39 @@ module Tina4
     # and let the outer transaction commit them.
     def execute_many(sql, params_list = [])
       params_list ||= []
-      already_pinned = !Thread.current[@tx_pin_key].nil?
-      drv = current_driver
-      Thread.current[@tx_pin_key] = drv unless already_pinned
-
-      begin
-        drv.begin_transaction unless already_pinned
-        begin
-          # ONE round-trip per CHUNK instead of one per ROW. Looping execute()
-          # here pays a full network round-trip for every row: 500 rows took
-          # 9848ms on PostgreSQL against 15.8ms as a single multi-row VALUES
-          # (625x), MySQL 216x, MSSQL 121x. build_batch_inserts returns an empty
-          # array for anything it cannot collapse safely - RETURNING, upserts,
-          # non-INSERT statements, ragged rows, Firebird - and the row-at-a-time
-          # loop then runs unchanged.
-          batched = SQLTranslator.build_batch_inserts(sql, params_list, get_database_type)
-          if batched.empty?
-            params_list.each { |params| drv.execute(sql, params) }
-          else
-            batched.each { |chunk_sql, chunk_params| drv.execute(chunk_sql, chunk_params) }
-          end
-          drv.commit unless already_pinned
-        rescue => e
-          drv.rollback unless already_pinned
-          @last_error = e.message
-          raise e
-        end
-      ensure
-        Thread.current[@tx_pin_key] = nil unless already_pinned
+      # ADR-0044 (DBA-B01): empty input is a successful no-op - it opens no
+      # transaction, calls no driver, and performs no write.
+      if params_list.empty?
+        return Tina4::DatabaseResult.new([], affected_rows: 0, last_id: nil, db: self)
       end
 
-      last_id = begin
+      # ADR-0044 (DBA-D02): the facade delegates to the driver's OWN
+      # execute_many exactly ONCE - it does not loop execute() itself. Native
+      # batching (one multi-row VALUES round-trip instead of one per row: 500
+      # rows measured 9848ms on PostgreSQL row-at-a-time against 15.8ms
+      # batched - 625x, MySQL 216x, MSSQL 121x) is the DRIVER's job.
+      #
+      # start_transaction/commit/rollback already correctly nest (depth
+      # counter) when called from inside an existing explicit transaction, so
+      # this brackets exactly the way a standalone start_transaction +
+      # execute + commit sequence would.
+      start_transaction
+      drv = current_driver # now returns the just-pinned driver
+      begin
+        raw = drv.execute_many(sql, params_list)
+        commit
+      rescue => e
+        rollback
+        @last_error = e.message
+        raise e
+      end
+
+      # Normalise whatever the driver returned (a Hash {affected_rows:,
+      # last_id:} today) into the shared aggregate result. affected_rows is
+      # the total ROW count - chunking/native batching must stay invisible.
+      affected = raw.is_a?(Hash) ? raw[:affected_rows] : params_list.length
+      last_id = raw.is_a?(Hash) ? raw[:last_id] : nil
+      last_id ||= begin
         drv.last_insert_id
       rescue StandardError
         nil
@@ -1001,7 +1008,7 @@ module Tina4
       # double-apply.
       Tina4::DatabaseResult.new(
         [],
-        affected_rows: params_list.length,
+        affected_rows: affected,
         last_id: last_id,
         db: self
       )
@@ -1316,9 +1323,14 @@ module Tina4
     # error is captured on @last_error and re-raised. Returns the first row (a
     # Hash) or nil on a SUCCESSFUL "no row" read.
     def fetch_one_direct(sql, params)
-      result = fetch(sql, params, limit: 1, no_cache: true)
+      # ADR-0044 (DBA-D03): delegates to the adapter's OWN fetch_one exactly
+      # once - no pagination count probe (the old path ran the full paginated
+      # #fetch, which the driver builds via a COUNT(*) subquery + LIMIT/OFFSET
+      # SQL, just to keep the first row).
+      drv = current_driver
+      result = drv.fetch_one(sql, params)
       @last_error = nil
-      result.first
+      result
     rescue => e
       @last_error = driver_error_message(current_driver, e)
       raise
@@ -1795,7 +1807,13 @@ module Tina4
       klass_name = DRIVERS[@driver_name]
       raise "Unknown database driver: #{@driver_name}" unless klass_name
       klass = Object.const_get(klass_name)
-      klass.new
+      driver = klass.new
+      # ADR-0044 / DBA-S02: fail loud, at registration, when the driver does
+      # not implement every required adapter capability - instead of failing
+      # later with a bare NoMethodError on whichever call path touches the
+      # gap first.
+      Tina4::DatabaseAdapter.validate!(driver, @driver_name)
+      driver
     rescue NameError
       raise "Driver #{klass_name} not loaded. Install the required gem."
     end

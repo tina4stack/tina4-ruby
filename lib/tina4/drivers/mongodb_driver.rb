@@ -171,6 +171,11 @@ module Tina4
         # no-op
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'mongodb'
+      end
+
       def tables
         @db.collection_names.reject { |n| n.start_with?("system.") }
       end

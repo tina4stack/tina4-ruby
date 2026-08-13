@@ -343,6 +343,11 @@ module Tina4
         @in_transaction = false
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'firebird'
+      end
+
       def tables
         sql = "SELECT RDB\$RELATION_NAME FROM RDB\$RELATIONS WHERE RDB\$SYSTEM_FLAG = 0 AND RDB\$VIEW_BLR IS NULL"
         rows = execute_query(sql)

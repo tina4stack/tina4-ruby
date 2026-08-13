@@ -183,6 +183,7 @@ module Tina4
         pragma = schema && identifier?(schema) && identifier?(tbl) ? "#{schema}.table_info(#{tbl})" : "table_info(#{table_name})"
         rows = execute_query("PRAGMA #{pragma}")
         rows.map do |r|
+          pk = r[:pk].to_i
           {
             name: r[:name],
             type: r[:type],
@@ -191,9 +192,18 @@ module Tina4
             # PRAGMA table_info reports `pk` as the 1-BASED POSITION within the
             # primary key, not a boolean: a composite key gives pk=1, pk=2, ...
             # Testing `== 1` reported only the first column of a composite key.
-            primary_key: r[:pk].to_i.positive?
+            primary_key: pk.positive?,
+            # ADR-0044 amendment (Feature 5 Decision 7): null for a non-key
+            # column; for a composite key this IS the declared PRIMARY KEY
+            # (...) order, not table-column order.
+            primary_key_position: pk.positive? ? pk : nil
           }
         end
+      end
+
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        "sqlite"
       end
 
       private

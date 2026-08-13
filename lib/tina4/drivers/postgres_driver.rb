@@ -218,6 +218,11 @@ module Tina4
         !rows.empty? && !rows[0][:oid].nil?
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        "postgres"
+      end
+
       def tables
         # v3.13.14 (#48): list every user schema; public tables stay bare,
         # others are returned schema-qualified.

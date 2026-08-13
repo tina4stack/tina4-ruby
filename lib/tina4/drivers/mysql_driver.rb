@@ -197,6 +197,11 @@ module Tina4
         !rows.empty?
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'mysql'
+      end
+
       def tables
         rows = execute_query("SHOW TABLES")
         rows.map { |r| r.values.first }

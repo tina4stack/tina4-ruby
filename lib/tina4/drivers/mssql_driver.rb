@@ -153,6 +153,11 @@ module Tina4
         !rows.empty?
       end
 
+      # ADR-0044 required adapter capability.
+      def get_database_type
+        'mssql'
+      end
+
       def tables
         rows = execute_query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
         rows.map { |r| r[:TABLE_NAME] || r[:table_name] }
