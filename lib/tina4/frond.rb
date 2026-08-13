@@ -85,6 +85,11 @@ module Tina4
     # -- Compiled regex constants (optimization: avoid re-compiling in methods) --
     EXTENDS_RE      = /\{%-?\s*extends\s+["'](.+?)["']\s*-?%\}/
     BLOCK_RE        = /\{%-?\s*block\s+(\w+)\s*-?%\}(.*?)\{%-?\s*endblock\s*-?%\}/m
+    # Open/close halves of BLOCK_RE, used standalone by extract_blocks' depth
+    # counter -- a single non-greedy BLOCK_RE match cannot tell a NESTED
+    # endblock from the outer block's own, so it needs its own two-piece scan.
+    BLOCK_OPEN_RE   = /\{%-?\s*block\s+(\w+)\s*-?%\}/
+    BLOCK_CLOSE_RE  = /\{%-?\s*endblock\s*-?%\}/
     STRING_LIT_RE   = /\A["'](.*)["']\z/
     INTEGER_RE      = /\A-?\d+\z/
     FLOAT_RE        = /\A-?\d+\.\d+\z/
@@ -744,15 +749,102 @@ module Tina4
       render_tokens(tokenize(source), context)
     end
 
+    # Extract {% block name %}...{% endblock %} from source, TOP-LEVEL only.
+    #
+    # Counts depth rather than relying on a single non-greedy BLOCK_RE scan:
+    # a plain scan cannot tell a NESTED block's own {% endblock %} from the
+    # outer block's real one, so it pairs the outer open with whichever
+    # {% endblock %} happens to come first -- silently truncating the outer
+    # block's captured content at the wrong tag. A nested block's own markup
+    # stays embedded, VERBATIM, inside its outer block's captured content
+    # here; resolving it is render_with_blocks' fixed-point substitution
+    # loop's job, not this method's. Matches the Python master's
+    # _extract_blocks.
     def extract_blocks(source)
       blocks = {}
-      source.scan(BLOCK_RE) do
-        blocks[Regexp.last_match(1)] = Regexp.last_match(2)
+      pos = 0
+      len = source.length
+
+      while pos < len
+        m_open = BLOCK_OPEN_RE.match(source, pos)
+        break unless m_open
+
+        name = m_open[1]
+        content_start = m_open.end(0)
+        depth = 1
+        scan = content_start
+        matched = false
+
+        while depth.positive? && scan < len
+          next_open = BLOCK_OPEN_RE.match(source, scan)
+          next_close = BLOCK_CLOSE_RE.match(source, scan)
+          break if next_close.nil? # malformed -- no matching endblock
+
+          if next_open && next_open.begin(0) < next_close.begin(0)
+            depth += 1
+            scan = next_open.end(0)
+          else
+            depth -= 1
+            if depth.zero?
+              blocks[name] = source[content_start...next_close.begin(0)]
+              pos = next_close.end(0)
+              matched = true
+              break
+            end
+            scan = next_close.end(0)
+          end
+        end
+
+        pos = content_start unless matched # malformed -- skip forward
       end
+
       blocks
     end
 
     def render_with_blocks(parent_source, context, child_blocks)
+      # Multi-level extends: when this parent ITSELF has its own {% extends %},
+      # merge its own block defaults under the child's overrides (the nearer
+      # descendant always wins) and recurse until a root template with no
+      # {% extends %} is reached. Before 3.13.100 this recursion never
+      # happened: a mid-level parent's own {% extends %} tag reached
+      # render_tokens' "block/endblock/extends" case, which is a silent
+      # no-op, so a 3+ level chain lost the root's wrapping entirely and any
+      # of the mid template's own non-block text leaked through unwrapped
+      # instead. Matches the Python/PHP/Node masters, which already recurse
+      # the parent -> grandparent chain the same way.
+      grandparent_name = extends_target(parent_source)
+      if grandparent_name
+        parent_blocks = extract_blocks(parent_source)
+        merged_blocks = parent_blocks.merge(child_blocks)
+
+        # Resolve NESTED blocks: a block value that itself contains a
+        # {% block inner %}...{% endblock %} tag (this level's own markup,
+        # not yet substituted) has that inner tag replaced with the merged
+        # dict's value for that name, or the inner tag's own default when
+        # nothing overrides it. Fixed-point because resolving one level can
+        # reveal another (a block three levels deep). Matches Python/Node's
+        # multi-level extends, and is what lets a grandchild override a
+        # block nested INSIDE a block the middle template redeclares.
+        changed = true
+        while changed
+          changed = false
+          merged_blocks.keys.each do |name|
+            resolved = merged_blocks[name].gsub(BLOCK_RE) do
+              inner_name = Regexp.last_match(1)
+              inner_default = Regexp.last_match(2)
+              merged_blocks.fetch(inner_name, inner_default)
+            end
+            if resolved != merged_blocks[name]
+              merged_blocks[name] = resolved
+              changed = true
+            end
+          end
+        end
+
+        grandparent_source = load_template(grandparent_name)
+        return render_with_blocks(grandparent_source, context, merged_blocks)
+      end
+
       engine = self
       result = parent_source.gsub(BLOCK_RE) do
         name = Regexp.last_match(1)

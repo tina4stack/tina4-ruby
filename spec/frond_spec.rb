@@ -734,6 +734,71 @@ RSpec.describe Tina4::Frond do
       expect(result).to include("Base Footer")
       expect(result).to include("+ Extra Footer")
     end
+
+    it "renders a 3-level extends chain (leaf extends mid, mid extends root) with the root's wrapper" do
+      # 3.13.100: render_with_blocks did not recurse when the immediate
+      # parent ITSELF had an {% extends %} -- mid's own extends tag hit
+      # render_tokens' "block/endblock/extends" no-op case, so this used to
+      # render bare "LEAF" instead of the root's <section> wrapper. Python,
+      # PHP and Node already recursed the parent -> grandparent chain.
+      File.write(File.join(tpl_dir, "root.html"), '<section>{% block content %}ROOT{% endblock %}</section>')
+      File.write(File.join(tpl_dir, "mid.html"), '{% extends "root.html" %}{% block content %}{% endblock %}')
+      File.write(File.join(tpl_dir, "leaf.html"), '{% extends "mid.html" %}{% block content %}LEAF{% endblock %}')
+      result = file_engine.render("leaf.html", {})
+      expect(result).to eq("<section>LEAF</section>")
+    end
+
+    it "renders a 4-level extends chain (leaf -> mid2 -> mid1 -> root) with the root's wrapper" do
+      # Same bug, one hop deeper -- proves the recursion walks the WHOLE
+      # chain, not just one extra level. mid1/mid2 are pure pass-through
+      # layers with no block of their own (the shape a real
+      # "admin layout extends base layout extends html shell" stack takes),
+      # a distinct case from the 3-level test above where mid redeclares an
+      # empty passthrough block.
+      File.write(File.join(tpl_dir, "root.html"), '<section>{% block content %}ROOT{% endblock %}</section>')
+      File.write(File.join(tpl_dir, "mid1.html"), '{% extends "root.html" %}')
+      File.write(File.join(tpl_dir, "mid2.html"), '{% extends "mid1.html" %}')
+      File.write(File.join(tpl_dir, "leaf.html"), '{% extends "mid2.html" %}{% block content %}LEAF{% endblock %}')
+      result = file_engine.render("leaf.html", {})
+      expect(result).to eq("<section>LEAF</section>")
+    end
+
+    it "resolves a block nested inside another block declared by an intermediate template" do
+      # A block can wrap ANOTHER block ({% block body %}<section>{% block
+      # inner %}{% endblock %}</section>{% endblock %}), and that nesting can
+      # live in a MIDDLE template of the chain, not just the leaf or the
+      # root. extract_blocks has to be depth-aware (not a flat non-greedy
+      # scan, which pairs the outer block's open tag with whichever
+      # {% endblock %} comes first -- the INNER block's own, not the outer's
+      # -- silently truncating the outer block's captured content), and the
+      # merged block set has to resolve that nested placeholder before the
+      # final substitution against root. Matches the Python master's
+      # test_three_level_extends exactly (root plain, mid nests body>inner).
+      File.write(File.join(tpl_dir, "root.html"), '<div>{% block body %}default{% endblock %}</div>')
+      File.write(
+        File.join(tpl_dir, "mid.html"),
+        '{% extends "root.html" %}{% block body %}<section>{% block inner %}{% endblock %}</section>{% endblock %}'
+      )
+      File.write(File.join(tpl_dir, "leaf.html"), '{% extends "mid.html" %}{% block inner %}LEAF{% endblock %}')
+      result = file_engine.render("leaf.html", {})
+      expect(result).to eq("<div><section>LEAF</section></div>")
+    end
+
+    it "keeps a middle template's own block override when the leaf does not re-override it" do
+      # Multi-level merge direction: the NEAREST ancestor that declares a
+      # block wins over a FARTHER one, but only for blocks it actually
+      # touches. Here mid overrides "sidebar" and leaf overrides "title"
+      # only -- mid's "sidebar" must still win over root's default (child
+      # overrides ancestor default), while leaf's "title" wins over both.
+      File.write(
+        File.join(tpl_dir, "root.html"),
+        '{% block title %}Default Title{% endblock %} - {% block sidebar %}Default Sidebar{% endblock %}'
+      )
+      File.write(File.join(tpl_dir, "mid.html"), '{% extends "root.html" %}{% block sidebar %}Mid Sidebar{% endblock %}')
+      File.write(File.join(tpl_dir, "leaf.html"), '{% extends "mid.html" %}{% block title %}Leaf Title{% endblock %}')
+      result = file_engine.render("leaf.html", {})
+      expect(result).to eq("Leaf Title - Mid Sidebar")
+    end
   end
 
   # ===========================================================================
