@@ -70,10 +70,21 @@ module Tina4
       # Fetch the bytes at `url`, following up to `limit` redirects. Returns
       # nil on any network/HTTP failure so the caller can skip gracefully.
       #
+      # MEASURED 2026-08-13 on the real suite (not a mock): install_skills
+      # makes up to 18 sequential HTTPS calls (3 skills x 2 targets x
+      # (1 SKILL.md + refs)) to raw.githubusercontent.com, and a single
+      # transient timeout/reset on any one of them silently dropped that
+      # whole skill - `installed` came back missing "tina4-maintainer" with
+      # no other symptom. A short retry on the TRANSPORT-level failure modes
+      # only (never on a clean HTTP response, which is a real answer, not a
+      # glitch) is the fix a real end user running `tina4 ai` needs too, not
+      # just this suite.
+      #
       # @param url [String]
       # @param limit [Integer] max redirects to follow
+      # @param retries [Integer] transient-failure retries before giving up
       # @return [String, nil]
-      def fetch_bytes(url, limit = 5)
+      def fetch_bytes(url, limit = 5, retries = 2)
         return nil if limit <= 0
 
         uri = URI.parse(url)
@@ -85,13 +96,31 @@ module Tina4
         response = http.get(uri.request_uri)
         case response
         when Net::HTTPSuccess
-          response.body
+          return response.body
         when Net::HTTPRedirection
           location = response["location"]
-          location ? fetch_bytes(location, limit - 1) : nil
+          return location ? fetch_bytes(location, limit - 1, retries) : nil
         end
+
+        # Not a success or a redirect. A throttle/server hiccup (429 rate
+        # limit, 502/503/504) is worth one retry; anything else (404, a real
+        # 4xx) is a genuine answer - retrying would not change it.
+        return fetch_and_retry(url, limit, retries) if retries.positive? && TRANSIENT_HTTP_CODES.include?(response.code)
+
+        nil
+      rescue Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNRESET, Errno::ECONNREFUSED, SocketError, EOFError
+        return nil unless retries.positive?
+
+        fetch_and_retry(url, limit, retries)
       rescue StandardError
         nil
+      end
+
+      TRANSIENT_HTTP_CODES = %w[429 500 502 503 504].freeze
+
+      def fetch_and_retry(url, limit, retries)
+        sleep(0.5)
+        fetch_bytes(url, limit, retries - 1)
       end
 
       # Install the Tina4 SKILL.md skills into the project AND the user's
