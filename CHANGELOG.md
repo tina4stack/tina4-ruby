@@ -19,6 +19,7 @@ inherit the extension.
 - Preserve nested root blocks through a depth-aware final substitution pass.
 - Bound template, fragment, and expression caches, with TTL sweeps for stale entries.
 - Retry transient AI skill-download failures.
+- Activate the tina4-js skill for `tina4js` and `Tina4 JS` spellings as well as `tina4-js`.
 - Keep `Tina4::VERSION` and both AI-facing guide markers on one version.
 
 ## 3.13.99
