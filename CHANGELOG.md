@@ -6,6 +6,17 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.100 (unreleased)
+
+- Reject a second `{% extends %}` tag instead of replacing the first parent without warning.
+- Resolve multi-level inheritance without recursing through the same child template.
+- Preserve nested root blocks through a depth-aware final substitution pass.
+- Bound template, fragment, and expression caches, with TTL sweeps for stale entries.
+- Retry transient AI skill-download failures.
+- Keep `Tina4::VERSION` and both AI-facing guide markers on one version.
+
+## 3.13.99
+
 ### Breaking: `request.params` is route-params-only, and `path_params` is renamed `params`
 
 Ruby had the worst version of the param-pollution bug: `params` used to merge the query
