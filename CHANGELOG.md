@@ -8,6 +8,12 @@ https://tina4.com/ruby/36-releases
 
 ## 3.13.100 (unreleased)
 
+### Breaking: Frond instance extensions stay local
+
+Calling `add_filter`, `add_global`, or `add_test` on a Frond instance now changes
+that renderer only. Register on `Frond` itself when every later instance must
+inherit the extension.
+
 - Reject a second `{% extends %}` tag instead of replacing the first parent without warning.
 - Resolve multi-level inheritance without recursing through the same child template.
 - Preserve nested root blocks through a depth-aware final substitution pass.

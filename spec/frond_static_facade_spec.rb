@@ -12,8 +12,8 @@ require_relative "../lib/tina4/frond"
 #   * Class-level call (``Tina4::Frond.add_filter(...)``) — populates the
 #     class registry only; later ``Frond.new`` instances drain it on
 #     construction.
-#   * Instance-level call (``frond.add_filter(...)``) — populates both the
-#     class registry AND the instance's live map.
+#   * Instance-level call (``frond.add_filter(...)``) — populates only the
+#     instance's live map.
 #   * ``Tina4::Frond.clear_registry`` — wipes user-registered state without
 #     touching the built-in filters baked in by ``default_filters``.
 RSpec.describe Tina4::Frond do
@@ -22,6 +22,11 @@ RSpec.describe Tina4::Frond do
     # rest of the suite (built-in filters survive — only user state is wiped).
     before(:each) { Tina4::Frond.clear_registry }
     after(:all)   { Tina4::Frond.clear_registry }
+
+    it "class registration is process global" do
+      Tina4::Frond.add_filter("class_filter") { |value| "class:#{value}" }
+      expect(Tina4::Frond.new.render_string("{{ value | class_filter }}", { "value" => "value" })).to eq("class:value")
+    end
 
     describe ".add_filter (class-level)" do
       it "registers a filter at class level visible to a NEW instance" do
@@ -54,11 +59,11 @@ RSpec.describe Tina4::Frond do
         expect(engine.render_string("{{ msg | exclaim }}", { "msg" => "hi" })).to eq("hi!")
       end
 
-      it "also propagates the filter to future instances via the class registry" do
+      it "instance filter registration is instance local" do
         engine = Tina4::Frond.new
         engine.add_filter("yell") { |v| "#{v.to_s.upcase}!" }
         future = Tina4::Frond.new
-        expect(future.render_string("{{ s | yell }}", { "s" => "yo" })).to eq("YO!")
+        expect(future.render_string("{{ s | yell }}", { "s" => "yo" })).to eq("yo")
       end
 
       it "returns self so calls can chain" do
@@ -95,11 +100,11 @@ RSpec.describe Tina4::Frond do
         expect(engine.render_string("{{ VERSION }}", {})).to eq("3.13.4")
       end
 
-      it "propagates to future instances" do
+      it "instance global registration is instance local" do
         engine = Tina4::Frond.new
         engine.add_global("NAME", "Tina4")
         future = Tina4::Frond.new
-        expect(future.render_string("{{ NAME }}", {})).to eq("Tina4")
+        expect(future.render_string("{{ NAME }}", {})).to eq("")
       end
     end
 
@@ -125,11 +130,11 @@ RSpec.describe Tina4::Frond do
         expect(engine.render_string("{% if x is zero %}Z{% else %}NZ{% endif %}", { "x" => 0 })).to eq("Z")
       end
 
-      it "propagates the test to later instances" do
+      it "instance test registration is instance local" do
         engine = Tina4::Frond.new
         engine.add_test("even_test") { |v| v.to_i.even? }
         future = Tina4::Frond.new
-        expect(future.render_string("{% if x is even_test %}E{% else %}O{% endif %}", { "x" => 4 })).to eq("E")
+        expect(future.render_string("{% if x is even_test %}E{% else %}O{% endif %}", { "x" => 4 })).to eq("O")
       end
     end
 

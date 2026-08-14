@@ -31,9 +31,8 @@ module Tina4
     # late-constructed engines automatically inherit prior registrations.
     #
     # The same-name dual-callable (class + instance) methods below let callers
-    # write either ``Tina4::Frond.add_filter(...)`` (class-level only) or
-    # ``frond.add_filter(...)`` (updates both the class registry and the
-    # instance's live filter map). Parity with tina4-python's
+    # write either ``Tina4::Frond.add_filter(...)`` (process-global) or
+    # ``frond.add_filter(...)`` (the instance's live filter map only). Parity with tina4-python's
     # ``_ClassOrInstanceMethod`` descriptor.
     @@class_filters = {}
     @@class_globals = {}
@@ -439,31 +438,25 @@ module Tina4
 
     # Register a custom filter.
     #
-    # Updates BOTH the class registry (so future ``Tina4::Frond.new`` picks
-    # the filter up) AND this instance's live filter map (so the change is
-    # visible to subsequent renders on the current engine).
+    # Updates this instance's live filter map only. Class calls remain the
+    # process-global registration path. tina4: ADR-0052.
     def add_filter(name, &blk)
-      self.class.add_filter(name, &blk)
       @filters[name.to_s] = blk
       self
     end
 
     # Register a custom test.
     #
-    # Updates BOTH the class registry and this instance's live tests map.
-    # See ``add_filter`` for the dual-write semantics.
+    # Updates this instance's live tests map only.
     def add_test(name, &blk)
-      self.class.add_test(name, &blk)
       @tests[name.to_s] = blk
       self
     end
 
     # Register a global variable available in all templates.
     #
-    # Updates BOTH the class registry and this instance's live globals map.
-    # See ``add_filter`` for the dual-write semantics.
+    # Updates this instance's live globals map only.
     def add_global(name, value)
-      self.class.add_global(name, value)
       @globals[name.to_s] = value
       self
     end
