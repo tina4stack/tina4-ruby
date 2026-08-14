@@ -68,6 +68,18 @@ db = Tina4::Database.new("sqlite://app.db")
 
 **2,508 tests. Zero runtime dependencies. Full parity across Python, PHP, Ruby, and Node.js.**
 
+### AI Client
+
+```ruby
+reply = Tina4::Ai.chat([{ role: "user", content: "Summarise this text" }])
+text = Tina4::Ai.complete("Give me a title")
+vector = Tina4::Ai.embed("semantic search text")
+
+Tina4::Ai.chat([{ role: "user", content: "Stream this" }], stream: true).each { |delta| print delta }
+```
+
+Configure `TINA4_AI_PROVIDER` as `local`, `openai`, or `anthropic`. Hosted providers require `TINA4_AI_KEY`; local OpenAI-compatible endpoints do not.
+
 ---
 
 ## CLI Reference

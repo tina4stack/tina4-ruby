@@ -632,8 +632,6 @@ module Tina4
           json_response(gallery_deploy(name))
         when ["GET", "/__dev/api/version-check"]
           json_response(version_check_payload)
-        when ["GET", "/__dev/api/metrics"]
-          json_response(Tina4::Metrics.quick_metrics)
         when ["GET", "/__dev/api/metrics/full"]
           # No fallback (ADR-0002). A missing or stale CLI is a 503 naming the
           # install command, never zeros that read as a healthy codebase.

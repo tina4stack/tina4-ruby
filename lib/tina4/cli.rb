@@ -71,7 +71,6 @@ module Tina4
       "console"          => { handler: :cmd_console,                                                       summary: "Start an interactive console" },
       "generate"         => { handler: :cmd_generate,         usage: "<what> <name> [options]", subcommands: GENERATORS.keys, summary: "Generate scaffolding (see Generators below)" },
       "ai"               => { handler: :cmd_ai,               usage: "[--all]",                            summary: "Detect AI tools and install context files" },
-      "metrics"          => { handler: :cmd_metrics,          usage: "[--top N] [--json] [--fail-on warn|error] [--path DIR]", summary: "Rank top code-quality offenders" },
       "commands"         => { handler: :cmd_commands,         usage: "[--json]",                           summary: "List available commands (add --json for machine form)" },
       "help"             => { handler: :cmd_help,                                                          summary: "Show this help message" },
     }.freeze
@@ -1058,104 +1057,6 @@ module Tina4
         selection = Tina4::AI.show_menu(root_dir)
         Tina4::AI.install_selected(root_dir, selection) unless selection.empty?
       end
-    end
-
-    # ── metrics ───────────────────────────────────────────────────────────
-
-    # Report top code-quality offenders (complexity, size, maintainability,
-    # tests). Mirrors the Python-master `tina4python metrics` command.
-    #
-    #   tina4ruby metrics                       # human report, scans src/ (or framework)
-    #   tina4ruby metrics --top 10              # only the worst 10
-    #   tina4ruby metrics --path lib            # scan a specific directory
-    #   tina4ruby metrics --json                # machine-readable for CI
-    #   tina4ruby metrics --fail-on warn        # exit 1 if any warn/error offender
-    #   tina4ruby metrics --fail-on error       # exit 1 only on error-severity
-    def cmd_metrics(argv)
-      require "json"
-      require "set"
-      require_relative "metrics"
-
-      flags, _positional = parse_flags(argv)
-
-      top = (flags["top"].to_s =~ /\A\d+\z/) ? flags["top"].to_i : 20
-      as_json = flags.key?("json")
-      path = flags["path"].is_a?(String) ? flags["path"] : "src"
-      fail_on = flags["fail-on"].is_a?(String) ? flags["fail-on"] : nil
-
-      unless [nil, "warn", "error"].include?(fail_on)
-        puts "  invalid --fail-on '#{fail_on}' (use warn or error)"
-        exit 2
-      end
-
-      # ONE engine run. Ask for every offender and slice for display: the gate
-      # must read the FULL set, not the printed top-N, and the old second call
-      # re-ran the whole analysis (its "full_analysis is cached" comment stopped
-      # being true when the in-process analyzer and its cache were deleted).
-      # An Integer, not Float::INFINITY -- Array#first demands an Integer.
-      every_offender = 2**31
-      begin
-        result = Tina4::Metrics.offenders(path, every_offender)
-      rescue Tina4::MetricsEngineError => e
-        warn "  metrics error: #{e.message}"
-        exit 2
-      end
-      summary = result["summary"]
-      all_offenders = result["offenders"]
-      found = all_offenders.first(top)
-
-      severities = all_offenders.map { |o| o["severity"] }.to_set
-      exit_code = 0
-      if fail_on == "warn" && !(severities & %w[warn error]).empty?
-        exit_code = 1
-      elsif fail_on == "error" && severities.include?("error")
-        exit_code = 1
-      end
-
-      if as_json
-        puts JSON.pretty_generate({ "summary" => summary, "offenders" => found })
-        exit exit_code
-      end
-
-      # ── Human report ──────────────────────────────────────────────────
-      use_color = $stdout.tty?
-      colorize = lambda do |text, code|
-        use_color ? "\e[#{code}m#{text}\e[0m" : text
-      end
-      sev_color = { "error" => "31", "warn" => "33", "info" => "2" } # red / yellow / dim
-
-      puts
-      puts "  Tina4 Metrics — #{summary['scan_mode']} scan (#{summary['scan_root']})"
-      puts "  files: #{summary['files_analyzed']}   " \
-           "functions: #{summary['total_functions']}   " \
-           "avg complexity: #{summary['avg_complexity']}   " \
-           "avg maintainability: #{summary['avg_maintainability']}"
-      showing = found.empty? ? "" : " (showing top #{found.length})"
-      puts "  offenders: #{summary['total_offenders']} total#{showing}"
-      puts
-
-      if found.empty?
-        puts "  " + colorize.call("✓ no offenders — clean", "32")
-        puts
-        exit exit_code
-      end
-
-      # Compute column widths so the table lines up.
-      locs = found.map { |o| "#{o['file']}:#{o['line']}" }
-      loc_w = [("FILE:LINE".length)].concat(locs.map(&:length)).max
-      kind_w = [("KIND".length)].concat(found.map { |o| o["kind"].length }).max
-
-      header = format("  %3s  %-8s  %-#{kind_w}s  %-#{loc_w}s  DETAIL", "#", "SEVERITY", "KIND", "FILE:LINE")
-      puts colorize.call(header, "1")
-      puts "  " + ("-" * (header.length - 2))
-      found.each_with_index do |o, i|
-        sev = o["severity"]
-        sev_cell = colorize.call(format("%-8s", sev), sev_color[sev])
-        puts format("  %3d  %s  %-#{kind_w}s  %-#{loc_w}s  %s",
-                    i + 1, sev_cell, o["kind"], locs[i], o["detail"])
-      end
-      puts
-      exit exit_code
     end
 
     # ── generate ────────────────────────────────────────────────────────
@@ -2938,13 +2839,6 @@ module Tina4
         "placeholder (raise NotImplementedError) where the custom logic goes; CRUD-",
         "shaped ones emit working code. Writes are secure by default; use --public",
         "to open them.",
-        "",
-        "Metrics:",
-        "  metrics [--top N] [--json] [--fail-on warn|error] [--path DIR]",
-        "    --top N        Show only the worst N offenders (default: 20)",
-        "    --json         Print machine-readable JSON ({summary, offenders}) for CI",
-        "    --fail-on      Exit 1 if any offender at/above this severity (warn|error)",
-        "    --path DIR     Scan DIR (default: src/, auto-resolves to the framework)",
         "",
         "Field types: string, int, float, bool, text, datetime, blob",
         "Table names: singular by default (Product -> product)",
