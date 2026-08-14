@@ -31,9 +31,8 @@ module Tina4
     # late-constructed engines automatically inherit prior registrations.
     #
     # The same-name dual-callable (class + instance) methods below let callers
-    # write either ``Tina4::Frond.add_filter(...)`` (class-level only) or
-    # ``frond.add_filter(...)`` (updates both the class registry and the
-    # instance's live filter map). Parity with tina4-python's
+    # write either ``Tina4::Frond.add_filter(...)`` (process-global) or
+    # ``frond.add_filter(...)`` (the instance's live filter map only). Parity with tina4-python's
     # ``_ClassOrInstanceMethod`` descriptor.
     @@class_filters = {}
     @@class_globals = {}
@@ -85,6 +84,11 @@ module Tina4
     # -- Compiled regex constants (optimization: avoid re-compiling in methods) --
     EXTENDS_RE      = /\{%-?\s*extends\s+["'](.+?)["']\s*-?%\}/
     BLOCK_RE        = /\{%-?\s*block\s+(\w+)\s*-?%\}(.*?)\{%-?\s*endblock\s*-?%\}/m
+    # Open/close halves of BLOCK_RE, used standalone by extract_blocks' depth
+    # counter -- a single non-greedy BLOCK_RE match cannot tell a NESTED
+    # endblock from the outer block's own, so it needs its own two-piece scan.
+    BLOCK_OPEN_RE   = /\{%-?\s*block\s+(\w+)\s*-?%\}/
+    BLOCK_CLOSE_RE  = /\{%-?\s*endblock\s*-?%\}/
     STRING_LIT_RE   = /\A["'](.*)["']\z/
     INTEGER_RE      = /\A-?\d+\z/
     FLOAT_RE        = /\A-?\d+\.\d+\z/
@@ -204,7 +208,21 @@ module Tina4
     # exists for the workload that genuinely grows without limit for the life
     # of a worker: +render_string+ keys on md5(source), so an app that builds
     # template strings dynamically adds an entry per distinct string.
+    #
+    # Also reused for @fragment_cache (the {% cache %} tag's runtime store):
+    # a rendered fragment is a whole HTML string, the same order of magnitude
+    # as a compiled template, not a small per-expression descriptor.
     TEMPLATE_CACHE_MAX = 256
+
+    # Hard cap on every per-expression memo cache in this engine (ADR-0004):
+    # @filter_chain_cache, @resolve_cache, @dotted_split_cache. Mirrors PHP's
+    # MEMO_CACHE_MAX and the Python master's `@lru_cache(maxsize=1024)` on the
+    # equivalent module-level parsers. A template that builds expression
+    # strings dynamically would otherwise grow a plain instance Hash without
+    # limit for the lifetime of the engine — a memory footgun on a long-lived
+    # worker. Deliberately higher than TEMPLATE_CACHE_MAX: one entry here is a
+    # small parsed-path array, orders of magnitude smaller than a token list.
+    MEMO_CACHE_MAX = 1024
 
     # -- Lazy context overlay for for-loops (avoids full Hash#dup) --
     class LoopContext
@@ -420,31 +438,25 @@ module Tina4
 
     # Register a custom filter.
     #
-    # Updates BOTH the class registry (so future ``Tina4::Frond.new`` picks
-    # the filter up) AND this instance's live filter map (so the change is
-    # visible to subsequent renders on the current engine).
+    # Updates this instance's live filter map only. Class calls remain the
+    # process-global registration path. tina4: ADR-0052.
     def add_filter(name, &blk)
-      self.class.add_filter(name, &blk)
       @filters[name.to_s] = blk
       self
     end
 
     # Register a custom test.
     #
-    # Updates BOTH the class registry and this instance's live tests map.
-    # See ``add_filter`` for the dual-write semantics.
+    # Updates this instance's live tests map only.
     def add_test(name, &blk)
-      self.class.add_test(name, &blk)
       @tests[name.to_s] = blk
       self
     end
 
     # Register a global variable available in all templates.
     #
-    # Updates BOTH the class registry and this instance's live globals map.
-    # See ``add_filter`` for the dual-write semantics.
+    # Updates this instance's live globals map only.
     def add_global(name, value)
-      self.class.add_global(name, value)
       @globals[name.to_s] = value
       self
     end
@@ -577,6 +589,29 @@ module Tina4
       cache.keys.first(max_entries / 2).each { |key| cache.delete(key) }
     end
 
+    # Drop every TTL-expired entry from the {% cache %} fragment store.
+    #
+    # cap_cache bounds @fragment_cache by SIZE (insertion order, oldest
+    # first) but says nothing about STALENESS: a key that expired and is
+    # never visited again would otherwise sit in the Hash, still counted
+    # against the cap, until something else finally evicts it. An app
+    # keying fragments on a dynamic value (a page id, a user id) can churn
+    # through many such keys, so staleness has to be swept on its own
+    # schedule, not just bounded by count.
+    #
+    # Called on every {% cache %} render (cheap: bounded by TEMPLATE_CACHE_MAX
+    # entries, so at most 256 comparisons) rather than only for the key being
+    # read, so an unrelated key's expiry is cleaned up as a side effect of
+    # ANY fragment-cache render, not just a future hit on that same key.
+    #
+    # @param cache [Hash] fragment cache to sweep, mutated in place —
+    #   key => [html, expires_at_unix_float]
+    # @return [void]
+    def sweep_expired_cache(cache)
+      now = Time.now.to_f
+      cache.delete_if { |_key, (_html, expires_at)| expires_at <= now }
+    end
+
     # -----------------------------------------------------------------------
     # Tokenizer
     # -----------------------------------------------------------------------
@@ -701,10 +736,29 @@ module Tina4
       render_tokens(tokens, context)
     end
 
+    # Return this template's OWN {% extends %} parent name, or nil.
+    #
+    # A template may extend at most one parent. Before 3.13.100 a SECOND
+    # {% extends %} tag anywhere in the source was silently invisible: only
+    # the first occurrence was ever matched, and the rest of the child's
+    # non-block content -- including the second extends tag -- was already
+    # discarded the same way ordinary non-block child content always is
+    # during inheritance. That hid what is almost always a mistake (a
+    # copy-paste, a bad merge) with zero signal. Raise clearly instead, the
+    # same policy 3.13.89 applied to an unknown tag.
+    def extends_target(source)
+      matches = source.scan(EXTENDS_RE)
+      if matches.length > 1
+        raise "Frond: template has #{matches.length} \"{% extends %}\" tags -- " \
+              "a template can extend only one parent"
+      end
+      source =~ EXTENDS_RE ? Regexp.last_match(1) : nil
+    end
+
     def execute_with_tokens(source, tokens, context)
       # Handle extends first
-      if source =~ EXTENDS_RE
-        parent_name = Regexp.last_match(1)
+      parent_name = extends_target(source)
+      if parent_name
         parent_source = load_template(parent_name)
         child_blocks = extract_blocks(source)
         return render_with_blocks(parent_source, context, child_blocks)
@@ -715,8 +769,8 @@ module Tina4
 
     def execute(source, context)
       # Handle extends first
-      if source =~ EXTENDS_RE
-        parent_name = Regexp.last_match(1)
+      parent_name = extends_target(source)
+      if parent_name
         parent_source = load_template(parent_name)
         child_blocks = extract_blocks(source)
         return render_with_blocks(parent_source, context, child_blocks)
@@ -725,20 +779,135 @@ module Tina4
       render_tokens(tokenize(source), context)
     end
 
+    # Extract {% block name %}...{% endblock %} from source, TOP-LEVEL only.
+    #
+    # Counts depth rather than relying on a single non-greedy BLOCK_RE scan:
+    # a plain scan cannot tell a NESTED block's own {% endblock %} from the
+    # outer block's real one, so it pairs the outer open with whichever
+    # {% endblock %} happens to come first -- silently truncating the outer
+    # block's captured content at the wrong tag. A nested block's own markup
+    # stays embedded, VERBATIM, inside its outer block's captured content
+    # here; resolving it is render_with_blocks' fixed-point substitution
+    # loop's job, not this method's. Matches the Python master's
+    # _extract_blocks.
     def extract_blocks(source)
       blocks = {}
-      source.scan(BLOCK_RE) do
-        blocks[Regexp.last_match(1)] = Regexp.last_match(2)
+      pos = 0
+      len = source.length
+
+      while pos < len
+        m_open = BLOCK_OPEN_RE.match(source, pos)
+        break unless m_open
+
+        name = m_open[1]
+        content_start = m_open.end(0)
+        depth = 1
+        scan = content_start
+        matched = false
+
+        while depth.positive? && scan < len
+          next_open = BLOCK_OPEN_RE.match(source, scan)
+          next_close = BLOCK_CLOSE_RE.match(source, scan)
+          break if next_close.nil? # malformed -- no matching endblock
+
+          if next_open && next_open.begin(0) < next_close.begin(0)
+            depth += 1
+            scan = next_open.end(0)
+          else
+            depth -= 1
+            if depth.zero?
+              blocks[name] = source[content_start...next_close.begin(0)]
+              pos = next_close.end(0)
+              matched = true
+              break
+            end
+            scan = next_close.end(0)
+          end
+        end
+
+        pos = content_start unless matched # malformed -- skip forward
       end
+
       blocks
     end
 
-    def render_with_blocks(parent_source, context, child_blocks)
+    # Depth-aware block substitution against `source` (typically the
+    # fully-resolved root template).
+    #
+    # A single regex #gsub pass with BLOCK_RE (non-greedy) pairs an OUTER
+    # block's open tag with the FIRST {% endblock %} found -- which, when
+    # the outer block wraps a NESTED {% block %}, is the nested block's
+    # own close tag, not the outer's. That silently truncates the outer
+    # block's captured content and drops everything after the inner
+    # endblock (the root-nested-block content-loss bug: {% block body
+    # %}<section>{% block inner %}{% endblock %}</section>{% endblock %}
+    # rendered "<section></section>", the leaf's "inner" override AND
+    # root's own "body" wrapper both silently lost). This scans with an
+    # open/close depth counter instead (mirroring extract_blocks), so an
+    # outer block always captures its FULL body, nested child blocks
+    # included.
+    #
+    # The content chosen for each block -- the child override in `blocks`
+    # if present, else the block's own default body -- is then
+    # recursively substituted against the SAME `blocks` map before being
+    # tokenized and rendered, so a block nested inside another block
+    # resolves correctly regardless of which template in the inheritance
+    # chain declared the nesting (the root, an intermediate, however many
+    # levels deep).
+    #
+    # {{ parent() }} / {{ super() }} inside a block still render that
+    # block's OWN default content at this level (lazy, on first call).
+    def substitute_blocks(source, blocks, context)
       engine = self
-      result = parent_source.gsub(BLOCK_RE) do
-        name = Regexp.last_match(1)
-        parent_content = Regexp.last_match(2)
-        block_source = child_blocks.fetch(name, parent_content)
+      len = source.length
+      pieces = []
+      pos = 0
+
+      while pos < len
+        m_open = BLOCK_OPEN_RE.match(source, pos)
+        unless m_open
+          pieces << source[pos..]
+          break
+        end
+
+        pieces << source[pos...m_open.begin(0)] # untouched text before the tag
+
+        name = m_open[1]
+        content_start = m_open.end(0)
+        depth = 1
+        scan = content_start
+        close_match = nil
+
+        while depth.positive? && scan < len
+          next_open = BLOCK_OPEN_RE.match(source, scan)
+          next_close = BLOCK_CLOSE_RE.match(source, scan)
+          break if next_close.nil? # malformed -- no matching endblock
+
+          if next_open && next_open.begin(0) < next_close.begin(0)
+            depth += 1
+            scan = next_open.end(0)
+          else
+            depth -= 1
+            if depth.zero?
+              close_match = next_close
+            else
+              scan = next_close.end(0)
+            end
+          end
+        end
+
+        if close_match.nil?
+          # Malformed template (no matching endblock) -- keep the rest
+          # verbatim rather than lose it, the same leniency extract_blocks
+          # applies to this case.
+          pieces << source[m_open.begin(0)..]
+          pos = len
+          break
+        end
+
+        parent_content = source[content_start...close_match.begin(0)]
+        block_source = blocks.fetch(name, parent_content)
+        resolved_source = substitute_blocks(block_source, blocks, context)
 
         # Make parent() and super() available inside child blocks
         rendered_parent = nil
@@ -750,8 +919,61 @@ module Tina4
         end
 
         block_ctx = context.merge("parent" => get_parent, "super" => get_parent)
-        render_tokens(tokenize(block_source), block_ctx)
+        pieces << render_tokens(tokenize(resolved_source), block_ctx)
+        pos = close_match.end(0)
       end
+
+      pieces.join
+    end
+
+    def render_with_blocks(parent_source, context, child_blocks)
+      # Multi-level extends: when this parent ITSELF has its own {% extends %},
+      # merge its own block defaults under the child's overrides (the nearer
+      # descendant always wins) and recurse until a root template with no
+      # {% extends %} is reached. Before 3.13.100 this recursion never
+      # happened: a mid-level parent's own {% extends %} tag reached
+      # render_tokens' "block/endblock/extends" case, which is a silent
+      # no-op, so a 3+ level chain lost the root's wrapping entirely and any
+      # of the mid template's own non-block text leaked through unwrapped
+      # instead. Matches the Python/PHP/Node masters, which already recurse
+      # the parent -> grandparent chain the same way.
+      grandparent_name = extends_target(parent_source)
+      if grandparent_name
+        parent_blocks = extract_blocks(parent_source)
+        merged_blocks = parent_blocks.merge(child_blocks)
+
+        # Resolve NESTED blocks: a block value that itself contains a
+        # {% block inner %}...{% endblock %} tag (this level's own markup,
+        # not yet substituted) has that inner tag replaced with the merged
+        # dict's value for that name, or the inner tag's own default when
+        # nothing overrides it. Fixed-point because resolving one level can
+        # reveal another (a block three levels deep). Matches Python/Node's
+        # multi-level extends, and is what lets a grandchild override a
+        # block nested INSIDE a block the middle template redeclares.
+        changed = true
+        while changed
+          changed = false
+          merged_blocks.keys.each do |name|
+            resolved = merged_blocks[name].gsub(BLOCK_RE) do
+              inner_name = Regexp.last_match(1)
+              inner_default = Regexp.last_match(2)
+              merged_blocks.fetch(inner_name, inner_default)
+            end
+            if resolved != merged_blocks[name]
+              merged_blocks[name] = resolved
+              changed = true
+            end
+          end
+        end
+
+        grandparent_source = load_template(grandparent_name)
+        return render_with_blocks(grandparent_source, context, merged_blocks)
+      end
+
+      # Depth-aware block substitution (handles a block nested inside
+      # another block at ANY level of the chain, including the root
+      # itself -- see substitute_blocks).
+      result = substitute_blocks(parent_source, child_blocks, context)
       render_tokens(tokenize(result), context)
     end
 
@@ -1015,6 +1237,7 @@ module Tina4
         root_var = @dotted_split_cache[var_name]
         unless root_var
           root_var = var_name.split(".")[0].split("[")[0].strip
+          cap_cache(@dotted_split_cache, MEMO_CACHE_MAX)
           @dotted_split_cache[var_name] = root_var
         end
         return "" if !root_var.empty? && !@allowed_vars.include?(root_var) && root_var != "loop"
@@ -1260,6 +1483,7 @@ module Tina4
       end
 
       result = [variable, filters].freeze
+      cap_cache(@filter_chain_cache, MEMO_CACHE_MAX)
       @filter_chain_cache[expr] = result
       result
     end
@@ -1784,6 +2008,7 @@ module Tina4
       parts = @resolve_cache[expr]
       unless parts
         parts = expr.split(RESOLVE_SPLIT_RE).reject(&:empty?)
+        cap_cache(@resolve_cache, MEMO_CACHE_MAX)
         @resolve_cache[expr] = parts
       end
 
@@ -2265,6 +2490,8 @@ module Tina4
       cache_key = m ? m[1] : "default"
       ttl = m && m[2] ? m[2].to_i : 60
 
+      sweep_expired_cache(@fragment_cache)
+
       # Check cache
       cached = @fragment_cache[cache_key]
       if cached
@@ -2317,6 +2544,7 @@ module Tina4
       end
 
       rendered = render_tokens(body_tokens.dup, context)
+      cap_cache(@fragment_cache, TEMPLATE_CACHE_MAX)
       @fragment_cache[cache_key] = [rendered, Time.now.to_f + ttl]
       [rendered, i]
     end

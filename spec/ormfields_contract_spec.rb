@@ -91,11 +91,20 @@ class OrmfEngineModel < Tina4::ORM
 end
 
 RSpec.describe "ORM fields and column mapping (feature 18)" do
-  let(:sqlite_path) { Tempfile.new(["ormf", ".db"]).path }
+  # Keep the Tempfile object alive for the whole example. Retaining only its
+  # path lets Ruby's GC unlink the open database at any point, which surfaced
+  # in CI as an intermittent SQLite "disk I/O error".
+  let(:sqlite_file) { Tempfile.new(["ormf", ".db"]) }
+  let(:sqlite_path) { sqlite_file.path }
 
   before(:each) do
     @db = Tina4::Database.new("sqlite:///#{sqlite_path}")
     Tina4.bind_database(@db)
+  end
+
+  after(:each) do
+    @db&.close
+    sqlite_file.close!
   end
 
   def column_type(db, table, col)
