@@ -6,22 +6,23 @@
 - [x] Read Feature 56 and ADR-0052
 - [x] Add failing scope regressions
 - [x] Remove instance-to-class writes
-- [ ] Verify focused and full lab suites
+- [x] Verify focused and full lab suites
 
 ## Parity
 | Feature | Python | PHP | Ruby | Node.js |
 |---|---|---|---|---|
-| ADR-0052 scope | in progress | in progress | in progress | in progress |
+| ADR-0052 scope | ✅ | ✅ | ✅ | ✅ |
 
 ## Tests
 - [x] Class registration reaches later instances
 - [x] Instance filter/global/test registrations do not reach later instances
 
 ## Bugs
-- [ ] EX-INSTANCE-LEAKS-CLASS
+- [x] EX-INSTANCE-LEAKS-CLASS
 - [x] Ruby's class-qualified Docs search test expected the instance method; corrected to the class method for PHP/Node parity
 
 ## Commits
-- pending
+- `ad4e696` - implementation, regressions, CHANGELOG
+- `bb1e8d6` - class-qualified Docs ranking parity
 
-## Status: In Progress
+## Status: Complete
