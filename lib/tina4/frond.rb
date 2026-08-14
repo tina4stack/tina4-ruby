@@ -838,6 +838,101 @@ module Tina4
       blocks
     end
 
+    # Depth-aware block substitution against `source` (typically the
+    # fully-resolved root template).
+    #
+    # A single regex #gsub pass with BLOCK_RE (non-greedy) pairs an OUTER
+    # block's open tag with the FIRST {% endblock %} found -- which, when
+    # the outer block wraps a NESTED {% block %}, is the nested block's
+    # own close tag, not the outer's. That silently truncates the outer
+    # block's captured content and drops everything after the inner
+    # endblock (the root-nested-block content-loss bug: {% block body
+    # %}<section>{% block inner %}{% endblock %}</section>{% endblock %}
+    # rendered "<section></section>", the leaf's "inner" override AND
+    # root's own "body" wrapper both silently lost). This scans with an
+    # open/close depth counter instead (mirroring extract_blocks), so an
+    # outer block always captures its FULL body, nested child blocks
+    # included.
+    #
+    # The content chosen for each block -- the child override in `blocks`
+    # if present, else the block's own default body -- is then
+    # recursively substituted against the SAME `blocks` map before being
+    # tokenized and rendered, so a block nested inside another block
+    # resolves correctly regardless of which template in the inheritance
+    # chain declared the nesting (the root, an intermediate, however many
+    # levels deep).
+    #
+    # {{ parent() }} / {{ super() }} inside a block still render that
+    # block's OWN default content at this level (lazy, on first call).
+    def substitute_blocks(source, blocks, context)
+      engine = self
+      len = source.length
+      pieces = []
+      pos = 0
+
+      while pos < len
+        m_open = BLOCK_OPEN_RE.match(source, pos)
+        unless m_open
+          pieces << source[pos..]
+          break
+        end
+
+        pieces << source[pos...m_open.begin(0)] # untouched text before the tag
+
+        name = m_open[1]
+        content_start = m_open.end(0)
+        depth = 1
+        scan = content_start
+        close_match = nil
+
+        while depth.positive? && scan < len
+          next_open = BLOCK_OPEN_RE.match(source, scan)
+          next_close = BLOCK_CLOSE_RE.match(source, scan)
+          break if next_close.nil? # malformed -- no matching endblock
+
+          if next_open && next_open.begin(0) < next_close.begin(0)
+            depth += 1
+            scan = next_open.end(0)
+          else
+            depth -= 1
+            if depth.zero?
+              close_match = next_close
+            else
+              scan = next_close.end(0)
+            end
+          end
+        end
+
+        if close_match.nil?
+          # Malformed template (no matching endblock) -- keep the rest
+          # verbatim rather than lose it, the same leniency extract_blocks
+          # applies to this case.
+          pieces << source[m_open.begin(0)..]
+          pos = len
+          break
+        end
+
+        parent_content = source[content_start...close_match.begin(0)]
+        block_source = blocks.fetch(name, parent_content)
+        resolved_source = substitute_blocks(block_source, blocks, context)
+
+        # Make parent() and super() available inside child blocks
+        rendered_parent = nil
+        get_parent = lambda do
+          rendered_parent ||= Tina4::SafeString.new(
+            engine.send(:render_tokens, tokenize(parent_content), context)
+          )
+          rendered_parent
+        end
+
+        block_ctx = context.merge("parent" => get_parent, "super" => get_parent)
+        pieces << render_tokens(tokenize(resolved_source), block_ctx)
+        pos = close_match.end(0)
+      end
+
+      pieces.join
+    end
+
     def render_with_blocks(parent_source, context, child_blocks)
       # Multi-level extends: when this parent ITSELF has its own {% extends %},
       # merge its own block defaults under the child's overrides (the nearer
@@ -882,24 +977,10 @@ module Tina4
         return render_with_blocks(grandparent_source, context, merged_blocks)
       end
 
-      engine = self
-      result = parent_source.gsub(BLOCK_RE) do
-        name = Regexp.last_match(1)
-        parent_content = Regexp.last_match(2)
-        block_source = child_blocks.fetch(name, parent_content)
-
-        # Make parent() and super() available inside child blocks
-        rendered_parent = nil
-        get_parent = lambda do
-          rendered_parent ||= Tina4::SafeString.new(
-            engine.send(:render_tokens, tokenize(parent_content), context)
-          )
-          rendered_parent
-        end
-
-        block_ctx = context.merge("parent" => get_parent, "super" => get_parent)
-        render_tokens(tokenize(block_source), block_ctx)
-      end
+      # Depth-aware block substitution (handles a block nested inside
+      # another block at ANY level of the chain, including the root
+      # itself -- see substitute_blocks).
+      result = substitute_blocks(parent_source, child_blocks, context)
       render_tokens(tokenize(result), context)
     end
 

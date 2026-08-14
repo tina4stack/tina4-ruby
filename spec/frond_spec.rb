@@ -784,6 +784,44 @@ RSpec.describe Tina4::Frond do
       expect(result).to eq("<div><section>LEAF</section></div>")
     end
 
+    it "resolves a block nested inside another block declared by the ROOT itself" do
+      # Regression (3.13.100): distinct from the "intermediate template"
+      # case just above -- here the ROOT template is the one nesting
+      # {% block inner %} inside {% block body %}. The FINAL block
+      # substitution pass against the resolved root source used a
+      # non-depth-aware regex (BLOCK_RE), so the OUTER block's open tag
+      # paired with the FIRST {% endblock %} -- the NESTED block's own
+      # close tag -- truncating the outer block's captured content and
+      # dropping everything after the inner endblock. Before the fix this
+      # rendered "<section></section>" (both the wrapper's correct
+      # placement AND the leaf's override lost). Mutation check: reverting
+      # substitute_blocks to a flat BLOCK_RE#gsub reproduces exactly that
+      # "<section></section>".
+      File.write(
+        File.join(tpl_dir, "root.html"),
+        '{% block body %}<section>{% block inner %}{% endblock %}</section>{% endblock %}'
+      )
+      File.write(File.join(tpl_dir, "mid.html"), '{% extends "root.html" %}{% block inner %}MID{% endblock %}')
+      File.write(File.join(tpl_dir, "leaf.html"), '{% extends "mid.html" %}{% block inner %}LEAF{% endblock %}')
+      result = file_engine.render("leaf.html", {})
+      expect(result).to eq("<section>LEAF</section>")
+    end
+
+    it "keeps a root-nested block's intermediate override when the leaf does not re-override it" do
+      # Same root-nesting shape as above, but a 3-level chain where the
+      # INTERMEDIATE overrides the nested block and the leaf does NOT
+      # re-override it -- the full structure (root's wrapper + mid's
+      # override) must reach the final render untouched by the leaf.
+      File.write(
+        File.join(tpl_dir, "root.html"),
+        '{% block body %}<section>{% block inner %}{% endblock %}</section>{% endblock %}'
+      )
+      File.write(File.join(tpl_dir, "mid.html"), '{% extends "root.html" %}{% block inner %}MID{% endblock %}')
+      File.write(File.join(tpl_dir, "leaf.html"), '{% extends "mid.html" %}{% block unrelated %}unused{% endblock %}')
+      result = file_engine.render("leaf.html", {})
+      expect(result).to eq("<section>MID</section>")
+    end
+
     it "keeps a middle template's own block override when the leaf does not re-override it" do
       # Multi-level merge direction: the NEAREST ancestor that declares a
       # block wins over a FARTHER one, but only for blocks it actually
