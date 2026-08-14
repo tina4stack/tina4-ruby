@@ -19,6 +19,7 @@
 
 ## Bugs
 - [ ] EX-INSTANCE-LEAKS-CLASS
+- [x] Ruby's class-qualified Docs search test expected the instance method; corrected to the class method for PHP/Node parity
 
 ## Commits
 - pending

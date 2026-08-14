@@ -274,8 +274,8 @@ RSpec.describe Tina4::Docs do
       hits = docs.search(query, k: 3)
       expect(hits).not_to be_empty, "no hits for #{query.inspect}"
       top = hits.first[:fqn] || hits.first["fqn"]
-      expect(top).to eq("Tina4::Frond#add_test"),
-        "#{query.inspect} should rank Tina4::Frond#add_test #1; got #{hits.map { |h| h[:fqn] || h["fqn"] }.inspect}"
+      expect(top).to eq("Tina4::Frond.add_test"),
+        "#{query.inspect} should rank Tina4::Frond.add_test #1; got #{hits.map { |h| h[:fqn] || h["fqn"] }.inspect}"
     end
   end
 
