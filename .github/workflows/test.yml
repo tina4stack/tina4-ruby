@@ -370,7 +370,7 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
 
-      - name: Install native Tina4 CLI 3.8.71
+      - name: Install native Tina4 CLI 3.8.76
         run: |
           cli_dir="$(mktemp -d)"
           trap 'rm -rf "$cli_dir"' EXIT
