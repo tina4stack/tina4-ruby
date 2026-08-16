@@ -1566,6 +1566,17 @@ module Tina4
     # FIFO drop-oldest-half, deliberately not LRU (no per-hit bookkeeping on the
     # hot path).
     EXPR_FORM_CACHE_MAX = 2048
+    EXPR_FORM_HANDLERS = {
+      pipe: [:eval_filter_pipe, :not_filter_pipe, true],
+      literal: [:eval_literal, :not_literal, false],
+      function: [:eval_function_call, :not_function, true],
+      concat: [:eval_concat, :not_concat, true],
+      arithmetic: [:eval_arithmetic, :not_arithmetic, true],
+      ternary: [:eval_ternary, :not_ternary, true],
+      inline_if: [:eval_inline_if, :not_inline_if, true],
+      coalesce: [:eval_null_coalesce, :not_coalesce, true],
+      collection: [:eval_collection_literal, :not_collection, true]
+    }.freeze
 
     # ── Expression evaluation: a cascade, with the branch memoised ──
     #
@@ -1648,21 +1659,16 @@ module Tina4
     # Evaluate via the one remembered branch. Returns :form_declined when that
     # branch no longer applies, so the caller re-runs the full cascade.
     def eval_expr_as(form, expr, context)
-      case form
-      when :resolve     then resolve(expr, context)
-      when :pipe        then (r = eval_filter_pipe(expr, context)) == :not_filter_pipe ? :form_declined : r
-      when :literal     then (r = eval_literal(expr)) == :not_literal ? :form_declined : r
-      when :function    then (r = eval_function_call(expr, context)) == :not_function ? :form_declined : r
-      when :concat      then (r = eval_concat(expr, context)) == :not_concat ? :form_declined : r
-      when :comparison  then has_comparison?(expr) ? eval_comparison(expr, context) : :form_declined
-      when :arithmetic  then (r = eval_arithmetic(expr, context)) == :not_arithmetic ? :form_declined : r
-      when :ternary     then (r = eval_ternary(expr, context)) == :not_ternary ? :form_declined : r
-      when :inline_if   then (r = eval_inline_if(expr, context)) == :not_inline_if ? :form_declined : r
-      when :coalesce    then (r = eval_null_coalesce(expr, context)) == :not_coalesce ? :form_declined : r
-      when :collection  then (r = eval_collection_literal(expr, context)) == :not_collection ? :form_declined : r
-      when :parens      then matched_parens?(expr) ? eval_expr(expr[1..-2], context) : :form_declined
-      else :form_declined
-      end
+      return resolve(expr, context) if form == :resolve
+      return has_comparison?(expr) ? eval_comparison(expr, context) : :form_declined if form == :comparison
+      return matched_parens?(expr) ? eval_expr(expr[1..-2], context) : :form_declined if form == :parens
+
+      handler = EXPR_FORM_HANDLERS[form]
+      return :form_declined unless handler
+
+      method_name, declined, needs_context = handler
+      result = needs_context ? send(method_name, expr, context) : send(method_name, expr)
+      result == declined ? :form_declined : result
     end
 
     # ── Filter pipe: value|filter(args) ──
