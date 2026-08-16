@@ -19,6 +19,8 @@ RSpec.describe Tina4::Metrics do
     expect(result['engine']).to eq('tina4-cli')
     expect(result['files_analyzed']).to be >= 1
     expect(result).to include('file_metrics', 'dependency_graph')
+    expect(result['file_metrics'].first).to include('has_referencing_test')
+    expect(result['file_metrics'].first).not_to include('has_tests')
   end
 
   it 'hands file detail to the native CLI' do

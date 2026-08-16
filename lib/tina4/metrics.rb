@@ -11,7 +11,7 @@ module Tina4
   module Metrics
     INSTALL_HINT = 'update the native tina4 CLI: https://tina4.com/cli'
     SUMMARY_KEYS = %w[files_analyzed total_functions avg_complexity avg_maintainability].freeze
-    FILE_KEYS = %w[path loc avg_complexity maintainability has_tests].freeze
+    FILE_KEYS = %w[path loc avg_complexity maintainability has_referencing_test].freeze
     FUNCTION_KEYS = %w[name file line complexity loc].freeze
 
     def self.resolve_target(root = 'src')
