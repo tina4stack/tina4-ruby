@@ -24,6 +24,16 @@ jobs:
         with:
           ruby-version: '3.2'
 
+      - name: Verify tag matches source version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          SOURCE_VERSION="$(ruby -Ilib -e 'require "tina4/version"; print Tina4::VERSION')"
+          test "$SOURCE_VERSION" = "$VERSION" || {
+            echo "::error::Tag $VERSION does not match lib/tina4/version.rb $SOURCE_VERSION"
+            exit 1
+          }
+          echo "Building verified version $VERSION"
+
       - name: Build gems
         # Build both the real framework gem and the transitional `tina4`
         # meta-gem (a pointer that depends on tina4ruby ~> 3.0). They share
