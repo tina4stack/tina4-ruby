@@ -38,7 +38,7 @@ write-back. Cursor todos / chat checklists are **not** the plan.
 | 2. Plan | Write the checklist `[ ]`, Bugs section, Commit log | the plan file (outcome stated, work starts) |
 | 3. Delegate | Spawn a worker per task; the main session stays free | worker(s) running off the plan |
 | 4. Test-first | The worker writes REAL tests before any code | failing tests that pin the behaviour |
-| 5. Scaffold + Build | **Scaffold** with `tina4ruby generate` → fill the `AI-FILL` placeholder → ground the custom ~20% with `tina4_context` | tests now green |
+| 5. Scaffold + Build | **Scaffold** with `tina4 generate` → fill the `AI-FILL` placeholder → ground the custom ~20% with `tina4_context` | tests now green |
 | 6. Verify + tick | Run it for real; **edit the plan file now** — `[x]` Scope/Tests + Commits line | plan file updated in the same turn |
 | 7. Report | Relay completions as a ✅/❌ table that matches the plan file | the status dashboard |
 
@@ -123,7 +123,7 @@ code exists**. No mocks, stubs, fakes, or "it returned 200" smoke tests — a gr
 nothing (see **Testing** below). The passing real test is the definition of done for a checklist item.
 
 ### 5. Scaffold the boilerplate, then fill only the custom logic
-Only once the tests exist: **scaffold with `tina4ruby generate <feature>`** (model, route, crud, service,
+Only once the tests exist: **scaffold with `tina4 generate <feature>`** (model, route, crud, service,
 queue, validator, seeder, websocket, listener, form, view, auth) — the boilerplate is generated
 deterministically, correct and **secure-by-default** (write routes are token-gated; pass `--public`
 to open them) — then **fill ONLY the `# ─── AI-FILL ───` placeholder** it leaves. An unfilled one
@@ -166,7 +166,7 @@ Climb in order; write new code only at the last rung. Tina4 ships **built-in fea
 
 1. **Does it need to exist?** Re-read the request and trace the actual code flow. The best change is often none.
 2. **Does Tina4 already do it?** Check built-ins first: CRUD → `auto_crud`; DB → the ORM (`User.where(...)`, `User.find_by_id`); Auth/JWT → `Tina4::Auth`; validation → the Validator; email → the Messenger; queue → `Tina4::Queue`; templates → Frond; sessions, i18n, WebSockets, GraphQL, realtime — all built in.
-3. **Can `tina4ruby generate` scaffold it?** Prefer the generator over hand-writing boilerplate: `tina4ruby generate <feature>` (model, route, crud, migration, service, queue, validator, seeder, websocket, listener, form, view, auth) emits correct, **secure-by-default** wiring (write routes token-gated; `--public` to open) and leaves a `# ─── AI-FILL ───` fill-spec placeholder — you fill only the custom logic. Keep the stochastic model out of the boilerplate path.
+3. **Can `tina4 generate` scaffold it?** Prefer the generator over hand-writing boilerplate: `tina4 generate <feature>` (model, route, crud, migration, service, queue, validator, seeder, websocket, listener, form, view, auth) emits correct, **secure-by-default** wiring (write routes token-gated; `--public` to open) and leaves a `# ─── AI-FILL ───` fill-spec placeholder — you fill only the custom logic. Keep the stochastic model out of the boilerplate path.
 4. **Does Ruby / the stdlib do it?** Use it before reaching further.
 5. **Is it already in THIS app?** Reuse the existing model/route/service — don't duplicate.
 6. **Adding a gem? Stop.** Tina4 is zero-dependency — find the built-in.
@@ -226,7 +226,7 @@ the app.
 | # | Step | What you do | Gate before moving on |
 |---|------|-------------|-----------------------|
 | 1 | **Ground** | retrieve the current idiom — `tina4_context(request, "ruby")`, then `code_search`/`api_search` for this project | real imports + shape in hand |
-| 2 | **Scaffold** | `tina4ruby generate <feature>` for the boilerplate — secure-by-default | the ~80% is deterministic |
+| 2 | **Scaffold** | `tina4 generate <feature>` for the boilerplate — secure-by-default | the ~80% is deterministic |
 | 3 | **Write** | the custom ~20% only, using ONLY symbols the grounding showed | — |
 | 4 | **Validate** | check every symbol against the known vocabulary (`api_search` / the real framework exports) | are they all real? |
 | 5 | **Repair** | fix the deterministic-fixable — wrong module path, a decorator/helper used but not imported | — |
@@ -273,12 +273,13 @@ Auto-discovery scans `src/routes`, `src/api`, and `src/orm` (plus their bare-wor
 
 Start a project and run the dev server:
 ```bash
-tina4rb init      # Scaffold a new Ruby project (alias: tina4 init)
+tina4 init ruby my-app
+cd my-app
 tina4 serve       # Run the dev server — ALWAYS use this
 ```
 
-**IMPORTANT:** Always run the app with `tina4 serve` (or `tina4ruby start`), not `ruby app.rb`
-directly for development. The `tina4` binary is a Rust-based CLI that handles SCSS compilation, file
+**IMPORTANT:** Always run the app with `tina4 serve`, not `tina4ruby start` or `ruby app.rb`
+directly for development. The unified `tina4` client handles SCSS compilation, file
 watching, browser auto-open, and hot reload. Running `ruby app.rb` skips all of this.
 
 The CLI passes `--managed` to the framework server. To bypass the client guard (e.g. Docker, CI),
@@ -692,7 +693,7 @@ statement as a Scope item.** Translate it first:
 4. **MASTER.md stays the dashboard** — complex programmes are *many small feature plans*, not one
    novel-length plan.
 
-Bad: `- [ ] Build checkout`  
+Bad: `- [ ] Build checkout`
 Good:
 ```markdown
 ## Scope
