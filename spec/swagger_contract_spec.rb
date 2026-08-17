@@ -77,6 +77,12 @@ RSpec.describe "Tina4 Swagger contract (3.13.96)" do
     previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 
+  def expected_default_security(spec)
+    security = [{ "bearerAuth" => [] }]
+    security << { "ssoSession" => [] } if spec.dig("components", "securitySchemes", "ssoSession")
+    security
+  end
+
   # Fetch a path through a REAL RackApp + in-process TestClient — the same front
   # controller (route match -> swagger/static branch -> gate) a live request
   # hits. A fresh RackApp per call, so the swagger gate re-reads the env each
@@ -112,7 +118,7 @@ RSpec.describe "Tina4 Swagger contract (3.13.96)" do
       # Non-vacuous: the app really did carry each of the four ingredients.
       expect(document["paths"]).to include("/api/products", "/api/products/{id}")
       expect(document.dig("components", "schemas")).to include("SwaggerContractModel")
-      expect(document.dig("paths", "/api/products", "post", "security")).to eq([{ "bearerAuth" => [] }])
+      expect(document.dig("paths", "/api/products", "post", "security")).to eq(expected_default_security(document))
 
       parsed = Openapi3Parser.load(document)
       expect(parsed.valid?).to be(true),
@@ -179,8 +185,8 @@ RSpec.describe "Tina4 Swagger contract (3.13.96)" do
     expect(open_route.auth_required).to be(false), "premise broken: no_auth no longer opens a write route"
 
     spec = Tina4::Swagger.generate
-    expect(spec.dig("paths", "/api/items", "post", "security")).to eq([{ "bearerAuth" => [] }])
-    expect(spec.dig("paths", "/api/private", "get", "security")).to eq([{ "bearerAuth" => [] }])
+    expect(spec.dig("paths", "/api/items", "post", "security")).to eq(expected_default_security(spec))
+    expect(spec.dig("paths", "/api/private", "get", "security")).to eq(expected_default_security(spec))
     # security is only emitted when non-nil, so an open write has no key at all.
     expect(spec.dig("paths", "/api/public", "post")).not_to have_key("security")
   end
@@ -428,7 +434,7 @@ RSpec.describe "Tina4 Swagger contract (3.13.96)" do
     spec = Tina4::Swagger.generate
 
     secured = spec.dig("paths", "/contract/shape-item", "post")
-    expect(secured["security"]).to eq([{ "bearerAuth" => [] }])
+    expect(secured["security"]).to eq(expected_default_security(spec))
     expect(secured["responses"]["401"]).to eq("description" => "Unauthorized")
     expect(secured["summary"]).to eq("POST /contract/shape-item")
     expect(secured["tags"]).to eq(["contract"])

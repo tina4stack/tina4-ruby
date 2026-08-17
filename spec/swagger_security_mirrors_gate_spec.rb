@@ -41,6 +41,12 @@ RSpec.describe "swagger security mirrors the runtime gate" do
     (spec["paths"] || spec[:paths] || {}).dig(path, verb) || {}
   end
 
+  def expected_default_security(spec)
+    security = [{ "bearerAuth" => [] }]
+    security << { "ssoSession" => [] } if spec.dig("components", "securitySchemes", "ssoSession")
+    security
+  end
+
   it "documents security on a write route registered the ordinary way" do
     Tina4::Router.post("/api/items") { |_req, res| res.json({ ok: true }, 200) }
 
@@ -49,16 +55,18 @@ RSpec.describe "swagger security mirrors the runtime gate" do
     # test is asserting the wrong thing, so pin it rather than assume it.
     expect(route.auth_required).to be(true), "premise broken: POST is no longer secure by default"
 
-    op = operation(Tina4::Swagger.generate, "/api/items", "post")
-    expect(op["security"]).to eq([{ "bearerAuth" => [] }]),
+    spec = Tina4::Swagger.generate
+    op = operation(spec, "/api/items", "post")
+    expect(op["security"]).to eq(expected_default_security(spec)),
       "a route the server answers 401 for is documented as public: #{op['security'].inspect}"
   end
 
   it "documents security on a GET explicitly marked secure" do
     Tina4::Router.get("/api/private") { |_req, res| res.json({ ok: true }, 200) }.secure
 
-    op = operation(Tina4::Swagger.generate, "/api/private", "get")
-    expect(op["security"]).to eq([{ "bearerAuth" => [] }]),
+    spec = Tina4::Swagger.generate
+    op = operation(spec, "/api/private", "get")
+    expect(op["security"]).to eq(expected_default_security(spec)),
       ".secure on a GET is enforced but never reached the document"
   end
 
