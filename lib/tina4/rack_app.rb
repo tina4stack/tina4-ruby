@@ -1174,6 +1174,12 @@ module Tina4
         # the auth gate into a 500. It degrades to an empty session, which means
         # no token, which means the ordinary 401 below - a SERVED request.
         session = Tina4::Session.new(env, degrade_on_backend_failure: true)
+        sso = session.get("_tina4_sso")
+        identity = sso.is_a?(Hash) ? sso["identity"] : nil
+        if identity.is_a?(Hash) && identity["issuer"] && identity["subject"]
+          env["tina4.auth_payload"] = identity
+          return nil
+        end
         session_token = session.get("token")
         if session_token && !session_token.empty?
           token = session_token

@@ -3,7 +3,7 @@ name: tina4-developer-ruby
 description: >
   Use whenever a developer is building a Ruby application with the Tina4 framework (tina4-ruby).
   Trigger when the user wants to create routes, define ORM models, write Frond templates, set up
-  authentication, use the queue system, configure databases, deploy with Docker, or any other app
+  JWT or OpenID Connect SSO, use GIS/PostGIS, use the queue system, configure databases, deploy with Docker, or any other app
   development task in a tina4-ruby project. Also trigger when a project's directory structure matches
   a Tina4 Ruby app (src/routes/, src/orm/, src/templates/, app.rb) or the user mentions building
   something with tina4 in Ruby, even casually like "add a login page" or "create an API endpoint"
@@ -541,12 +541,12 @@ Read these when you need detailed Ruby patterns for a specific area:
 - **`references/routes-and-api.md`** — Routing (`Tina4.get`/`Tina4.post`), middleware,
   request/response, API design, Swagger. Read for any HTTP/API work.
 - **`references/data-and-orm.md`** — ORM models (`table_name`, `integer_field`, `string_field`),
-  database connections, migrations, seeding, queries, relationships, QueryBuilder. Read for any data
-  work.
+  database connections, migrations, seeding, queries, relationships, QueryBuilder, GIS and PostGIS.
+  Read for any data work.
 - **`references/templates-and-frontend.md`** — Frond templates, live blocks, frond.js, forms, CRUD
   tables, WebSocket. Read for any UI/frontend work.
-- **`references/auth-and-services.md`** — JWT auth, sessions, the queue system, email, GraphQL,
-  events, caching, i18n. Read for auth or background services.
+- **`references/auth-and-services.md`** — JWT auth, provider-neutral OpenID Connect SSO, sessions,
+  the queue system, email, GraphQL, events, caching, i18n. Read for auth or background services.
 - **`references/deployment.md`** — Docker (multi-stage `ruby:3.3-alpine`), Docker Compose,
   environment variables, production checklist. Read for ANY deployment work.
 - **`references/realtime.md`** — Real-time collaboration (`Tina4::Realtime.mount`): WebRTC

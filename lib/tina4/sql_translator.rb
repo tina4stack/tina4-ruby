@@ -16,7 +16,70 @@ module Tina4
   #   # => "SELECT * FROM users ROWS 6 TO 15"
   #
   class SQLTranslator
+    SPATIAL_ENGINES = %w[postgres postgresql].freeze
+    SPATIAL_IDENTIFIER = /\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\z/
+
     class << self
+      def require_spatial(engine, feature)
+        name = engine.to_s.downcase
+        return name if SPATIAL_ENGINES.include?(name)
+        raise SpatialNotSupportedError,
+              "#{feature} is not supported on the '#{name.empty? ? 'unknown' : name}' database engine. " \
+              "Tina4 GIS support is PostGIS-first: use PostgreSQL with CREATE EXTENSION postgis. " \
+              "Tina4 will not replace a spatial query with an approximate coordinate query."
+      end
+
+      def spatial_identifier(name, what = "column")
+        text = name.to_s
+        raise ArgumentError, "Spatial #{what} is not a valid SQL identifier: #{text}" unless SPATIAL_IDENTIFIER.match?(text)
+        text
+      end
+
+      def point_column_type(engine, srid = Point::DEFAULT_SRID)
+        require_spatial(engine, "PointField")
+        "geography(Point,#{Integer(srid)})"
+      end
+
+      def spatial_index(engine, table, column)
+        require_spatial(engine, "spatial index creation")
+        table = spatial_identifier(table, "table")
+        column = spatial_identifier(column)
+        "CREATE INDEX IF NOT EXISTS #{table.tr('.', '_')}_#{column}_gist ON #{table} USING GIST (#{column})"
+      end
+
+      def point_literal(engine, srid = Point::DEFAULT_SRID)
+        require_spatial(engine, "spatial predicates")
+        "ST_SetSRID(ST_MakePoint(?, ?), #{Integer(srid)})::geography"
+      end
+
+      def within_distance(engine, column, srid = Point::DEFAULT_SRID)
+        "ST_DWithin(#{spatial_identifier(column)}, #{point_literal(engine, srid)}, ?)"
+      end
+
+      def distance(engine, column, srid = Point::DEFAULT_SRID)
+        "ST_Distance(#{spatial_identifier(column)}, #{point_literal(engine, srid)})"
+      end
+
+      def distance_as(engine, column, alias_name, srid = Point::DEFAULT_SRID)
+        "#{distance(engine, column, srid)} AS #{spatial_identifier(alias_name, 'result alias')}"
+      end
+
+      def geometry_literal(engine, form = :ewkt, srid = Point::DEFAULT_SRID)
+        require_spatial(engine, "spatial predicates")
+        return "ST_GeogFromText(?)" if form.to_sym == :ewkt
+        return "ST_SetSRID(ST_GeomFromGeoJSON(?), #{Integer(srid)})::geography" if form.to_sym == :geojson
+        raise ArgumentError, "Unsupported spatial geometry form: #{form}"
+      end
+
+      def intersects(engine, column, form = :ewkt, srid = Point::DEFAULT_SRID)
+        "ST_Intersects(#{spatial_identifier(column)}, #{geometry_literal(engine, form, srid)})"
+      end
+
+      def bbox(engine, column, srid = Point::DEFAULT_SRID)
+        require_spatial(engine, "bbox")
+        "ST_Intersects(#{spatial_identifier(column)}, ST_MakeEnvelope(?, ?, ?, ?, #{Integer(srid)})::geography)"
+      end
+
       # ── Literal-safe rewriting ────────────────────────────────────
       #
       # A dialect rewrite (|| -> CONCAT, TRUE -> 1, ILIKE -> LOWER LIKE) must NEVER

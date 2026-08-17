@@ -161,6 +161,17 @@ module Tina4
           }
         end
 
+        sso_issuer = ENV["TINA4_SSO_ISSUER"].to_s.sub(%r{/$}, "")
+        unless sso_issuer.empty?
+          schemes["oidc"] = {
+            "type" => "openIdConnect",
+            "openIdConnectUrl" => "#{sso_issuer}/.well-known/openid-configuration"
+          }
+          schemes["ssoSession"] = {
+            "type" => "apiKey", "in" => "cookie", "name" => "tina4_session"
+          }
+        end
+
         # Registered schemes win (let an app override bearerAuth or add oauth2).
         @registered_schemes.each { |name, defn| schemes[name] = defn }
         schemes
@@ -302,7 +313,11 @@ module Tina4
         #
         # Both flags are honoured. A custom auth_handler protects a route even
         # when auth_required is false for its method, so it is still documented.
-        return sanitize_security([{ default_scheme => [] }], schemes) if route.auth_required || route.auth_handler
+        if route.auth_required || route.auth_handler
+          requirements = [{ default_scheme => [] }]
+          requirements << { "ssoSession" => [] } if default_scheme == "bearerAuth" && schemes.key?("ssoSession")
+          return sanitize_security(requirements, schemes)
+        end
 
         nil
       end

@@ -15,6 +15,7 @@ require_relative "tina4/database_adapter"
 require_relative "tina4/database_url"
 require_relative "tina4/database"
 require_relative "tina4/database_result"
+require_relative "tina4/point"
 require_relative "tina4/field_types"
 require_relative "tina4/orm"
 require_relative "tina4/query_builder"
@@ -25,6 +26,7 @@ require_relative "tina4/template"
 require_relative "tina4/frond"
 require_relative "tina4/auth"
 require_relative "tina4/session"
+require_relative "tina4/sso"
 require_relative "tina4/middleware"
 require_relative "tina4/cors"
 require_relative "tina4/rate_limiter"
@@ -486,6 +488,10 @@ module Tina4
 
       # Auto-discover routes
       auto_discover(root_dir)
+
+      # Configuration-first OIDC mounts after application discovery so a
+      # canonical-path collision fails loudly rather than being shadowed.
+      Tina4::Sso.mount_configured
 
       # Apply pending DB migrations on startup (non-breaking — see method doc).
       # Runs AFTER route discovery / DB bind, BEFORE serving.

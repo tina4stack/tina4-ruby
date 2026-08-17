@@ -237,7 +237,7 @@ module Tina4
 
     # Return all session data
     def all
-      @data.dup
+      @data.reject { |key, _| %w[_tina4_sso _tina4_sso_pending].include?(key.to_s) }
     end
 
     # Flash data: set a value that is removed after next read.
