@@ -1,5 +1,25 @@
 # Data, ORM & Database (Ruby)
 
+## GIS and PostGIS
+
+Use `PointField` for geographic points. Coordinates are always `[longitude, latitude]`, while
+radius and returned distance use metres.
+
+```ruby
+site.location = Tina4::Point.new(18.4241, -33.9249)
+site.save
+
+nearby = ChargePoint.query
+  .within_distance("location", [18.42, -33.92], 5_000)
+  .select_distance("location", [18.42, -33.92])
+  .order_by_distance("location", [18.42, -33.92])
+  .get
+```
+
+PostGIS stores a `PointField` as `geography(Point,4326)` and creates a GiST index. Unsupported
+engines fail instead of storing fake spatial text. `Tina4::Point.parse` accepts coordinate pairs,
+WKT/EWKT, GeoJSON, or WKB/EWKB; `to_feature` returns map-ready GeoJSON.
+
 ## Defining Models
 
 Drop a model file in `src/orm/` and it's auto-registered. A model is a class that inherits
