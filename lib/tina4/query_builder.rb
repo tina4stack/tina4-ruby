@@ -19,10 +19,11 @@ module Tina4
   #     .get
   #
   class QueryBuilder
-    def initialize(table, db: nil)
+    def initialize(table, db: nil, primary_key: nil)
       @table = table
       @db = db
       @columns = ["*"]
+      @select_params = []
       @wheres = []
       @params = []
       @joins = []
@@ -30,6 +31,8 @@ module Tina4
       @havings = []
       @having_params = []
       @order_by_cols = []
+      @order_by_params = []
+      @primary_key = primary_key&.to_s
       @limit_val = nil
       @offset_val = nil
     end
@@ -39,8 +42,8 @@ module Tina4
     # @param table_name [String] The database table name.
     # @param db [Object, nil] Optional database connection.
     # @return [QueryBuilder]
-    def self.from_table(table_name, db: nil)
-      new(table_name, db: db)
+    def self.from_table(table_name, db: nil, primary_key: nil)
+      new(table_name, db: db, primary_key: primary_key)
     end
 
     # Set the columns to select.
@@ -48,7 +51,10 @@ module Tina4
     # @param columns [Array<String>] Column names.
     # @return [self]
     def select(*columns)
-      @columns = columns unless columns.empty?
+      unless columns.empty?
+        @columns = columns
+        @select_params = []
+      end
       self
     end
 
@@ -123,6 +129,46 @@ module Tina4
       self
     end
 
+    def within_distance(column, point, radius_metres, srid: Point::DEFAULT_SRID)
+      radius = Float(radius_metres)
+      raise ArgumentError, "Spatial radius must be finite and greater than or equal to zero" unless radius.finite? && radius >= 0
+      point = Point.parse(point, srid: srid)
+      where(SQLTranslator.within_distance(engine, column, point.srid), [point.lon, point.lat, radius])
+    end
+
+    def intersects(column, geometry, srid: Point::DEFAULT_SRID)
+      bound, form = Point.geometry_binding(geometry, srid: srid)
+      where(SQLTranslator.intersects(engine, column, form, srid), [bound])
+    end
+
+    def bbox(column, min_lon, min_lat, max_lon, max_lat, srid: Point::DEFAULT_SRID)
+      values = [min_lon, min_lat, max_lon, max_lat].map { |value| Float(value) }
+      raise ArgumentError, "Bounding-box coordinates must be finite" unless values.all?(&:finite?)
+      west, south, east, north = values
+      Point.new(west, south, srid: srid)
+      Point.new(east, north, srid: srid)
+      raise ArgumentError, "Bounding box must be ordered west, south, east, north" if west > east || south > north
+      where(SQLTranslator.bbox(engine, column, srid), values)
+    end
+
+    def select_distance(column, point, alias_name: "distance", srid: Point::DEFAULT_SRID)
+      point = Point.parse(point, srid: srid)
+      @columns << SQLTranslator.distance_as(engine, column, alias_name, point.srid)
+      @select_params.concat([point.lon, point.lat])
+      self
+    end
+
+    def order_by_distance(column, point, direction: "ASC", srid: Point::DEFAULT_SRID)
+      direction = direction.to_s.upcase
+      raise ArgumentError, "Distance order direction must be ASC or DESC" unless %w[ASC DESC].include?(direction)
+      raise ArgumentError, "Stable spatial ordering needs a primary key; use ORM.query or pass primary_key:" if @primary_key.to_s.empty?
+      point = Point.parse(point, srid: srid)
+      @order_by_cols << "#{SQLTranslator.distance(engine, column, point.srid)} #{direction}"
+      @order_by_params.concat([point.lon, point.lat])
+      @order_by_cols << "#{SQLTranslator.spatial_identifier(@primary_key, 'primary key')} ASC"
+      self
+    end
+
     # Set LIMIT and optional OFFSET.
     #
     # @param count [Integer] Maximum rows to return.
@@ -167,7 +213,7 @@ module Tina4
     def get
       ensure_db!
       sql = to_sql
-      all_params = @params + @having_params
+      all_params = @select_params + @params + @having_params + @order_by_params
 
       @db.fetch(
         sql,
@@ -183,7 +229,7 @@ module Tina4
     def first
       ensure_db!
       sql = to_sql
-      all_params = @params + @having_params
+      all_params = @select_params + @params + @having_params + @order_by_params
 
       @db.fetch_one(sql, all_params.empty? ? [] : all_params)
     end
@@ -196,9 +242,18 @@ module Tina4
 
       # Build a count query by replacing columns
       original = @columns
+      original_select_params = @select_params
+      original_order = @order_by_cols
+      original_order_params = @order_by_params
       @columns = ["COUNT(*) as cnt"]
+      @select_params = []
+      @order_by_cols = []
+      @order_by_params = []
       sql = to_sql
       @columns = original
+      @select_params = original_select_params
+      @order_by_cols = original_order
+      @order_by_params = original_order_params
 
       all_params = @params + @having_params
 
@@ -271,6 +326,11 @@ module Tina4
     end
 
     private
+
+    def engine
+      ensure_db!
+      @db.get_database_type
+    end
 
     # Parse a single SQL condition into a MongoDB filter hash.
     #

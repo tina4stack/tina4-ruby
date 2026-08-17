@@ -108,6 +108,11 @@ module Tina4
         register_field(name, :json, nullable: nullable, default: default)
       end
 
+      def point_field(name, srid: Tina4::Point::DEFAULT_SRID, spatial_index: true, nullable: true, default: nil)
+        register_field(name, :point, srid: Integer(srid), spatial_index: spatial_index,
+                       nullable: nullable, default: default)
+      end
+
       # Declare a foreign key integer column and auto-wire relationships.
       #
       # Automatically:
@@ -230,6 +235,13 @@ module Tina4
         # __setattr__ + object.__setattr__ default-seeding.
         attr_reader name
         define_method("#{name}=") do |value|
+          if type == :point && !value.nil?
+            point = Tina4::Point.parse(value, srid: options[:srid])
+            if point.srid != options[:srid]
+              raise ArgumentError, "Point field '#{name}' expects SRID #{options[:srid]}; received #{point.srid}"
+            end
+            value = point
+          end
           fields = (@assigned_fields ||= [])
           fields << name unless fields.include?(name)
           instance_variable_set("@#{name}", value)

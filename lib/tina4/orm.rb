@@ -245,7 +245,7 @@ module Tina4
       #
       # @return [Tina4::QueryBuilder]
       def query
-        QueryBuilder.from_table(table_name, db: db)
+        QueryBuilder.from_table(table_name, db: db, primary_key: get_db_column(primary_key_field || :id))
       end
 
       def find(id_or_filter = nil, filter = nil, **kwargs)
@@ -529,7 +529,7 @@ module Tina4
       end
 
       def create_table
-        return true if db.table_exists?(table_name)
+        return create_spatial_indexes if db.table_exists?(table_name)
 
         # v3.13.16: engine-aware DDL. Ruby used to emit SQLite-only DDL on
         # every driver — INTEGER for booleans, DATETIME for datetimes, and a
@@ -594,12 +594,17 @@ module Tina4
           datetime: datetime_sql,
           timestamp: "TIMESTAMP",
           blob: "BLOB",
-          json: json_sql
+          json: json_sql,
+          point: nil
         }
 
         col_defs = []
         field_definitions.each do |name, opts|
-          sql_type = type_map[opts[:type]] || "TEXT"
+          sql_type = if opts[:type] == :point
+                       SQLTranslator.point_column_type(engine, opts[:srid] || Point::DEFAULT_SRID)
+                     else
+                       type_map[opts[:type]] || "TEXT"
+                     end
           if opts[:type] == :string && opts[:length]
             sql_type = "VARCHAR(#{opts[:length]})"
           elsif opts[:type] == :decimal
@@ -687,9 +692,31 @@ module Tina4
             # ONE case is benign - re-raise anything else.
             raise ce unless ce.message.to_s =~ /no corresponding begin/i
           end
-          true
+          create_spatial_indexes
+        rescue SpatialNotSupportedError
+          raise
         rescue => e
           Tina4::Log.error("create_table failed for #{table_name}: #{db.get_error || e.message}", { sql: sql })
+          false
+        end
+      end
+
+      def create_spatial_indexes
+        fields = field_definitions.select { |_name, opts| opts[:type] == :point }
+        return true if fields.empty?
+        engine = db.get_database_type.to_s.downcase
+        begin
+          fields.each do |name, opts|
+            SQLTranslator.point_column_type(engine, opts[:srid] || Point::DEFAULT_SRID)
+            next unless opts.fetch(:spatial_index, true)
+            db.execute(SQLTranslator.spatial_index(engine, table_name, get_db_column(name)))
+          end
+          db.commit
+          true
+        rescue SpatialNotSupportedError
+          raise
+        rescue => e
+          Tina4::Log.error("spatial index creation failed for #{table_name}: #{e.message}")
           false
         end
       end
@@ -720,6 +747,9 @@ module Tina4
             rescue JSON::ParserError
               # leave the raw string in place
             end
+          end
+          if fdef && fdef[:type] == :point && !value.nil?
+            value = Point.parse(value, srid: fdef[:srid] || Point::DEFAULT_SRID)
           end
           setter = "#{attr_name}="
           instance.__send__(setter, value) if instance.respond_to?(setter)
@@ -857,6 +887,12 @@ module Tina4
           # a.meta must not leak into b.meta). Parity with the Python master,
           # which deepcopies a JSONField's dict/list default per instance.
           d = Marshal.load(Marshal.dump(d)) if d.is_a?(Hash) || d.is_a?(Array)
+          if opts[:type] == :point && !d.nil?
+            d = Point.parse(d, srid: opts[:srid] || Point::DEFAULT_SRID)
+            if d.srid != (opts[:srid] || Point::DEFAULT_SRID)
+              raise ArgumentError, "Point field '#{name}' expects SRID #{opts[:srid] || Point::DEFAULT_SRID}; received #{d.srid}"
+            end
+          end
           # #165: seed the default straight into the ivar, BYPASSING the
           # tracking setter, so a default is not recorded as a caller
           # assignment (mirrors the Python master's object.__setattr__).
@@ -1283,7 +1319,8 @@ module Tina4
       key_case = binding.local_variable_get(:case)  # :case is a reserved word
       hash = {}
       self.class.field_definitions.each_key do |name|
-        hash[name] = __send__(name)
+        value = __send__(name)
+        hash[name] = value.is_a?(Point) ? value.geojson : value
       end
 
       if include
@@ -1319,6 +1356,19 @@ module Tina4
       end
 
       hash
+    end
+
+    def to_feature(geometry_field: nil, include: nil)
+      point_fields = self.class.field_definitions.select { |_name, opts| opts[:type] == :point }.keys
+      geometry_field = (geometry_field || point_fields.first)&.to_sym
+      raise ArgumentError, "to_feature needs a declared point_field" unless geometry_field && point_fields.include?(geometry_field)
+      properties = to_h(include: include)
+      geometry = properties.delete(geometry_field)
+      { type: "Feature", geometry: geometry, properties: properties }
+    end
+
+    def self.feature_collection(models, geometry_field: nil, include: nil)
+      { type: "FeatureCollection", features: models.map { |model| model.to_feature(geometry_field: geometry_field, include: include) } }
     end
 
     alias to_hash to_h
@@ -1377,6 +1427,7 @@ module Tina4
         if opts[:type] == :json && !value.nil? && !value.is_a?(String)
           value = JSON.generate(value)
         end
+        value = value.ewkt if opts[:type] == :point && value.is_a?(Point)
         db_col = mapping[name.to_s] || name
         hash[db_col.to_sym] = value
       end
@@ -1400,6 +1451,7 @@ module Tina4
         if opts[:type] == :json && !value.nil? && !value.is_a?(String)
           value = JSON.generate(value)
         end
+        value = value.ewkt if opts[:type] == :point && value.is_a?(Point)
         db_col = mapping[name.to_s] || name
         hash[db_col.to_sym] = value
       end
