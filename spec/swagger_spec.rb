@@ -5,6 +5,12 @@ require "spec_helper"
 RSpec.describe Tina4::Swagger do
   before(:each) { Tina4::Router.clear! }
 
+  def expected_default_security(spec)
+    security = [{ "bearerAuth" => [] }]
+    security << { "ssoSession" => [] } if spec.dig("components", "securitySchemes", "ssoSession")
+    security
+  end
+
   describe ".generate" do
     it "returns a valid OpenAPI 3.0.3 spec" do
       spec = Tina4::Swagger.generate
@@ -35,7 +41,7 @@ RSpec.describe Tina4::Swagger do
       # secure_get sets route.auth_handler, so resolve_security applies the
       # default scheme (bearerAuth). bearerAuth is type "http", so scopes are
       # sanitized to [] (scopes only allowed on oauth2/openIdConnect).
-      expect(operation["security"]).to eq([{ "bearerAuth" => [] }])
+      expect(operation["security"]).to eq(expected_default_security(spec))
     end
 
     it "includes request body for POST routes" do
@@ -232,7 +238,7 @@ RSpec.describe Tina4::Swagger do
       Tina4.secure_post("/api/admin") { |_req, res| res.json({}) }
       spec = Tina4::Swagger.generate
       operation = spec["paths"]["/api/admin"]["post"]
-      expect(operation["security"]).to eq([{ "bearerAuth" => [] }])
+      expect(operation["security"]).to eq(expected_default_security(spec))
     end
 
     it "does not include security for non-secure routes" do
