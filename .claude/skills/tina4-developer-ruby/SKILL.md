@@ -492,7 +492,7 @@ endpoint validating credentials inside the handler, or an explicitly anonymous r
 
 ## Language Version
 
-Always target the latest supported Ruby: **Ruby 3.3+** (the Docker image is `ruby:3.3-alpine`). Use
+Framework minimum is **Ruby 3.1** (`tina4.gemspec` `required_ruby_version = ">= 3.1.0"`); the Docker image ships **Ruby 3.3-alpine**, and 3.3+ is the recommended deployment target. Use
 modern Ruby features — keyword arguments, pattern matching, `Comparable`, safe navigation (`&.`).
 
 ## Staying current: check for Tina4 updates
@@ -509,7 +509,7 @@ change behaviour).
 - **If behind:** tell the user what changed — point them at the release notes on
   https://tina4.com — and offer the upgrade: `bundle update tina4ruby` (or
   `gem update tina4ruby`).
-- The `tina4` CLI self-updates with `tina4 update`; `tina4 doctor` checks your toolchain.
+- The Rust `tina4` CLI (external — installed via the Homebrew tap / installer script, not `tina4ruby`) self-updates with `tina4 update` and offers `tina4 doctor` for toolchain checks. `tina4ruby` handles framework-owned commands (`serve`, `migrate`, `generate`, `seed`, `test`, `queue`, `build`, `routes`, `console`, `ai`, `commands`); metrics/update/doctor come from the external client.
 
 ### Lean, green, and grounded - keep app complexity down as a habit
 

@@ -129,9 +129,13 @@ end
 **Per-route middleware** — pass classes via `middleware:` on the registration, or chain `.middleware`:
 
 ```ruby
-Tina4.get "/protected", middleware: [AuthCheck] do |request, response|
+Tina4::Router.get("/protected", middleware: [AuthCheck]) do |request, response|
   response.json({ secret: "data" })
 end
+# `middleware:` is on `Tina4::Router.get` (`lib/tina4/router.rb:476`), NOT on the
+# `Tina4.get` shortcut (`lib/tina4.rb:678` — signature is
+# `(path, auth: nil, swagger_meta: {}, &block)`). Passing `middleware:` to the
+# shortcut raises `ArgumentError: unknown keyword: :middleware`.
 
 # or chain:
 Tina4::Router.get("/protected") { |request, response| response.json({ ok: true }) }.middleware(AuthCheck)
@@ -178,11 +182,29 @@ All state-changing browser forms must include a CSRF token. In a Frond template:
 </form>
 ```
 
-`{{ form_token() }}` renders a hidden `<input name="formToken" value="…">`. The framework validates it
-automatically on POST/PUT/DELETE requests; a missing or invalid token is rejected. frond.js
-(`saveForm`) attaches the token automatically for AJAX submissions.
+`{{ form_token() }}` renders a hidden `<input name="formToken" value="…">`. `frond.js`'s
+`saveForm` attaches the token automatically for AJAX submissions.
 
-**Never skip CSRF protection on browser forms.**
+**CSRF validation is OFF by default** — it is opt-in. `Tina4::CsrfMiddleware`
+(`lib/tina4/middleware.rb:601`) is NOT attached to the pipeline unless
+`TINA4_CSRF` is truthy (`middleware.rb:603`). To enable it:
+
+```env
+TINA4_CSRF=true
+TINA4_SECRET=your-long-random-secret   # required — the middleware fails closed without it
+```
+
+Or attach it explicitly in `app.rb` / `config.rb`:
+
+```ruby
+Tina4::Router.use(Tina4::CsrfMiddleware)
+```
+
+Once enabled it validates `formToken` on every state-changing request and returns
+`403 CSRF_INVALID` on a missing / invalid / expired token. Until you enable it
+your forms submit without any CSRF check.
+
+**Never skip CSRF protection on browser forms — enable it.**
 
 ## CORS
 
