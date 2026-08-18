@@ -6,6 +6,26 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.105
+
+Bug release. Route inspection stops touching the app; Firebird's migration
+ledger tolerates whatever case the driver hands back; PHP loses a colon-in-
+filename that broke Windows checkouts.
+
+### Route inspection scans, never boots
+
+- `tina4 routes` now walks canonical route files and never executes the
+  application entrypoint or starts the server. Feature 115 / ADR-0058.
+- Fixes the case where `tina4 routes --override` would boot the app on the
+  same port and kill whatever process was already holding it (tina4-python
+  issue #104).
+
+### Firebird migration ledger is case-agnostic
+
+- `tina4_migration` reads and writes work regardless of the case the
+  Firebird driver returns for the `migration_name` column.
+- Uses the atomic sequence table pattern already in place for other engines.
+
 ## 3.13.103
 
 ### Metrics reports what it can prove
