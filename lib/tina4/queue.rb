@@ -171,7 +171,14 @@ module Tina4
       @backend.close
     end
 
-    # Get jobs that failed but are still eligible for retry (under max_retries).
+    # Get jobs that failed at least once but are still being retried
+    # (0 < attempts < max_retries). These live in the pending queue under
+    # the auto-retry lifecycle (fail() re-queues them with an incremented
+    # attempts count and a retry_backoff delay) so pop() picks them up
+    # again. They are NOT counted by size("failed") — that alias counts
+    # the dead-letter store, matching dead_letters(). To include retryable-
+    # failed jobs in a total, use size("pending"). Terminal failures are
+    # returned by dead_letters().
     def failed # -> list[dict]
       refuse_operation!("failed()") unless @backend.respond_to?(:failed)
       @backend.failed(@topic, max_retries: @max_retries)
@@ -179,13 +186,24 @@ module Tina4
 
     # Retry a specific failed job by ID, or all dead-letter jobs if no id given.
     # Returns true if re-queued.
+    #
+    # The no-arg branch is materialised by the backend (LiteBackend#retry_job
+    # iterates every dead-letter file with .each, MongoBackend materialises
+    # find(...).to_a before iterating) — no generator inside any() /
+    # short-circuit reduce can silently leave dead letters behind (parity port
+    # of PY-12-04, 3.13.105).
     def retry(job_id = nil, delay_seconds: 0) # -> bool
       refuse_operation!("retry()") unless @backend.respond_to?(:retry_job)
       @backend.retry_job(@topic, job_id: job_id, delay_seconds: delay_seconds)
     end
 
-    # Get dead letter jobs — messages that exceeded max retries.
-    # Pass max_retries to override the queue's default.
+    # Get jobs that exceeded max_retries — terminal failures.
+    #
+    # Same set counted by size("failed") / size("dead") / size("dead_letter")
+    # (three aliases for the dead-letter store). To LIST retryable-but-
+    # attempted jobs (attempts > 0 AND attempts < max_retries) that are still
+    # being auto-retried, use failed() — those live in the pending queue and
+    # are NOT dead letters. Pass max_retries to override the queue's default.
     def dead_letters(max_retries: nil) # -> list[dict]
       refuse_operation!("dead_letters()") unless @backend.respond_to?(:dead_letters)
       @backend.dead_letters(@topic, max_retries: max_retries || @max_retries)
@@ -328,9 +346,21 @@ module Tina4
       attach(@backend.find_by_id(topic || @topic, id))
     end
 
-    # Get the number of messages by status.
-    # status: "pending" (default) counts pending messages in the topic queue.
-    # status: "failed" or "dead" counts messages in the dead_letter directory.
+    # Count jobs by status.
+    #
+    # "pending" counts jobs waiting to be popped — INCLUDES retryable-but-
+    # attempted ones, because they live in the pending queue under the
+    # auto-retry lifecycle (see failed()).
+    # "reserved" counts jobs a consumer has popped but not yet
+    # completed/failed (in-flight against the visibility timeout).
+    # "completed" counts jobs the consumer has finished successfully
+    # (0 on the lite/file backend which deletes on complete; backends that
+    # track completion expose completed_count).
+    # "failed", "dead", "dead_letter" are ALIASES that all count the
+    # dead-letter store — jobs whose attempts >= max_retries and that have
+    # given up. Use dead_letters() to list them. Retryable-but-attempted
+    # jobs are NOT counted by size("failed"); use failed() to list them or
+    # size("pending") to include them in a total.
     def size(status: "pending")
       case status.to_s
       when "pending"

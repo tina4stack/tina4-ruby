@@ -164,9 +164,26 @@ module Tina4
 
       # Explicit re-queue requested by the caller (job.retry()). Always
       # re-enqueues regardless of the retry limit — a manual override, distinct
-      # from the automatic fail() path. Increments attempts, clears the error.
+      # from the automatic fail() path. Cleans up BOTH the reservation record
+      # and any dead-letter file for this id, so a caller who iterates
+      # dead_letters and calls job.retry on each doesn't leave the dead-letter
+      # directory carrying duplicates (3.13.105, parity port of PY-12-05).
+      # Aligns with retry_job(id) which had always unlinked the dead-letter
+      # file — two spellings of the same intent that previously diverged.
+      # Increments attempts, clears the error.
       def retry(job, delay_seconds: 0)
         clear_reservation(job.topic, job.id)
+        # Drop any dead-letter file for this id BEFORE the re-queue: if this
+        # job came from dead_letters it lives in @dead_letter_dir and would
+        # otherwise stay on disk while a fresh pending file appears in
+        # topic_path, so the next dead_letters call reports the job again
+        # and a consumer processes it twice.
+        begin
+          File.unlink(job_file(@dead_letter_dir, job.id))
+        rescue Errno::ENOENT
+          # No dead-letter file for this id (manual .retry on a live job) —
+          # nothing to clean up.
+        end
         job.attempts += 1
         requeue_job(job, delay_seconds: delay_seconds, error: nil)
       end

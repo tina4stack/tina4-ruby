@@ -729,10 +729,15 @@ queue.push(payload, priority: 0, delay_seconds: 0) -> Integer  # job id
 queue.pop -> Job | nil
 queue.pop_batch(count) -> Array<Job>
 queue.pop_by_id(id) -> Job | nil
+# size() status vocabulary: "pending" (waiting for pop -- INCLUDES
+# retryable-but-attempted); "reserved" (in-flight); "completed"; "failed"/
+# "dead"/"dead_letter" are ALIASES for the dead-letter count (matches
+# dead_letters.length); retryable-but-attempted jobs are listed by failed()
+# but count under "pending".
 queue.size(status: "pending") -> Integer
 queue.clear -> Integer
-queue.failed -> Array<Hash>
-queue.dead_letters(max_retries: nil) -> Array<Hash>
+queue.failed -> Array<Hash>            # retryable-but-attempted (0 < attempts < max_retries) -- live in pending queue
+queue.dead_letters(max_retries: nil) -> Array<Hash>  # terminal failures (attempts >= max_retries) -- same set counted by size("failed"/"dead"/"dead_letter")
 queue.purge(status, max_retries: nil) -> Integer
 queue.retry(job_id = nil, delay_seconds: 0) -> Boolean
 queue.retry_failed(max_retries: nil) -> Integer
