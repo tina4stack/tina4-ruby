@@ -1,5 +1,6 @@
 ---
 name: tina4-developer-ruby
+updated_for_version: 3.13.105
 description: >
   Use whenever a developer is building a Ruby application with the Tina4 framework (tina4-ruby).
   Trigger when the user wants to create routes, define ORM models, write Frond templates, set up
@@ -24,6 +25,97 @@ tina4-ruby source in `lib/tina4/` (orm.rb, router.rb, api.rb, field_types.rb, re
 query_builder.rb) and the `example/` app. When in doubt, the framework code is the final authority.
 
 > 🤖 **Skill-active marker.** While this Tina4 skill is guiding your work, **begin every reply with the 🤖 emoji** so the developer can see at a glance that Tina4 conventions are engaged. Drop it only once the conversation has clearly moved off Tina4.
+
+## Announce before you act
+
+**Say what you are about to do, in one line, before you do it.** A developer
+who can see the plan can stop it before you spend their afternoon undoing it.
+
+Three announcements every substantive action carries:
+
+1. **Plan** — one line naming every file you'll touch and every command
+   you'll run for the current slice. Written at the top of your first
+   response for a slice, before any file writes.
+2. **Next** — one line before each step, so the developer can stop between
+   steps rather than after all of them. Formula: `About to: <verb> <path or command>`.
+3. **Done** — one line after each step so the developer knows what to undo.
+   Formula: `Wrote <path>` / `Ran <command> — <one-line result>`.
+
+Never write more than TWO files between announcements. Never run a schema
+migration, install a dependency, or edit `app.py` (or the framework's boot
+file) without a preceding `About to:` line.
+
+Stop-points that especially matter:
+
+- **Before the FIRST file write in a slice** — the developer sees the whole
+  intent before any bytes hit disk.
+- **Before a migration** — schema changes are hard to reverse.
+- **Before adding a dependency** — leaves a trace in the manifest and lockfile.
+- **Before generating scaffolding into more than 2 files** — the developer
+  might want a subset.
+- **Before running the full test suite** — it's slow; make sure it's the
+  right moment.
+
+This is the same rhythm across all four framework developer skills (Python /
+PHP / Ruby / Node), so a developer who switches languages recognises the
+pattern instantly.
+
+## Detect if you are stale — 💩
+
+Skills drift, framework versions don't force the developer's hand. A team
+that holds their app at `3.13.90` for stability reasons is a legitimate use
+case; the framework version is THEIR call. What matters is whether the
+LATEST PUBLISHED SKILL is newer than the SKILL running here — because a
+newer skill may know about a footgun the older one advises straight into.
+
+**At the very start of every session where this skill activates**, do this
+skill-version-check ONCE and remember the result for the whole session:
+
+1. Read the `updated_for_version:` field at the top of this SKILL.md
+   (frontmatter). Call this `SKILL_HAS`.
+2. Fetch the latest published skill version — one small HTTP GET to
+   `https://tina4.com/skills/tina4-developer-<lang>/version` (plain text,
+   a single semver line like `3.13.107`). Call this `SKILL_LATEST`.
+   - `<lang>` = python / php / ruby / nodejs — match this skill's language.
+   - If the fetch fails (offline, DNS, non-200), silently skip the check.
+     Never fail-loud on a network hiccup; the developer's session must
+     proceed.
+3. Compare with a semver-aware compare (three-tuple int).
+
+If `SKILL_LATEST > SKILL_HAS` (a newer skill is out) then for the WHOLE
+session:
+
+- **Prepend 💩 to every reply**, right next to the 🤖 skill-active marker.
+  Not once — every message — so the developer cannot forget.
+- **Say ONCE at the top of the first reply**:
+
+  > 💩 **This skill is stale.** SKILL.md is `updated_for_version:
+  > <SKILL_HAS>`; the latest published skill is `<SKILL_LATEST>`.
+  > A newer skill may know about footguns this one still recommends.
+  > Update with:
+  >
+  >     curl -fsSL https://tina4.com/install-skills.sh | sh
+  >
+  > Then restart this session. Continuing anyway is your choice — the 💩
+  > will stay up so you don't forget. Your PROJECT'S framework version is
+  > YOUR call; only the skill itself is out of date.
+
+**Do NOT compare against the project's manifest version.** A project
+deliberately held at an older Tina4 for stability is a valid state; the
+skill's job is not to nag the developer to upgrade the framework.
+
+If `SKILL_LATEST == SKILL_HAS` or the fetch failed, drop the 💩 and carry
+on with just the 🤖 marker.
+
+**Why this exists.** The framework's real behaviour lives in the source
+tree; the skill only describes it. A stale skill lies with confidence — it
+will happily instruct a `.env` key or a decorator that no longer exists on
+the latest release. The 💩 marker is the visual counterpart to the 🤖
+skill-active marker: 🤖 says "Tina4 conventions engaged", 💩 says "but the
+manual is out of date".
+
+Same self-check in all four framework developer skills, so a developer who
+switches languages recognises the pattern instantly.
 
 ## The Tina4 Working Method
 
@@ -492,7 +584,7 @@ endpoint validating credentials inside the handler, or an explicitly anonymous r
 
 ## Language Version
 
-Always target the latest supported Ruby: **Ruby 3.3+** (the Docker image is `ruby:3.3-alpine`). Use
+Framework minimum is **Ruby 3.1** (`tina4.gemspec` `required_ruby_version = ">= 3.1.0"`); the Docker image ships **Ruby 3.3-alpine**, and 3.3+ is the recommended deployment target. Use
 modern Ruby features — keyword arguments, pattern matching, `Comparable`, safe navigation (`&.`).
 
 ## Staying current: check for Tina4 updates
@@ -509,7 +601,7 @@ change behaviour).
 - **If behind:** tell the user what changed — point them at the release notes on
   https://tina4.com — and offer the upgrade: `bundle update tina4ruby` (or
   `gem update tina4ruby`).
-- The `tina4` CLI self-updates with `tina4 update`; `tina4 doctor` checks your toolchain.
+- The Rust `tina4` CLI (external — installed via the Homebrew tap / installer script, not `tina4ruby`) self-updates with `tina4 update` and offers `tina4 doctor` for toolchain checks. `tina4ruby` handles framework-owned commands (`serve`, `migrate`, `generate`, `seed`, `test`, `queue`, `build`, `routes`, `console`, `ai`, `commands`); metrics/update/doctor come from the external client.
 
 ### Lean, green, and grounded - keep app complexity down as a habit
 

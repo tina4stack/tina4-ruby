@@ -291,8 +291,19 @@ module Tina4
                   .map { |doc| job_from_doc(doc) }
       end
 
+      # Delete every doc in this queue whose status matches.
+      #
+      # 3.13.105 (parity port): route the dead-letter statuses ("dead",
+      # "failed", "dead_letter") to the ".dead_letter" topic namespace where
+      # they actually live — pre-fix, purge("dead") delete_many'd on
+      # {topic: topic, status: "dead"}, matching zero docs and silently
+      # returning 0 while the dead letters sat untouched in the sibling
+      # namespace. Every path scopes by status so a purge never nukes docs it
+      # was not asked to remove, and every path returns deleted_count so a
+      # caller can log/assert what was purged.
       def purge(topic, status)
-        result = collection.delete_many(topic: topic, status: status.to_s)
+        namespace = dead_status?(status) ? "#{topic}.dead_letter" : topic
+        result = collection.delete_many(topic: namespace, status: status.to_s)
         result.deleted_count
       end
 
@@ -326,20 +337,31 @@ module Tina4
         result.modified_count
       end
 
-      # Move ONE dead-lettered job back to its main topic as pending.
-      # Returns true when a job was revived, false when the id was not found.
+      # Move dead-lettered jobs back to their main topic as pending.
+      #
+      # With +job_id+, revives that ONE dead letter and returns true when
+      # found (false otherwise). With no id, iterates every dead letter for
+      # the topic and revives ALL — materialised into an array before
+      # reducing, so a truthy first result never short-circuits away the
+      # rest (the class of bug the parity port of PY-12-04 pins). Ruby's
+      # dead-letter model stores the SAME document with topic flipped to
+      # "<topic>.dead_letter", so reviving is the reverse in-place update:
+      # flip the topic back, reset status/available_at/error. Mirrors
+      # LiteBackend#retry_job.
       def retry_job(topic, job_id: nil, delay_seconds: 0)
         filter = { topic: "#{topic}.dead_letter", status: "dead" }
         filter[:_id] = job_id if job_id
-        doc = collection.find(filter).first
-        return false unless doc
+        docs = collection.find(filter).to_a
+        return false if docs.empty?
 
         available = delay_seconds.to_f > 0 ? (Time.now.utc + delay_seconds.to_f) : Time.now.utc
-        collection.update_one(
-          { _id: doc["_id"] },
-          { "$set" => { topic: topic, status: "pending", error: nil,
-                        reserved_at: nil, available_at: available } }
-        )
+        docs.each do |doc|
+          collection.update_one(
+            { _id: doc["_id"] },
+            { "$set" => { topic: topic, status: "pending", error: nil,
+                          reserved_at: nil, available_at: available } }
+          )
+        end
         true
       end
 
@@ -357,6 +379,12 @@ module Tina4
       end
 
       private
+
+      DEAD_STATES = %w[failed dead dead_letter].freeze
+
+      def dead_status?(status)
+        DEAD_STATES.include?(status.to_s)
+      end
 
       # A stored document as a plain Hash with string keys, CARRYING attempts
       # and error.

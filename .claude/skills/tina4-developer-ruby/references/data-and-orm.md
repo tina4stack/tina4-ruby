@@ -671,8 +671,8 @@ against `lib/tina4/`) — don't add the dep:**
 | Response / JSON | return a Hash/Array → JSON; `response.json(model_or_array)` serialises ORM objects *(`response.rb`)* |
 | Background queue | `Tina4::Queue.new(topic:).push(...)` / `.consume` *(don't add Sidekiq/Resque — `queue.rb`)* |
 | Email | `Tina4::Messenger.new.send(to:, subject:, body:, html:)` *(`messenger.rb`)* |
-| Sessions | `request.session` (backends file/redis/valkey/mongodb/database via `TINA4_SESSION_BACKEND`) *(`session.rb`)* |
-| Caching | `Tina4::Cache` + `{% cache %}` blocks *(`cache.rb`, `cache_backends/`)* |
+| Sessions | `request.session` (backends file/redis/valkey/mongodb/memcached/database via `TINA4_SESSION_BACKEND`) *(`session.rb`)* |
+| Caching | `Tina4::QueryCache` / `Tina4::ResponseCache` / `Tina4.cache_*` module API + `{% cache %}` blocks *(`cache.rb`, `response_cache.rb`, `cache_backends/`)* |
 | OpenAPI / Swagger | `Tina4::Swagger` — served at `/swagger` *(`swagger.rb`)* |
 | WebSockets | `Tina4.websocket "/ws/…"`; live regions via Frond `{% live %}` *(`websocket.rb`)* |
 | Real-time (WebRTC signalling, presence) | `Tina4::Realtime.mount` *(`realtime.rb`, `realtime/`)* |

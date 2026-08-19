@@ -1013,8 +1013,8 @@ module Tina4
 
     def cmd_routes(_argv = nil)
       require_relative "../tina4"
-      Tina4.initialize!(Dir.pwd)
-      load_routes(Dir.pwd)
+      Tina4::Env.load_env(Dir.pwd)
+      load_routes(Dir.pwd, entrypoints: false)
 
       puts "\nRegistered Routes:"
       puts "-" * 60
@@ -2959,7 +2959,7 @@ module Tina4
 
     # ── shared helpers ────────────────────────────────────────────────────
 
-    def load_routes(root_dir)
+    def load_routes(root_dir, entrypoints: true)
       route_dirs = %w[src/routes routes src/api api src/orm orm]
       route_dirs.each do |dir|
         route_dir = File.join(root_dir, dir)
@@ -2967,7 +2967,10 @@ module Tina4
         Dir.glob(File.join(route_dir, "**/*.rb")).sort.each { |f| load f }
       end
 
-      # Also load app.rb if it exists
+      return unless entrypoints
+
+      # Runtime and console boot load the application entrypoint. Inspection
+      # commands opt out so they can never start a server or take over a port.
       app_file = File.join(root_dir, "app.rb")
       load app_file if File.exist?(app_file)
 

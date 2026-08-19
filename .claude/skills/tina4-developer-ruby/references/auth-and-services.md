@@ -141,7 +141,7 @@ end.no_auth
 
 The real gate is the **method default + the route's `auth_handler`** (and `.no_auth` / `auth: false`
 to opt out). A route's `swagger_meta: { security: … }` only annotates the **OpenAPI spec** — it
-**never changes enforcement** (`swagger.rb:243` reads `route.auth_handler` for the *actual* security
+**never changes enforcement** (`swagger.rb:316` checks `route.auth_required || route.auth_handler` for the *actual* security
 requirement; `swagger_meta[:security]` just overrides what Swagger *displays*). So documenting
 `security` on a public-by-default `GET` leaves the route open while Swagger *claims* it's secured —
 the worst kind of drift.
@@ -161,7 +161,7 @@ end
 
 Configure the backend in `.env`:
 ```env
-TINA4_SESSION_BACKEND=file    # file, redis, valkey, mongodb, database
+TINA4_SESSION_BACKEND=file    # file, redis, valkey, mongodb, memcached, database (aliases: filesystem, mongo, memcache, db)
 ```
 
 `request.session` supports both `get`/`set` and `[]`/`[]=`:
@@ -216,7 +216,7 @@ Tina4::Queue.new(topic: "order-emails").consume do |job|
 end
 ```
 
-`consume(topic = nil, poll_interval: 1.0, iterations: 0, batch_size: 1)` loops and yields each `Job`.
+`consume(topic = nil, id: nil, poll_interval: 1.0, iterations: 0, batch_size: 1)` loops and yields each `Job`.
 A `Job` exposes `payload`, `topic`, `attempts`, and `complete` / `fail(reason)` / `retry`. For a
 single controlled pass use `process(max_jobs:, batch_size:) { |job| ... }`.
 
@@ -325,5 +325,11 @@ templates:
 
 ## Caching
 
-Built-in, zero-dep caching (`Tina4::Cache`). Use `{% cache %}` blocks in templates (see
+Built-in, zero-dep caching. Two classes cover the surface: `Tina4::QueryCache`
+(`lib/tina4/cache.rb:13`) is the in-memory TTL/tagged store; `Tina4::ResponseCache`
+(`lib/tina4/response_cache.rb:39`) is the GET-response middleware. Module-level
+API for direct KV use: `Tina4.cache_get / cache_set / cache_delete / cache_stats
+/ clear_cache` (`lib/tina4/response_cache.rb:191, 220, 235, 242, 256`). There is
+no `Tina4::Cache` class — writing `Tina4::Cache.new(...)` raises `NameError`.
+Use `{% cache %}` blocks in templates (see
 `templates-and-frontend.md`), or the cache API in code for expensive operations.
