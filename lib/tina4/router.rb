@@ -8,6 +8,9 @@ module Tina4
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta,
                 :path_regex, :param_names, :template
     attr_accessor :auth_required, :cached
+    # RBAC guard groups (Feature 138 / ADR-0058). Each is an array of arrays:
+    # OR within a group, AND across groups (stacking).
+    attr_reader :roles, :perms
 
     def initialize(method, path, handler, auth_handler: nil, swagger_meta: {}, middleware: [], template: nil)
       @method = method.to_s.upcase.freeze
@@ -23,6 +26,8 @@ module Tina4
       # PY-10-02. Call .no_auth on the route to opt out explicitly.
       @auth_required = %w[POST PUT PATCH DELETE].include?(@method)
       @cached = false
+      @roles = []
+      @perms = []
       @param_names = []
       @path_regex = compile_pattern(@path)
       @param_names.freeze
@@ -39,6 +44,31 @@ module Tina4
     # Returns self for chaining: Router.post("/login") { ... }.no_auth
     def no_auth
       @auth_required = false
+      self
+    end
+
+    # RBAC: require ONE of the named roles (OR). Reads the verified JWT `roles`
+    # claim. Stack .role/.can for AND. Implies auth. Feature 138 / ADR-0058.
+    # Returns self for chaining: Router.get("/admin") { ... }.role("admin")
+    def role(*names)
+      names = names.flatten.map(&:to_s).reject(&:empty?)
+      unless names.empty?
+        @roles << names
+        @auth_required = true
+      end
+      self
+    end
+
+    # RBAC: require ONE of the named permissions (OR). Reads the verified JWT
+    # `permissions` claim; granted-side wildcards (`posts.*`, `*`) satisfy a
+    # concrete requirement. Stack for AND. Implies auth. Feature 138.
+    # Returns self for chaining: Router.delete("/p") { ... }.can("posts.delete")
+    def can(*permissions)
+      permissions = permissions.flatten.map(&:to_s).reject(&:empty?)
+      unless permissions.empty?
+        @perms << permissions
+        @auth_required = true
+      end
       self
     end
 

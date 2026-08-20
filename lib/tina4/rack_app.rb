@@ -1178,6 +1178,9 @@ module Tina4
         identity = sso.is_a?(Hash) ? sso["identity"] : nil
         if identity.is_a?(Hash) && identity["issuer"] && identity["subject"]
           env["tina4.auth_payload"] = identity
+          deny = rbac_forbidden(route, identity)
+          return deny if deny
+
           return nil
         end
         session_token = session.get("token")
@@ -1207,7 +1210,61 @@ module Tina4
         return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
       end
 
+      # ── RBAC guards (Feature 138): authorization AFTER authentication ──
+      # Auth has passed (401 ruled out above). If the route carries role/
+      # permission guards, the verified payload must satisfy them, else 403.
+      deny = rbac_forbidden(route, env["tina4.auth_payload"])
+      return deny if deny
+
       nil
+    end
+
+    # Build a 403 Rack tuple when a route's RBAC guards are not satisfied by the
+    # verified payload, else nil. AND across guard groups, OR within a group.
+    # Roles read the `roles` claim (legacy singular `role` coerced); permissions
+    # read `permissions` with granted-side wildcards. Feature 138 / ADR-0058.
+    def self.rbac_forbidden(route, payload)
+      required_roles = route.respond_to?(:roles) ? Array(route.roles) : []
+      required_perms = route.respond_to?(:perms) ? Array(route.perms) : []
+      return nil if required_roles.empty? && required_perms.empty?
+
+      subject = payload.is_a?(Hash) ? payload : {}
+      roles = _rbac_claim_list(subject, "roles", "role")
+      required_roles.each do |group|
+        return _rbac_forbidden_tuple unless group.any? { |r| roles.include?(r) }
+      end
+      perms = _rbac_claim_list(subject, "permissions", nil)
+      required_perms.each do |group|
+        return _rbac_forbidden_tuple unless group.any? { |req| _rbac_perm_granted(perms, req) }
+      end
+      nil
+    end
+
+    def self._rbac_forbidden_tuple
+      [403, { "content-type" => "application/json" }, [JSON.generate({ error: "Forbidden" })]]
+    end
+
+    # Read a claim as a list of strings; coerce a legacy singular string.
+    def self._rbac_claim_list(subject, key, legacy)
+      out = _rbac_coerce_list(subject[key])
+      out = _rbac_coerce_list(subject[legacy]) if out.empty? && legacy
+      out
+    end
+
+    def self._rbac_coerce_list(val)
+      case val
+      when String then val.empty? ? [] : [val]
+      when Array then val.map(&:to_s).reject(&:empty?)
+      else []
+      end
+    end
+
+    # True if any GRANTED permission satisfies the concrete REQUIRED one.
+    # `*` grants everything; `posts.*` grants `posts.<...>` on the dot boundary.
+    def self._rbac_perm_granted(granted, required)
+      granted.any? do |g|
+        g == "*" || g == required || (g.end_with?(".*") && required.start_with?(g[0..-2]))
+      end
     end
 
     def self._read_rack_body(env)
