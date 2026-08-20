@@ -46,66 +46,66 @@ RSpec.describe "RBAC guards (Feature 138)" do
   end
 
   # ── rbac-role-allows ───────────────────────────────────────────
-  it "allows the route when the role claim is present" do
+  it "role claim allows the route" do
     expect(get("/rbac/role_admin", { "sub" => "u", "roles" => ["admin"] }).status).to eq(200)
   end
 
   # ── rbac-role-denies-403 ───────────────────────────────────────
-  it "forbids (403) when the role is missing" do
+  it "missing role is forbidden 403" do
     expect(get("/rbac/role_admin", { "sub" => "u", "roles" => ["viewer"] }).status).to eq(403)
   end
 
   # ── rbac-unauthenticated-401 ───────────────────────────────────
-  it "is 401 (not 403) when unauthenticated — a guard implies auth" do
+  it "unauthenticated guard is 401" do
     expect(get("/rbac/role_admin").status).to eq(401)
   end
 
   # ── rbac-role-or-and ───────────────────────────────────────────
-  it "treats a role list as any-of" do
+  it "role list is any of" do
     expect(get("/rbac/role_any", { "sub" => "u", "roles" => ["editor"] }).status).to eq(200)
     expect(get("/rbac/role_any", { "sub" => "u", "roles" => ["admin"] }).status).to eq(200)
     expect(get("/rbac/role_any", { "sub" => "u", "roles" => ["viewer"] }).status).to eq(403)
   end
 
-  it "treats stacked guards as all-of" do
+  it "stacked guards are all of" do
     expect(get("/rbac/role_stacked", { "sub" => "u", "roles" => %w[admin editor] }).status).to eq(200)
     expect(get("/rbac/role_stacked", { "sub" => "u", "roles" => ["admin"] }).status).to eq(403)
   end
 
   # ── rbac-can-permission ────────────────────────────────────────
-  it "grants the route on the permission" do
+  it "permission grants the route" do
     expect(get("/rbac/can_delete", { "sub" => "u", "permissions" => ["posts.delete"] }).status).to eq(200)
   end
 
-  it "forbids (403) when the permission is missing" do
+  it "missing permission is forbidden 403" do
     expect(get("/rbac/can_delete", { "sub" => "u", "permissions" => ["posts.read"] }).status).to eq(403)
   end
 
-  it "does not let a role satisfy a permission guard" do
+  it "role alone does not satisfy a permission guard" do
     expect(get("/rbac/can_delete", { "sub" => "u", "roles" => ["admin"] }).status).to eq(403)
   end
 
   # ── rbac-wildcard-grant ────────────────────────────────────────
-  it "grants within scope via a wildcard permission" do
+  it "wildcard permission grants within scope" do
     expect(get("/rbac/can_delete", { "sub" => "u", "permissions" => ["posts.*"] }).status).to eq(200)
   end
 
-  it "grants everything via the superuser star" do
+  it "superuser star grants everything" do
     expect(get("/rbac/can_delete", { "sub" => "u", "permissions" => ["*"] }).status).to eq(200)
   end
 
-  it "does not let a wildcard cross scope" do
+  it "wildcard does not cross scope" do
     expect(get("/rbac/can_users", { "sub" => "u", "permissions" => ["posts.*"] }).status).to eq(403)
   end
 
   # ── rbac-verified-payload-only ─────────────────────────────────
-  it "ignores a spoofed role header" do
+  it "spoofed role header is ignored" do
     # A viewer token with a spoofed X-Role: admin header is still forbidden.
     expect(get("/rbac/role_admin", { "sub" => "u", "roles" => ["viewer"] }, { "X-Role" => "admin" }).status).to eq(403)
   end
 
   # ── rbac-legacy-singular-role ──────────────────────────────────
-  it "coerces a legacy singular role claim" do
+  it "legacy singular role is coerced" do
     expect(get("/rbac/role_admin", { "sub" => "u", "role" => "admin" }).status).to eq(200)
   end
 end
