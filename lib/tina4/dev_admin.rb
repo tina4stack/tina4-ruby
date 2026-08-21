@@ -407,6 +407,16 @@ module Tina4
           serve_dashboard
         when ["GET", "/__dev/js/tina4-dev-admin.min.js"]
           serve_dev_js
+        when ["GET", "/__dev/toolbar.css"]
+          # tina4stack #115: the injected toolbar's stylesheet, served as an
+          # external asset so the toolbar carries no inline style= and renders
+          # under the default default-src 'self' CSP. Parity with PHP/Python/Node.
+          [200, { "content-type" => "text/css; charset=utf-8" }, [Tina4::RackApp.toolbar_css]]
+        when ["GET", "/__dev/toolbar.js"]
+          # tina4stack #115: the injected toolbar's script (version modal, dash
+          # overlay, WebSocket-primary reloader), served as an external asset so
+          # the toolbar carries no inline <script>/onclick and stays CSP-clean.
+          [200, { "content-type" => "application/javascript; charset=utf-8" }, [Tina4::RackApp.toolbar_js]]
         when ["GET", "/__dev/api/mtime"]
           json_response({ mtime: @reload_mtime || 0, file: @reload_file || "" })
         when ["POST", "/__dev/api/reload"]

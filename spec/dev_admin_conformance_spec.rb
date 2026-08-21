@@ -242,6 +242,38 @@ RSpec.describe "Tina4::DevAdmin security conformance (feature 127)" do
     expect(body_str).to include("&lt;script&gt;alert(1)&lt;/script&gt;")
   end
 
+  # ── tina4stack #115: CSP-clean dev toolbar (external CSS/JS assets) ──────────
+
+  it "injected toolbar has no inline style onclick or inline script" do
+    ENV["TINA4_DEBUG"] = "true"
+
+    # The toolbar rides EVERY text/html response (including this 404). Isolate
+    # the injected fragment from its external-stylesheet link so the surrounding
+    # error page's own markup can't mask an inline attribute in the toolbar.
+    _status, body_str = dispatch(
+      "GET", "/some-html-page", headers: { "accept" => "text/html" }
+    )
+    expect(body_str).to include("tina4-dev-toolbar"), "the dev toolbar was not injected"
+
+    marker = '<link rel="stylesheet" href="/__dev/toolbar.css">'
+    idx = body_str.index(marker)
+    expect(idx).not_to be_nil, "toolbar did not link the external stylesheet"
+    frag = body_str[idx..]
+
+    # Positive: the toolbar links the external CSS + JS assets.
+    expect(frag).to include('id="tina4-dev-toolbar"')
+    expect(frag).to include('<script src="/__dev/toolbar.js"></script>')
+
+    # Negative: no inline style=, no inline onclick=, and every <script> in the
+    # toolbar is an external src reference (no inline <script>...</script>) - so
+    # it renders under the framework's default default-src 'self' CSP.
+    expect(frag).not_to include("style="), "inline style= in toolbar"
+    expect(frag).not_to include("onclick="), "inline onclick= in toolbar"
+    frag.scan(/<script\b[^>]*>/).each do |tag|
+      expect(tag).to include(" src="), "inline <script> in toolbar: #{tag}"
+    end
+  end
+
   # ── DEVADMIN-DEC-05: mcp/call tool-execution gate ───────────────────────────
 
   def bind_probe_db(dir)

@@ -915,140 +915,59 @@ module Tina4
       [-1, {}, []]
     end
 
+    # Inject the CSP-clean dev toolbar into HTML responses in dev mode.
+    #
+    # tina4stack #115: the toolbar is CSP-clean - it carries NO inline `style=`,
+    # NO `onclick=` (or any inline handler) and NO inline `<script>` block. All
+    # styling lives in the external `/__dev/toolbar.css` stylesheet and every
+    # interaction is wired via `addEventListener` in the external
+    # `/__dev/toolbar.js`, so the toolbar renders under the framework's default
+    # `default-src 'self'` CSP with no violations. Parity with PHP/Python/Node,
+    # which serve the same external `/__dev/toolbar.{css,js}` assets.
     def inject_dev_overlay(body, request_info, ai_port: false)
       version = Tina4::VERSION
-      # DEVADMIN-DEC-04 (feature 127): the toolbar is injected into EVERY
-      # text/html response (including 404s), so the reflected request
-      # method/path/matched-pattern MUST be HTML-escaped or a crafted path
-      # reflects <script> that runs in the dev-server origin and can then drive
-      # every ungated /__dev mutation route. (Parity with PHP htmlspecialchars
-      # and the Python master html.escape; Ruby was reflecting them raw.)
+      # DEVADMIN-DEC-04 (feature 127): the toolbar rides EVERY text/html response
+      # (including 404s), so the reflected request method/path/matched-pattern
+      # MUST be HTML-escaped or a crafted path reflects <script> that runs in the
+      # dev-server origin and can then drive every ungated /__dev mutation route.
+      # (Parity with PHP htmlspecialchars and the Python master html.escape.)
       method = CGI.escapeHTML(request_info[:method].to_s)
       path = CGI.escapeHTML(request_info[:path].to_s)
       matched_pattern = CGI.escapeHTML(request_info[:matched_pattern].to_s)
-      request_id = Tina4::Log.get_request_id || "-"
+      request_id = CGI.escapeHTML((Tina4::Log.get_request_id || "-").to_s)
       route_count = Tina4::Router.routes.length
+      ruby_version = RUBY_VERSION
 
-      ai_badge = ai_port ? '<span style="background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:bold;">AI PORT</span>' : ""
+      # data-reload gates the live reloader in toolbar.js: "1" on the human dev
+      # port, "0" on the AI/stable port (the JS early-returns before starting the
+      # reloader when it is not "1"). Matches Python's render_dev_toolbar.
+      reload = ai_port ? "0" : "1"
+      ai_badge = ai_port ? '<span class="t4-ai-badge">AI PORT</span>' : ""
 
       toolbar = <<~HTML.strip
-        <div id="tina4-dev-toolbar" style="position:fixed;bottom:0;left:0;right:0;background:#333;color:#fff;font-family:monospace;font-size:12px;padding:6px 16px;z-index:99999;display:flex;align-items:center;gap:16px;">
-            #{ai_badge}<span id="tina4-ver-btn" style="color:#d32f2f;font-weight:bold;cursor:pointer;text-decoration:underline dotted;" onclick="tina4VersionModal()" title="Click to check for updates">Tina4 v#{version}</span>
-            <div id="tina4-ver-modal" style="display:none;position:fixed;bottom:3rem;left:1rem;background:#1e1e2e;border:1px solid #d32f2f;border-radius:8px;padding:16px 20px;z-index:100000;min-width:320px;box-shadow:0 8px 32px rgba(0,0,0,0.5);font-family:monospace;font-size:13px;color:#cdd6f4;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <strong style="color:#89b4fa;">Version Info</strong>
-                <span onclick="document.getElementById('tina4-ver-modal').style.display='none'" style="cursor:pointer;color:#888;">&times;</span>
+        <link rel="stylesheet" href="/__dev/toolbar.css">
+        <div id="tina4-dev-toolbar" data-reload="#{reload}">
+            #{ai_badge}<span id="tina4-ver-btn" title="Click to check for updates">Tina4 v#{version}</span>
+            <div id="tina4-ver-modal">
+              <div class="t4-modal-head">
+                <strong class="t4-modal-title">Version Info</strong>
+                <span id="tina4-ver-close" class="t4-x">&times;</span>
               </div>
-              <div id="tina4-ver-body" style="line-height:1.8;">
-                <div>Current: <strong style="color:#a6e3a1;">v#{version}</strong></div>
-                <div id="tina4-ver-latest" style="color:#888;">Checking for updates...</div>
+              <div id="tina4-ver-body">
+                <div>Current: <strong class="t4-ok">v#{version}</strong></div>
+                <div id="tina4-ver-latest" class="t4-dim">Checking for updates...</div>
               </div>
             </div>
-            <span style="color:#4caf50;">#{method}</span>
+            <span class="t4-green">#{method}</span>
             <span>#{path}</span>
-            <span style="color:#666;">&rarr; #{matched_pattern}</span>
-            <span style="color:#ffeb3b;">req:#{request_id}</span>
-            <span style="color:#90caf9;">#{route_count} routes</span>
-            <span style="color:#888;">Ruby #{RUBY_VERSION}</span>
-            <a href="#" onclick="window.__tina4ToggleOverlay(event)" style="color:#ef9a9a;margin-left:auto;text-decoration:none;cursor:pointer;">Dashboard &#8599;</a>
-            <span onclick="this.parentElement.style.display='none'" style="cursor:pointer;color:#888;margin-left:8px;">&#10005;</span>
+            <span class="t4-arrow">&rarr; #{matched_pattern}</span>
+            <span class="t4-yellow">req:#{request_id}</span>
+            <span class="t4-blue">#{route_count} routes</span>
+            <span class="t4-dim">Ruby #{ruby_version}</span>
+            <a href="#" id="tina4-dash-link" class="t4-dash">Dashboard &#8599;</a>
+            <span id="tina4-bar-close" class="t4-x t4-bar-close">&#10005;</span>
         </div>
-        <script>
-        // Overlay open/toggle helper + auto-restore. Persist the dev-admin
-        // iframe's open/closed state across parent reloads so saving a
-        // file doesn't lose the user's dev-admin context. Cross-framework
-        // parity with PHP / Python / Node — same localStorage key.
-        (function(){
-            var STATE_KEY = 'tina4_dev_overlay_open';
-            function buildOverlay() {
-                var c = document.createElement('div');
-                c.id = 'tina4-dev-panel';
-                c.style.cssText = 'position:fixed;top:3rem;left:0;right:0;bottom:2rem;z-index:99998;transition:all 0.2s';
-                var f = document.createElement('iframe');
-                f.src = '/__dev';
-                f.style.cssText = 'width:100%;height:100%;border:1px solid #CC342D;border-radius:0.5rem;box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#0f172a';
-                c.appendChild(f);
-                document.body.appendChild(c);
-                return c;
-            }
-            window.__tina4ToggleOverlay = function(e) {
-                if (e) e.preventDefault();
-                var p = document.getElementById('tina4-dev-panel');
-                if (p) {
-                    var hide = p.style.display !== 'none';
-                    p.style.display = hide ? 'none' : 'block';
-                    try { localStorage.setItem(STATE_KEY, hide ? '0' : '1'); } catch (_) {}
-                    return;
-                }
-                buildOverlay();
-                try { localStorage.setItem(STATE_KEY, '1'); } catch (_) {}
-            };
-            function restoreIfOpen() {
-                try {
-                    if (location.pathname.indexOf('/__dev') === 0) return;
-                    if (localStorage.getItem(STATE_KEY) === '1' && !document.getElementById('tina4-dev-panel')) {
-                        buildOverlay();
-                    }
-                } catch (_) {}
-            }
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', restoreIfOpen);
-            } else {
-                restoreIfOpen();
-            }
-        })();
-        </script>
-        <script>
-        function tina4VersionModal(){
-            var m=document.getElementById('tina4-ver-modal');
-            if(m.style.display==='block'){m.style.display='none';return;}
-            m.style.display='block';
-            var el=document.getElementById('tina4-ver-latest');
-            el.innerHTML='Checking for updates...';
-            el.style.color='#888';
-            fetch('/__dev/api/version-check')
-            .then(function(r){return r.json()})
-            .then(function(d){
-                var latest=d.latest;
-                var current=d.current;
-                if(latest===current){
-                    el.innerHTML='Latest: <strong style="color:#a6e3a1;">v'+latest+'</strong> &mdash; You are up to date!';
-                    el.style.color='#a6e3a1';
-                }else{
-                    var cParts=current.split('.').map(Number);
-                    var lParts=latest.split('.').map(Number);
-                    var isNewer=false;
-                    for(var i=0;i<Math.max(cParts.length,lParts.length);i++){
-                        var c=cParts[i]||0,l=lParts[i]||0;
-                        if(l>c){isNewer=true;break;}
-                        if(l<c)break;
-                    }
-                    var isAhead=false;
-                    if(!isNewer){for(var i=0;i<Math.max(cParts.length,lParts.length);i++){var c2=cParts[i]||0,l2=lParts[i]||0;if(c2>l2){isAhead=true;break;}if(c2<l2)break;}}
-                    if(isNewer){
-                        var breaking=(lParts[0]!==cParts[0]||lParts[1]!==cParts[1]);
-                        el.innerHTML='Latest: <strong style="color:#f9e2af;">v'+latest+'</strong>';
-                        if(breaking){
-                            el.innerHTML+='<div style="color:#f38ba8;margin-top:6px;">&#9888; Major/minor version change &mdash; check the <a href="https://github.com/tina4stack/tina4-ruby/releases" target="_blank" style="color:#89b4fa;">changelog</a> for breaking changes before upgrading.</div>';
-                        }else{
-                            el.innerHTML+='<div style="color:#f9e2af;margin-top:6px;">Patch update available. Run: <code style="background:#313244;padding:2px 6px;border-radius:3px;">gem install tina4ruby</code></div>';
-                        }
-                    }else if(isAhead){
-                        el.innerHTML='You are running <strong style="color:#cba6f7;">v'+current+'</strong> (ahead of RubyGems <strong>v'+latest+'</strong> &mdash; not yet published).';
-                        el.style.color='#cba6f7';
-                    }else{
-                        el.innerHTML='Latest: <strong style="color:#a6e3a1;">v'+latest+'</strong> &mdash; You are up to date!';
-                        el.style.color='#a6e3a1';
-                    }
-                }
-            })
-            .catch(function(){
-                el.innerHTML='Could not check for updates (offline?)';
-                el.style.color='#f38ba8';
-            });
-        }
-        #{ai_port ? "" : dev_reload_client_js}
-        </script>
+        <script src="/__dev/toolbar.js"></script>
       HTML
 
       if body.include?("</body>")
@@ -1058,75 +977,173 @@ module Tina4
       end
     end
 
-    # WebSocket-primary dev reloader injected into HTML pages in debug mode.
-    #
-    # The running server re-imports changed src/ route files in-process and
-    # pushes a {type,file,mtime} message over /__dev_reload — no respawn,
-    # instant refresh. The mtime poll is a FALLBACK only: it is started when
-    # the socket is down and stopped the moment it connects. On a CSS change
-    # the client swaps <link rel=stylesheet> hrefs with a cache-bust query;
-    # any other change does a full location.reload(). The poll seeds its
-    # last-seen mtime to a null sentinel (NOT 0) and reloads whenever the
-    # polled mtime DIFFERS (not just when greater) so the first change after
-    # load isn't swallowed and a counter reset on restart still triggers.
-    # Mirrors the Python master's injected client exactly.
-    def dev_reload_client_js
+    # CSS for the injected dev toolbar. Served as an external stylesheet (see
+    # DevAdmin.handle_request) so the toolbar carries no inline `style=` and
+    # stays CSP-clean under a strict `default-src 'self'`.
+    def self.toolbar_css
+      <<~CSS
+        #tina4-dev-toolbar{position:fixed;bottom:0;left:0;right:0;background:#333;color:#fff;font-family:monospace;font-size:12px;padding:6px 16px;z-index:99999;display:flex;align-items:center;gap:16px}
+        #tina4-dev-toolbar a{text-decoration:none}
+        .t4-ai-badge{background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:bold}
+        #tina4-ver-btn{color:#d32f2f;font-weight:bold;cursor:pointer;text-decoration:underline dotted}
+        #tina4-ver-modal{display:none;position:fixed;bottom:3rem;left:1rem;background:#1e1e2e;border:1px solid #d32f2f;border-radius:8px;padding:16px 20px;z-index:100000;min-width:320px;box-shadow:0 8px 32px rgba(0,0,0,.5);font-family:monospace;font-size:13px;color:#cdd6f4}
+        .t4-modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+        .t4-modal-title{color:#89b4fa}
+        #tina4-ver-body{line-height:1.8}
+        .t4-x{cursor:pointer;color:#888}
+        .t4-bar-close{margin-left:8px}
+        .t4-green{color:#4caf50}
+        .t4-dim{color:#888}
+        .t4-arrow{color:#666}
+        .t4-yellow{color:#ffeb3b}
+        .t4-blue{color:#90caf9}
+        .t4-ok{color:#a6e3a1}
+        .t4-warn{color:#f9e2af}
+        .t4-err{color:#f38ba8}
+        .t4-purple{color:#cba6f7}
+        .t4-link{color:#89b4fa}
+        .t4-code{background:#313244;padding:2px 6px;border-radius:3px}
+        .t4-note{margin-top:6px}
+        .t4-dash{color:#ef9a9a;margin-left:auto;cursor:pointer}
+        #tina4-dev-panel{position:fixed;top:3rem;left:0;right:0;bottom:2rem;z-index:99998;transition:all .2s}
+        #tina4-dev-panel iframe{width:100%;height:100%;border:1px solid #CC342D;border-radius:.5rem;box-shadow:0 8px 32px rgba(0,0,0,.5);background:#0f172a}
+      CSS
+    end
+
+    # JS for the injected dev toolbar - the version-check modal, the dashboard
+    # overlay, and the WebSocket-primary live reloader. Served as an external
+    # script (see DevAdmin.handle_request) so the toolbar carries no inline
+    # handlers or `<script>` and stays CSP-clean. Every handler is wired via
+    # addEventListener; the reloader only starts when the toolbar's `data-reload`
+    # attribute is "1" (reload not suppressed for this request). Mirrors the
+    # Python master's injected client and the PHP external toolbar.js exactly.
+    def self.toolbar_js
       poll_interval_ms = (ENV["TINA4_DEV_POLL_INTERVAL"] || "3000").to_i
       poll_interval_ms = 3000 if poll_interval_ms <= 0
       <<~JS
-        (function(){
-            var _t4_css_exts=['.css','.scss'],_t4_debounce=null;
-            var _t4_interval=parseInt('#{poll_interval_ms}')||3000;
-            var _t4_ws=null,_t4_poll_timer=null,_t4_mtime=null;
-            function _t4_apply(d){
-                d=d||{};
-                var f=d.file||'',t=d.type||'';
-                var isCss=t==='css'||_t4_css_exts.some(function(e){return f.endsWith(e)});
-                if(isCss){
-                    var links=document.querySelectorAll('link[rel="stylesheet"]');
-                    links.forEach(function(l){
-                        var href=l.getAttribute('href');
-                        if(href){l.setAttribute('href',href.split('?')[0]+'?_t4='+(d.mtime||Date.now()))}
+        (function () {
+            var bar = document.getElementById('tina4-dev-toolbar');
+            if (!bar) { return; }
+
+            var modal = document.getElementById('tina4-ver-modal');
+            function upToDate(el, latest) {
+                el.className = 't4-ok';
+                el.innerHTML = 'Latest: <strong class="t4-ok">v' + latest + '</strong> &mdash; You are up to date!';
+            }
+            function checkVersion() {
+                if (modal.style.display === 'block') { modal.style.display = 'none'; return; }
+                modal.style.display = 'block';
+                var el = document.getElementById('tina4-ver-latest');
+                el.className = 't4-dim';
+                el.textContent = 'Checking for updates...';
+                fetch('/__dev/api/version-check').then(function (r) { return r.json(); }).then(function (d) {
+                    var latest = d.latest, current = d.current;
+                    if (latest === current) { upToDate(el, latest); return; }
+                    var cP = current.split('.').map(Number), lP = latest.split('.').map(Number);
+                    var isNewer = false, i, c, l;
+                    for (i = 0; i < Math.max(cP.length, lP.length); i++) { c = cP[i] || 0; l = lP[i] || 0; if (l > c) { isNewer = true; break; } if (l < c) { break; } }
+                    var isAhead = false;
+                    if (!isNewer) { for (i = 0; i < Math.max(cP.length, lP.length); i++) { var c2 = cP[i] || 0, l2 = lP[i] || 0; if (c2 > l2) { isAhead = true; break; } if (c2 < l2) { break; } } }
+                    if (isNewer) {
+                        var breaking = (lP[0] !== cP[0] || lP[1] !== cP[1]);
+                        el.className = '';
+                        el.innerHTML = 'Latest: <strong class="t4-warn">v' + latest + '</strong>';
+                        if (breaking) {
+                            el.innerHTML += '<div class="t4-err t4-note">&#9888; Major/minor version change &mdash; check the <a href="https://github.com/tina4stack/tina4-ruby/releases" target="_blank" class="t4-link">changelog</a> for breaking changes before upgrading.</div>';
+                        } else {
+                            el.innerHTML += '<div class="t4-warn t4-note">Patch update available. Run: <code class="t4-code">gem install tina4ruby</code></div>';
+                        }
+                    } else if (isAhead) {
+                        el.className = 't4-purple';
+                        el.innerHTML = 'You are running <strong class="t4-purple">v' + current + '</strong> (ahead of RubyGems <strong>v' + latest + '</strong> &mdash; not yet published).';
+                    } else {
+                        upToDate(el, latest);
+                    }
+                }).catch(function () {
+                    el.className = 't4-err';
+                    el.textContent = 'Could not check for updates (offline?)';
+                });
+            }
+            var verBtn = document.getElementById('tina4-ver-btn');
+            if (verBtn) { verBtn.addEventListener('click', checkVersion); }
+            var verClose = document.getElementById('tina4-ver-close');
+            if (verClose) { verClose.addEventListener('click', function () { modal.style.display = 'none'; }); }
+            var barClose = document.getElementById('tina4-bar-close');
+            if (barClose) { barClose.addEventListener('click', function () { bar.style.display = 'none'; }); }
+
+            var STATE_KEY = 'tina4_dev_overlay_open';
+            function buildOverlay() {
+                var c = document.createElement('div');
+                c.id = 'tina4-dev-panel';
+                var f = document.createElement('iframe');
+                f.src = '/__dev';
+                c.appendChild(f);
+                document.body.appendChild(c);
+                return c;
+            }
+            function toggleOverlay(e) {
+                if (e) { e.preventDefault(); }
+                var p = document.getElementById('tina4-dev-panel');
+                if (p) {
+                    var hide = p.style.display !== 'none';
+                    p.style.display = hide ? 'none' : 'block';
+                    try { localStorage.setItem(STATE_KEY, hide ? '0' : '1'); } catch (_) {}
+                    return;
+                }
+                buildOverlay();
+                try { localStorage.setItem(STATE_KEY, '1'); } catch (_) {}
+            }
+            var dash = document.getElementById('tina4-dash-link');
+            if (dash) { dash.addEventListener('click', toggleOverlay); }
+            try {
+                if (location.pathname.indexOf('/__dev') !== 0
+                    && localStorage.getItem(STATE_KEY) === '1'
+                    && !document.getElementById('tina4-dev-panel')) {
+                    buildOverlay();
+                }
+            } catch (_) {}
+
+            if (bar.getAttribute('data-reload') !== '1') { return; }
+            var cssExts = ['.css', '.scss'], debounce = null, interval = #{poll_interval_ms};
+            var ws = null, pollTimer = null, mtime = null;
+            function apply(d) {
+                d = d || {};
+                var f = d.file || '', t = d.type || '';
+                var isCss = t === 'css' || cssExts.some(function (e) { return f.endsWith(e); });
+                if (isCss) {
+                    document.querySelectorAll('link[rel="stylesheet"]').forEach(function (l) {
+                        var href = l.getAttribute('href');
+                        if (href) { l.setAttribute('href', href.split('?')[0] + '?_t4=' + (d.mtime || Date.now())); }
                     });
-                }else{
+                } else {
                     location.reload();
                 }
             }
-            function _t4_poll(){
-                fetch('/__dev/api/mtime').then(function(r){return r.json()}).then(function(d){
-                    if(_t4_mtime===null){_t4_mtime=d.mtime;return;}
-                    if(d.mtime!==_t4_mtime){
-                        _t4_mtime=d.mtime;
-                        if(_t4_debounce)clearTimeout(_t4_debounce);
-                        _t4_debounce=setTimeout(function(){_t4_apply(d);},500);
-                    }
-                }).catch(function(){});
+            function poll() {
+                fetch('/__dev/api/mtime').then(function (r) { return r.json(); }).then(function (d) {
+                    if (mtime === null) { mtime = d.mtime; return; }
+                    if (d.mtime !== mtime) { mtime = d.mtime; if (debounce) { clearTimeout(debounce); } debounce = setTimeout(function () { apply(d); }, 500); }
+                }).catch(function () {});
             }
-            function _t4_startPoll(){
-                if(_t4_poll_timer)return;
-                _t4_mtime=null;
-                _t4_poll_timer=setInterval(_t4_poll,_t4_interval);
-            }
-            function _t4_stopPoll(){
-                if(_t4_poll_timer){clearInterval(_t4_poll_timer);_t4_poll_timer=null;}
-            }
-            function _t4_connect(){
-                var url=(location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/__dev_reload';
-                try{_t4_ws=new WebSocket(url);}catch(_){_t4_startPoll();return;}
-                _t4_ws.addEventListener('open',function(){_t4_stopPoll();});
-                _t4_ws.addEventListener('message',function(ev){
-                    var d=null;
-                    try{d=typeof ev.data==='string'?JSON.parse(ev.data):null;}catch(_){}
-                    if(!d)return;
-                    if(d.type==='reload'||d.type==='change'||d.type==='css'){
-                        if(_t4_debounce)clearTimeout(_t4_debounce);
-                        _t4_debounce=setTimeout(function(){_t4_apply(d);},150);
+            function startPoll() { if (pollTimer) { return; } mtime = null; pollTimer = setInterval(poll, interval); }
+            function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+            function connect() {
+                var url = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/__dev_reload';
+                try { ws = new WebSocket(url); } catch (_) { startPoll(); return; }
+                ws.addEventListener('open', function () { stopPoll(); });
+                ws.addEventListener('message', function (ev) {
+                    var d = null;
+                    try { d = typeof ev.data === 'string' ? JSON.parse(ev.data) : null; } catch (_) {}
+                    if (!d) { return; }
+                    if (d.type === 'reload' || d.type === 'change' || d.type === 'css') {
+                        if (debounce) { clearTimeout(debounce); }
+                        debounce = setTimeout(function () { apply(d); }, 150);
                     }
                 });
-                _t4_ws.addEventListener('close',function(){_t4_ws=null;_t4_startPoll();setTimeout(_t4_connect,2000);});
-                _t4_ws.addEventListener('error',function(){try{_t4_ws&&_t4_ws.close();}catch(_){}});
+                ws.addEventListener('close', function () { ws = null; startPoll(); setTimeout(connect, 2000); });
+                ws.addEventListener('error', function () { try { ws && ws.close(); } catch (_) {} });
             }
-            _t4_connect();
+            connect();
         })();
       JS
     end
