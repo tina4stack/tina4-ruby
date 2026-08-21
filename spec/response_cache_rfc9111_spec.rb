@@ -114,6 +114,84 @@ RSpec.describe "ResponseCache RFC 9111 conformance" do
     expect(state).to eq(:miss)
     expect(out.body.to_s).to include("recomputed")
   end
+
+  # ── Session-leak regressions (port of Python #117) ────────────────
+  #
+  # The cache key is method + URL only, and a Tina4 session IS a cookie. Before
+  # the fix, may_store? guarded only Vary '*' and Authorization, so a
+  # cookie-bearing or Set-Cookie response fell through to `true` and was replayed
+  # to the next caller of that URL. These prove it no longer is, and the two
+  # controls prove the fix did not simply switch caching off.
+
+  it "a response that sets Set-Cookie is not replayed to another session" do
+    # First caller's handler installs a session cookie on the response.
+    first, first_state = round_trip(get_request("/api/dashboard"),
+                                    body: { "user" => "alice" },
+                                    response_headers: { "Set-Cookie" => "tina4session=alice; HttpOnly" })
+    expect(first_state).to eq(:miss)
+    expect(first.body.to_s).to include("alice")
+
+    # A second, different visitor must NOT be served alice's per-session page:
+    # the handler has to run again (MISS), not replay from cache.
+    second, second_state = round_trip(get_request("/api/dashboard"),
+                                      body: { "user" => "bob" })
+    expect(second_state).to eq(:miss)
+    expect(second.body.to_s).to include("bob")
+    expect(second.body.to_s).not_to include("alice")
+  end
+
+  it "a cookie-bearing request without a shared-cache directive is not cached" do
+    # A signed-in caller carries a session cookie; with no shared-cache opt-in,
+    # storing their response would replay it to the next caller of this URL.
+    first, first_state = round_trip(get_request("/api/profile", "Cookie" => "tina4session=alice"),
+                                    body: { "user" => "alice" })
+    expect(first_state).to eq(:miss)
+
+    second, second_state = round_trip(get_request("/api/profile", "Cookie" => "tina4session=bob"),
+                                      body: { "user" => "bob" })
+    expect(second_state).to eq(:miss)
+    expect(second.body.to_s).to include("bob")
+    expect(second.body.to_s).not_to include("alice")
+  end
+
+  it "responses marked private / no-store / no-cache are not cached" do
+    %w[private no-store no-cache].each_with_index do |directive, i|
+      url = "/api/secret-#{i}"
+      first, first_state = round_trip(get_request(url),
+                                      body: { "v" => "first" },
+                                      response_headers: { "Cache-Control" => directive })
+      expect(first_state).to eq(:miss), "expected #{directive.inspect} first request to MISS"
+      expect(first.body.to_s).to include("first")
+
+      _second, second_state = round_trip(get_request(url), body: { "v" => "recomputed" })
+      expect(second_state).to eq(:miss), "expected #{directive.inspect} to keep the response out of the cache"
+    end
+  end
+
+  # Control: a cookie-bearing caller CAN be cached when the response explicitly
+  # opts a shared cache in — otherwise the fix would just disable caching for
+  # every browser that holds a cookie.
+  it "a cookie-bearing request marked public still hits the cache" do
+    round_trip(get_request("/api/rates", "Cookie" => "tina4session=alice"),
+               body: { "usd" => "shared-rates" },
+               response_headers: { "Cache-Control" => "public, max-age=60" })
+
+    second, state = round_trip(get_request("/api/rates", "Cookie" => "tina4session=bob"),
+                               body: { "usd" => "recomputed" })
+    expect(state).to eq(:hit)
+    expect(second.body.to_s).to include("shared-rates")
+  end
+
+  # Control: plain cookieless public traffic is unaffected — the common case
+  # still caches and replays.
+  it "cookieless public traffic still hits the cache" do
+    round_trip(get_request("/api/news"), body: { "v" => "headline" })
+
+    second, state = round_trip(get_request("/api/news"), body: { "v" => "recomputed" })
+    expect(state).to eq(:hit)
+    expect(second.body.to_s).to include("headline")
+    expect(second.headers["X-Cache"]).to eq("HIT")
+  end
 end
 
 RSpec.describe "Cache backend name validation" do
