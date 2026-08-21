@@ -260,15 +260,31 @@ module Tina4
   # The URL-selected graph factory — the GraphDatabase sibling of Database.
   class GraphDatabase
     # engine -> { require:, class:, package:, install: }. Selected lazily so
-    # requiring +tina4/graph+ pulls in NO engine driver. bolt (Neo4j/Memgraph)
-    # and arango land later — declared so the factory gives a "coming soon"
-    # message rather than a bare KeyError.
+    # requiring +tina4/graph+ pulls in NO engine driver.
+    #
+    # ultipa wraps the OPTIONAL +tina4-ultipa+ gem (a missing gem surfaces as the
+    # actionable install error). bolt (Neo4j/Memgraph) and arango are pure-Ruby
+    # over stdlib (+socket+ / +Net::HTTP+) — zero third-party gems, so their
+    # +require+ always succeeds and the install line is never reached; it stays
+    # declared for a uniform registry shape.
     ENGINE_ADAPTERS = {
       "ultipa" => {
         require: "tina4/drivers/ultipa_graph_driver",
         class: "Tina4::Drivers::UltipaGraphDriver",
         package: "tina4-ultipa",
         install: "gem install tina4-ultipa   # or add gem \"tina4-ultipa\" to your Gemfile",
+      },
+      "bolt" => {
+        require: "tina4/drivers/bolt_graph_driver",
+        class: "Tina4::Drivers::BoltGraphDriver",
+        package: "tina4ruby (built-in, stdlib socket)",
+        install: "no install needed — the Bolt driver ships with tina4ruby",
+      },
+      "arango" => {
+        require: "tina4/drivers/arango_graph_driver",
+        class: "Tina4::Drivers::ArangoGraphDriver",
+        package: "tina4ruby (built-in, stdlib Net::HTTP)",
+        install: "no install needed — the ArangoDB driver ships with tina4ruby",
       },
     }
 

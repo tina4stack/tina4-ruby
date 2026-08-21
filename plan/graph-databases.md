@@ -27,7 +27,47 @@ Contract answer key: tina4-documentation/plan/v3/fixtures/graph_contract.json.
 ## Parity
 | Feature | Python | PHP | Ruby | Node |
 |---------|--------|-----|------|------|
-| graph layer | ✅ | ❌ | ✅ | ❌ |
+| graph layer (Ultipa) | ✅ | ❌ | ✅ | ❌ |
+| bolt (Neo4j/Memgraph) | ✅ | ❌ | ✅ | ❌ |
+| arango | ✅ | ❌ | ✅ | ❌ |
+
+## Bolt + Arango adapters (added on feature/graph-databases)
+
+Two engine adapters mirroring the Python reference
+(tina4-python/tina4_python/graph/adapters/bolt.py + arango.py):
+
+- `lib/tina4/drivers/bolt_graph_driver.rb` — engine `bolt`, serving BOTH Neo4j
+  and Memgraph. Portable core in Cypher (`[*1..N]` variable-length, `SET n += $props`
+  merge, `id(n)` integer ids) over a self-contained Bolt 4.4 / PackStream v2 client
+  built on stdlib `socket`. **Driver choice (proven on the lab, no mocks):** the
+  maintained community gems each fail one engine — `neo4j-ruby-driver` (4.4.6)
+  connects to Neo4j but NOT Memgraph (its handshake offers 4.4 only inside a
+  4.2–4.4 range entry Memgraph declines, so negotiation drops to Bolt v3 where its
+  strict server-version parser rejects Memgraph's agent string), and pulls in
+  ActiveSupport + needs a connection_pool 2.x pin; the pure-Ruby `neo4j_bolt` gem
+  hardcodes `scheme => 'none'` (no auth) and a process-global connection, so it
+  cannot authenticate to Neo4j. Both lab engines negotiate a *plain* Bolt 4.4
+  handshake, so a compact real client that offers plain 4.4 works against BOTH and
+  adds zero third-party gems (a wire protocol is the sanctioned library exception,
+  but no working library exists — so the best implementation is the real client we
+  control).
+- `lib/tina4/drivers/arango_graph_driver.rb` — engine `arango`. Portable core in
+  AQL over stdlib `Net::HTTP` at the `/_api/cursor` REST endpoint (a REAL driver,
+  not a mock). Ensures the `tina4_nodes` (document, type 2) + `tina4_edges` (edge,
+  type 3) collections exist; nodes carry `_labels`, edges carry `_from/_to/_type`;
+  ids are `_id` handles; delete removes touching edges first.
+
+Both registered in `GraphDatabase::ENGINE_ADAPTERS` (graph.rb): `bolt` for
+neo4j+memgraph schemes, `arango` for arango/arangodb. `spec/graph_spec.rb`
+extended to the PROVIDER MATRIX — the 9 live cases parametrised over every engine
+whose `TINA4_TEST_<ENGINE>_URL` is set (Cypher raw+clean for ultipa/neo4j/memgraph,
+AQL for arango).
+
+**Lab proof (no mocks), rspec spec/graph_spec.rb:**
+`39 examples, 0 failures, 0 pending` with all four engines live —
+`ultipa://…@192.168.88.99:60071/default`, `bolt://neo4j:***@192.168.88.99:7687/neo4j`,
+`bolt://192.168.88.99:7688` (Memgraph), `arango://root:***@192.168.88.99:8529/_system`.
+Unique label `T4GraphContractTest`, cleaned before/after; zero leftover verified.
 
 ## Tests (real, no mocks — 11 contract cases, names mirror test_graph.py)
 - [x] graph-connect-by-url (scheme selects adapter; unknown rejected)

@@ -58,6 +58,23 @@ Gem::Specification.new do |spec|
   # first run with LoadError — see tina4-book#100.
   spec.add_dependency "sqlite3", "~> 2.0"
 
+  # Graph databases (Feature 139) — NO runtime gem is added for them:
+  #   * Ultipa uses the OPTIONAL, separately-published `tina4-ultipa` gem,
+  #     required lazily by lib/tina4/drivers/ultipa_graph_driver.rb (a missing
+  #     gem surfaces as an actionable install error, never a bare LoadError).
+  #   * Neo4j + Memgraph (engine `bolt`) use a self-contained Bolt 4.4 /
+  #     PackStream client built on stdlib `socket`
+  #     (lib/tina4/drivers/bolt_graph_driver.rb). The maintained community gems
+  #     were both rejected on the lab: `neo4j-ruby-driver` cannot negotiate with
+  #     Memgraph (its handshake offers Bolt 4.4 only inside a range entry
+  #     Memgraph declines, dropping to v3 where its strict version-string parser
+  #     throws) and drags in ActiveSupport; the pure-Ruby `neo4j_bolt` gem
+  #     hardcodes `scheme => 'none'` and cannot authenticate to Neo4j.
+  #   * ArangoDB (engine `arango`) uses stdlib `Net::HTTP` over the AQL cursor
+  #     REST endpoint (lib/tina4/drivers/arango_graph_driver.rb).
+  # All three are REAL drivers proven live (no mocks); bolt + arango add zero
+  # third-party dependencies, keeping the framework core zero-dependency.
+
   spec.add_development_dependency "listen", "~> 3.8"
   # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
   # it lazily, exactly like pg. It is a development/optional dependency only so
