@@ -454,6 +454,28 @@ module Tina4
       raw.split(",").map { |f| f.strip.downcase }.reject(&:empty?)
     end
 
+    # The Cache-Control directive NAMES on a request or response, lowercased.
+    #
+    # Parsed as comma-separated tokens with any `=value` stripped, rather than by
+    # substring search, so `no-cache="Set-Cookie"` is recognised as `no-cache`
+    # and a directive name never matches as a fragment of a longer one.
+    #
+    # @param carrier [Object, nil]
+    # @return [Array<String>]
+    def cache_control_tokens(carrier)
+      raw = header_value(carrier, "Cache-Control").to_s
+      raw.split(",").map { |token| token.split("=", 2).first.to_s.strip.downcase }.reject(&:empty?)
+    end
+
+    # Does the response carry a directive that lets a SHARED cache store it?
+    # (public / s-maxage / must-revalidate — RFC 9111 s3.5.)
+    #
+    # @param response [Object, nil]
+    # @return [Boolean]
+    def shared_cache_allowed?(response)
+      !(cache_control_tokens(response) & SHARED_CACHE_DIRECTIVES).empty?
+    end
+
     # May a SHARED cache store this response? (RFC 9111 s3, s4.1)
     #
     # s3 -- "if the cache is shared: the Authorization header field is not
@@ -464,15 +486,33 @@ module Tina4
     # s4.1 -- a stored response whose Vary contains "*" "always fails to
     # match", so storing one is pointless.
     #
+    # The same s3 reasoning covers two cases the Authorization check alone does
+    # not:
+    #
+    #   - `no-store` forbids storage in any cache and `private` forbids it in a
+    #     shared one (`no-cache` too, without revalidation) -- so a handler can
+    #     keep a response out of this cache with the standard header.
+    #   - A caller identified by a session Cookie is as specific as one carrying
+    #     Authorization, and Tina4's own session mechanism IS a cookie. Because
+    #     the key is method + URL, storing such a response replays one signed-in
+    #     user's page to whoever asks for that URL next; a response that installs
+    #     a session (Set-Cookie) is per-user by construction for the same reason.
+    #
+    # Both cookie cases stay cacheable when the response opts in explicitly with
+    # a shared-cache directive, which is how a genuinely public page served to
+    # cookie-bearing browsers keeps its hit rate.
+    #
     # @param request [Object, nil]
     # @param response [Object, nil]
     # @return [Boolean]
     def may_store?(request, response)
       return false if vary_fields(response).include?("*")
-      return true if header_value(request, "Authorization").nil?
+      return false unless (cache_control_tokens(response) & %w[no-store private no-cache]).empty?
+      return shared_cache_allowed?(response) unless header_value(request, "Authorization").nil?
+      return shared_cache_allowed?(response) unless header_value(request, "Cookie").nil?
+      return shared_cache_allowed?(response) unless header_value(response, "Set-Cookie").nil?
 
-      cache_control = header_value(response, "Cache-Control").to_s.downcase
-      SHARED_CACHE_DIRECTIVES.any? { |directive| cache_control.include?(directive) }
+      true
     end
 
     # Do the nominated request headers match the ones recorded on the entry?
