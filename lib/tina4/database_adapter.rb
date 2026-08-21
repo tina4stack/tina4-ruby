@@ -262,12 +262,6 @@ module Tina4
     CONNECT_TIMEOUT_VAR = "TINA4_DATABASE_CONNECT_TIMEOUT"
     DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 
-    # Clock slack when deciding whether a failed connect was OUR bound expiring.
-    # A native bound of 10s is measured back as 9.998s often enough to matter,
-    # and without the slack the contract error would degrade into the raw driver
-    # error at random.
-    CONNECT_TIMEOUT_SLACK_SECONDS = 0.25
-
     # Seconds to bound a connect by, or nil when the operator disabled the bound.
     def self.connect_timeout_seconds
       seconds = Tina4::Env.float(CONNECT_TIMEOUT_VAR, default: DEFAULT_CONNECT_TIMEOUT_SECONDS)
@@ -275,12 +269,20 @@ module Tina4
     end
 
     # Whole seconds for the native options that accept only an integer (libpq,
-    # libmysqlclient, FreeTDS). Rounds UP and never below 1: libpq reads
-    # connect_timeout=0 as "wait forever", so rounding 0.4 DOWN to 0 would
-    # silently disable the very bound being set.
+    # libmysqlclient, FreeTDS). STRICTLY greater than the bound, never below 1.
+    #
+    # floor(s) + 1, not ceil(s): the native option must land AFTER our bound so
+    # the driver's own timer fires first and bounding_connect gets to translate
+    # its failure. ceil(N) == N for a whole-second bound - and the shipped
+    # default of 10 is whole - which put the driver's deadline ON our bound
+    # instead of after it, so which message reached the caller came down to which
+    # clock ticked first. floor(s) + 1 is strictly greater for every input,
+    # whole or fractional, at a cost of at most one extra second on a path that
+    # has already failed. (libpq also reads connect_timeout=0 as "wait forever",
+    # so the +1 doubles as the guard against rounding a sub-second bound to 0.)
     def self.connect_timeout_whole_seconds
       seconds = connect_timeout_seconds
-      seconds && [seconds.ceil, 1].max
+      seconds && [seconds.floor + 1, 1].max
     end
 
     # The one error a timed-out connect raises: it names the host, the port, the
@@ -294,6 +296,27 @@ module Tina4
             "indefinitely).#{detail}"
     end
 
+    # Did a connect that FAILED take at least the configured bound?
+    #
+    # Two readings, because the framework and the driver do not share a clock.
+    # bounding_connect times on CLOCK_MONOTONIC; libpq times its own
+    # connect_timeout on gettimeofday - CLOCK_REALTIME (libmysqlclient and
+    # FreeTDS likewise measure against the wall clock). NTP slews and steps
+    # realtime and never touches monotonic, so a forward step or slew can make
+    # the driver abort while a monotonic reading over the very same connect is
+    # still short of the bound - and then the driver's own message, which names
+    # no tunable, reaches the caller.
+    #
+    # Taking the LARGER of the two readings covers both directions: the realtime
+    # reading catches a forward jump, and keeping the monotonic reading means a
+    # BACKWARD jump cannot hide a timeout that really did happen. Pure, so the
+    # decision is testable without faking a clock.
+    def self.bound_reached?(elapsed_monotonic, elapsed_realtime, seconds)
+      return false if seconds.nil?
+
+      [elapsed_monotonic, elapsed_realtime].max >= seconds
+    end
+
     # Run a driver's natively-bounded connect and translate an expiry into the
     # contract error above. The NATIVE option does the bounding; this only names
     # it. Whether the bound expired is decided by ELAPSED TIME, not by matching
@@ -301,17 +324,26 @@ module Tina4
     # ("timeout expired", "waiting for initial communication packet", "TDS
     # server connection timed out", "Connection timed out"), and a marker table
     # is one more thing to drift and MISS. A missed timeout is the whole defect.
+    #
+    # The elapsed time is read on BOTH clocks and compared through
+    # bound_reached?, because the driver measured its own deadline on the wall
+    # clock while we started ours on the monotonic one - see that method. The
+    # strictly-greater native option (connect_timeout_whole_seconds) leaves the
+    # driver's deadline after ours, so on an undisturbed clock the larger reading
+    # comfortably reaches the bound with no slack to tune.
     def self.bounding_connect(host, port)
-      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      started_monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      started_realtime = Process.clock_gettime(Process::CLOCK_REALTIME)
       yield
     rescue StandardError => error
       bound = connect_timeout_seconds
       raise if bound.nil?
 
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
-      raise if elapsed < bound - CONNECT_TIMEOUT_SLACK_SECONDS
+      elapsed_monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_monotonic
+      elapsed_realtime = Process.clock_gettime(Process::CLOCK_REALTIME) - started_realtime
+      raise unless bound_reached?(elapsed_monotonic, elapsed_realtime, bound)
 
-      connect_timed_out!(host, port, elapsed, error)
+      connect_timed_out!(host, port, [elapsed_monotonic, elapsed_realtime].max, error)
     end
 
     # Did this driver actually OVERRIDE the contract method, or is it inheriting

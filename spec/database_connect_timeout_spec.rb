@@ -250,6 +250,59 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
         expect(Tina4::DatabaseAdapter.connect_timeout_whole_seconds).to eq(3)
       end
     end
+
+    it "makes the native option STRICTLY longer than the bound, not merely not-shorter" do
+      # bounding_connect runs no competing countdown - it waits for the driver
+      # to abort at the DRIVER's deadline and restates that failure. For that the
+      # driver's deadline has to land AFTER ours, so its option must be strictly
+      # greater than the bound. ceil gave equality for every whole-second bound,
+      # and the shipped default (10) is whole; equality is not separation. A
+      # >= assertion passes with that bug in place, which is why this asserts >.
+      ["0.4", "1", "2", "2.5", "10", "30"].each do |raw|
+        with_connect_timeout(raw) do
+          option = Tina4::DatabaseAdapter.connect_timeout_whole_seconds
+          expect(option).to be > raw.to_f,
+                            "a bound of #{raw}s got an option of #{option}s - the driver " \
+                            "can abort at or before our own deadline"
+        end
+      end
+    end
+  end
+
+  # The bound counts as reached on EITHER clock, because the driver uses the other.
+  describe ".bound_reached?" do
+    it "counts the ordinary case where the clocks agree and monotonic settles it" do
+      expect(Tina4::DatabaseAdapter.bound_reached?(2.0, 2.0, 2.0)).to be(true)
+      expect(Tina4::DatabaseAdapter.bound_reached?(2.5, 2.5, 2.0)).to be(true)
+    end
+
+    it "counts a bound reached on the REALTIME reading alone - the leak this fixes" do
+      # libpq measures connect_timeout on gettimeofday (CLOCK_REALTIME) while a
+      # duration in Ruby belongs on CLOCK_MONOTONIC. NTP can run realtime ahead,
+      # so realtime reaches the bound while a monotonic reading over the same
+      # connect is still short - by which point the driver has already aborted
+      # and returning false hands the caller libpq's bare "timeout expired".
+      expect(Tina4::DatabaseAdapter.bound_reached?(1.56, 2.03, 2.0)).to be(true)
+    end
+
+    it "is not fooled by a BACKWARD realtime step into hiding a real timeout" do
+      # A backward step leaves the realtime reading small or negative; trusting
+      # it alone would swallow an expiry that really took the whole bound, so the
+      # comparison keeps both and takes the larger.
+      expect(Tina4::DatabaseAdapter.bound_reached?(2.01, -30.0, 2.0)).to be(true)
+    end
+
+    it "does NOT count a failure faster than the bound on either clock" do
+      # A refusal, bad credentials, an unknown database - milliseconds on both
+      # clocks, and dressing one up as an expiry sends an operator hunting a
+      # network stall that never happened.
+      expect(Tina4::DatabaseAdapter.bound_reached?(0.001, 0.001, 2.0)).to be(false)
+      expect(Tina4::DatabaseAdapter.bound_reached?(1.999, 1.999, 2.0)).to be(false)
+    end
+
+    it "never counts anything when the bound is disabled (nil)" do
+      expect(Tina4::DatabaseAdapter.bound_reached?(9999.0, 9999.0, nil)).to be(false)
+    end
   end
 
   # ── PostgreSQL: libpq's own connect_timeout ─────────────────────────────────
