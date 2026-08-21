@@ -4,11 +4,10 @@
 <h1 align="center">Tina4 Ruby</h1>
 <h3 align="center">TINA4: The Intelligent Native Application 4ramework</h3>
 <p align="center"><em>Simple. Fast. Human. &nbsp;|&nbsp; Built for AI. Built for you.</em></p>
-<p align="center">98 built-in features. Zero runtime dependencies. One require, everything works.</p>
+<p align="center">Zero runtime dependencies. One require, everything works.</p>
 <p align="center">
   <a href="https://rubygems.org/gems/tina4ruby"><img src="https://img.shields.io/gem/v/tina4ruby?color=7b1fa2&label=RubyGems" alt="RubyGems"></a>
-  <img src="https://img.shields.io/badge/tests-2%2C508%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/features-98-blue" alt="Features">
+  <a href="https://github.com/tina4stack/tina4-ruby/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/tina4stack/tina4-ruby/test.yml?label=tests" alt="Tests"></a>
   <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero Deps">
   <a href="https://tina4.com"><img src="https://img.shields.io/badge/docs-tina4.com-7b1fa2" alt="Docs"></a>
 </p>
