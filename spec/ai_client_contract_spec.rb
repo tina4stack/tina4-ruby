@@ -90,10 +90,42 @@ RSpec.describe "ADR-0053 app-facing AI client" do
                   content_type = "text/event-stream"
                   "data: #{JSON.generate(type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello ' })}\n\n" \
                     "data: #{JSON.generate(type: 'content_block_delta', delta: { type: 'text_delta', text: 'world' })}\n\n" \
+                    "data: #{JSON.generate(type: 'message_delta', delta: { stop_reason: 'end_turn' })}\n\n" \
+                    "data: #{JSON.generate(type: 'message_stop')}\n\n"
+                when "/stream-openai-tools"
+                  content_type = "text/event-stream"
+                  # OpenAI tool_calls arrive as fragmented function.arguments
+                  # strings; the client buffers them per index and emits ONE
+                  # tool_call event when finish_reason=tool_calls fires.
+                  "data: #{JSON.generate(choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '' } }] } }])}\n\n" \
+                    "data: #{JSON.generate(choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"loc' } }] } }])}\n\n" \
+                    "data: #{JSON.generate(choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'ation":"Boston"}' } }] } }])}\n\n" \
+                    "data: #{JSON.generate(choices: [{ delta: {}, finish_reason: 'tool_calls' }])}\n\n" \
                     "data: [DONE]\n\n"
+                when "/stream-anthropic-tools"
+                  content_type = "text/event-stream"
+                  # Anthropic streams a content_block_start for the tool, then
+                  # input_json_delta fragments, then content_block_stop; the
+                  # client emits ONE tool_call event on stop.
+                  "data: #{JSON.generate(type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: {} })}\n\n" \
+                    "data: #{JSON.generate(type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"loc' })}\n\n" \
+                    "data: #{JSON.generate(type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: 'ation":"Boston"}' })}\n\n" \
+                    "data: #{JSON.generate(type: 'content_block_stop', index: 0)}\n\n" \
+                    "data: #{JSON.generate(type: 'message_delta', delta: { stop_reason: 'tool_use' })}\n\n" \
+                    "data: #{JSON.generate(type: 'message_stop')}\n\n"
                 when "/stream-partial"
                   content_type = "text/event-stream"
                   "data: #{JSON.generate(choices: [{ delta: { content: 'first' } }])}\n\n"
+                when "/stream-midstream-drop"
+                  content_type = "text/event-stream"
+                  # Send one delta then hang up before [DONE]. Net::HTTP sees
+                  # a Content-Length that never arrives -> transport failure
+                  # after we've already yielded one text_delta.
+                  extra["Content-Length"] = "9999"
+                  "data: #{JSON.generate(choices: [{ delta: { content: 'partial' } }])}\n\n"
+                when "/multimodal-echo"
+                  # Mirrors /openai but the test asserts the request body shape.
+                  JSON.generate(model: body["model"] || "fixture-model", choices: [{ message: { content: "ok" }, finish_reason: "stop" }], usage: {})
                 when "/retry"
                   if @counts[path] == 1
                     status = 429
@@ -201,15 +233,177 @@ RSpec.describe "ADR-0053 app-facing AI client" do
     expect(Tina4::Ai.embed(%w[one two])).to eq([[0.0, 0.25, 0.5], [1.0, 0.25, 0.5]])
   end
 
-  it "ai_stream_is_ordered_deltas" do
+  # ── ADR-0060: typed streaming events ────────────────────────────────────
+
+  it "ai-stream-text-deltas-order" do
     ENV["TINA4_AI_URL"] = @server.url("/stream-openai")
-    expect(Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a).to eq(["hello ", "world"])
-    ENV.update("TINA4_AI_PROVIDER" => "local", "TINA4_AI_MAX_RETRIES" => "1", "TINA4_AI_URL" => @server.url("/stream-partial"))
-    ENV.delete("TINA4_AI_KEY")
-    expect { Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a }.to raise_error(Tina4::AiParseError)
+    events = Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a
+    texts = events.select { |e| e[:type] == :text_delta }.map { |e| e[:text] }
+    expect(texts).to eq(["hello ", "world"])
+
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/stream-anthropic"))
+    events = Tina4::Ai.chat([{ role: "user", content: "hi" }], stream: true).to_a
+    texts = events.select { |e| e[:type] == :text_delta }.map { |e| e[:text] }
+    expect(texts).to eq(["hello ", "world"])
+  end
+
+  it "ai-stream-tool-call-aggregated-openai" do
+    ENV["TINA4_AI_URL"] = @server.url("/stream-openai-tools")
+    events = Tina4::Ai.chat([{ role: "user", content: "call it" }], stream: true).to_a
+    tool_calls = events.select { |e| e[:type] == :tool_call }
+    expect(tool_calls.length).to eq(1)
+    expect(tool_calls.first).to include(id: "call_1", name: "get_weather",
+                                        args: { "location" => "Boston" })
+    # Exactly one tool_call event -- fragmented args were aggregated, not
+    # emitted per fragment.
+    expect(events.count { |e| e[:type] == :tool_call }).to eq(1)
+  end
+
+  it "ai-stream-tool-call-aggregated-anthropic" do
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/stream-anthropic-tools"))
+    events = Tina4::Ai.chat([{ role: "user", content: "call it" }], stream: true).to_a
+    tool_calls = events.select { |e| e[:type] == :tool_call }
+    expect(tool_calls.length).to eq(1)
+    expect(tool_calls.first).to include(id: "toolu_1", name: "get_weather",
+                                        args: { "location" => "Boston" })
+  end
+
+  it "ai-stream-done-fires-once" do
+    ENV["TINA4_AI_URL"] = @server.url("/stream-openai")
+    events = Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a
+    done = events.select { |e| e[:type] == :done }
+    expect(done.length).to eq(1)
+    expect(done.first[:finish_reason]).to eq("stop")
+    # done is the LAST event.
+    expect(events.last[:type]).to eq(:done)
+
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/stream-anthropic"))
+    events = Tina4::Ai.chat([{ role: "user", content: "hi" }], stream: true).to_a
+    done = events.select { |e| e[:type] == :done }
+    expect(done.length).to eq(1)
+    expect(done.first[:finish_reason]).to eq("end_turn")
+    expect(events.last[:type]).to eq(:done)
+  end
+
+  it "ai-stream-error-instead-of-done-on-midstream-failure" do
+    ENV["TINA4_AI_URL"] = @server.url("/stream-partial")
+    events = Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a
+    # We got at least one text_delta, then no terminal SSE event -> :error.
+    expect(events.count { |e| e[:type] == :text_delta }).to be >= 1
+    expect(events.count { |e| e[:type] == :done }).to eq(0)
+    expect(events.last[:type]).to eq(:error)
+    expect(events.last[:message]).to be_a(String)
+  end
+
+  it "ai-stream-no-retry-after-first-event" do
+    ENV["TINA4_AI_MAX_RETRIES"] = "3"
+    ENV["TINA4_AI_URL"] = @server.url("/stream-partial")
+    Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a
+    # Once we yielded a delta, the client MUST NOT reissue the request even
+    # though the stream ended before [DONE] and retries are configured.
     expect(@server.counts["/stream-partial"]).to eq(1)
-    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key", "TINA4_AI_URL" => @server.url("/stream-anthropic"))
-    expect(Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a).to eq(["hello ", "world"])
+  end
+
+  # ── ADR-0060: multimodal content parts ──────────────────────────────────
+
+  it "ai-multimodal-text-part" do
+    ENV["TINA4_AI_URL"] = @server.url("/multimodal-echo")
+    Tina4::Ai.chat([{ role: "user",
+                      content: [{ type: "text", text: "hello" }] }])
+    sent = @server.requests.last[:body]
+    expect(sent["messages"].first["content"]).to eq([{ "type" => "text", "text" => "hello" }])
+  end
+
+  it "ai-multimodal-image-data-uri" do
+    ENV["TINA4_AI_URL"] = @server.url("/multimodal-echo")
+    data_uri = "data:image/png;base64,iVBORw0KGgoAAAA="
+    Tina4::Ai.chat([{ role: "user",
+                      content: [{ type: "text", text: "what is this?" },
+                                { type: "image", source: data_uri }] }])
+    parts = @server.requests.last[:body]["messages"].first["content"]
+    expect(parts.first).to eq("type" => "text", "text" => "what is this?")
+    expect(parts.last).to eq("type" => "image_url", "image_url" => { "url" => data_uri })
+  end
+
+  it "ai-multimodal-image-url" do
+    ENV["TINA4_AI_URL"] = @server.url("/multimodal-echo")
+    url = "https://example.com/cat.png"
+    Tina4::Ai.chat([{ role: "user",
+                      content: [{ type: "image", source: url }] }])
+    parts = @server.requests.last[:body]["messages"].first["content"]
+    expect(parts).to eq([{ "type" => "image_url", "image_url" => { "url" => url } }])
+  end
+
+  it "ai-multimodal-malformed-part-fails-config" do
+    ENV["TINA4_AI_URL"] = @server.url("/multimodal-echo")
+    # Missing text
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: [{ type: "text" }] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # Unknown type
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: [{ type: "video", source: "https://x/" }] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # Non-string text
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: [{ type: "text", text: 42 }] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # data URI without base64 marker
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: [{ type: "image", source: "data:image/png,abc" }] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # http URL (must be https or data)
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: [{ type: "image", source: "http://x/" }] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # Not a Hash part
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: ["hello"] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # Empty parts array
+    expect do
+      Tina4::Ai.chat([{ role: "user", content: [] }])
+    end.to raise_error(Tina4::AiConfigError)
+    # None of the requests reached the wire.
+    expect(@server.requests).to be_empty
+  end
+
+  it "ai-multimodal-openai-body-shape" do
+    ENV["TINA4_AI_URL"] = @server.url("/multimodal-echo")
+    data_uri = "data:image/jpeg;base64,ABCDEF=="
+    Tina4::Ai.chat([{ role: "user",
+                      content: [{ type: "text", text: "what is this?" },
+                                { type: "image", source: data_uri }] }])
+    body = @server.requests.last[:body]
+    expect(body["messages"]).to eq([{
+      "role" => "user",
+      "content" => [
+        { "type" => "text", "text" => "what is this?" },
+        { "type" => "image_url", "image_url" => { "url" => data_uri } }
+      ]
+    }])
+  end
+
+  it "ai-multimodal-anthropic-body-shape" do
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/anthropic"))
+    data_uri = "data:image/png;base64,ZXhhbXBsZQ=="
+    Tina4::Ai.chat([{ role: "user",
+                      content: [{ type: "text", text: "describe" },
+                                { type: "image", source: data_uri },
+                                { type: "image", source: "https://example.com/img.jpg" }] }])
+    body = @server.requests.last[:body]
+    parts = body["messages"].first["content"]
+    expect(parts[0]).to eq("type" => "text", "text" => "describe")
+    expect(parts[1]).to eq("type" => "image", "source" => {
+                            "type" => "base64", "media_type" => "image/png", "data" => "ZXhhbXBsZQ=="
+                          })
+    expect(parts[2]).to eq("type" => "image", "source" => {
+                            "type" => "url", "url" => "https://example.com/img.jpg"
+                          })
   end
 
   it "ai_configuration_precedence" do

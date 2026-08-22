@@ -6,6 +6,72 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.113
+
+Feature: streaming and multimodal AI, plus reusable `Api.stream` primitives
+(ADR-0060).
+
+### Api.stream primitives
+
+- `Tina4::API#stream_bytes(path, ...)` streams the response body as raw
+  chunks in transport order. Pass a block or take an Enumerator.
+- `Tina4::API#stream_lines(path, ...)` yields one UTF-8 String per LF- or
+  CRLF-terminated line; a trailing line without a newline is yielded on EOF;
+  multibyte sequences that split across chunks are buffered.
+- `Tina4::API#stream_sse(path, ...)` frames SSE events into
+  `{data:, event:, id:, retry:}` Hashes; blank line separates events;
+  `:` comment lines are dropped; multi-line `data:` fields are joined with
+  `\n`; the OpenAI `[DONE]` sentinel is delivered as the last event and the
+  iterator ends. Each primitive is layered on the one below it.
+- `Tina4::APIStreamError` (with `#status`) is raised when a stream opens
+  with a non-2xx HTTP status (pre-stream error, no bytes yielded).
+
+### Ai.chat streaming: typed events (breaking)
+
+- `Tina4::Ai.chat(messages, stream: true)` now yields typed event Hashes:
+  `{ type: :text_delta, text: ... }`, `{ type: :tool_call, id:, name:, args: }`,
+  `{ type: :done, finish_reason:, usage: nil }`, or
+  `{ type: :error, message:, code: nil }`. Text deltas fire per chunk;
+  OpenAI `tool_calls` fragments and Anthropic `input_json_delta` fragments
+  are aggregated and emitted as a single `tool_call` event; `done` fires
+  exactly once on the terminal wire signal; `error` replaces `done` on a
+  mid-stream failure. Malformed tool-call arguments JSON raises
+  `Tina4::AiParseError`.
+- The stream path is implemented on top of `Tina4::API#stream_sse`; there is
+  one SSE reader for the framework, shared between `Api` and `Ai`.
+- Migration for 3.13.101–3.13.112 callers: `for chunk in stream` becomes
+  `for event in stream; event[:text] if event[:type] == :text_delta; end`.
+  No shim (feedback_no_aliases, feedback_breaking_changes).
+
+### Ai.chat multimodal content
+
+- `message[:content]` accepts a String OR an Array of parts:
+  `{ type: "text", text: String }` and
+  `{ type: "image", source: "data:<mime>;base64,<payload>" }` or
+  `{ type: "image", source: "https://..." }` (also with symbol keys).
+- Parts are translated per provider before the request is sent:
+  OpenAI / local get `{ type: "image_url", image_url: { url } }`;
+  Anthropic gets `{ type: "image", source: { type: "base64", media_type, data } }`
+  for data URIs or `{ type: "image", source: { type: "url", url } }` for
+  https URLs.
+- Malformed parts (missing `text` or `source`, unknown `type`, non-string
+  values, a `data:` URI without `;base64,`, a plain `http:` URL) raise
+  `Tina4::AiConfigError` before any request is sent.
+
+### Tests
+
+- New `spec/api_stream_contract_spec.rb` with a real local TCP fixture
+  server exercising chunked transport, LF/CRLF line splitting, trailing
+  lines, multibyte-across-chunk-boundary buffering, and every SSE framing
+  case (single/multi-line/named/comment/blank/[DONE]/retry). Verifies the
+  request body reaches the server and that a transport drop raises.
+- Extended `spec/ai_client_contract_spec.rb` with `/stream-openai-tools`,
+  `/stream-anthropic-tools`, `/stream-midstream-drop`, and
+  `/multimodal-echo` cases proving typed events, tool-call aggregation on
+  both providers, one-and-only-one `done`, mid-stream error semantics,
+  no-retry-after-first-event, and the OpenAI/Anthropic body shapes for
+  multimodal parts.
+
 ## 3.13.107
 
 Feature: RBAC role and permission guards (parity across all four frameworks).

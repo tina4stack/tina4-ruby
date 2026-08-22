@@ -302,7 +302,181 @@ module Tina4
       end
     end
 
+    # ── Streaming primitives (ADR-0060 / 3.13.113) ─────────────────────────────
+    #
+    # Three cooperating primitives, each layered on the one below:
+    #   * stream_bytes  — raw response body chunks in the order the transport
+    #                     delivers them (no buffering, no framing).
+    #   * stream_lines  — one String per LF- or CRLF-terminated line, decoded as
+    #                     UTF-8. A trailing line without a newline is yielded on
+    #                     EOF. An incomplete UTF-8 sequence at a chunk boundary
+    #                     is buffered across chunks.
+    #   * stream_sse    — SSE-framed events {data:, event:, id:, retry:}. Blank
+    #                     line separates events; ":" comment lines are dropped;
+    #                     multi-line data: fields are joined with "\n"; the
+    #                     OpenAI [DONE] sentinel arrives as the last event
+    #                     (data == "[DONE]") and the iterator ends on the next
+    #                     EOF (the caller decides how to treat it).
+    #
+    # Ruby idiom: pass a block, OR call without a block to get an Enumerator.
+    # Every keyword arg (method:, body:, headers:, content_type:, timeout:,
+    # connect_timeout:) is optional and matches the send_request defaults.
+    # Aborting the iterator (break, StopIteration on Enumerator#next, GC) closes
+    # the underlying socket cleanly — Net::HTTP's block form releases it on any
+    # exit from the block.
+    #
+    # These are the SAME primitives Tina4::Ai.chat(stream: true) uses under the
+    # hood (ADR-0060 rule 5). Application code that streams HTTP anywhere (LLMs,
+    # log tails, event feeds, chunked downloads) reaches for these instead of
+    # hand-rolling a Net::HTTP + line-buffer + SSE-frame reader per app.
+
+    def stream_bytes(path, method: "GET", body: nil, headers: {},
+                     content_type: nil, timeout: nil, connect_timeout: nil, &block)
+      unless block_given?
+        return Enumerator.new do |y|
+          stream_bytes(path, method: method, body: body, headers: headers,
+                       content_type: content_type, timeout: timeout,
+                       connect_timeout: connect_timeout) { |chunk| y << chunk }
+        end
+      end
+      open_stream(path, method, body, headers, content_type, timeout, connect_timeout, &block)
+    end
+
+    def stream_lines(path, method: "GET", body: nil, headers: {},
+                     content_type: nil, timeout: nil, connect_timeout: nil, &block)
+      unless block_given?
+        return Enumerator.new do |y|
+          stream_lines(path, method: method, body: body, headers: headers,
+                       content_type: content_type, timeout: timeout,
+                       connect_timeout: connect_timeout) { |line| y << line }
+        end
+      end
+      buffer = String.new(encoding: Encoding::BINARY)
+      stream_bytes(path, method: method, body: body, headers: headers,
+                   content_type: content_type, timeout: timeout,
+                   connect_timeout: connect_timeout) do |chunk|
+        buffer << chunk.b
+        while (index = buffer.index("\n".b))
+          raw = buffer.byteslice(0, index)
+          raw = raw.byteslice(0, raw.bytesize - 1) if raw.bytesize.positive? && raw.getbyte(raw.bytesize - 1) == 13
+          buffer = buffer.byteslice(index + 1, buffer.bytesize - index - 1) || String.new(encoding: Encoding::BINARY)
+          block.call(decode_utf8(raw))
+        end
+      end
+      block.call(decode_utf8(buffer)) unless buffer.empty?
+    end
+
+    def stream_sse(path, method: "GET", body: nil, headers: {},
+                   content_type: nil, timeout: nil, connect_timeout: nil, &block)
+      unless block_given?
+        return Enumerator.new do |y|
+          stream_sse(path, method: method, body: body, headers: headers,
+                     content_type: content_type, timeout: timeout,
+                     connect_timeout: connect_timeout) { |event| y << event }
+        end
+      end
+      data_parts = []
+      event_name = nil
+      event_id = nil
+      retry_ms = nil
+      dispatch = lambda do
+        return if data_parts.empty? && event_name.nil? && event_id.nil? && retry_ms.nil?
+
+        payload = { data: data_parts.join("\n") }
+        payload[:event] = event_name if event_name
+        payload[:id] = event_id if event_id
+        payload[:retry] = retry_ms if retry_ms
+        block.call(payload)
+        data_parts = []
+        event_name = nil
+        event_id = nil
+        retry_ms = nil
+      end
+      stream_lines(path, method: method, body: body, headers: headers,
+                   content_type: content_type, timeout: timeout,
+                   connect_timeout: connect_timeout) do |line|
+        if line.empty?
+          dispatch.call
+        elsif line.start_with?(":")
+          # comment — ignored per the SSE spec
+        else
+          field, sep, value = line.partition(":")
+          field = line if sep.empty?
+          value = "" if sep.empty?
+          value = value[1..] if value.start_with?(" ")
+          case field
+          when "data"  then data_parts << value
+          when "event" then event_name = value
+          when "id"    then event_id = value
+          when "retry"
+            begin
+              retry_ms = Integer(value)
+            rescue ArgumentError, TypeError
+              retry_ms = nil
+            end
+          end
+        end
+      end
+      dispatch.call
+    end
+
     private
+
+    # Force UTF-8 on a raw line, tolerating a mid-multibyte tail (which
+    # stream_lines already buffered across chunks — the trailing-EOF flush is
+    # the only place an incomplete sequence can slip through, and we mark it
+    # replaceable rather than crash the whole stream).
+    def decode_utf8(bytes)
+      string = bytes.dup.force_encoding(Encoding::UTF_8)
+      string.valid_encoding? ? string : string.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+    end
+
+    # Open a single streaming HTTP request and yield body chunks to the block.
+    # Non-2xx responses raise APIStreamError (with the status code); a transport
+    # failure (DNS, connection refused, mid-stream drop) also raises. Net::HTTP's
+    # block form releases the socket when this method returns for any reason —
+    # including a break/StopIteration propagated up from the caller.
+    def open_stream(path, method, body, headers, content_type, timeout, connect_timeout)
+      uri = build_uri(path)
+      request_class = case method.to_s.upcase
+                      when "GET"    then Net::HTTP::Get
+                      when "POST"   then Net::HTTP::Post
+                      when "PUT"    then Net::HTTP::Put
+                      when "PATCH"  then Net::HTTP::Patch
+                      when "DELETE" then Net::HTTP::Delete
+                      when "HEAD"   then Net::HTTP::Head
+                      else raise ArgumentError, "unsupported stream method: #{method}"
+                      end
+      request = request_class.new(uri)
+      apply_headers(request, headers || {})
+      cookie = cookie_header
+      request["Cookie"] = cookie if @cookies_enabled && cookie
+      if body
+        request.body = body.is_a?(String) ? body : JSON.generate(body)
+        request["Content-Type"] = content_type if content_type
+      elsif content_type
+        request["Content-Type"] = content_type
+      end
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == "https"
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE if @verify_ssl == false
+      http.open_timeout = connect_timeout || @timeout
+      http.read_timeout = timeout || @timeout
+      http.write_timeout = (timeout || @timeout) if http.respond_to?(:write_timeout=)
+
+      http.start do |conn|
+        conn.request(request) do |response|
+          status = response.code.to_i
+          unless (200..299).cover?(status)
+            response.read_body { |_chunk| } # drain the error body
+            raise APIStreamError.new("stream returned HTTP #{status}", status)
+          end
+          store_cookies(response.get_fields("Set-Cookie"))
+          response.read_body { |chunk| yield chunk }
+        end
+      end
+    end
 
     def build_uri(path, params = {})
       url = "#{@base_url}#{path}"
@@ -611,6 +785,21 @@ module Tina4
       else
         APIResponse.new(status: 0, body: nil, headers: {}, error: message, path: path)
       end
+    end
+  end
+
+  # Raised when a streaming request (stream_bytes / stream_lines / stream_sse)
+  # opens successfully but the HTTP status is not 2xx. The buffered `execute`
+  # path folds an error status into an APIResponse; a streaming caller has no
+  # response object to inspect, so the error is raised at the moment the status
+  # is known -- before any bytes are yielded (the pre-stream error contract of
+  # ADR-0060). Carries the status code for the caller to switch on.
+  class APIStreamError < StandardError
+    attr_reader :status
+
+    def initialize(message, status = nil)
+      super(message)
+      @status = status
     end
   end
 
