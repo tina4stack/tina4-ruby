@@ -6,6 +6,52 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.114
+
+Feature: the tool loop closes — `Tina4::Ai.chat` accepts `tools:` and
+`tool_choice:`, and validates tool-result turns in either OpenAI or Anthropic
+form (ADR-0061).
+
+### Send-side additions
+
+- `Tina4::Ai.chat(messages, tools: [...])` translates the neutral tool shape
+  (`{name:, description:, parameters: <JSON-Schema Hash>}`) into each
+  provider's outbound body: OpenAI/local as
+  `[{type: "function", function: {name, description, parameters}}]`;
+  Anthropic as `[{name, description, input_schema}]` (`parameters` renamed).
+  Missing `tools:` omits the field entirely.
+- `Tina4::Ai.chat(..., tool_choice: ...)` accepts `'auto'`, `'none'`,
+  `'required'`, or `{name: 'x'}` (String or Symbol; String or Symbol keys on
+  the Hash). Translation per ADR-0061: `'auto'` → OpenAI `"auto"` / Anthropic
+  `{type: "auto"}`; `'none'` → OpenAI `"none"` / Anthropic OMITS `tools`;
+  `'required'` → OpenAI `"required"` / Anthropic `{type: "any"}`;
+  `{name: 'x'}` → OpenAI `{type: "function", function: {name: "x"}}` /
+  Anthropic `{type: "tool", name: "x"}`.
+- `validate_messages` accepts the two tool-result forms: OpenAI
+  `{role: "tool", tool_call_id:, content:}` and Anthropic
+  `{role: "user", content: [{type: "tool_result", tool_use_id:, content:}]}`.
+  Malformed shapes raise `Tina4::AiConfigError` before any bytes hit the
+  wire.
+- The client normalises whichever form the caller sent to whichever form the
+  configured provider expects, so an agent loop written against `Ai.chat` is
+  provider-neutral. An assistant message with `tool_calls:` and `nil` content
+  now validates too (the OpenAI wire form for a model's tool invocation).
+
+### Tests
+
+`spec/ai_client_contract_spec.rb` grows by 13 fixture-mapped cases across four
+groups: `ai-tools-openai-body-shape`, `ai-tools-anthropic-body-shape`,
+`ai-tools-parameters-passthrough-jsonschema`, `ai-tool-choice-auto`,
+`ai-tool-choice-none`, `ai-tool-choice-required`, `ai-tool-choice-named`,
+`ai-tool-result-openai-form-passthrough`,
+`ai-tool-result-anthropic-form-passthrough`,
+`ai-tool-result-openai-to-anthropic-translation`,
+`ai-tool-result-anthropic-to-openai-translation`,
+`ai-agent-loop-openai-round-trip`, `ai-agent-loop-anthropic-round-trip`. The
+inline `AiContractServer` gains `/tool-echo-openai`, `/tool-echo-anthropic`,
+`/agent-openai`, and `/agent-anthropic` endpoints so the full loop is proven
+against real sockets, no mocks.
+
 ## 3.13.113
 
 Feature: streaming and multimodal AI, plus reusable `Api.stream` primitives

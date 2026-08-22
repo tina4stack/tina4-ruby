@@ -126,6 +126,46 @@ RSpec.describe "ADR-0053 app-facing AI client" do
                 when "/multimodal-echo"
                   # Mirrors /openai but the test asserts the request body shape.
                   JSON.generate(model: body["model"] || "fixture-model", choices: [{ message: { content: "ok" }, finish_reason: "stop" }], usage: {})
+                when "/tool-echo-openai"
+                  # OpenAI-shape non-streaming echo — the tests only assert
+                  # the outbound request body.
+                  JSON.generate(model: body["model"] || "fixture-model", choices: [{ message: { content: "ok" }, finish_reason: "stop" }], usage: {})
+                when "/tool-echo-anthropic"
+                  # Anthropic-shape non-streaming echo.
+                  JSON.generate(model: body["model"] || "fixture-model", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 })
+                when "/agent-openai"
+                  # Full round-trip: first call (no tool result yet) streams
+                  # ONE tool_call; second call (tool result appended) streams
+                  # the final text_delta + done. Both responses are OpenAI SSE.
+                  content_type = "text/event-stream"
+                  has_tool_result = (body["messages"] || []).any? { |m| m.is_a?(Hash) && m["role"] == "tool" }
+                  if has_tool_result
+                    "data: #{JSON.generate(choices: [{ delta: { content: "It is sunny in Boston." } }])}\n\n" \
+                      "data: #{JSON.generate(choices: [{ delta: {}, finish_reason: "stop" }])}\n\n" \
+                      "data: [DONE]\n\n"
+                  else
+                    "data: #{JSON.generate(choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"Boston"}' } }] } }])}\n\n" \
+                      "data: #{JSON.generate(choices: [{ delta: {}, finish_reason: "tool_calls" }])}\n\n" \
+                      "data: [DONE]\n\n"
+                  end
+                when "/agent-anthropic"
+                  # Same round-trip against the Anthropic SSE shape.
+                  content_type = "text/event-stream"
+                  has_tool_result = (body["messages"] || []).any? do |m|
+                    m.is_a?(Hash) && m["role"] == "user" && m["content"].is_a?(Array) &&
+                      m["content"].any? { |p| p.is_a?(Hash) && p["type"] == "tool_result" }
+                  end
+                  if has_tool_result
+                    "data: #{JSON.generate(type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "It is sunny in Boston." })}\n\n" \
+                      "data: #{JSON.generate(type: "message_delta", delta: { stop_reason: "end_turn" })}\n\n" \
+                      "data: #{JSON.generate(type: "message_stop")}\n\n"
+                  else
+                    "data: #{JSON.generate(type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "get_weather", input: {} })}\n\n" \
+                      "data: #{JSON.generate(type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"city":"Boston"}' })}\n\n" \
+                      "data: #{JSON.generate(type: "content_block_stop", index: 0)}\n\n" \
+                      "data: #{JSON.generate(type: "message_delta", delta: { stop_reason: "tool_use" })}\n\n" \
+                      "data: #{JSON.generate(type: "message_stop")}\n\n"
+                  end
                 when "/retry"
                   if @counts[path] == 1
                     status = 429
@@ -446,5 +486,271 @@ RSpec.describe "ADR-0053 app-facing AI client" do
   it "ai_zero_runtime_dependencies_real_socket" do
     ENV["TINA4_AI_URL"] = @server.url("/malformed")
     expect { Tina4::Ai.chat([{ role: "user", content: "hello" }]) }.to raise_error(Tina4::AiParseError)
+  end
+
+  # ── ADR-0061: outbound tools declaration ────────────────────────────────
+
+  it "ai-tools-openai-body-shape" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    tools = [{
+      name: "get_weather",
+      description: "Get the weather",
+      parameters: { type: "object",
+                    properties: { city: { type: "string" } },
+                    required: ["city"] }
+    }]
+    Tina4::Ai.chat([{ role: "user", content: "weather?" }], tools: tools)
+    sent = @server.requests.last[:body]
+    expect(sent["tools"]).to eq([{
+      "type" => "function",
+      "function" => {
+        "name" => "get_weather",
+        "description" => "Get the weather",
+        "parameters" => { "type" => "object",
+                          "properties" => { "city" => { "type" => "string" } },
+                          "required" => ["city"] }
+      }
+    }])
+  end
+
+  it "ai-tools-anthropic-body-shape" do
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    tools = [{
+      name: "get_weather",
+      description: "Get the weather",
+      parameters: { type: "object",
+                    properties: { city: { type: "string" } },
+                    required: ["city"] }
+    }]
+    Tina4::Ai.chat([{ role: "user", content: "weather?" }], tools: tools)
+    sent = @server.requests.last[:body]
+    expect(sent["tools"]).to eq([{
+      "name" => "get_weather",
+      "description" => "Get the weather",
+      "input_schema" => { "type" => "object",
+                          "properties" => { "city" => { "type" => "string" } },
+                          "required" => ["city"] }
+    }])
+  end
+
+  it "ai-tools-parameters-passthrough-jsonschema" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    schema = {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "search text" },
+        limit: { type: "integer", minimum: 1, maximum: 50, default: 10 },
+        filters: {
+          type: "object",
+          properties: { since: { type: "string", format: "date-time" } },
+          additionalProperties: false
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+    Tina4::Ai.chat([{ role: "user", content: "find" }],
+                   tools: [{ name: "search", description: "run a search", parameters: schema }])
+    sent_params = @server.requests.last[:body]["tools"].first["function"]["parameters"]
+    expect(sent_params).to eq(JSON.parse(JSON.generate(schema)))
+  end
+
+  # ── ADR-0061: tool_choice mode translation ──────────────────────────────
+
+  it "ai-tool-choice-auto" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+                   tool_choice: "auto")
+    expect(@server.requests.last[:body]["tool_choice"]).to eq("auto")
+
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+                   tool_choice: :auto)
+    expect(@server.requests.last[:body]["tool_choice"]).to eq("type" => "auto")
+  end
+
+  it "ai-tool-choice-none" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+                   tool_choice: "none")
+    body = @server.requests.last[:body]
+    expect(body["tool_choice"]).to eq("none")
+    expect(body["tools"]).to be_a(Array)   # OpenAI keeps the tools list even when tool_choice is "none"
+
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+                   tool_choice: "none")
+    body = @server.requests.last[:body]
+    # Anthropic has no "none" — the whole tool surface is omitted.
+    expect(body).not_to have_key("tools")
+    expect(body).not_to have_key("tool_choice")
+  end
+
+  it "ai-tool-choice-required" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+                   tool_choice: "required")
+    expect(@server.requests.last[:body]["tool_choice"]).to eq("required")
+
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+                   tool_choice: "required")
+    expect(@server.requests.last[:body]["tool_choice"]).to eq("type" => "any")
+  end
+
+  it "ai-tool-choice-named" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "get_weather", description: "w", parameters: { type: "object" } }],
+                   tool_choice: { name: "get_weather" })
+    expect(@server.requests.last[:body]["tool_choice"]).to eq(
+      "type" => "function", "function" => { "name" => "get_weather" }
+    )
+
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    Tina4::Ai.chat([{ role: "user", content: "hi" }],
+                   tools: [{ name: "get_weather", description: "w", parameters: { type: "object" } }],
+                   tool_choice: { "name" => "get_weather" })
+    expect(@server.requests.last[:body]["tool_choice"]).to eq(
+      "type" => "tool", "name" => "get_weather"
+    )
+  end
+
+  # ── ADR-0061: tool-result message shape ─────────────────────────────────
+
+  it "ai-tool-result-openai-form-passthrough" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    Tina4::Ai.chat([
+      { role: "user", content: "weather?" },
+      { role: "tool", tool_call_id: "call_1", content: "sunny 24C" }
+    ])
+    messages = @server.requests.last[:body]["messages"]
+    expect(messages.last).to eq(
+      "role" => "tool", "tool_call_id" => "call_1", "content" => "sunny 24C"
+    )
+  end
+
+  it "ai-tool-result-anthropic-form-passthrough" do
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    Tina4::Ai.chat([
+      { role: "user", content: "weather?" },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "sunny 24C" }] }
+    ])
+    messages = @server.requests.last[:body]["messages"]
+    expect(messages.last).to eq(
+      "role" => "user",
+      "content" => [{ "type" => "tool_result", "tool_use_id" => "toolu_1", "content" => "sunny 24C" }]
+    )
+  end
+
+  it "ai-tool-result-openai-to-anthropic-translation" do
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/tool-echo-anthropic"))
+    Tina4::Ai.chat([
+      { role: "user", content: "weather?" },
+      { role: "tool", tool_call_id: "call_1", content: "sunny 24C" }
+    ])
+    messages = @server.requests.last[:body]["messages"]
+    # OpenAI-form tool message was translated into an Anthropic user turn
+    # carrying a tool_result part.
+    expect(messages.last).to eq(
+      "role" => "user",
+      "content" => [{ "type" => "tool_result", "tool_use_id" => "call_1", "content" => "sunny 24C" }]
+    )
+    expect(messages.none? { |m| m["role"] == "tool" }).to be(true)
+  end
+
+  it "ai-tool-result-anthropic-to-openai-translation" do
+    ENV["TINA4_AI_URL"] = @server.url("/tool-echo-openai")
+    Tina4::Ai.chat([
+      { role: "user", content: "weather?" },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "sunny 24C" }] }
+    ])
+    messages = @server.requests.last[:body]["messages"]
+    # Anthropic user+tool_result turn was translated into a flat OpenAI tool
+    # message with the tool_call_id set to the tool_use_id.
+    expect(messages.last).to eq(
+      "role" => "tool", "tool_call_id" => "toolu_1", "content" => "sunny 24C"
+    )
+    # And there is no leftover user message with a tool_result content part.
+    expect(messages.none? { |m| m["role"] == "user" && m["content"].is_a?(Array) && m["content"].any? { |p| p["type"] == "tool_result" } }).to be(true)
+  end
+
+  # ── ADR-0061: full agent-loop round-trip ────────────────────────────────
+
+  it "ai-agent-loop-openai-round-trip" do
+    ENV["TINA4_AI_URL"] = @server.url("/agent-openai")
+    tools = [{ name: "get_weather", description: "Get the weather",
+               parameters: { type: "object",
+                             properties: { city: { type: "string" } },
+                             required: ["city"] } }]
+
+    messages = [{ role: "user", content: "what is the weather in Boston?" }]
+
+    # Turn 1 — send messages + tools; the model streams ONE tool_call and done.
+    events = Tina4::Ai.chat(messages, stream: true, tools: tools).to_a
+    tool_call = events.find { |e| e[:type] == :tool_call }
+    expect(tool_call).to include(id: "call_1", name: "get_weather", args: { "city" => "Boston" })
+    expect(events.last[:type]).to eq(:done)
+
+    # Caller "runs" the tool locally.
+    result = "sunny 24C"
+
+    # Turn 2 — append the assistant tool_calls message + tool result, resend.
+    messages << { role: "assistant", content: nil,
+                  tool_calls: [{ id: tool_call[:id], type: "function",
+                                 function: { name: tool_call[:name], arguments: JSON.generate(tool_call[:args]) } }] }
+    messages << { role: "tool", tool_call_id: tool_call[:id], content: result }
+
+    events2 = Tina4::Ai.chat(messages, stream: true, tools: tools).to_a
+    text = events2.select { |e| e[:type] == :text_delta }.map { |e| e[:text] }.join
+    expect(text).to eq("It is sunny in Boston.")
+    expect(events2.last[:type]).to eq(:done)
+    expect(events2.last[:finish_reason]).to eq("stop")
+
+    # And the fixture server saw both turns.
+    expect(@server.counts["/agent-openai"]).to eq(2)
+  end
+
+  it "ai-agent-loop-anthropic-round-trip" do
+    ENV.update("TINA4_AI_PROVIDER" => "anthropic", "TINA4_AI_KEY" => "hosted-key",
+               "TINA4_AI_URL" => @server.url("/agent-anthropic"))
+    tools = [{ name: "get_weather", description: "Get the weather",
+               parameters: { type: "object",
+                             properties: { city: { type: "string" } },
+                             required: ["city"] } }]
+
+    messages = [{ role: "user", content: "what is the weather in Boston?" }]
+
+    events = Tina4::Ai.chat(messages, stream: true, tools: tools).to_a
+    tool_call = events.find { |e| e[:type] == :tool_call }
+    expect(tool_call).to include(id: "toolu_1", name: "get_weather", args: { "city" => "Boston" })
+    expect(events.last[:type]).to eq(:done)
+
+    result = "sunny 24C"
+
+    # Anthropic-form return: append a user message with a tool_result part.
+    messages << { role: "user",
+                  content: [{ type: "tool_result", tool_use_id: tool_call[:id], content: result }] }
+
+    events2 = Tina4::Ai.chat(messages, stream: true, tools: tools).to_a
+    text = events2.select { |e| e[:type] == :text_delta }.map { |e| e[:text] }.join
+    expect(text).to eq("It is sunny in Boston.")
+    expect(events2.last[:type]).to eq(:done)
+    expect(events2.last[:finish_reason]).to eq("end_turn")
+
+    expect(@server.counts["/agent-anthropic"]).to eq(2)
   end
 end

@@ -42,11 +42,20 @@ module Tina4
       # was a deliberately breaking change (see ADR-0060 §7) so an agent loop
       # could observe tool_calls and finish_reason without hand-rolled SSE
       # parsing per app.
+      #
+      # ADR-0061 adds the SEND half of the agent loop:
+      # - tools: [{name:, description:, parameters:}]  (parameters is JSON-Schema)
+      # - tool_choice: 'auto' | 'none' | 'required' | {name: '...'}
+      # - tool-result turns accepted in either OpenAI or Anthropic form; the
+      #   client normalises to whichever the current provider expects.
       def chat(messages, model: nil, temperature: nil, max_tokens: nil,
-               stream: false, timeout: nil, provider: nil)
+               stream: false, timeout: nil, provider: nil,
+               tools: nil, tool_choice: nil)
         validate_messages(messages)
+        validate_tools(tools)
+        validate_tool_choice(tool_choice)
         config = resolve_config("chat", model, timeout, provider)
-        body = chat_body(config, messages, temperature, max_tokens, stream)
+        body = chat_body(config, messages, temperature, max_tokens, stream, tools, tool_choice)
         return stream_events(config, headers(config), body) if stream
 
         normalize_chat(config[:provider], request_json(config, headers(config), body))
@@ -95,11 +104,29 @@ module Tina4
           raise AiConfigError, "AI messages must be objects" unless message.is_a?(Hash)
 
           role = (message[:role] || message["role"]).to_s
-          unless %w[system user assistant].include?(role)
+          unless %w[system user assistant tool].include?(role)
             raise AiConfigError, "AI messages must contain supported roles"
           end
 
+          if role == "tool"
+            # OpenAI-form tool-result message (ADR-0061).
+            tool_call_id = message[:tool_call_id] || message["tool_call_id"]
+            unless tool_call_id.is_a?(String) && !tool_call_id.empty?
+              raise AiConfigError, "AI tool message must have a string tool_call_id"
+            end
+            content = message.key?(:content) ? message[:content] : message["content"]
+            raise AiConfigError, "AI tool message must have a string content" unless content.is_a?(String)
+            next
+          end
+
           content = message.key?(:content) ? message[:content] : message["content"]
+          # An assistant message carrying tool_calls may have nil content
+          # (that is how the OpenAI wire form encodes the model's tool
+          # invocation). Callers append this before the tool result.
+          if content.nil? && role == "assistant" && (message[:tool_calls] || message["tool_calls"])
+            next
+          end
+
           validate_content(content)
         end
       end
@@ -132,9 +159,51 @@ module Tina4
           elsif !source.start_with?("https://")
             raise AiConfigError, "AI image source must be a data:<mime>;base64,<data> URI or an https:// URL"
           end
+        when "tool_result"
+          # Anthropic-form tool-result part (ADR-0061).
+          tool_use_id = part[:tool_use_id] || part["tool_use_id"]
+          unless tool_use_id.is_a?(String) && !tool_use_id.empty?
+            raise AiConfigError, "AI tool_result part must have a string tool_use_id"
+          end
+          content = part.key?(:content) ? part[:content] : part["content"]
+          raise AiConfigError, "AI tool_result part must have a string content" unless content.is_a?(String)
         else
-          raise AiConfigError, "AI content part type must be 'text' or 'image'"
+          raise AiConfigError, "AI content part type must be 'text', 'image', or 'tool_result'"
         end
+      end
+
+      # ── tools + tool_choice validation (ADR-0061) ──────────────────────────
+
+      def validate_tools(tools)
+        return if tools.nil?
+
+        raise AiConfigError, "AI tools must be an array" unless tools.is_a?(Array)
+
+        tools.each do |tool|
+          raise AiConfigError, "Each AI tool must be an object" unless tool.is_a?(Hash)
+
+          name = tool[:name] || tool["name"]
+          raise AiConfigError, "AI tool must have a string name" unless name.is_a?(String) && !name.empty?
+
+          params = tool[:parameters] || tool["parameters"]
+          raise AiConfigError, "AI tool must have a JSON-Schema parameters object" unless params.is_a?(Hash)
+        end
+      end
+
+      def validate_tool_choice(tool_choice)
+        return if tool_choice.nil?
+
+        if tool_choice.is_a?(Hash)
+          name = tool_choice[:name] || tool_choice["name"]
+          return if name.is_a?(String) && !name.empty?
+
+          raise AiConfigError, "AI tool_choice {name:} must have a non-empty string name"
+        end
+
+        value = tool_choice.to_s
+        return if %w[auto none required].include?(value)
+
+        raise AiConfigError, "AI tool_choice must be 'auto', 'none', 'required', or {name: 'x'}"
       end
 
       # ── configuration ──────────────────────────────────────────────────────
@@ -208,13 +277,9 @@ module Tina4
 
       # ── request body ───────────────────────────────────────────────────────
 
-      def chat_body(config, messages, temperature, max_tokens, stream)
+      def chat_body(config, messages, temperature, max_tokens, stream, tools = nil, tool_choice = nil)
         provider = config[:provider]
-        normalized = messages.map do |message|
-          role = (message[:role] || message["role"]).to_s
-          content = message.key?(:content) ? message[:content] : message["content"]
-          { role: role, content: translate_content(provider, role, content) }
-        end
+        normalized = normalize_messages_for_provider(provider, messages)
         body = { model: config[:model], messages: normalized, stream: stream }
         body[:temperature] = temperature unless temperature.nil?
         body[:max_tokens] = max_tokens unless max_tokens.nil?
@@ -224,7 +289,139 @@ module Tina4
           body[:max_tokens] = max_tokens || 1024
           body[:system] = system_texts.join("\n\n") unless system_texts.empty?
         end
+        apply_tools(body, provider, tools, tool_choice)
         body
+      end
+
+      # Normalise the caller's message list to the provider-native shape.
+      # Tool-result turns are translated between OpenAI form
+      # ({role: 'tool', tool_call_id, content}) and Anthropic form
+      # ({role: 'user', content: [{type: 'tool_result', tool_use_id, content}]})
+      # so the caller's agent loop never has to fork on TINA4_AI_PROVIDER
+      # (ADR-0061). Anthropic-form user messages carrying multiple
+      # tool_result parts fan out to N OpenAI tool messages on the wire.
+      def normalize_messages_for_provider(provider, messages)
+        messages.flat_map { |message| normalize_one_message(provider, message) }
+      end
+
+      def normalize_one_message(provider, message)
+        role = (message[:role] || message["role"]).to_s
+        content = message.key?(:content) ? message[:content] : message["content"]
+
+        if role == "tool"
+          tool_call_id = message[:tool_call_id] || message["tool_call_id"]
+          return translate_openai_tool_message(provider, tool_call_id, content)
+        end
+
+        if role == "assistant" && content.nil?
+          tool_calls = message[:tool_calls] || message["tool_calls"]
+          return [{ role: "assistant", content: nil, tool_calls: tool_calls }]
+        end
+
+        if role == "user" && content.is_a?(Array)
+          tool_result_parts = content.select { |part| part.is_a?(Hash) && content_part_type(part) == "tool_result" }
+          unless tool_result_parts.empty?
+            if tool_result_parts.length != content.length
+              raise AiConfigError, "AI tool_result parts cannot be mixed with other content parts in one message"
+            end
+            return translate_anthropic_tool_results(provider, tool_result_parts)
+          end
+        end
+
+        [{ role: role, content: translate_content(provider, role, content) }]
+      end
+
+      def content_part_type(part)
+        (part[:type] || part["type"]).to_s
+      end
+
+      def translate_openai_tool_message(provider, tool_call_id, content)
+        if provider == "anthropic"
+          [{ role: "user",
+             content: [{ type: "tool_result", tool_use_id: tool_call_id, content: content }] }]
+        else
+          [{ role: "tool", tool_call_id: tool_call_id, content: content }]
+        end
+      end
+
+      def translate_anthropic_tool_results(provider, parts)
+        if provider == "anthropic"
+          [{ role: "user",
+             content: parts.map do |part|
+               { type: "tool_result",
+                 tool_use_id: part[:tool_use_id] || part["tool_use_id"],
+                 content: part[:content] || part["content"] }
+             end }]
+        else
+          parts.map do |part|
+            { role: "tool",
+              tool_call_id: part[:tool_use_id] || part["tool_use_id"],
+              content: part[:content] || part["content"] }
+          end
+        end
+      end
+
+      # ── tools translation (ADR-0061) ───────────────────────────────────────
+
+      def apply_tools(body, provider, tools, tool_choice)
+        return body if tools.nil? && tool_choice.nil?
+
+        # Anthropic has no "none" — the equivalent is to omit tools entirely,
+        # AND we do not emit a tool_choice field either.
+        if provider == "anthropic" && tool_choice_is_string?(tool_choice, "none")
+          return body
+        end
+
+        if tools.is_a?(Array) && !tools.empty?
+          body[:tools] = translate_tools(provider, tools)
+        end
+
+        unless tool_choice.nil?
+          body[:tool_choice] = translate_tool_choice(provider, tool_choice)
+        end
+
+        body
+      end
+
+      def tool_choice_is_string?(tool_choice, value)
+        return false if tool_choice.nil? || tool_choice.is_a?(Hash)
+
+        tool_choice.to_s == value
+      end
+
+      def translate_tools(provider, tools)
+        if provider == "anthropic"
+          tools.map do |tool|
+            { name: tool[:name] || tool["name"],
+              description: tool[:description] || tool["description"],
+              input_schema: tool[:parameters] || tool["parameters"] }
+          end
+        else
+          tools.map do |tool|
+            { type: "function",
+              function: { name: tool[:name] || tool["name"],
+                          description: tool[:description] || tool["description"],
+                          parameters: tool[:parameters] || tool["parameters"] } }
+          end
+        end
+      end
+
+      def translate_tool_choice(provider, tool_choice)
+        if tool_choice.is_a?(Hash)
+          name = tool_choice[:name] || tool_choice["name"]
+          return provider == "anthropic" ? { type: "tool", name: name } : { type: "function", function: { name: name } }
+        end
+
+        value = tool_choice.to_s
+        if provider == "anthropic"
+          case value
+          when "auto"     then { type: "auto" }
+          when "required" then { type: "any" }
+          # "none" was already handled by apply_tools (returns before us).
+          end
+        else
+          value
+        end
       end
 
       # Anthropic's `system` field is a plain string. If the caller passed a
