@@ -15,7 +15,7 @@ The full discipline lives in `.claude/skills/tina4-maintainer/SKILL.md`; this bl
 
 # Tina4 Ruby
 
-Version 3.13.115 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
+Version 3.13.116 - TINA4: The Intelligent Native Application 4ramework. Simple. Fast. Human. Built for AI. Built for you. See https://tina4.com for full documentation.
 
 ## Build & Test
 

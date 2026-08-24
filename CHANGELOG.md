@@ -6,6 +6,51 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.116
+
+Cooperative service-runner shutdown + version-contract test hardening.
+Parity with tina4-python #118, tina4-nodejs #58, and the tina4-php
+port landing in this same release.
+
+### ServiceRunner.stop calls the registered Tina4::Service instance
+
+Before: `Tina4::ServiceRunner.stop(name)` only flipped `ctx.running =
+false` on the ServiceContext and joined the worker thread; a
+class-based Tina4::Service subclass whose #run looped on
+`until should_stop?` never exited cooperatively because @running
+(the ivar should_stop? reads) was untouched — the thread was killed
+by thread.join(5) timeout, leaving the run loop still spinning.
+
+Fix: BEFORE thread.join(5), iterate the target names and for each
+@registry entry that carries an :instance responding to #stop,
+call entry[:instance].stop cooperatively. Wrapped so a misbehaving
+user-override cannot strand siblings. ctx.running-based
+block-handler daemons keep working (fix is additive).
+
+The docstring on register_service (service_runner.rb:53-55) has
+claimed this exact wiring since v3 arrived — the code was missing.
+
+Regression: `spec/service_runner_stop_class_instance_spec.rb` — real
+Tina4::Service subclass, real register_service, real
+ServiceRunner.stop; asserts the instance's should_stop? flips. Gate
+proven by mutation (positive example fails without the fix).
+
+### Version-contract test hardening
+
+- `spec/version_contract_spec.rb`:
+  `VersionContractProbe.parse_cli_manifest(stdout, context)` locates
+  the first `{` in the child's stdout before JSON.parse, and raises
+  RuntimeError with a 400-char stdout slice on parse failure.
+  `cli_run` subprocess env now sets `RUBYOPT=-W0` so a child ruby
+  warning cannot leak onto stdout via any misconfigured require path.
+- Both callsites (`spec/version_contract_spec.rb`,
+  `spec/commands_manifest_spec.rb`) routed through the resilient
+  parser.
+- Two named regression examples: positive (polluted stdout still
+  parses) + negative (no-JSON stdout raises with context).
+
+Parity: sibling Python / PHP / Node fixes landing alongside.
+
 ## 3.13.115
 
 Parity version bump. No framework code changes in Ruby for this
