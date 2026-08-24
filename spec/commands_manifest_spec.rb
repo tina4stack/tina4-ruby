@@ -164,9 +164,14 @@ RSpec.describe "tina4ruby commands manifest" do
     def run_exe(dir)
       # Unset every DB/bootstrap trigger so a bootstrap attempt could not even
       # find a DB to open. nil value in the env hash UNSETS the key for the child.
+      # RUBYOPT="-W0" silences the child's Ruby warnings so a stray require-time
+      # warning from a broken ~/.irbrc or gem cannot leak onto stdout ahead of
+      # the JSON payload -- the parse below is robust to it via
+      # parse_cli_manifest, but silencing the source is defence-in-depth against
+      # the same defect class as the 3.13.115 PHP local-env failure.
       env = { "TINA4_DATABASE_URL" => nil, "TINA4_DATABASE_USERNAME" => nil,
               "TINA4_DATABASE_PASSWORD" => nil, "TINA4_DEBUG" => nil,
-              "TINA4_AUTO_MIGRATE" => nil }
+              "TINA4_AUTO_MIGRATE" => nil, "RUBYOPT" => "-W0" }
       cmd = [RbConfig.ruby, EXE, "commands", "--json"]
       out = nil
       status = nil
@@ -182,6 +187,27 @@ RSpec.describe "tina4ruby commands manifest" do
       [status, out]
     end
 
+    # Local twin of VersionContractProbe.parse_cli_manifest in
+    # spec/version_contract_spec.rb -- duplicated (rather than require_relative'd)
+    # so this spec stays self-contained and can run standalone via
+    # `rspec spec/commands_manifest_spec.rb`, and so cross-loading two spec
+    # files does not risk RSpec re-executing the other's describe blocks
+    # (spec files are loaded via Kernel#load, not require, so require_relative
+    # does not dedupe across them).
+    def parse_cli_manifest(stdout, context = "")
+      brace = stdout.index("{")
+      if brace.nil?
+        raise "No JSON manifest found in stdout (context=#{context}); " \
+              "first 400 bytes: #{stdout[0, 400].inspect}"
+      end
+      begin
+        JSON.parse(stdout[brace..])
+      rescue JSON::ParserError => e
+        raise "Failed to parse CLI manifest JSON (context=#{context}, err=#{e.message}); " \
+              "first 400 bytes: #{stdout[0, 400].inspect}"
+      end
+    end
+
     it "exits 0 with valid JSON, opens no DB, and creates no files" do
       Dir.mktmpdir("tina4_commands_manifest") do |dir|
         # A genuinely empty project: no migrations/, no app.rb, no DB.
@@ -192,7 +218,7 @@ RSpec.describe "tina4ruby commands manifest" do
 
         expect(status).to eq(0), "non-zero exit; output:\n#{out}"
 
-        manifest = JSON.parse(out) # raises if the output is not valid JSON
+        manifest = parse_cli_manifest(out, "run_exe(commands --json)")
         expect(manifest["framework"]).to eq("ruby")
         expect(manifest["version"].to_s.strip).not_to be_empty
         names = manifest["commands"].map { |c| c["name"] }

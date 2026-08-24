@@ -112,8 +112,18 @@ module VersionContractProbe
   end
 
   # Real subprocess running the actual exe/tina4ruby CLI.
+  #
+  # RUBYOPT="-W0" silences Ruby warnings entirely for the child. Ruby normally
+  # writes warnings to stderr (which we redirect into the combined output
+  # buffer with err: [:child, :out]), but a stray `puts` in a broken
+  # ~/.irbrc, a gem's `require` warning routed to $stdout, or any misconfigured
+  # startup file can put noise on STDOUT ahead of the JSON manifest. The
+  # payload is parsed via parse_cli_manifest (below), which is robust to
+  # leading noise, but silencing warnings at the source is the belt to that
+  # suspenders. Same defect class as the 3.13.115 PHP local-env failure where
+  # a warning printed to stdout before the JSON killed JSON.parse.
   def cli_run(*args)
-    env = { "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "BUNDLER_SETUP" => nil }
+    env = { "BUNDLE_GEMFILE" => nil, "RUBYOPT" => "-W0", "BUNDLER_SETUP" => nil }
     cmd = [RUBY_BIN, EXE, *args]
     out = nil
     status = nil
@@ -128,6 +138,28 @@ module VersionContractProbe
     end
     [status, out]
   end
+
+  # Locate the first `{` in the child's stdout and JSON.parse from there. A
+  # bare JSON.parse(cli_out) raises an opaque ParserError with no clue what
+  # the child actually printed -- exactly the failure mode that hit 3.13.115
+  # in PHP when a startup warning leaked onto stdout ahead of the manifest.
+  # This helper isolates the leading noise (raising RuntimeError with a
+  # 400-byte stdout slice so the operator can see WHAT preceded the payload)
+  # and calls JSON.parse only on the substring starting at the first brace.
+  def parse_cli_manifest(stdout, context = "")
+    brace = stdout.index("{")
+    if brace.nil?
+      raise "No JSON manifest found in stdout (context=#{context}); " \
+            "first 400 bytes: #{stdout[0, 400].inspect}"
+    end
+    begin
+      JSON.parse(stdout[brace..])
+    rescue JSON::ParserError => e
+      raise "Failed to parse CLI manifest JSON (context=#{context}, err=#{e.message}); " \
+            "first 400 bytes: #{stdout[0, 400].inspect}"
+    end
+  end
+  module_function :parse_cli_manifest
 end
 
 RSpec.describe "Dynamic framework version (feature 130)" do
@@ -169,7 +201,7 @@ RSpec.describe "Dynamic framework version (feature 130)" do
 
       cli_status, cli_out = VersionContractProbe.cli_run("commands", "--json")
       raise "tina4ruby commands --json exited #{cli_status}: #{cli_out}" unless cli_status.zero?
-      cli_version = JSON.parse(cli_out)["version"]
+      cli_version = VersionContractProbe.parse_cli_manifest(cli_out, "cli_run(commands --json)")["version"]
 
       {
         resolved: resolved,
@@ -246,5 +278,34 @@ RSpec.describe "Dynamic framework version (feature 130)" do
       thread.kill
       server.close
     end
+  end
+end
+
+# ── CLI manifest parser resilience (feature 130) ────────────────────────────
+#
+# Named regression tests for the JSON.parse hardening in
+# VersionContractProbe.parse_cli_manifest. Same defect class as the 3.13.115
+# PHP local-env failure: a warning printed to stdout ahead of the JSON payload
+# killed the bare JSON.parse. The parser now locates the first `{` in stdout
+# before parsing, and raises a diagnostic RuntimeError (with a 400-byte stdout
+# slice) when no JSON payload is present, so the operator can see what the
+# child actually printed.
+RSpec.describe "CLI manifest parser resilience" do
+  it "parses a JSON payload even when stdout has leading warning noise (positive gate)" do
+    polluted = "Warning: something loud\n" \
+               "DEBUG: whatever\n" \
+               "{\"framework\":\"ruby\",\"version\":\"3.13.115\",\"commands\":[]}"
+    manifest = VersionContractProbe.parse_cli_manifest(polluted, "test-fixture")
+    expect(manifest["version"]).to eq("3.13.115")
+    expect(manifest["framework"]).to eq("ruby")
+
+    clean = "{\"framework\":\"ruby\",\"version\":\"3.13.115\",\"commands\":[]}"
+    expect(VersionContractProbe.parse_cli_manifest(clean, "clean")["version"]).to eq("3.13.115")
+  end
+
+  it "raises a diagnostic RuntimeError when stdout contains no JSON (negative gate)" do
+    expect {
+      VersionContractProbe.parse_cli_manifest("Traceback: exploded, no JSON here", "test-negative")
+    }.to raise_error(RuntimeError, /no.*json|manifest/i)
   end
 end
