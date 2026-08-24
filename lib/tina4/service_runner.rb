@@ -140,6 +140,32 @@ module Tina4
           Tina4::Log.info("Service stopping: #{svc_name}")
         end
 
+        # Cooperative shutdown of class-based Service instances — parity with
+        # tina4-python #118 and tina4-nodejs #58 (ead390c76). Must happen
+        # BEFORE thread.join(5) so a subclass's `until should_stop?` loop
+        # observes the flip and returns before the join times out. When
+        # invoked with a name, also fires for a registered-but-not-yet-
+        # started service — `targets` above is @contexts-derived and empty
+        # in that case, so without this the docstring's promise
+        # (register_service wires up #stop) would be honoured only for
+        # started services. Wrapped so one bad user-override #stop cannot
+        # strand siblings.
+        cooperative_names = if name
+                              @registry.key?(name.to_s) ? [name.to_s] : []
+                            else
+                              targets.keys
+                            end
+        cooperative_names.each do |svc_name|
+          entry = @registry[svc_name]
+          next unless entry && entry[:instance].respond_to?(:stop)
+
+          begin
+            entry[:instance].stop
+          rescue StandardError => e
+            Tina4::Log.error("ServiceRunner: #{svc_name}#stop raised: #{e.message}")
+          end
+        end
+
         # Join threads with a timeout so we don't hang forever
         targets.each_key do |svc_name|
           thread = @threads[svc_name]
