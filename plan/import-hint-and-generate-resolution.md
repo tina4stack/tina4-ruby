@@ -42,6 +42,6 @@ that plans the actions but writes nothing.
 - [x] Detail view was `#{table}.twig` — for reserved-word `Order`, that collided with the list view `orders.twig`. Now keyed by `to_snake_case(name)`.
 
 ## Commits
-- (populated post-commit)
+- 60cc0f1  feat(cli): AI-agent import hints + generate resolution transparency
 
-## Status: In Progress
+## Status: Complete
