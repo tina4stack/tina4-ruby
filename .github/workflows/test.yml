@@ -351,7 +351,10 @@ jobs:
           sudo apt-get install -y unixodbc unixodbc-dev odbc-postgresql
           driver_so=$(dpkg -L odbc-postgresql | grep -E 'psqlodbcw\.so$' | head -1)
           if [ -z "$driver_so" ]; then
-            echo "::error::psqlodbcw.so not found in odbc-postgresql package contents"; exit 1
+            driver_so=$(find /usr/lib /usr/lib64 -name psqlodbcw.so 2>/dev/null | head -1)
+          fi
+          if [ -z "$driver_so" ]; then
+            echo "::error::psqlodbcw.so not found via dpkg -L or filesystem search"; exit 1
           fi
           echo "Found PostgreSQL ODBC driver at $driver_so"
           # printf, not a heredoc: a YAML block scalar ("run: |") fixes its
