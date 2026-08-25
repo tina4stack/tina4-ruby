@@ -6,6 +6,66 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.117
+
+Agent-experience release. Two paired features (import-hint fallback +
+generate-resolution transparency) attack the same defect class: the
+framework silently transforming input, then failing downstream with a
+message that never names the transformation. See ADR-0062.
+
+### Import-hint fallback (Tina4::Routr -> Tina4::Router)
+
+- New `lib/tina4/import_helper.rb`: two hooks in Ruby's namespace.
+  `Tina4.const_missing(name)` catches `Tina4::<Anything>` lookups
+  that Ruby could not resolve, walks `Tina4.constants` recursively
+  with `DidYouMean::SpellChecker` for the close match, raises
+  `NameError` with the suggestion. A `Kernel#require` wrap catches
+  `LoadError` for paths prefixed `tina4/`, walks `lib/tina4/*.rb`
+  for close matches, re-raises with the suggestion.
+- Bounded to the `Tina4::*` and `tina4/*` surfaces. Everything else
+  passes through untouched.
+- Installed from `lib/tina4.rb` at the end of the require chain.
+  Idempotent.
+- 8 real-subprocess spec examples cover positive-happy, negative-hint
+  (const + require), negative-no-match, masking-gate, and a live
+  mutation-gate example that stashes/restores the helper to prove
+  the hint text is genuinely dependent on the finder.
+
+### Generate-command resolution transparency
+
+- `tina4ruby generate model|route|migration|middleware --json` emits
+  a versioned envelope on stdout, matching the `generate_v1`
+  contract advertised in `commands --json`.
+- `--dry-run` computes resolution WITHOUT writing files. Composable
+  with `--json`.
+- Bare invocation prints a human-readable resolution block to stderr
+  naming every transformation, path and warning; files are written
+  as before.
+- Introduced `SQL_RESERVED_TABLE_NAMES` in `lib/tina4/cli.rb` mirroring
+  the Python master. `generate model Order` now surfaces the
+  "auto-pluralized" transformation and names the `--table X --quote`
+  override flag (parsed; the quoted-identifier ORM mode it opts into
+  is tracked at tina4-python#123 for a follow-up).
+- `commands --json` gains `"resolution_contract" => {"version" => "1",
+  "envelope" => "generate_v1"}`.
+- 6 real-subprocess spec examples covering json+dry_run,
+  reserved-word transformation, bare stderr, reserved-name stderr,
+  manifest advertisement.
+
+Side-fixes surfaced by the new reserved-word policy:
+
+- `generate crud/form/view` had a pre-existing `"#{table}s"` bug
+  that only appeared once reserved-word tables started pluralising
+  (Order -> orders -> orderss). Introduced `to_route_name` that
+  always pluralises from the class-name snake. `Category` was
+  ALREADY producing `categorys` (wrong); now correctly `categories`.
+- Detail-view path collision (`#{table}.twig` collided with the
+  list view for reserved-word classes; both `orders.twig`). Fixed
+  by keying detail on `to_snake_case(name)`.
+
+Parity: tina4-python, tina4-php, tina4-nodejs ship the same two
+features in 3.13.117 through their language-native mechanisms.
+
 ## 3.13.116
 
 Cooperative service-runner shutdown + version-contract test hardening.
