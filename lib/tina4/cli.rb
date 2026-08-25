@@ -2,6 +2,8 @@
 
 require "optparse"
 require "fileutils"
+require "set"
+require "json"
 require_relative "port_takeover"
 
 module Tina4
@@ -228,9 +230,54 @@ module Tina4
           .downcase
     end
 
-    # Class name -> singular table name: Product -> product
+    # Table names that collide with SQL reserved words. `CREATE TABLE order (...)`
+    # is a syntax error on every engine, and the ORM interpolates table names
+    # into SQL unquoted (and hands the raw name to driver insert/update/delete),
+    # so the safe fix is to never GENERATE one. The plural form is not reserved
+    # and reads naturally as a table name. Mirrored from the Python master
+    # (tina4-python/tina4_python/cli/__init__.py:62-75) so a `generate model`
+    # in any framework picks the same table name for the same class.
+    SQL_RESERVED_TABLE_NAMES = %w[
+      order group user table select from where index
+      key values column constraint check default primary
+      foreign references unique join union having limit
+      offset desc asc case when then else end and
+      or not null insert update delete create drop
+      alter grant revoke commit rollback view trigger
+      procedure function database schema session set into
+      as on by inner outer left right full natural
+      using with distinct between exists like in is
+      all any cross add row rows range current to
+    ].to_set.freeze
+
+    # Simple English plural, used to escape a reserved table name.
+    # Mirrors `_pluralize_table` in tina4-python/tina4_python/cli/__init__.py:76.
+    def pluralize_table(name)
+      return "#{name[0..-2]}ies" if name.end_with?("y") &&
+                                    !name.end_with?("ay", "ey", "iy", "oy", "uy")
+      return "#{name}es"          if name.end_with?("s", "x", "z", "ch", "sh")
+
+      "#{name}s"
+    end
+
+    # Class name -> singular table name: Product -> product.
+    # A name colliding with a SQL reserved word is pluralised instead
+    # (Order -> orders). Every generator routes through here, so the model's
+    # `table_name`, the migration DDL, the routes and the tests all agree.
     def to_table_name(name)
-      to_snake_case(name)
+      table = to_snake_case(name)
+      SQL_RESERVED_TABLE_NAMES.include?(table) ? pluralize_table(table) : table
+    end
+
+    # Class name -> plural route/resource segment: Product -> products,
+    # Order -> orders, Category -> categories. Used by generate_crud /
+    # generate_form / generate_view for the URL path and the plural view
+    # filename. Naive `"#{table}s"` doubled the `s` when `table` was ALREADY
+    # plural from the reserved-word pluralize (Order -> orders -> orderss)
+    # and produced the wrong plural for `y`-ending / sibilant-ending names
+    # (Category -> categorys). This routes both through `pluralize_table`.
+    def to_route_name(name)
+      pluralize_table(to_snake_case(name))
     end
 
     # Called without --fields, the generators fall back to a single `name`
@@ -328,7 +375,7 @@ module Tina4
     # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
     def parse_flags(args)
       # Boolean-only flags that never take a value argument
-      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration once]
+      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration once dry-run]
 
       flags = {}
       positional = []
@@ -1060,6 +1107,14 @@ module Tina4
     end
 
     # ── generate ────────────────────────────────────────────────────────
+    #
+    # The generate command has two OUTPUT modes: human (default) and JSON
+    # (`--json`). A `--dry-run` short-circuits the file writes but still
+    # emits the resolution so a caller can PLAN a scaffold without touching
+    # the working tree. This is `resolution_contract.envelope = generate_v1`
+    # (see `commands_manifest`) — one machine-readable answer, per target,
+    # for AI agents that need to know exactly what a `generate model Order`
+    # will produce before it runs.
 
     def cmd_generate(argv)
       what = argv.shift
@@ -1071,6 +1126,8 @@ module Tina4
         puts '  Options:    --fields "name:string,price:float"  --model ModelName'
         puts '              --public                  open a route'"'"'s writes (default: secure)'
         puts '              --every 5m | --cron "..."  service schedule'
+        puts '              --json                    emit the generate_v1 resolution envelope'
+        puts '              --dry-run                 plan the scaffold; write no files'
         exit 1
       end
 
@@ -1086,16 +1143,204 @@ module Tina4
       name = no_name_generators.include?(what) ? "" : argv.shift
       flags, _positional = parse_flags(argv)
 
+      json_mode = flags.delete("json") ? true : false
+      dry_run   = flags.delete("dry-run") ? true : false
+
       # Dispatch from the GENERATORS registry (single source of truth for the
       # generate subcommands; also feeds #cmd_help and the manifest).
       gen_spec = GENERATORS[what]
-      if gen_spec
-        send(gen_spec[:handler], name, flags)
-      else
+      unless gen_spec
         puts "Unknown generator: #{what}"
         puts "  Available: #{all}"
         exit 1
       end
+
+      # Only the four resolution-aware targets emit a resolution + JSON envelope;
+      # every other generator keeps its existing behaviour so nothing regresses.
+      resolution_aware = %w[model route migration middleware]
+      if !resolution_aware.include?(what)
+        send(gen_spec[:handler], name, flags)
+        return
+      end
+
+      resolution = build_generate_resolution(what, name, flags)
+
+      if json_mode
+        actions_taken = dry_run ? [] : run_generator_capturing_actions(gen_spec, name, flags)
+        envelope = build_generate_envelope(what, name, flags, resolution, actions_taken, dry_run)
+        puts JSON.pretty_generate(envelope)
+        return
+      end
+
+      # Human mode: print the resolution block to STDERR BEFORE writing files,
+      # so a caller can Ctrl-C between the plan and the write.
+      $stderr.puts format_generate_resolution_block(what, name, resolution)
+
+      if dry_run
+        $stderr.puts "  (dry-run — no files written)"
+      else
+        send(gen_spec[:handler], name, flags)
+      end
+    end
+
+    # ── generate resolution helpers ────────────────────────────────────────
+
+    # One `resolution` per target, with the SAME KEY SET so a caller can
+    # rely on the envelope shape regardless of what they generated:
+    #
+    #   class_name, table_name, file_path, migration_path,
+    #   transformations, routes, test_paths
+    #
+    # Fields that don't apply to a target (a middleware has no table_name;
+    # a migration is defined by its migration_path) are `nil` rather than
+    # missing — a stable envelope beats a compact one for machine callers.
+    def build_generate_resolution(target, name, flags)
+      case target
+      when "model"      then build_model_resolution(name, flags)
+      when "route"      then build_route_resolution(name, flags)
+      when "migration"  then build_migration_resolution(name, flags)
+      when "middleware" then build_middleware_resolution(name, flags)
+      else
+        { "class_name" => name.to_s, "table_name" => nil, "file_path" => nil,
+          "migration_path" => nil, "transformations" => [],
+          "routes" => [], "test_paths" => [] }
+      end
+    end
+
+    def build_model_resolution(name, flags)
+      raw = to_snake_case(name)
+      transformations = []
+      table =
+        if SQL_RESERVED_TABLE_NAMES.include?(raw)
+          plural = pluralize_table(raw)
+          transformations << {
+            "kind"     => "reserved_word_pluralize",
+            "from"     => raw,
+            "to"       => plural,
+            "reason"   => "SQL reserved word '#{raw}' would break CREATE TABLE",
+            "override" => "--table #{raw} --quote (requires quoted-identifier mode, not yet implemented)"
+          }
+          plural
+        else
+          raw
+        end
+      # The migration filename embeds a timestamp; predict it deterministically
+      # so a `--dry-run` and the real run agree on the same second. Two
+      # generations within the same second collide anyway (existing behaviour).
+      timestamp = Time.now.strftime("%Y%m%d%H%M%S")
+      {
+        "class_name"     => name.to_s,
+        "table_name"     => table,
+        "file_path"      => "src/orm/#{raw}.rb",
+        "migration_path" => "migrations/#{timestamp}_create_#{table}.sql",
+        "transformations" => transformations,
+        "routes"         => ["/#{table}", "/#{table}/{id}"],
+        "test_paths"     => ["spec/#{raw}_spec.rb"]
+      }
+    end
+
+    def build_route_resolution(name, flags)
+      route_path = name.to_s.sub(%r{^/}, "")
+      {
+        "class_name"      => nil,
+        "table_name"      => nil,
+        "file_path"       => "src/routes/#{route_path}.rb",
+        "migration_path"  => nil,
+        "transformations" => [],
+        "routes"          => ["/api/#{route_path}", "/api/#{route_path}/{id}"],
+        "test_paths"      => ["spec/routes/#{route_path}_spec.rb"]
+      }
+    end
+
+    def build_migration_resolution(name, _flags)
+      timestamp = Time.now.strftime("%Y%m%d%H%M%S")
+      base = name.to_s.sub(/^create_/, "").sub(/^add_/, "").sub(/^drop_/, "")
+      snake_base = to_snake_case(base)
+      path = "migrations/#{timestamp}_#{name}.sql"
+      {
+        "class_name"      => nil,
+        "table_name"      => snake_base,
+        "file_path"       => path,
+        "migration_path"  => path,
+        "transformations" => [],
+        "routes"          => [],
+        "test_paths"      => []
+      }
+    end
+
+    def build_middleware_resolution(name, _flags)
+      snake = to_snake_case(name)
+      {
+        "class_name"      => name.to_s,
+        "table_name"      => nil,
+        "file_path"       => "src/middleware/#{snake}.rb",
+        "migration_path"  => nil,
+        "transformations" => [],
+        "routes"          => [],
+        "test_paths"      => []
+      }
+    end
+
+    def build_generate_envelope(target, name, flags, resolution, actions_taken, dry_run)
+      {
+        "command"       => "generate",
+        "target"        => target,
+        "input"         => { "name" => name.to_s, "fields" => flags["fields"] },
+        "resolution"    => resolution,
+        "actions_taken" => actions_taken,
+        "dry_run"       => dry_run
+      }
+    end
+
+    # Human-readable resolution block emitted to STDERR before a bare
+    # `generate model Order` writes files. Only shows the "keep raw name"
+    # hint when a reserved-word pluralize actually fired.
+    def format_generate_resolution_block(target, name, resolution)
+      lines = ["Generated #{target} #{name}"]
+      if resolution["class_name"]
+        lines << "  class      #{resolution['class_name']}  (in #{resolution['file_path']})"
+      elsif resolution["file_path"]
+        lines << "  file       #{resolution['file_path']}"
+      end
+      if resolution["table_name"]
+        pluralized = resolution["transformations"].find { |t| t["kind"] == "reserved_word_pluralize" }
+        note = pluralized ? "  (auto-pluralized: '#{pluralized['from']}' is a SQL reserved word)" : ""
+        lines << "  table      #{resolution['table_name']}#{note}"
+      end
+      if resolution["routes"] && !resolution["routes"].empty?
+        lines << "  routes     #{resolution['routes'].join(', ')}"
+      end
+      if resolution["migration_path"] && resolution["migration_path"] != resolution["file_path"]
+        lines << "  migration  #{resolution['migration_path']}"
+      end
+      pluralized = resolution["transformations"].find { |t| t["kind"] == "reserved_word_pluralize" }
+      if pluralized
+        lines << ""
+        lines << "  To keep the raw name '#{pluralized['from']}' as the table:"
+        lines << "    tina4ruby generate #{target} #{name} --table #{pluralized['from']} --quote  (opt-in, ADR-0062 forthcoming)"
+      end
+      lines.join("\n")
+    end
+
+    # Run a generator with its usual stdout output CAPTURED, and derive an
+    # `actions_taken` list from the "  Created <path>" lines the generators
+    # emit. Machine callers get one clean JSON envelope on stdout; the
+    # generator's own log stays discoverable via the returned list.
+    def run_generator_capturing_actions(gen_spec, name, flags)
+      require "stringio"
+      require "json"
+      buffer = StringIO.new
+      original = $stdout
+      $stdout = buffer
+      begin
+        send(gen_spec[:handler], name, flags)
+      ensure
+        $stdout = original
+      end
+      buffer.string.each_line
+            .map(&:strip)
+            .select { |line| line.start_with?("Created ") }
+            .map { |line| "wrote #{line.sub(/^Created\s+/, '')}" }
     end
 
     # ── Generator: model ─────────────────────────────────────────────────
@@ -1348,7 +1593,11 @@ module Tina4
 
     def generate_crud(name, flags)
       table = to_table_name(name)
-      route_name = "#{table}s"
+      # Always derive the plural route from the CLASS NAME, not by appending
+      # "s" to the table — otherwise a reserved-word table (already plural,
+      # Order -> orders) becomes orderss, and a `y`-ending class (Category)
+      # becomes categorys instead of categories.
+      route_name = to_route_name(name)
       is_public = flags["public"] ? true : false
 
       puts "\n  Generating CRUD for #{name}...\n"
@@ -1649,7 +1898,7 @@ module Tina4
     def generate_form(name, flags = {})
       fields = fields_or_default(flags["fields"])
       table = to_table_name(name)
-      route_name = "#{table}s"
+      route_name = to_route_name(name)
 
       # Input type mapping
       input_types = {
@@ -1662,7 +1911,11 @@ module Tina4
 
       dir = "src/templates/forms"
       FileUtils.mkdir_p(dir)
-      path = File.join(dir, "#{table}.twig")
+      # Form template is for creating/editing ONE record, so the filename is
+      # keyed by the singular class snake (order.twig), never by the plural
+      # table (which for a reserved-word class Order would be orders.twig
+      # and read wrong for a form).
+      path = File.join(dir, "#{to_snake_case(name)}.twig")
       if File.exist?(path)
         puts "  File already exists: #{path}"
         return
@@ -1727,7 +1980,7 @@ module Tina4
     def generate_view(name, flags = {})
       fields = fields_or_default(flags["fields"])
       table = to_table_name(name)
-      route_name = "#{table}s"
+      route_name = to_route_name(name)
 
       cols = fields.map { |f, _| f }
 
@@ -1778,8 +2031,13 @@ module Tina4
         puts "  Created #{list_path}"
       end
 
-      # Detail view
-      detail_path = File.join(dir, "#{table}.twig")
+      # Detail view — file named by the singular CLASS NAME (snake_case), not
+      # the table name. When the class is a SQL reserved word the table has
+      # been pluralised (Order -> orders), and reusing that name would
+      # collide with the list view path just above. The class-name snake
+      # (order.twig) is the natural detail-page filename and matches the
+      # pre-reserved-word behaviour for every non-reserved class.
+      detail_path = File.join(dir, "#{to_snake_case(name)}.twig")
       unless File.exist?(detail_path)
         detail_fields = cols.map do |c|
           "    <div class=\"mb-3\"><strong>#{c.tr('_', ' ').split.map(&:capitalize).join(' ')}:</strong> {{ item.#{c} }}</div>"
@@ -2880,7 +3138,16 @@ module Tina4
         entry["args"] = spec[:args].dup if spec[:args]
         entry
       end
-      { "framework" => "ruby", "version" => Tina4::VERSION, "commands" => commands }
+      {
+        "framework" => "ruby",
+        "version"   => Tina4::VERSION,
+        "commands"  => commands,
+        # Contract for the `generate --json` envelope so a machine caller can
+        # KNOW the envelope shape before it invokes generate (see cmd_generate).
+        # Bump `version` when the envelope shape changes; add a new envelope
+        # name rather than mutating the existing one.
+        "resolution_contract" => { "version" => "1", "envelope" => "generate_v1" }
+      }
     end
 
     # Emit the CLI's own command surface — the self-describing manifest.

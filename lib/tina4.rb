@@ -59,6 +59,12 @@ require_relative "tina4/context"
 require_relative "tina4/mcp"
 require_relative "tina4/realtime"
 
+# AI-agent experience: install the constant-lookup and require-path hint hooks
+# LAST, once every real Tina4::* constant and every lib/tina4/*.rb file is
+# discoverable. Idempotent — safe to load lib/tina4 more than once.
+require_relative "tina4/import_helper"
+Tina4::ImportHelper.install
+
 module Tina4
   # Bind address, with the framework name winning over the bare one.
   #
