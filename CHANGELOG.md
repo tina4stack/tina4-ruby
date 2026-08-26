@@ -6,6 +6,34 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.119
+
+Skill repair by @MichaelC8E (#44, merged as c1b8c43d5) plus a
+small CLAUDE.md footer bump that the 3.13.118 release worker missed.
+
+### Skill file repairs (#44)
+
+Three defects fixed across the three skill trees this repo carries
+(`.claude/skills/`, `.agents/skills/`, `.cursor/skills/`):
+
+- The Codex and Cursor copies of `tina4-maintainer` were UTF-8-with-BOM
+  with both em dashes replaced by the cp1252 round-trip
+  `c3 a2 e2 82 ac e2 80 9d`. Corruption sat inside the `description`
+  frontmatter (the text that decides when a skill triggers), and the
+  BOM sat in front of the opening `---` (which some frontmatter
+  parsers reject outright). All eight tracked copies across the
+  language ports were byte-identical, so every diff-based check
+  reported them clean.
+- Two shared files had gone stale against canonical in tina4-python.
+- The Codex and Cursor copies of `tina4-developer-ruby` were around
+  60 lines behind `.claude`, and shipped none of the seven
+  `references/` files their own SKILL.md cites.
+
+Parity: tina4-python 3.13.119 and tina4-nodejs 3.13.119 are
+version-parity bumps. tina4-php 3.13.119 ships @MichaelC8E's
+skill-repair PR (tina4-php#205), @cwvermaak-codeinfinity's Messenger
+fix (tina4-php#204), and my ImportHelper autoload non-throw fix.
+
 ## 3.13.118
 
 Version-parity bump. No framework code changes in Ruby for this
