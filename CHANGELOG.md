@@ -6,6 +6,26 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.118
+
+Version-parity bump. No framework code changes in Ruby for this
+release; the version aligns with tina4-python 3.13.118 which
+carries an urgent regression fix (@MichaelC8E's #124 fixed a
+3.13.117 pre-import defect in `_import_helper.py`).
+
+In flight for 3.13.119:
+
+- @MichaelC8E's #44 - skill repairs across three skill trees:
+  Codex and Cursor copies of `tina4-maintainer` had UTF-8-with-BOM
+  + cp1252 mojibake in the `description` frontmatter (byte-identical
+  across copies, invisible to diff-based checks). Codex and Cursor
+  copies of `tina4-developer-ruby` were around 60 lines behind
+  `.claude`, missing seven `references/` files. Two shared files
+  had gone stale against canonical in tina4-python.
+
+Approved and queued in the tina4stack Actions runner backlog. Ships
+in 3.13.119 the moment CI clears.
+
 ## 3.13.117
 
 Agent-experience release. Two paired features (import-hint fallback +
