@@ -42,7 +42,7 @@ Three announcements every substantive action carries:
    Formula: `Wrote <path>` / `Ran <command> — <one-line result>`.
 
 Never write more than TWO files between announcements. Never run a schema
-migration, install a dependency, or edit `app.py` (or the framework's boot
+migration, install a dependency, or edit `app.rb` (or the framework's boot
 file) without a preceding `About to:` line.
 
 Stop-points that especially matter:
@@ -183,6 +183,22 @@ feature plan owns the detail:
 | Checkout flow      | [checkout.md](checkout.md)              | 🟡 In Progress |
 ```
 
+**Nested plans are allowed and encouraged when a feature is itself large.** You can go
+one more level deep — a big feature earns its OWN dashboard + sub-plans:
+
+```
+plan/MASTER.md                    # top dashboard
+plan/auth.md                      # simple feature
+plan/products/MASTER.md           # sub-dashboard for a large feature
+plan/products/search.md           # sub-feature detail
+plan/products/checkout-flow.md    # sub-feature detail
+```
+
+The top `plan/MASTER.md` always stays the entry point; the depth of the tree
+matches the shape of the work. A tiny single-file demo may put the whole plan
+directly in `MASTER.md`. A multi-page app with a backend + frontend + workers:
+split by feature. A big feature inside a split project: split again.
+
 A feature plan has four parts — a Scope checklist, the Tests, a Bugs section, and a Commit log:
 
 ```markdown
@@ -207,6 +223,39 @@ A feature plan has four parts — a Scope checklist, the Tests, a Bugs section, 
 
 ## Status: In Progress
 ```
+
+### Project layout — components live in their own folders
+
+Never pollute the project ROOT with source code. The root is for orchestration and
+docs only: `plan/` (the overview dashboard), `README.md`, `TINA4.md`, and shared
+config. Source lives in COMPONENT folders.
+
+- A single standalone frontend (one `index.html` + assets) may sit at the root.
+- The moment a build has BOTH a frontend AND a backend, split them and keep the
+  root clean:
+
+```
+plan/            # ROOT overview dashboard — links each component's plan/
+README.md
+TINA4.md
+backend/         # ALL backend source
+  plan/          # backend's own plans, linked from root plan/MASTER.md
+frontend/        # ALL frontend source
+  plan/          # frontend's own plans, linked from root plan/MASTER.md
+```
+
+- The root `plan/` is the single overview; each component keeps ITS plans in its own
+  `plan/` folder, referenced from the root `plan/MASTER.md`. Mirror the code's folder
+  structure with plan/ folders (see the plan-folder rules above).
+- Do NOT write server files or app files loose in the root of a full-stack build. If
+  you are about to write `server.*`/`index.html` at the root of a full-stack build,
+  stop and put it under `backend/` or `frontend/`.
+
+**Ask the backend framework — never assume.** When a build needs a backend (an API,
+a database, auth, server-side logic — anything beyond a static frontend) and the
+stack is not already decided, ASK which framework BEFORE scaffolding it. Offer the
+Tina4 stacks first — Tina4 (Python / Node.js / PHP / Ruby) — then "other". Record the
+choice in `TINA4.md` so it holds for the whole project.
 
 ### 4. Tests first — real tests, never smoke tests
 Write the tests **before** the code, and make them real: they hit the actual dependency (a real
@@ -584,7 +633,7 @@ endpoint validating credentials inside the handler, or an explicitly anonymous r
 
 ## Language Version
 
-Always target the latest supported Ruby: **Ruby 3.3+** (the Docker image is `ruby:3.3-alpine`). Use
+Framework minimum is **Ruby 3.1** (`tina4.gemspec` `required_ruby_version = ">= 3.1.0"`); the Docker image ships **Ruby 3.3-alpine**, and 3.3+ is the recommended deployment target. Use
 modern Ruby features — keyword arguments, pattern matching, `Comparable`, safe navigation (`&.`).
 
 ## Staying current: check for Tina4 updates
@@ -601,7 +650,7 @@ change behaviour).
 - **If behind:** tell the user what changed — point them at the release notes on
   https://tina4.com — and offer the upgrade: `bundle update tina4ruby` (or
   `gem update tina4ruby`).
-- The `tina4` CLI self-updates with `tina4 update`; `tina4 doctor` checks your toolchain.
+- The Rust `tina4` CLI (external — installed via the Homebrew tap / installer script, not `tina4ruby`) self-updates with `tina4 update` and offers `tina4 doctor` for toolchain checks. `tina4ruby` handles framework-owned commands (`serve`, `migrate`, `generate`, `seed`, `test`, `queue`, `build`, `routes`, `console`, `ai`, `commands`); metrics/update/doctor come from the external client.
 
 ### Lean, green, and grounded - keep app complexity down as a habit
 
@@ -764,6 +813,15 @@ server listens on port **7147**, and the app includes a health check at `/health
 those headings are obsolete and cause agents to ignore half the plan.
 
 Every feature starts with `plan/<feature-name>.md` (and a row in `plan/MASTER.md`). No exceptions.
+
+**Plan-first is a HARD rule, not a convention.** Coding-agent shells that host
+this skill (e.g. `tina4-simple-agent`) enforce it at the tool layer: any
+`write_file` whose path is not `plan/**.md` is REFUSED until `plan/MASTER.md`
+exists on disk. That's deliberate — no code lands before the plan exists. If an
+attempt is refused, WRITE THE PLAN FIRST, then retry the code write. The rule
+holds under every mode (quick / efficient / meticulous) and applies to sub-plans
+too (any `.md` under `plan/**` counts, so `plan/products/MASTER.md` unlocks
+code just as `plan/MASTER.md` does).
 This is how you avoid building the wrong thing and how the developer tracks progress.
 
 ### From sweeping asks to small shippable chunks
