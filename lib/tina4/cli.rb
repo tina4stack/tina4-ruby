@@ -2165,6 +2165,7 @@ module Tina4
       end
 
       content = <<~HTML
+        {# tina4:edit  restyle the form beyond the scaffolded defaults #}
         {% extends "base.twig" %}
         {% block title %}#{name} {% if item.id %}Edit{% else %}Create{% endif %}{% endblock %}
         {% block content %}
@@ -2204,6 +2205,7 @@ module Tina4
         td = cols.map { |c| "<td>{{ item.#{c} }}</td>" }.join("\n                ")
 
         list_content = <<~HTML
+          {# tina4:edit  add sort / filter / pagination controls to the list #}
           {% extends "base.twig" %}
           {% block title %}#{name}s{% endblock %}
           {% block content %}
@@ -2254,6 +2256,7 @@ module Tina4
         end.join("\n")
 
         detail_content = <<~HTML
+          {# tina4:edit  extend the detail view with related records or actions #}
           {% extends "base.twig" %}
           {% block title %}#{name} Detail{% endblock %}
           {% block content %}
