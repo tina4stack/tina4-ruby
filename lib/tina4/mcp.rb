@@ -1015,11 +1015,104 @@ module Tina4
         migration.respond_to?(:status) ? migration.status : { "info" => "Migration status not available" }
       }, "List pending and completed migrations")
 
+      # migration_create — delegates to the SAME resolution-aware helper that
+      # backs `tina4ruby migrate:create` + `tina4ruby generate migration`, so the
+      # MCP tool emits the ADR-0063 `generate_v1_1` envelope (edit_hints[],
+      # next[], `-- tina4:edit` markers baked into the UP+DOWN files) alongside
+      # the pre-existing `{created}` contract. Duplicate-slug guard mirrors the
+      # PHP + Python MCPs: if a migration file for the same slug already lives
+      # under migrations/, refuse (the AI should edit the existing one instead
+      # of spawning a second migration for the same schema change).
       server.register_tool("migration_create", lambda { |description:|
-        migration = Tina4::Migration.new(nil)
-        filename = migration.create(description)
-        { "created" => filename }
-      }, "Create a new migration file")
+        require "fileutils"
+        require_relative "cli"
+
+        desc = (description || "").to_s
+        slug = desc.gsub(/[^a-z0-9]+/i, "_").downcase.gsub(/^_|_$/, "")
+
+        # Duplicate-slug guard — walks migrations/ and compares against the
+        # slugified basename (stripping the leading 14-digit timestamp + the
+        # .sql / .down.sql extension). Handles the "create_orders_table" vs
+        # "create_orders" equivalence PHP + Python already recognise.
+        mig_dir = File.join(Dir.pwd, "migrations")
+        if slug != "" && File.directory?(mig_dir)
+          existing = []
+          Dir.glob(File.join(mig_dir, "*.sql")).sort.each do |path|
+            base = File.basename(path)
+            after = base.sub(/\A\d{14}_/, "").sub(/\.(down\.)?sql\z/, "")
+            existing_slug = after.gsub(/[^a-z0-9]+/i, "_").downcase.gsub(/^_|_$/, "")
+            if existing_slug == slug ||
+               existing_slug == "#{slug}_table" ||
+               slug == "#{existing_slug}_table"
+              existing << path.sub("#{Dir.pwd}/", "")
+            end
+          end
+          unless existing.empty?
+            next {
+              "ok" => false,
+              "error" => "Migration for #{desc.inspect} already exists: #{existing.first}. " \
+                         "Edit it with file_patch / file_write instead of creating a duplicate.",
+              "existing" => existing
+            }
+          end
+        end
+
+        # Delegate through the SHARED resolution-aware helper (the same entry
+        # point cmd_migrate_create uses since 1f09a31), so the envelope shape
+        # here is byte-for-byte the same as `tina4ruby migrate:create <desc>
+        # --json`. Human-mode output is captured and discarded — the MCP tool
+        # returns structured JSON only.
+        cli = Tina4::CLI.new
+        # `reset_generate_timestamp!` and `run_resolution_aware_generator` are
+        # private-by-declaration in cli.rb (everything below `private` at
+        # cli.rb:175). They are the SHARED entry points cmd_generate +
+        # cmd_migrate_create use, so calling them through #send here is the
+        # deliberate re-use path — not a boundary crossing.
+        cli.send(:reset_generate_timestamp!)
+
+        name = slug
+
+        require "stringio"
+        old_stdout = $stdout
+        old_stderr = $stderr
+        stdout_buf = StringIO.new
+        stderr_buf = StringIO.new
+        envelope = nil
+        begin
+          $stdout = stdout_buf
+          $stderr = stderr_buf
+          # json_mode: true → run_resolution_aware_generator prints the
+          # envelope to stdout (captured here); dry_run: false → the migration
+          # files are really written under migrations/ in Dir.pwd.
+          cli.send(
+            :run_resolution_aware_generator,
+            "migration", name, {},
+            json_mode: true,
+            dry_run: false,
+            gen_spec: Tina4::CLI::GENERATORS["migration"],
+            generator_kwargs: { emit_test: false, description: desc }
+          )
+          envelope = JSON.parse(stdout_buf.string)
+        ensure
+          $stdout = old_stdout
+          $stderr = old_stderr
+        end
+
+        # actions_taken carries "wrote migrations/<ts>_<name>.sql" lines; the
+        # first .sql (never .down.sql) is the canonical `created` filename that
+        # earlier callers of migration_create relied on.
+        actions = envelope["actions_taken"] || []
+        created = actions.map { |a| a.to_s.sub(/\Awrote\s+/, "") }
+                         .find { |p| p.end_with?(".sql") && !p.end_with?(".down.sql") }
+        created ||= (envelope.dig("resolution", "file_path"))
+
+        {
+          "ok" => true,
+          "created" => created,
+          "resolution" => envelope["resolution"],
+          "actions_taken" => actions
+        }
+      }, "Create a new migration file (emits ADR-0063 resolution envelope)")
 
       server.register_tool("migration_run", lambda {
         db = Tina4.database

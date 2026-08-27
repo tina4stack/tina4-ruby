@@ -7,6 +7,8 @@ require "net/http"
 require "uri"
 require "fileutils"
 require "shellwords"
+require "rbconfig" # RbConfig.ruby for scaffold_run's Open3.capture3 call to exe/tina4ruby
+require "open3"    # scaffold_run shells to exe/tina4ruby generate <kind> <name>
 require_relative "metrics"
 
 module Tina4
@@ -2294,38 +2296,53 @@ module Tina4
         ] }
       end
 
+      # scaffold_run — shells to `exe/tina4ruby generate <kind> <name>` so the
+      # dev-admin endpoint emits the ADR-0063 resolution envelope through the
+      # SAME code path the CLI + MCP go through, instead of the old inline
+      # File.write branches that skipped every marker + envelope. Mirrors PHP
+      # (Tina4/DevAdmin.php:2506-2520, shell_exec 'php bin/tina4php generate ...')
+      # and Node (packages/core/src/devAdmin.ts:handleScaffoldRun, execFileSync
+      # 'npx tina4nodejs generate ...'). The captured stdout+stderr is returned
+      # as `output`, matching PHP/Node's shape.
+      #
+      # ADR-0063: the four resolution-aware verbs (route / model / migration /
+      # middleware) are the whitelist here — the same set the CLI declares in
+      # cli.rb's `resolution_aware`. An unknown kind returns {ok:false,error}
+      # instead of shelling to the CLI with an invalid subcommand.
+      SCAFFOLD_ALLOWED_KINDS = %w[route model migration middleware].freeze
+
       def scaffold_run(body)
-        kind = body["kind"].to_s
+        require "open3"
+
+        kind = body["kind"].to_s.strip.downcase
         name = body["name"].to_s.strip
+
         return { ok: false, error: "kind + name required" } if kind.empty? || name.empty?
-        project = Dir.pwd
-        case kind
-        when "route"
-          target = File.join(project, "src", "routes", "#{name}.rb")
-          FileUtils.mkdir_p(File.dirname(target))
-          File.write(target, "# #{name} routes\nTina4::Router.get(\"/api/#{name}\") do |req, res|\n  res.call({ hello: \"#{name}\" })\nend\n") unless File.exist?(target)
-          { ok: true, created: target.sub("#{project}/", "") }
-        when "model"
-          target = File.join(project, "src", "orm", "#{name}.rb")
-          FileUtils.mkdir_p(File.dirname(target))
-          cls = name.to_s.split(/[_-]/).map(&:capitalize).join
-          File.write(target, "class #{cls} < Tina4::ORM\n  integer_field :id, primary_key: true, auto_increment: true\n  string_field :name\nend\n") unless File.exist?(target)
-          { ok: true, created: target.sub("#{project}/", "") }
-        when "migration"
-          ts = Time.now.strftime("%Y%m%d%H%M%S")
-          target = File.join(project, "migrations", "#{ts}_#{name}.sql")
-          FileUtils.mkdir_p(File.dirname(target))
-          File.write(target, "-- migration: #{name}\n")
-          { ok: true, created: target.sub("#{project}/", "") }
-        when "middleware"
-          target = File.join(project, "src", "app", "#{name}.rb")
-          FileUtils.mkdir_p(File.dirname(target))
-          cls = name.to_s.split(/[_-]/).map(&:capitalize).join
-          File.write(target, "class #{cls}\n  def self.before_check(req, res); [req, res]; end\nend\n") unless File.exist?(target)
-          { ok: true, created: target.sub("#{project}/", "") }
-        else
-          { ok: false, error: "unknown kind: #{kind}" }
+        unless SCAFFOLD_ALLOWED_KINDS.include?(kind)
+          return { ok: false, error: "unknown kind: #{kind}" }
         end
+        # Same name validation the PHP + Node dev-admin endpoints apply —
+        # keeps a shell-metacharacter payload out of the generator arg.
+        unless name =~ /\A[A-Za-z][\w]*\z/
+          return { ok: false, error: "name must match [A-Za-z][A-Za-z0-9_]*" }
+        end
+
+        project = Dir.pwd
+        exe = File.join(project, "exe", "tina4ruby")
+
+        stdout, stderr, status = Open3.capture3(
+          RbConfig.ruby, exe, "generate", kind, name,
+          chdir: project
+        )
+
+        ok = status.exitstatus == 0
+        {
+          ok: ok,
+          kind: kind,
+          name: name,
+          output: stdout.to_s + stderr.to_s,
+          error: (ok ? nil : (stderr.to_s.strip.empty? ? "generate exited #{status.exitstatus}" : stderr.to_s.strip))
+        }.compact
       end
 
       # ── Live Docs (Live API RAG) ─────────────────────────────────

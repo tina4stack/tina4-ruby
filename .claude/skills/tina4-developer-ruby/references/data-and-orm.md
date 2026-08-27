@@ -369,19 +369,42 @@ tina4 generate migration create_users      # scaffold a new migration file (same
 tina4 generate migration create_users --fields "name:string,email:string"
 ```
 
-**Two CLI paths, one file.** `tina4 migrate:create <desc>` and
-`tina4 generate migration <name>` produce the SAME migration file with the SAME
-ADR-0063 `generate_v1_1` envelope — same `-- tina4:edit` markers, same
-`edit_hints[]`, same `next[]`. `migrate:create` is the shorter form for a human
-description (it slugifies "add users table" → `add_users_table` and preserves
-the raw prose in the file's `-- Migration:` header). `generate migration`
-composes with `--fields "name:string,price:float"` for schema-aware `CREATE
-TABLE` scaffolding when the name starts with `create_X`. Neither is deprecated
-(3.13.121 unified the two paths, no user-facing change beyond the delegated
-path now carrying the envelope + edit markers). One intentional difference:
-`generate migration create_X` co-emits a spec at `spec/{table}_migration_spec.rb`;
-`migrate:create` never does (it passes `emit_test: false` to the shared
-generator).
+**Four surfaces, one envelope.** A new migration can be scaffolded from FOUR
+places, and every one emits the SAME ADR-0063 `generate_v1_1` resolution
+envelope — same `-- tina4:edit` markers baked into the UP + DOWN `.sql`,
+same `edit_hints[]`, same `next[]`. The four paths are:
+
+1. **CLI shortform** — `tina4ruby migrate:create <description>` — the shorter
+   form for a human description (it slugifies "add users table" →
+   `add_users_table` and preserves the raw prose in the file's `-- Migration:`
+   header).
+2. **CLI generator** — `tina4ruby generate migration <name>` — composes with
+   `--fields "name:string,price:float"` for schema-aware `CREATE TABLE`
+   scaffolding when the name starts with `create_X`.
+3. **MCP tool** — `migration_create(description:)` — the same lambda a coding
+   agent (Claude Code / Cursor / etc.) drives through `POST /__dev/mcp`. The
+   tool delegates to the SAME shared resolution-aware helper the CLI uses, so
+   the returned JSON carries `{ok, created, resolution, actions_taken}` where
+   `resolution` is the full v1.1 envelope. Duplicate-slug guard: a second
+   call for the same (or clearly equivalent) description returns
+   `{ok: false, error, existing: [<path>]}` and writes nothing, so an agent
+   edits the existing migration instead of spawning a second file for the
+   same schema change (mirrors PHP + Python MCPs).
+4. **Dev-admin HTTP** — `POST /__dev/api/scaffold/run` with
+   `{kind: "migration", name: "..."}` — shells out to `exe/tina4ruby generate
+   migration <name>` and returns `{ok, kind, name, output}` where `output` is
+   the CLI subprocess's captured stdout + stderr, including the human
+   "Edit these lines:" + "Next:" resolution block. The endpoint also handles
+   `route`, `model`, and `middleware` the same way — mirroring PHP's
+   `shell_exec 'php bin/tina4php generate ...'` and Node's `execFileSync
+   'npx tina4nodejs generate ...'`.
+
+One intentional difference: `generate migration create_X` co-emits a spec at
+`spec/{table}_migration_spec.rb`; `migrate:create` never does (it passes
+`emit_test: false` to the shared generator). The MCP tool follows
+`migrate:create`'s behaviour (no co-emitted spec) — an agent creating a
+migration is not asking for a test file. Nothing is deprecated (3.13.121
+unified all four paths onto the same envelope).
 
 **Twig templates (form, view) participate in `edit_hints[]` from 3.13.121;
 the scanner matches `# tina4:edit`, `-- tina4:edit`, and `{# tina4:edit ... #}`

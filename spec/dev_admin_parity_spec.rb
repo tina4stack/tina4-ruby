@@ -94,6 +94,15 @@ RSpec.describe "Tina4::DevAdmin parity routes" do
   end
 
   it "runs a scaffold and creates the target file" do
+    # ADR-0063 (3.13.121): scaffold_run now shells to `exe/tina4ruby generate
+    # <kind> <name>` so the CLI's envelope + `# tina4:edit` markers reach the
+    # endpoint's `output` (mirrors PHP's shell_exec + Node's execFileSync).
+    # The Dir.mktmpdir around-block gives us an empty cwd, so symlink the real
+    # exe + lib in for the subprocess to find.
+    FileUtils.mkdir_p("exe")
+    File.symlink(EXE, "exe/tina4ruby") unless File.exist?("exe/tina4ruby")
+    File.symlink(File.join(REPO_ROOT, "lib"), "lib") unless File.exist?("lib")
+
     status, _, body = Tina4::DevAdmin.handle_request(
       make_env("POST", "/__dev/api/scaffold/run", body: { kind: "route", name: "widgets" })
     )
