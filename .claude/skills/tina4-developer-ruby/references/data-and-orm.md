@@ -361,10 +361,27 @@ firebird://user:password@localhost:3050/mydb
 ## Migrations
 
 ```bash
-tina4 migrate           # run pending migrations
-tina4 migrate:status    # show migration status
-tina4 migrate:rollback  # roll back the last batch
+tina4 migrate                              # run pending migrations
+tina4 migrate:status                       # show migration status
+tina4 migrate:rollback                     # roll back the last batch
+tina4 migrate:create "add users table"     # scaffold a new migration file
+tina4 generate migration create_users      # scaffold a new migration file (same envelope)
+tina4 generate migration create_users --fields "name:string,email:string"
 ```
+
+**Two CLI paths, one file.** `tina4 migrate:create <desc>` and
+`tina4 generate migration <name>` produce the SAME migration file with the SAME
+ADR-0063 `generate_v1_1` envelope — same `-- tina4:edit` markers, same
+`edit_hints[]`, same `next[]`. `migrate:create` is the shorter form for a human
+description (it slugifies "add users table" → `add_users_table` and preserves
+the raw prose in the file's `-- Migration:` header). `generate migration`
+composes with `--fields "name:string,price:float"` for schema-aware `CREATE
+TABLE` scaffolding when the name starts with `create_X`. Neither is deprecated
+(3.13.121 unified the two paths, no user-facing change beyond the delegated
+path now carrying the envelope + edit markers). One intentional difference:
+`generate migration create_X` co-emits a spec at `spec/{table}_migration_spec.rb`;
+`migrate:create` never does (it passes `emit_test: false` to the shared
+generator).
 
 Migration files are versioned SQL in **`migrations/`** at the project root — the canonical location
 (matches the CLI + auto-migrate + the Python reference); a legacy `src/migrations/` is honoured only

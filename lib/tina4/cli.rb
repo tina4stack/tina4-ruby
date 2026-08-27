@@ -692,22 +692,52 @@ module Tina4
 
     # ── migrate:create ───────────────────────────────────────────────────
 
-    # Create a new timestamped migration file (UP .sql + .down.sql), matching
-    # the Python master `migrate:create`. CHEAP + database-free: it only writes
-    # files via the static Tina4::Migration.create_migration helper — no app
-    # boot, no DB connection, no tracking table. `description` is every arg
-    # joined with a space (parity with Python's `" ".join(args)`).
+    # Create a new timestamped migration file (UP .sql + .down.sql). The
+    # description can be human prose ("add users table") — it is slugified into
+    # a snake_case name ("add_users_table") and then handed to the SAME
+    # resolution-aware generator that backs `tina4ruby generate migration`, so
+    # both CLI paths emit the ADR-0063 `generate_v1_1` envelope with matching
+    # `edit_hints[]`, `next[]`, human resolution block, and the same
+    # `# tina4:edit` markers in the generated .sql files. The only intentional
+    # difference is `emit_test: false` — `migrate:create` never co-emits a
+    # test file, preserving its "just a migration" semantics. CHEAP +
+    # database-free: it never boots the app, opens a DB, or writes a tracking
+    # row.
+    #
+    # Accepts `--json` and `--dry-run` (same as `generate migration`); anything
+    # else is treated as description tokens joined with a space (parity with
+    # Python's `" ".join(args)`).
     def cmd_migrate_create(argv)
-      description = (argv || []).join(" ").strip
+      argv = argv || []
+      flags, positional = parse_flags(argv)
+      json_mode = flags.delete("json") ? true : false
+      dry_run   = flags.delete("dry-run") ? true : false
+
+      description = positional.join(" ").strip
       if description.empty?
         puts "Usage: tina4ruby migrate:create <description>"
         exit 1
       end
 
-      require_relative "log"
-      require_relative "migration"
-      path = Tina4::Migration.create_migration(description, migrations_dir: "migrations")
-      puts "Created: #{path}"
+      # Slugify the human description into a snake_case migration NAME so the
+      # filename matches what `generate migration <name>` would produce, and
+      # so the generator's `create_X` schema-awareness fires when the
+      # description starts with "create <thing>". Regex + downcase mirrors the
+      # Python master's `re.sub(r'[^a-z0-9]+', '_', desc, flags=re.I).lower()`
+      # convention that the four frameworks share for migration filenames.
+      name = description.gsub(/[^a-z0-9]+/i, "_").downcase.gsub(/^_|_$/, "")
+
+      # Fresh timestamp per command run so the sandbox pre-run (edit_hints)
+      # and the real generator agree on the same second — ADR-0063.
+      reset_generate_timestamp!
+
+      run_resolution_aware_generator(
+        "migration", name, flags,
+        json_mode: json_mode,
+        dry_run: dry_run,
+        gen_spec: GENERATORS["migration"],
+        generator_kwargs: { emit_test: false, description: description }
+      )
     end
 
     # ── migrate:status ─────────────────────────────────────────────────────
@@ -1257,14 +1287,39 @@ module Tina4
         return
       end
 
+      run_resolution_aware_generator(
+        what, name, flags,
+        json_mode: json_mode, dry_run: dry_run, gen_spec: gen_spec
+      )
+    end
+
+    # Shared entry point for the four resolution-aware generators (model,
+    # route, migration, middleware) — used by BOTH `cmd_generate` and by
+    # `cmd_migrate_create`, so both CLI paths emit the SAME ADR-0063 envelope
+    # (`edit_hints[]`, `next[]`, human resolution block, `# tina4:edit`
+    # markers). `generator_kwargs` are forwarded verbatim to the generator
+    # method — that is how `cmd_migrate_create` passes `emit_test: false` and
+    # `description:` without duplicating the whole envelope-emission path.
+    def run_resolution_aware_generator(what, name, flags,
+                                       json_mode:, dry_run:,
+                                       gen_spec: nil,
+                                       generator_kwargs: {})
+      gen_spec ||= GENERATORS[what]
+
       resolution = build_generate_resolution(what, name, flags)
       # ADR-0063 additive v1.1 keys: curated next-steps (pure fn of resolution)
       # and edit_hints (scan of generated files for `# tina4:edit <label>`).
       resolution["next"] = build_next_steps(what, resolution)
-      resolution["edit_hints"] = collect_edit_hints_via_sandbox(gen_spec, name, flags)
+      resolution["edit_hints"] =
+        collect_edit_hints_via_sandbox(gen_spec, name, flags, **generator_kwargs)
 
       if json_mode
-        actions_taken = dry_run ? [] : run_generator_capturing_actions(gen_spec, name, flags)
+        actions_taken =
+          if dry_run
+            []
+          else
+            run_generator_capturing_actions(gen_spec, name, flags, **generator_kwargs)
+          end
         envelope = build_generate_envelope(what, name, flags, resolution, actions_taken, dry_run)
         puts JSON.pretty_generate(envelope)
         return
@@ -1277,7 +1332,7 @@ module Tina4
       if dry_run
         $stderr.puts "  (dry-run — no files written)"
       else
-        send(gen_spec[:handler], name, flags)
+        send(gen_spec[:handler], name, flags, **generator_kwargs)
       end
     end
 
@@ -1323,7 +1378,11 @@ module Tina4
     # `generate_timestamp` is shared with the real run so a migration file
     # sandboxed here has the SAME timestamped basename as the file that lands
     # in the developer's cwd - the hint's `file` field matches disk verbatim.
-    def collect_edit_hints_via_sandbox(gen_spec, name, flags)
+    # `generator_kwargs` are forwarded verbatim to the generator method so the
+    # sandbox pre-run produces the same files (and therefore the same edit
+    # markers) as the real run — used by `cmd_migrate_create` to thread
+    # `emit_test: false` + `description:` through without a bespoke sandbox.
+    def collect_edit_hints_via_sandbox(gen_spec, name, flags, **generator_kwargs)
       hints = []
       Dir.mktmpdir("tina4_edit_hints") do |sandbox|
         # Block-form Dir.chdir composes cleanly under an outer block-form
@@ -1337,7 +1396,7 @@ module Tina4
             # A generator failure inside the sandbox must never break the caller's
             # real run - rescue everything, return whatever hints we managed to
             # gather. The real run will error the same way if it is going to.
-            send(gen_spec[:handler], name, flags.dup)
+            send(gen_spec[:handler], name, flags.dup, **generator_kwargs)
           rescue StandardError, LoadError, ScriptError
             # swallow - the sandbox is best-effort
           ensure
@@ -1521,14 +1580,17 @@ module Tina4
     # `actions_taken` list from the "  Created <path>" lines the generators
     # emit. Machine callers get one clean JSON envelope on stdout; the
     # generator's own log stays discoverable via the returned list.
-    def run_generator_capturing_actions(gen_spec, name, flags)
+    # `generator_kwargs` are forwarded verbatim to the generator method so
+    # callers (e.g. `cmd_migrate_create`) can pass overrides like
+    # `emit_test: false` without duplicating the envelope-emission path.
+    def run_generator_capturing_actions(gen_spec, name, flags, **generator_kwargs)
       require "stringio"
       require "json"
       buffer = StringIO.new
       original = $stdout
       $stdout = buffer
       begin
-        send(gen_spec[:handler], name, flags)
+        send(gen_spec[:handler], name, flags, **generator_kwargs)
       ensure
         $stdout = original
       end
@@ -1823,7 +1885,8 @@ module Tina4
 
     # ── Generator: migration ─────────────────────────────────────────────
 
-    def generate_migration(name, flags = {}, fields_override: nil, table_override: nil, emit_test: true)
+    def generate_migration(name, flags = {}, fields_override: nil, table_override: nil,
+                           emit_test: true, description: nil)
       # ADR-0063: `generate_timestamp` is the shared memoised `Time.now` for
       # this cmd_generate run; the resolution's `migration_path` uses the SAME
       # value, so envelope and disk agree.
@@ -1831,6 +1894,15 @@ module Tina4
       timestamp = now.strftime("%Y%m%d%H%M%S")
       dir = "migrations"
       FileUtils.mkdir_p(dir)
+
+      # `description` (when supplied by `cmd_migrate_create`) keeps the raw
+      # human prose that appears in the file HEADER — the filename still uses
+      # the snake_case `name`, so the two CLI paths write matching filenames
+      # while the delegating path preserves the readable "add users table"
+      # comment inside the file. Falls back to `name` when no description was
+      # supplied (the `tina4ruby generate migration` path, where `name` is
+      # already snake_case).
+      header_text = description || name
 
       # Determine table name
       if table_override
@@ -1880,7 +1952,7 @@ module Tina4
       # rollback SQL lives solely in the sibling .down.sql. Matches the Python
       # master (tina4_python/cli/__init__.py).
       content = <<~SQL
-        -- Migration: #{name}
+        -- Migration: #{header_text}
         -- Created: #{now.strftime("%Y-%m-%d %H:%M:%S")}
 
         #{up_sql}
@@ -1893,7 +1965,7 @@ module Tina4
       down_filename = "#{timestamp}_#{name}.down.sql"
       down_path = File.join(dir, down_filename)
       down_content = <<~SQL
-        -- Rollback: #{name}
+        -- Rollback: #{header_text}
         -- Created: #{now.strftime("%Y-%m-%d %H:%M:%S")}
 
         #{down_sql}
