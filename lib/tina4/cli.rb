@@ -292,14 +292,20 @@ module Tina4
     DEFAULT_FIELDS = [["name", "string"]].freeze
 
     # ADR-0063 (scaffolding envelope v1.1): `# tina4:edit <label>` in a generated
-    # Ruby file, or `-- tina4:edit <label>` in a generated SQL file, marks a
+    # Ruby file, `-- tina4:edit <label>` in a generated SQL file, or
+    # `{# tina4:edit <label> #}` in a generated Twig template marks a
     # first-edit spot for a developer / coding agent to fill in. The scanner
     # surfaces every match as an `edit_hints` entry in the `generate_v1_1`
-    # envelope AND under "Edit these lines:" in the human stderr block. Any
-    # comment character (`#` or `--`) followed by `tina4:edit` and one or more
-    # spaces then the label matches — Twig `{# tina4:edit … #}` is Wave 2 and
-    # deliberately NOT matched here.
-    EDIT_MARKER_RE = /(?:#|--)\s*tina4:edit[ \t]+(.+?)\s*$/.freeze
+    # envelope AND under "Edit these lines:" in the human stderr block.
+    #
+    # One regex covers all three comment styles - `//`-style (Ruby `#`), SQL
+    # (`--`), and Twig (`{# ... #}`) - so the same scanner drives
+    # model / migration / middleware / route AND the form + view Twig
+    # generators (ADR-0063 twig-scanner parity, 3.13.121). The optional
+    # `(?:\s*#\})?` tail strips the Twig closing sequence so the captured
+    # label stays clean ("add fields here", not "add fields here #}").
+    # Ported verbatim from tina4-php's `collectEditHintsFromContent`.
+    EDIT_MARKER_RE = %r{(?://|#|--|\{\#)\s*tina4:edit[ \t]+(.+?)(?:\s*\#\})?\s*$}.freeze
 
     # ADR-0063 next-step catalogue: 5 short actionable lines per resolution-aware
     # verb. Rendered under "Next:" in the human block AND surfaced as
@@ -354,7 +360,42 @@ module Tina4
           "Chain more:           order in the middleware: [] list is registration order",
         ]
       end,
+      "form" => lambda do |res|
+        class_name = res["class_name"] || "Form"
+        file_path = res["file_path"] || "src/templates/forms/form.twig"
+        route = (res["routes"] || []).first || "/#{to_snake_case_static(class_name)}"
+        [
+          "Edit #{file_path} to restyle / add fields to the form",
+          "Render it:             response.render(\"forms/#{File.basename(file_path)}\", { item: item })",
+          "Wire it to a route:    tina4ruby generate route #{class_name}",
+          "Add a matching model:  tina4ruby generate model #{class_name}",
+          "Try it:                tina4ruby serve  ->  http://localhost:7147#{route}",
+        ]
+      end,
+      "view" => lambda do |res|
+        class_name = res["class_name"] || "View"
+        list_path = res["file_path"] || "src/templates/pages/list.twig"
+        detail_path = (res["transformations"] || []).find { |t| t["kind"] == "detail_view" }
+        detail_path = detail_path ? detail_path["to"] : list_path.sub(/list\.twig$/, "detail.twig")
+        route = (res["routes"] || []).first || "/#{to_snake_case_static(class_name)}"
+        [
+          "Edit #{list_path} for the list view (add sort / filter / pagination)",
+          "Edit #{detail_path} for the detail view (add related records / actions)",
+          "Wire it to a route:    tina4ruby generate route #{class_name}",
+          "Add a matching model:  tina4ruby generate model #{class_name}",
+          "Try it:                tina4ruby serve  ->  http://localhost:7147#{route}",
+        ]
+      end,
     }.freeze
+
+    # Static helper for the NEXT_STEPS lambdas above - avoids reaching for the
+    # per-instance to_snake_case when only the class name is known.
+    def self.to_snake_case_static(name)
+      s = name.to_s
+      s.gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+       .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+       .downcase
+    end
 
     # ADR-0063: freeze `Time.now` for the duration of one `cmd_generate` call.
     # Both the resolution builders (`build_migration_resolution`,
@@ -1279,9 +1320,11 @@ module Tina4
         exit 1
       end
 
-      # Only the four resolution-aware targets emit a resolution + JSON envelope;
+      # Only the resolution-aware targets emit a resolution + JSON envelope;
       # every other generator keeps its existing behaviour so nothing regresses.
-      resolution_aware = %w[model route migration middleware]
+      # ADR-0063 (3.13.121): form + view joined so their baked `{# tina4:edit ... #}`
+      # markers surface in resolution.edit_hints[] under the same v1.1 envelope.
+      resolution_aware = %w[model route migration middleware form view]
       if !resolution_aware.include?(what)
         send(gen_spec[:handler], name, flags)
         return
@@ -1429,6 +1472,8 @@ module Tina4
       when "route"      then build_route_resolution(name, flags)
       when "migration"  then build_migration_resolution(name, flags)
       when "middleware" then build_middleware_resolution(name, flags)
+      when "form"       then build_form_resolution(name, flags)
+      when "view"       then build_view_resolution(name, flags)
       else
         { "class_name" => name.to_s, "table_name" => nil, "file_path" => nil,
           "migration_path" => nil, "transformations" => [],
@@ -1510,6 +1555,54 @@ module Tina4
         "migration_path"  => nil,
         "transformations" => [],
         "routes"          => [],
+        "test_paths"      => []
+      }
+    end
+
+    # Form generator writes ONE Twig template in src/templates/forms/<snake>.twig.
+    # `file_path` names that primary file; the scanner walks every generated
+    # file in the sandbox, so the twig `{# tina4:edit ... #}` marker landing
+    # inside it flows into resolution.edit_hints[] regardless.
+    def build_form_resolution(name, _flags)
+      snake = to_snake_case(name)
+      route_name = to_route_name(name)
+      {
+        "class_name"      => name.to_s,
+        "table_name"      => nil,
+        "file_path"       => "src/templates/forms/#{snake}.twig",
+        "migration_path"  => nil,
+        "transformations" => [],
+        "routes"          => ["/api/#{route_name}"],
+        "test_paths"      => []
+      }
+    end
+
+    # View generator writes TWO Twig templates: a list view keyed by the
+    # (plural) route name and a detail view keyed by the (singular) class
+    # snake. `file_path` names the list (the primary entry point); the
+    # detail path is surfaced under `transformations` so a caller / NEXT_STEPS
+    # lambda / human block can find it without re-deriving. Scanner picks up
+    # both files from the sandbox walk regardless of these fields.
+    def build_view_resolution(name, _flags)
+      snake = to_snake_case(name)
+      route_name = to_route_name(name)
+      list_path = "src/templates/pages/#{route_name}.twig"
+      detail_path = "src/templates/pages/#{snake}.twig"
+      {
+        "class_name"      => name.to_s,
+        "table_name"      => nil,
+        "file_path"       => list_path,
+        "migration_path"  => nil,
+        "transformations" => [
+          {
+            "kind"     => "detail_view",
+            "from"     => name.to_s,
+            "to"       => detail_path,
+            "reason"   => "list view is #{route_name}.twig; detail view keyed by the singular class snake",
+            "override" => nil
+          }
+        ],
+        "routes"          => ["/#{route_name}", "/#{route_name}/{id}"],
         "test_paths"      => []
       }
     end

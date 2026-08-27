@@ -383,6 +383,19 @@ path now carrying the envelope + edit markers). One intentional difference:
 `migrate:create` never does (it passes `emit_test: false` to the shared
 generator).
 
+**Twig templates (form, view) participate in `edit_hints[]` from 3.13.121;
+the scanner matches `# tina4:edit`, `-- tina4:edit`, and `{# tina4:edit ... #}`
+styles.** `tina4 generate form <Name>` (writes `src/templates/forms/<name>.twig`)
+and `tina4 generate view <Name>` (writes `src/templates/pages/<plural>.twig` +
+`src/templates/pages/<singular>.twig`) now emit the same `generate_v1_1`
+envelope as model / migration / route / middleware — `--json --dry-run` returns
+a `resolution.edit_hints[]` pointing at the twig `{# tina4:edit <label> #}`
+markers baked into each generated template, with a clean label (the scanner
+strips the closing `#}` before capture). Bare `generate form / view` prints
+the same "Edit these lines:" and "Next:" block to STDERR. This is additive:
+the envelope version is still `1.1`, and Ruby + SQL markers keep firing as
+before.
+
 Migration files are versioned SQL in **`migrations/`** at the project root — the canonical location
 (matches the CLI + auto-migrate + the Python reference); a legacy `src/migrations/` is honoured only
 as a fallback (`lib/tina4/migration.rb:160`; the boot
