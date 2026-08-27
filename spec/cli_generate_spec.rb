@@ -225,7 +225,9 @@ RSpec.describe "CLI generate commands" do
 
       files = Dir.glob(File.join(@tmp_dir, "migrations", "*add_email_to_users.sql"))
       content = File.read(files.first)
-      expect(content).to include("-- Write your UP migration SQL here")
+      # ADR-0063 lowered the placeholder + prefixed the machine-readable
+      # `-- tina4:edit` marker so a scanner (envelope + human block) can find it.
+      expect(content).to include("-- tina4:edit  write your UP migration SQL here")
     end
   end
 

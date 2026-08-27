@@ -4,6 +4,8 @@ require "optparse"
 require "fileutils"
 require "set"
 require "json"
+require "tmpdir"    # Dir.mktmpdir — used by the ADR-0063 sandbox edit-hint scan
+require "stringio"  # StringIO — captures generator stdout during the sandbox run
 require_relative "port_takeover"
 
 module Tina4
@@ -289,6 +291,87 @@ module Tina4
     # created_at. The first write then failed with "no such column: name".
     DEFAULT_FIELDS = [["name", "string"]].freeze
 
+    # ADR-0063 (scaffolding envelope v1.1): `# tina4:edit <label>` in a generated
+    # Ruby file, or `-- tina4:edit <label>` in a generated SQL file, marks a
+    # first-edit spot for a developer / coding agent to fill in. The scanner
+    # surfaces every match as an `edit_hints` entry in the `generate_v1_1`
+    # envelope AND under "Edit these lines:" in the human stderr block. Any
+    # comment character (`#` or `--`) followed by `tina4:edit` and one or more
+    # spaces then the label matches — Twig `{# tina4:edit … #}` is Wave 2 and
+    # deliberately NOT matched here.
+    EDIT_MARKER_RE = /(?:#|--)\s*tina4:edit[ \t]+(.+?)\s*$/.freeze
+
+    # ADR-0063 next-step catalogue: 5 short actionable lines per resolution-aware
+    # verb. Rendered under "Next:" in the human block AND surfaced as
+    # `resolution.next[]` in the envelope. Each entry is a `Proc` that consumes
+    # the resolution so paths / class names substitute correctly. Curated (not
+    # generated) so a caller sees consistent, sensible next steps.
+    NEXT_STEPS = {
+      "model" => lambda do |res|
+        table = res["table_name"] || "resource"
+        class_name = res["class_name"] || "Model"
+        file_path = res["file_path"] || "src/orm/#{table}.rb"
+        route = (res["routes"] || []).first || "/#{table}"
+        [
+          "Edit #{file_path} to add fields beyond the default 'name'",
+          "Apply the migration:   tina4ruby migrate",
+          "Try it:                tina4ruby serve  ->  curl http://localhost:7147#{route}",
+          "Add CRUD scaffolding:  tina4ruby generate crud #{class_name} --skip-model",
+          "Seed sample data:      tina4ruby generate seeder #{class_name} && tina4ruby seed",
+        ]
+      end,
+      "route" => lambda do |res|
+        file_path = res["file_path"] || "src/routes/resource.rb"
+        route = (res["routes"] || []).first || "/api/resource"
+        test_path = (res["test_paths"] || []).first || "spec/routes/resource_spec.rb"
+        [
+          "Edit #{file_path} to customise the response",
+          "Try it:                tina4ruby serve  ->  curl http://localhost:7147#{route}",
+          "Add real assertions:   #{test_path}",
+          "Bearer-gate is on:     writes require a Bearer token (rerun with --public to open)",
+          "Browse the API:        tina4ruby serve  ->  http://localhost:7147/swagger",
+        ]
+      end,
+      "migration" => lambda do |res|
+        file_path = res["file_path"] || "migrations/new_migration.sql"
+        down_path = file_path.sub(/\.sql$/, ".down.sql")
+        [
+          "Edit #{file_path} to add columns beyond id + created_at",
+          "Mirror the change in:  #{down_path}",
+          "Apply it:              tina4ruby migrate",
+          "Check status:          tina4ruby migrate status",
+          "Rollback if wrong:     tina4ruby migrate rollback",
+        ]
+      end,
+      "middleware" => lambda do |res|
+        class_name = res["class_name"] || "Middleware"
+        file_path = res["file_path"] || "src/middleware/middleware.rb"
+        [
+          "Edit #{file_path} to guard the request or shape the response",
+          "Wire it into a route: middleware: [#{class_name}] on Tina4.get/post/...",
+          "Wire it globally:     Tina4::Router.use(#{class_name})",
+          "Prove the gate:       add a real spec covering allow + deny",
+          "Chain more:           order in the middleware: [] list is registration order",
+        ]
+      end,
+    }.freeze
+
+    # ADR-0063: freeze `Time.now` for the duration of one `cmd_generate` call.
+    # Both the resolution builders (`build_migration_resolution`,
+    # `build_model_resolution`) and the actual generator (`generate_migration`)
+    # embed a timestamp in the migration filename. If they call `Time.now`
+    # independently, the sandbox pre-run (which drives edit_hints for dry-run
+    # mode) and the real run can pick different seconds, and the envelope's
+    # `file_path` would drift from the file that actually gets written. One
+    # memoised timestamp per command run fixes that.
+    def generate_timestamp
+      @generate_timestamp ||= Time.now
+    end
+
+    def reset_generate_timestamp!
+      @generate_timestamp = nil
+    end
+
     # Parsed --fields, or the default single `name` column when none given.
     def fields_or_default(fields_str)
       parsed = parse_fields(fields_str)
@@ -331,7 +414,11 @@ module Tina4
       bar = "─" * 60
       head = "#{indent}# ─── AI-FILL: #{fn} "
       head += "─" * [4, 66 - head.length].max
-      lines = [head, "#{indent}# Intent:  #{intent}"]
+      # ADR-0063: prepend a `# tina4:edit <label>` machine-readable pointer so a
+      # tool can surface WHERE this stub needs custom logic without parsing the
+      # AI-FILL banner. `intent` is the developer-facing TODO — reuse it as the
+      # label (short, actionable, no period).
+      lines = ["#{indent}# tina4:edit  #{intent}", head, "#{indent}# Intent:  #{intent}"]
       lines << "#{indent}# Given:   #{given}" if given
       lines << "#{indent}# Use:     #{use}"
       lines << "#{indent}# Return:  #{ret}" if ret
@@ -348,7 +435,10 @@ module Tina4
     def extend_marker(note, hint = "", indent: "  ")
       head = "#{indent}# ─── EXTEND: #{note} "
       head += "─" * [4, 66 - head.length].max
-      out = head + "\n"
+      # ADR-0063: `# tina4:edit <label>` is the machine-readable partner of the
+      # ─── EXTEND banner. `note` is the human-shaped TODO — reuse it verbatim.
+      out = "#{indent}# tina4:edit  #{note}\n"
+      out += head + "\n"
       out += "#{indent}# #{hint}\n" unless hint.to_s.empty?
       out
     end
@@ -1117,6 +1207,10 @@ module Tina4
     # will produce before it runs.
 
     def cmd_generate(argv)
+      # ADR-0063: fresh timestamp per command run so the sandbox pre-run + the
+      # real generator both agree on the migration filename.
+      reset_generate_timestamp!
+
       what = argv.shift
       all = GENERATORS.keys.join(", ")  # single source: the GENERATORS registry
 
@@ -1126,7 +1220,7 @@ module Tina4
         puts '  Options:    --fields "name:string,price:float"  --model ModelName'
         puts '              --public                  open a route'"'"'s writes (default: secure)'
         puts '              --every 5m | --cron "..."  service schedule'
-        puts '              --json                    emit the generate_v1 resolution envelope'
+        puts '              --json                    emit the generate_v1_1 resolution envelope'
         puts '              --dry-run                 plan the scaffold; write no files'
         exit 1
       end
@@ -1164,6 +1258,10 @@ module Tina4
       end
 
       resolution = build_generate_resolution(what, name, flags)
+      # ADR-0063 additive v1.1 keys: curated next-steps (pure fn of resolution)
+      # and edit_hints (scan of generated files for `# tina4:edit <label>`).
+      resolution["next"] = build_next_steps(what, resolution)
+      resolution["edit_hints"] = collect_edit_hints_via_sandbox(gen_spec, name, flags)
 
       if json_mode
         actions_taken = dry_run ? [] : run_generator_capturing_actions(gen_spec, name, flags)
@@ -1181,6 +1279,78 @@ module Tina4
       else
         send(gen_spec[:handler], name, flags)
       end
+    end
+
+    # ADR-0063 helpers ────────────────────────────────────────────────────────
+
+    # Curated per-verb next-step list. Pure function of the resolution; never
+    # scans the filesystem, so it works identically in dry-run and real-run.
+    def build_next_steps(target, resolution)
+      builder = NEXT_STEPS[target]
+      return [] unless builder
+      Array(builder.call(resolution))
+    end
+
+    # Scan a list of files for `# tina4:edit <label>` (Ruby) or
+    # `-- tina4:edit <label>` (SQL) lines. Returns `[{file, line, label}]` in
+    # the same order the files were passed. Missing / unreadable files are
+    # skipped silently (a scaffold that already exists on disk simply produces
+    # no hint for that path — that is the intended behaviour).
+    def scan_edit_hints_from_files(paths)
+      hints = []
+      paths.each do |path|
+        next unless path
+        next unless File.file?(path)
+        begin
+          content = File.read(path, encoding: "UTF-8", invalid: :replace, undef: :replace)
+        rescue SystemCallError
+          next
+        end
+        content.each_line.with_index(1) do |line, lineno|
+          next unless (m = line.match(EDIT_MARKER_RE))
+          hints << { "file" => path, "line" => lineno, "label" => m[1].strip }
+        end
+      end
+      hints
+    end
+
+    # Run the generator inside a throw-away tmpdir with `$stdout` captured, then
+    # walk every written file and scan for `# tina4:edit` / `-- tina4:edit`
+    # markers. Used for BOTH dry-run and real-run modes so the envelope always
+    # ships accurate `edit_hints` before any live-cwd write happens (preserves
+    # the "Ctrl-C between plan and write" contract of the human block).
+    #
+    # `generate_timestamp` is shared with the real run so a migration file
+    # sandboxed here has the SAME timestamped basename as the file that lands
+    # in the developer's cwd - the hint's `file` field matches disk verbatim.
+    def collect_edit_hints_via_sandbox(gen_spec, name, flags)
+      hints = []
+      Dir.mktmpdir("tina4_edit_hints") do |sandbox|
+        # Block-form Dir.chdir composes cleanly under an outer block-form
+        # Dir.chdir (Ruby 3.x warns on nested non-block chdir). No `ensure`
+        # cwd-restore needed - the block form guarantees it.
+        Dir.chdir(sandbox) do
+          buffer = StringIO.new
+          original_stdout = $stdout
+          $stdout = buffer
+          begin
+            # A generator failure inside the sandbox must never break the caller's
+            # real run - rescue everything, return whatever hints we managed to
+            # gather. The real run will error the same way if it is going to.
+            send(gen_spec[:handler], name, flags.dup)
+          rescue StandardError, LoadError, ScriptError
+            # swallow - the sandbox is best-effort
+          ensure
+            $stdout = original_stdout
+          end
+          Dir.glob("**/*", File::FNM_DOTMATCH).sort.each do |rel_path|
+            next if [".", ".."].include?(File.basename(rel_path))
+            next unless File.file?(rel_path)
+            hints.concat(scan_edit_hints_from_files([rel_path]))
+          end
+        end
+      end
+      hints
     end
 
     # ── generate resolution helpers ────────────────────────────────────────
@@ -1227,7 +1397,10 @@ module Tina4
       # The migration filename embeds a timestamp; predict it deterministically
       # so a `--dry-run` and the real run agree on the same second. Two
       # generations within the same second collide anyway (existing behaviour).
-      timestamp = Time.now.strftime("%Y%m%d%H%M%S")
+      # ADR-0063: `generate_timestamp` memoises `Time.now` per `cmd_generate`
+      # call so the sandbox pre-run + real run share one second, and the
+      # envelope's `migration_path` matches the file that actually lands.
+      timestamp = generate_timestamp.strftime("%Y%m%d%H%M%S")
       {
         "class_name"     => name.to_s,
         "table_name"     => table,
@@ -1253,7 +1426,8 @@ module Tina4
     end
 
     def build_migration_resolution(name, _flags)
-      timestamp = Time.now.strftime("%Y%m%d%H%M%S")
+      # ADR-0063: shared memoised timestamp (see `generate_timestamp`).
+      timestamp = generate_timestamp.strftime("%Y%m%d%H%M%S")
       base = name.to_s.sub(/^create_/, "").sub(/^add_/, "").sub(/^drop_/, "")
       snake_base = to_snake_case(base)
       path = "migrations/#{timestamp}_#{name}.sql"
@@ -1313,11 +1487,32 @@ module Tina4
       if resolution["migration_path"] && resolution["migration_path"] != resolution["file_path"]
         lines << "  migration  #{resolution['migration_path']}"
       end
+      # ADR-0063: surface the pre-existing test_paths (v1 field, only now printed
+      # in the human block) alongside the two new sections.
+      if resolution["test_paths"] && !resolution["test_paths"].empty?
+        lines << "  tests      #{resolution['test_paths'].join(', ')}"
+      end
       pluralized = resolution["transformations"].find { |t| t["kind"] == "reserved_word_pluralize" }
       if pluralized
         lines << ""
         lines << "  To keep the raw name '#{pluralized['from']}' as the table:"
         lines << "    tina4ruby generate #{target} #{name} --table #{pluralized['from']} --quote  (opt-in, ADR-0062 forthcoming)"
+      end
+      # ADR-0063 v1.1: surface `edit_hints[]` under "Edit these lines:" and
+      # `next[]` under "Next:" — both additive; missing / empty arrays elide
+      # cleanly. The `file:line  label` shape is grep-friendly for humans and
+      # machine-parseable for tools.
+      if resolution["edit_hints"] && !resolution["edit_hints"].empty?
+        lines << ""
+        lines << "  Edit these lines:"
+        resolution["edit_hints"].each do |h|
+          lines << "    #{h['file']}:#{h['line']}  #{h['label']}"
+        end
+      end
+      if resolution["next"] && !resolution["next"].empty?
+        lines << ""
+        lines << "  Next:"
+        resolution["next"].each { |step| lines << "    #{step}" }
       end
       lines.join("\n")
     end
@@ -1371,6 +1566,7 @@ module Tina4
         class #{name} < Tina4::ORM
           table_name "#{table}"
 
+          # tina4:edit  add fields beyond the default 'name'
         #{field_lines.join("\n")}
         end
       RUBY
@@ -1628,7 +1824,10 @@ module Tina4
     # ── Generator: migration ─────────────────────────────────────────────
 
     def generate_migration(name, flags = {}, fields_override: nil, table_override: nil, emit_test: true)
-      now = Time.now
+      # ADR-0063: `generate_timestamp` is the shared memoised `Time.now` for
+      # this cmd_generate run; the resolution's `migration_path` uses the SAME
+      # value, so envelope and disk agree.
+      now = generate_timestamp
       timestamp = now.strftime("%Y%m%d%H%M%S")
       dir = "migrations"
       FileUtils.mkdir_p(dir)
@@ -1661,11 +1860,18 @@ module Tina4
         end
         col_lines << "    created_at TEXT DEFAULT CURRENT_TIMESTAMP"
 
-        up_sql = "CREATE TABLE IF NOT EXISTS #{table} (\n#{col_lines.join(",\n")}\n);"
-        down_sql = "DROP TABLE IF EXISTS #{table};"
+        # ADR-0063: `-- tina4:edit` marker for the SQL scanner (mirrors `# tina4:edit`
+        # in Ruby files). The scanner regex accepts both comment prefixes.
+        up_sql = "CREATE TABLE IF NOT EXISTS #{table} (\n" \
+                 "    -- tina4:edit  add columns beyond id + created_at\n" \
+                 "#{col_lines.join(",\n")}\n);"
+        down_sql = "-- tina4:edit  mirror the CREATE's added columns in the rollback\n" \
+                   "DROP TABLE IF EXISTS #{table};"
       else
-        up_sql = "-- Write your UP migration SQL here\n-- Example: ALTER TABLE #{table} ADD COLUMN new_col TEXT DEFAULT '';"
-        down_sql = "-- Write your DOWN rollback SQL here\n-- Example: ALTER TABLE #{table} DROP COLUMN new_col;"
+        up_sql = "-- tina4:edit  write your UP migration SQL here\n" \
+                 "-- Example: ALTER TABLE #{table} ADD COLUMN new_col TEXT DEFAULT '';"
+        down_sql = "-- tina4:edit  write your DOWN rollback SQL here\n" \
+                   "-- Example: ALTER TABLE #{table} DROP COLUMN new_col;"
       end
 
       # The main .sql holds ONLY the UP migration. The runner executes the WHOLE
@@ -1727,12 +1933,14 @@ module Tina4
             # Runs before the route handler.
             # Return [request, response] to continue, or
             # return [request, response.json({ error: "Unauthorized" }, 401)] to block.
+            # tina4:edit  guard the request here
             Tina4::Log.info("#{name}: \#{request.method} \#{request.path}")
             [request, response]
           end
 
           def self.after_#{snake}(request, response)
             # Runs after the route handler.
+            # tina4:edit  post-process the response here
             [request, response]
           end
         end
@@ -1836,6 +2044,7 @@ module Tina4
           # Tests for #{name} CRUD operations
           RSpec.describe "#{model}" do
             before(:each) do
+              # tina4:edit  seed real fixtures for a real DB
               # Set up test fixtures
             end
 
@@ -1844,7 +2053,7 @@ module Tina4
             end
 
             it "lists #{snake}" do
-              # TODO: implement
+              # tina4:edit  replace the tautology with a real assertion
               expect(true).to be true
             end
 
@@ -1875,6 +2084,7 @@ module Tina4
           # Tests for #{name}
           RSpec.describe "#{class_name}" do
             before(:each) do
+              # tina4:edit  seed real fixtures for a real DB
               # Set up test fixtures
             end
 
@@ -1883,7 +2093,7 @@ module Tina4
             end
 
             it "works as expected" do
-              # TODO: replace with real tests
+              # tina4:edit  replace the tautology with a real assertion
               expect(true).to be true
             end
           end
@@ -2087,6 +2297,7 @@ module Tina4
           # clears the router's auth_required).
           Tina4.post "/api/auth/register", auth: false do |request, response|
             # Register a new user
+            # tina4:edit  harden the register flow (rate limit / captcha / password rules)
             email = request.body["email"].to_s
             password = request.body["password"].to_s
 
@@ -2112,6 +2323,7 @@ module Tina4
           # PUBLIC: login mints the token — clear BOTH write gates (see register).
           Tina4.post "/api/auth/login", auth: false do |request, response|
             # Login with email and password
+            # tina4:edit  harden the login flow (rate limit / lockout after N failures)
             email = request.body["email"].to_s
             password = request.body["password"].to_s
 
@@ -3146,7 +3358,12 @@ module Tina4
         # KNOW the envelope shape before it invokes generate (see cmd_generate).
         # Bump `version` when the envelope shape changes; add a new envelope
         # name rather than mutating the existing one.
-        "resolution_contract" => { "version" => "1", "envelope" => "generate_v1" }
+        # ADR-0063: v1.1 adds two additive keys to `resolution` — `edit_hints[]`
+        # (grep of every `# tina4:edit <label>` / `-- tina4:edit <label>` line
+        # in the generated files) and `next[]` (curated actionable steps). Every
+        # v1 key is preserved untouched, so a v1 caller reading v1.1 output
+        # keeps working.
+        "resolution_contract" => { "version" => "1.1", "envelope" => "generate_v1_1" }
       }
     end
 

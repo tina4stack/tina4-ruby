@@ -138,15 +138,18 @@ RSpec.describe "tina4ruby generate — resolution transparency" do
   end
 
   describe "commands --json manifest carries the resolution_contract" do
-    it "declares { version: '1', envelope: 'generate_v1' }" do
+    # ADR-0063 bumped the contract from v1 -> v1.1 (additive: edit_hints[] and
+    # next[] joined the resolution shape; every v1 key is preserved). See
+    # spec/generate_envelope_v1_1_spec.rb for the v1.1 contract's own coverage.
+    it "declares { version: '1.1', envelope: 'generate_v1_1' } (ADR-0063)" do
       stdout, _stderr, status = Open3.capture3(RUBY_BIN, EXE, "commands", "--json")
       expect(status.exitstatus).to eq(0)
 
       manifest = JSON.parse(stdout)
       expect(manifest).to have_key("resolution_contract")
       expect(manifest["resolution_contract"]).to eq(
-        "version"  => "1",
-        "envelope" => "generate_v1"
+        "version"  => "1.1",
+        "envelope" => "generate_v1_1"
       )
     end
   end
