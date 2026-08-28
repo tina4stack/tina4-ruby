@@ -806,12 +806,41 @@ module Tina4
           response.headers["Strict-Transport-Security"] = "max-age=#{hsts}; includeSubDomains"
         end
 
+        warn_csp_default_once if ENV["TINA4_CSP"].nil?
         response.headers["Content-Security-Policy"] = ENV["TINA4_CSP"] || "default-src 'self'"
         response.headers["Referrer-Policy"] = ENV["TINA4_REFERRER_POLICY"] || "strict-origin-when-cross-origin"
         response.headers["X-XSS-Protection"] = "0"
         response.headers["Permissions-Policy"] = ENV["TINA4_PERMISSIONS_POLICY"] || "camera=(), microphone=(), geolocation=()"
 
         [request, response]
+      end
+
+      # Warn once per process that the default CSP is in force (TINA4_CSP unset).
+      #
+      # Secure-by-default keeps `default-src 'self'` (SECHDR-DEC-01), but that
+      # default is invisible: it blocks runtime-injected inline styles, cross-origin
+      # fonts/scripts/CDNs, `data:` URIs, and cross-origin WebSocket/XHR (a separate
+      # API or LiveKit host) -- and the failure surfaces only in the browser at
+      # runtime, long after a deploy has gone green. So the framework says so once,
+      # naming the escape hatch. It NEVER fails the boot or a request -- logging a
+      # heads-up must not be the reason the server or a request dies. Fires only when
+      # TINA4_CSP is ABSENT; setting it (even to empty) is an explicit opt-in.
+      def warn_csp_default_once
+        return if @csp_default_warned
+
+        @csp_default_warned = true
+        message = "TINA4_CSP is not set, so Tina4 is serving the default Content-Security-Policy " \
+          "\"default-src 'self'\" on every response. That default blocks runtime-injected " \
+          "inline styles, cross-origin fonts/scripts/CDNs, data: URIs, and cross-origin " \
+          "WebSocket/XHR (e.g. a separate API or LiveKit host). If your app uses any of " \
+          "these, set TINA4_CSP to a policy that allows them (see https://tina4.com); to " \
+          "silence this notice without changing behaviour, set TINA4_CSP=\"default-src 'self'\"."
+        begin
+          Tina4::Log.warning(message)
+        rescue StandardError
+          # Logging must never break a request.
+          warn(message)
+        end
       end
     end
   end
