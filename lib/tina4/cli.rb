@@ -372,6 +372,16 @@ module Tina4
           "Try it:                tina4ruby serve  ->  http://localhost:7147#{route}",
         ]
       end,
+      "queue" => lambda do |res|
+        file_path = res["file_path"] || "src/services/topic_consumer.rb"
+        slug = File.basename(file_path, ".rb").sub(/_consumer$/, "")
+        [
+          "Edit #{file_path}: implement handle_#{slug}(payload) to process ONE job",
+          "Produce a job:  publish_#{slug}({ ... })",
+          "Run the worker: tina4ruby queue work #{slug}",
+          "Check stats:    tina4ruby queue stats #{slug}",
+        ]
+      end,
       "view" => lambda do |res|
         class_name = res["class_name"] || "View"
         list_path = res["file_path"] || "src/templates/pages/list.twig"
@@ -1324,7 +1334,7 @@ module Tina4
       # every other generator keeps its existing behaviour so nothing regresses.
       # ADR-0063 (3.13.121): form + view joined so their baked `{# tina4:edit ... #}`
       # markers surface in resolution.edit_hints[] under the same v1.1 envelope.
-      resolution_aware = %w[model route migration middleware form view]
+      resolution_aware = %w[model route migration middleware form view queue]
       if !resolution_aware.include?(what)
         send(gen_spec[:handler], name, flags)
         return
@@ -1474,6 +1484,7 @@ module Tina4
       when "middleware" then build_middleware_resolution(name, flags)
       when "form"       then build_form_resolution(name, flags)
       when "view"       then build_view_resolution(name, flags)
+      when "queue"      then build_queue_resolution(name, flags)
       else
         { "class_name" => name.to_s, "table_name" => nil, "file_path" => nil,
           "migration_path" => nil, "transformations" => [],
@@ -1556,6 +1567,23 @@ module Tina4
         "transformations" => [],
         "routes"          => [],
         "test_paths"      => []
+      }
+    end
+
+    # Slug computed EXACTLY as generate_queue does, so the envelope's paths
+    # equal the on-disk filenames.
+    def build_queue_resolution(name, _flags)
+      topic = name.to_s.sub(%r{^/}, "")
+      slug = to_snake_case(topic.gsub(/[^0-9a-zA-Z]+/, "_")).gsub(/\A_+|_+\z/, "")
+      slug = "topic" if slug.empty?
+      {
+        "class_name"      => nil,
+        "table_name"      => nil,
+        "file_path"       => "src/services/#{slug}_consumer.rb",
+        "migration_path"  => nil,
+        "transformations" => [],
+        "routes"          => [],
+        "test_paths"      => ["spec/#{slug}_spec.rb"]
       }
     end
 

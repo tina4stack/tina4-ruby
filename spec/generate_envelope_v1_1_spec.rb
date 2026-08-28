@@ -88,6 +88,38 @@ RSpec.describe "tina4ruby generate — scaffolding envelope v1.1 (ADR-0063)" do
     end
   end
 
+  describe "1b. queue (a logic-shaped generator) is wired to the envelope too" do
+    it "generate queue emits the envelope with the handler fill point + next[]" do
+      stdout, stderr, status = run_generate("queue", "order-emails", "--json", "--dry-run")
+
+      expect(status.exitstatus).to eq(0), "stderr: #{stderr}"
+      envelope = JSON.parse(stdout)
+      expect(envelope["target"]).to eq("queue")
+      expect(envelope["dry_run"]).to be true
+      expect(envelope["actions_taken"]).to eq([])
+
+      resolution = envelope["resolution"]
+      expect(resolution["file_path"]).to eq("src/services/order_emails_consumer.rb")
+      expect(resolution["test_paths"]).to eq(["spec/order_emails_spec.rb"])
+
+      # THE fix: the ai_fill handler marker surfaces as an edit hint. Before this,
+      # `generate queue` printed a bare "Created" with no envelope at all.
+      expect(resolution["edit_hints"]).to be_an(Array)
+      expect(resolution["edit_hints"]).not_to be_empty
+      files = resolution["edit_hints"].map { |h| h["file"] }
+      expect(files).to include("src/services/order_emails_consumer.rb")
+
+      expect(resolution["next"]).to be_an(Array)
+      expect(resolution["next"]).not_to be_empty
+      joined = resolution["next"].join("\n")
+      expect(joined).to include("src/services/order_emails_consumer.rb")
+      expect(joined).to include("publish_order_emails")
+
+      # --dry-run writes nothing (it used to ignore the flag and write files).
+      expect(Dir.exist?(File.join(@project_root, "src"))).to be false
+    end
+  end
+
   describe "2. commands --json manifest declares v1.1 / generate_v1_1" do
     it "returns resolution_contract { version: '1.1', envelope: 'generate_v1_1' }" do
       stdout, _stderr, status = Open3.capture3(RUBY_BIN, EXE, "commands", "--json")
