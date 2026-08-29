@@ -230,18 +230,24 @@ module Tina4
         rows.map { |row| decode_blobs(symbolize_keys(row)) }
       end
 
-      def execute(sql, params = [])
-        # Translate SQLite-canonical DDL to Firebird at APPLY time, mirroring the
-        # Python master's firebird.py _translate_sql: strip AUTOINCREMENT (Firebird
-        # uses generators), then rewrite the types Firebird rejects -- TEXT ->
-        # BLOB SUB_TYPE TEXT (-607), REAL -> DOUBLE PRECISION -- and drop
-        # CREATE TABLE IF NOT EXISTS. Both helpers only touch DDL keywords
-        # (AUTOINCREMENT / CREATE TABLE / ALTER TABLE), so a plain
-        # INSERT/UPDATE/DELETE/SELECT is returned untouched. This is what lets a
-        # REALLY-generated migration (id INTEGER PRIMARY KEY AUTOINCREMENT,
-        # bio TEXT, price REAL) apply on Firebird instead of raising -607/-104.
+      # Translate SQLite-canonical SQL to Firebird at APPLY time, mirroring the
+      # Python master's firebird.py _translate_sql: strip AUTOINCREMENT (Firebird
+      # uses generators), bare TRUE/FALSE -> 1/0 (Firebird has no boolean type; a
+      # TRUE/FALSE INSIDE a string literal is data and is left untouched), rewrite
+      # the types Firebird rejects -- TEXT -> BLOB SUB_TYPE TEXT (-607), REAL ->
+      # DOUBLE PRECISION -- and drop CREATE TABLE IF NOT EXISTS. Every helper only
+      # touches DDL keywords or bare boolean tokens, so a plain
+      # INSERT/UPDATE/DELETE/SELECT is returned untouched. This is what lets a
+      # REALLY-generated migration (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      # bio TEXT, price REAL) apply on Firebird instead of raising -607/-104.
+      def translate_sql(sql)
         sql = Tina4::SQLTranslator.auto_increment_syntax(sql, "firebird")
-        sql = Tina4::SQLTranslator.ddl_types(sql, "firebird")
+        sql = Tina4::SQLTranslator.boolean_to_int(sql)
+        Tina4::SQLTranslator.ddl_types(sql, "firebird")
+      end
+
+      def execute(sql, params = [])
+        sql = translate_sql(sql)
         result = with_reconnect do
           if params.empty?
             @connection.execute(sql)

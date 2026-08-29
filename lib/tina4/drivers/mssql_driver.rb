@@ -58,15 +58,21 @@ module Tina4
         rows
       end
 
-      def execute(sql, params = [])
-        # Translate SQLite-canonical DDL to T-SQL at APPLY time, mirroring the
-        # Python master's mssql.py _translate_sql: AUTOINCREMENT -> IDENTITY(1,1),
-        # then strip CREATE TABLE IF NOT EXISTS (not T-SQL) and map TIMESTAMP ->
-        # DATETIME2 (MSSQL's TIMESTAMP is a rowversion, not a datetime). Both
-        # helpers only touch DDL keywords, so DML is returned untouched -- this is
-        # what lets a REALLY-generated migration apply on MSSQL.
+      # Translate SQLite-canonical SQL to T-SQL at APPLY time, mirroring the
+      # Python master's mssql.py _translate_sql: AUTOINCREMENT -> IDENTITY(1,1),
+      # bare TRUE/FALSE -> 1/0 (MSSQL has BIT, not a boolean type; a TRUE/FALSE
+      # INSIDE a string literal is data and is left untouched), strip CREATE TABLE
+      # IF NOT EXISTS (not T-SQL) and map TIMESTAMP -> DATETIME2 (MSSQL's TIMESTAMP
+      # is a rowversion). Every helper only touches DDL keywords or bare boolean
+      # tokens, so a plain INSERT/UPDATE/DELETE/SELECT is returned untouched.
+      def translate_sql(sql)
         sql = Tina4::SQLTranslator.auto_increment_syntax(sql, "mssql")
-        sql = Tina4::SQLTranslator.ddl_types(sql, "mssql")
+        sql = Tina4::SQLTranslator.boolean_to_int(sql)
+        Tina4::SQLTranslator.ddl_types(sql, "mssql")
+      end
+
+      def execute(sql, params = [])
+        sql = translate_sql(sql)
         effective_sql = interpolate_params(sql, params)
 
         # Capture the generated IDENTITY AT WRITE TIME — mirror of the Python
