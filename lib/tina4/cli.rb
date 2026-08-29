@@ -143,7 +143,7 @@ module Tina4
       "bool"     => { orm: "boolean_field", sql: "INTEGER",      default: "0" },
       "boolean"  => { orm: "boolean_field", sql: "INTEGER",      default: "0" },
       "text"     => { orm: "string_field",  sql: "TEXT",         default: "''" },
-      "datetime" => { orm: "string_field",  sql: "TEXT",         default: "NULL" },
+      "datetime" => { orm: "string_field",  sql: "TIMESTAMP",         default: "NULL" },
       "blob"     => { orm: "string_field",  sql: "BLOB",         default: "NULL" },
     }.freeze
 
@@ -2051,7 +2051,7 @@ module Tina4
           default = info[:default] != "NULL" ? " DEFAULT #{info[:default]}" : ""
           col_lines << "    #{fname} #{info[:sql]}#{default}"
         end
-        col_lines << "    created_at TEXT DEFAULT CURRENT_TIMESTAMP"
+        col_lines << "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
 
         # ADR-0063: `-- tina4:edit` marker for the SQL scanner (mirrors `# tina4:edit`
         # in Ruby files). The scanner regex accepts both comment prefixes.

@@ -73,7 +73,15 @@ module Tina4
       # wiring that makes the previously-dead concat/ilike helpers live in Ruby.)
       def translate_dialect(sql)
         sql = Tina4::SQLTranslator.concat_pipes_to_func(sql)
-        Tina4::SQLTranslator.ilike_to_like(sql)
+        sql = Tina4::SQLTranslator.ilike_to_like(sql)
+        # Complete the DDL dialect translation at APPLY time, mirroring the Python
+        # master's mysql.py _translate_sql: AUTOINCREMENT -> AUTO_INCREMENT, then
+        # map a datetime column's TIMESTAMP -> DATETIME (MySQL's TIMESTAMP carries
+        # auto-update + 2038 surprises). Both helpers only touch DDL keywords, so a
+        # SELECT/INSERT is returned untouched -- this is what lets a
+        # REALLY-generated migration apply on MySQL.
+        sql = Tina4::SQLTranslator.auto_increment_syntax(sql, "mysql")
+        Tina4::SQLTranslator.ddl_types(sql, "mysql")
       end
 
       def execute_query(sql, params = [])

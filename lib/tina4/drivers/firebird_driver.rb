@@ -231,6 +231,17 @@ module Tina4
       end
 
       def execute(sql, params = [])
+        # Translate SQLite-canonical DDL to Firebird at APPLY time, mirroring the
+        # Python master's firebird.py _translate_sql: strip AUTOINCREMENT (Firebird
+        # uses generators), then rewrite the types Firebird rejects -- TEXT ->
+        # BLOB SUB_TYPE TEXT (-607), REAL -> DOUBLE PRECISION -- and drop
+        # CREATE TABLE IF NOT EXISTS. Both helpers only touch DDL keywords
+        # (AUTOINCREMENT / CREATE TABLE / ALTER TABLE), so a plain
+        # INSERT/UPDATE/DELETE/SELECT is returned untouched. This is what lets a
+        # REALLY-generated migration (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        # bio TEXT, price REAL) apply on Firebird instead of raising -607/-104.
+        sql = Tina4::SQLTranslator.auto_increment_syntax(sql, "firebird")
+        sql = Tina4::SQLTranslator.ddl_types(sql, "firebird")
         result = with_reconnect do
           if params.empty?
             @connection.execute(sql)
