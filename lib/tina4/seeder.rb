@@ -108,6 +108,30 @@ module Tina4
     CURRENCIES = %w[USD EUR GBP JPY CAD AUD CHF ZAR INR CNY].freeze
     CREDIT_CARD_PREFIXES = %w[4111 4242 5500 5105].freeze
 
+    # Product-name vocabulary (adjective + noun). Seeds a generic
+    # +name+/+full_name+ column on a product-ish table with "Wireless Keyboard"
+    # instead of a person name. Mirrors the Python master's word banks.
+    PRODUCT_ADJECTIVES = %w[
+      Wireless Organic Premium Classic Eco Smart Portable
+      Deluxe Compact Rustic Handcrafted Vintage Modern
+      Ergonomic Stainless Bamboo Recycled Artisan Professional
+      Ultra Insulated Lightweight Adjustable Foldable
+    ].freeze
+
+    PRODUCT_NOUNS = [
+      "Keyboard", "Coffee Beans", "Backpack", "Water Bottle", "Desk Lamp",
+      "Headphones", "Notebook", "Sneakers", "Sunglasses", "Wallet", "Mug",
+      "Chair", "Blender", "Speaker", "Charger", "Umbrella", "Toothbrush",
+      "Jacket", "Watch", "Kettle", "Picture Frame", "Planter", "Cutlery Set",
+      "Yoga Mat", "Phone Case"
+    ].freeze
+
+    # A table/model whose name contains any of these gets product names on its
+    # generic +name+/+full_name+ column instead of a person name.
+    PRODUCT_TABLE_HINTS = %w[
+      product item catalog inventory goods merchandise sku listing stock ware
+    ].freeze
+
     def initialize(seed: nil)
       @rng = seed ? Random.new(seed) : Random.new
     end
@@ -247,6 +271,23 @@ module Tina4
       JOB_TITLES[@rng.rand(JOB_TITLES.length)]
     end
 
+    # A plausible product name, e.g. "Wireless Keyboard" or "Organic Coffee
+    # Beans". Deterministic under a seed like every other generator (draws from
+    # the same @rng), so a seeded run reproduces it. Mirrors the Python master's
+    # FakeData.product().
+    def product
+      "#{PRODUCT_ADJECTIVES[@rng.rand(PRODUCT_ADJECTIVES.length)]} #{PRODUCT_NOUNS[@rng.rand(PRODUCT_NOUNS.length)]}"
+    end
+
+    # True when the table/model name looks like a product catalogue, so a generic
+    # +name+/+full_name+ column seeds a product name, not a person name. With no
+    # table context (nil/"") this is false, so the person-name default is kept
+    # (back-compat). Mirrors the Python master's +_is_product_table+.
+    def self.product_table?(table)
+      down = table.to_s.downcase
+      PRODUCT_TABLE_HINTS.any? { |hint| down.include?(hint) }
+    end
+
     def currency
       CURRENCIES[@rng.rand(CURRENCIES.length)]
     end
@@ -282,7 +323,13 @@ module Tina4
     end
 
     # Generate appropriate data based on field definition and column name.
-    def for_field(field_def, column_name = nil)
+    #
+    # +table+ (optional) is the table/model name. When it names a product-ish
+    # catalogue (see FakeData.product_table?) a generic +name+/+full_name+/
+    # +fullname+ column yields a product name ("Wireless Keyboard") instead of a
+    # person name. With no table context the person-name default is kept
+    # (back-compat). first_name/last_name/user_name stay person either way.
+    def for_field(field_def, column_name = nil, table = nil)
       col = (column_name || "").to_s.downcase
       type = field_def[:type]
 
@@ -323,7 +370,7 @@ module Tina4
 
       when :string, :text
         max_len = field_def[:length] || 255
-        val = generate_string_for(col, max_len)
+        val = generate_string_for(col, max_len, table)
         val.length > max_len ? val[0...max_len] : val
 
       else
@@ -333,9 +380,15 @@ module Tina4
 
     private
 
-    def generate_string_for(col, max_len)
+    def generate_string_for(col, max_len, table = nil)
       return email[0...max_len] if col.include?("email")
-      return name[0...max_len] if %w[name full_name fullname display_name].include?(col)
+      if %w[name full_name fullname display_name].include?(col)
+        # GENERIC full-name column: a product-ish table gets a product name, any
+        # other table (or no table context) keeps the person name. first_name/
+        # last_name/user_name are handled by the branches below, so they stay
+        # person on a product table too.
+        return (self.class.product_table?(table) ? product : name)[0...max_len]
+      end
       return first_name[0...max_len] if col.include?("first") && col.include?("name")
       return last_name[0...max_len] if col.include?("last") && col.include?("name")
       return last_name[0...max_len] if col =~ /surname|family_name/
@@ -523,7 +576,10 @@ module Tina4
           elsif fk_pools[name] && !fk_pools[name].empty?
             attrs[name] = fake.choice(fk_pools[name])
           else
-            generated = fake.for_field(field_def, name)
+            # Thread the MODEL name (orm_class.name) so a generic name column on
+            # a product-ish model seeds a product name (parity with the Python
+            # master, which passes orm_class.__name__).
+            generated = fake.for_field(field_def, name, orm_class.name)
             attrs[name] = generated unless generated.nil?
           end
         end
@@ -614,7 +670,10 @@ module Tina4
             row[col_name] = type_str.arity.zero? ? type_str.call : type_str.call(fake)
           else
             field_def = { type: type_str.to_sym }
-            row[col_name] = fake.for_field(field_def, col_name)
+            # Thread the TABLE name so a generic name column on a product-ish
+            # table (incl. the MCP seed_table dev tool, which reaches here via
+            # db.columns) seeds a product name instead of a person name.
+            row[col_name] = fake.for_field(field_def, col_name, table_name)
           end
         end
 

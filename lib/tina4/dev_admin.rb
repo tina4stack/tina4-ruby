@@ -1385,7 +1385,9 @@ module Tina4
           # the closure, not a dead keyword.
           fake = Tina4::FakeData.new(seed: seed)
           field_map = Tina4._normalize_columns(db.columns(table_name)).each_with_object({}) do |(col_name, type_sym), map|
-            map[col_name] = -> { fake.for_field({ type: type_sym }, col_name) }
+            # Thread the TABLE name so a generic name column on a product-ish
+            # table seeds a product name (parity with the seed_table path).
+            map[col_name] = -> { fake.for_field({ type: type_sym }, col_name, table_name) }
           end
           # Delegate to the shared resilient seed_table helper so the endpoint
           # gets the exact same per-row wrap (P1) — no unhandled row failure can
