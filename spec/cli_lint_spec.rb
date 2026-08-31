@@ -57,19 +57,12 @@ RSpec.describe "tina4ruby lint" do
     [out, status]
   end
 
-  # A rubocop already on PATH would preempt the zero-dependency baseline for the
-  # --no-install cases: the temp dir has no Gemfile, so ONLY a PATH rubocop can
-  # resolve there. CI and the lab bundle no linter (the gemspec dev-dependency
-  # was removed with this feature), so the baseline genuinely runs there; on a
-  # dev box that `gem install`ed rubocop globally the baseline path is
-  # unreachable and the case is skipped with a clear reason (never a mock).
-  def rubocop_on_path?
-    !cli.send(:which_executable, "rubocop").nil?
-  end
-
+  # resolve_rubocop only honours the PROJECT's bundled rubocop, so a stray global
+  # rubocop on PATH can no longer preempt the --no-install baseline. The baseline
+  # is therefore always reachable in a temp project with no bundled rubocop -- no
+  # skip guard needed, on any machine (dev box, CI, or the lab).
   describe "zero-dependency baseline (ruby -c)" do
     it "passes a clean src file (--no-install) with exit 0" do
-      skip "rubocop on PATH — the --no-install baseline path is unreachable here" if rubocop_on_path?
       FileUtils.mkdir_p("src")
       File.write("src/ok.rb", CLEAN_RB)
       out, status = run_lint(["--no-install"])
@@ -79,7 +72,6 @@ RSpec.describe "tina4ruby lint" do
     end
 
     it "fails a src file with a syntax error (exit 1)" do
-      skip "rubocop on PATH — the --no-install baseline path is unreachable here" if rubocop_on_path?
       FileUtils.mkdir_p("src")
       File.write("src/bad.rb", BROKEN_RB)
       out, status = run_lint(["--no-install"])
@@ -89,7 +81,6 @@ RSpec.describe "tina4ruby lint" do
     end
 
     it "includes app.rb in scope (a broken app.rb fails, exit 1)" do
-      skip "rubocop on PATH — the --no-install baseline path is unreachable here" if rubocop_on_path?
       File.write("app.rb", BROKEN_RB)
       out, status = run_lint(["--no-install"])
       expect(out).to include("app.rb")

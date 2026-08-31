@@ -1315,15 +1315,16 @@ module Tina4
     # rubocop because inside a bundled project the pinned version is the correct
     # one (and a bare `rubocop` may trip Bundler's "not part of the bundle").
     def resolve_rubocop
+      # Only the PROJECT's own bundled rubocop counts -- linting must be
+      # reproducible from the project's pinned dev dependency, NOT a stray global
+      # rubocop on PATH (which would also make the on-demand install
+      # non-deterministic: a global tool would preempt it). When the project has
+      # none, the caller installs it dev-only via `bundle add`.
       bundle = which_executable("bundle")
       if bundle && File.file?("Gemfile") &&
          system(bundle, "exec", "rubocop", "--version", out: File::NULL, err: File::NULL)
         return [bundle, "exec", "rubocop"]
       end
-
-      direct = which_executable("rubocop")
-      return [direct] if direct
-
       nil
     end
 
