@@ -99,7 +99,11 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "bunny", "~> 2.22"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.12"
-  spec.add_development_dependency "rubocop", "~> 1.50"
+  # NO rubocop dev-dependency. The framework ships no linter — `tina4ruby lint`
+  # installs rubocop on demand into the USER's project (bundle add rubocop
+  # --group development), so a Tina4 app stays zero-dependency until the developer
+  # asks to lint. Keeping it here would force rubocop into every framework install
+  # and contradict that contract.
   # openapi3_parser — TEST-ONLY OpenAPI 3.0 validator for the Swagger contract
   # suite (spec/swagger_contract_spec.rb). It implements the OpenAPI 3.0
   # validation rules and exposes document.valid? / document.errors, so the suite

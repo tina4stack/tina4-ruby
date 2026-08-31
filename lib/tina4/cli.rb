@@ -6,6 +6,7 @@ require "set"
 require "json"
 require "tmpdir"    # Dir.mktmpdir — used by the ADR-0063 sandbox edit-hint scan
 require "stringio"  # StringIO — captures generator stdout during the sandbox run
+require "open3"     # Open3.capture2e — captures `ruby -c` output+status for `lint`
 require_relative "port_takeover"
 
 module Tina4
@@ -70,6 +71,7 @@ module Tina4
       "test"             => { handler: :cmd_test,                                                          summary: "Run inline tests" },
       "queue"            => { handler: :cmd_queue,            usage: "<work|stats|retry|clear> [topic]", subcommands: QUEUE_SUBCOMMANDS.keys, summary: "Run queue workers and manage jobs" },
       "build"            => { handler: :cmd_build,            usage: "[--tag NAME] [--file PATH]",         summary: "Build the deployable Docker image" },
+      "lint"             => { handler: :cmd_lint,             usage: "[--fix] [--no-install]",             summary: "Lint src/ + app.rb (rubocop, installed dev-only on demand, else ruby -c)" },
       "version"          => { handler: :cmd_version,                                                       summary: "Show Tina4 version" },
       "routes"           => { handler: :cmd_routes,                                                        summary: "List all registered routes" },
       "console"          => { handler: :cmd_console,                                                       summary: "Start an interactive console" },
@@ -516,7 +518,7 @@ module Tina4
     # Parse --key value and --flag from args. Returns [flags_hash, positional_array]
     def parse_flags(args)
       # Boolean-only flags that never take a value argument
-      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration once dry-run]
+      boolean_flags = %w[no-browser no-reload production managed all clear dev json public no-migration once dry-run fix no-install]
 
       flags = {}
       positional = []
@@ -1204,6 +1206,125 @@ module Tina4
       end
       puts "  ✓ Built image #{tag}"
       puts "  Run: docker run -p 7147:7147 #{tag}"
+    end
+
+    # ── lint ──────────────────────────────────────────────────────────────
+    #
+    # Lint the project's source. The framework ships NO linter (so a Tina4 app
+    # stays zero-dependency); `tina4ruby lint` uses the project's own rubocop and
+    # INSTALLS it as a DEV dependency on demand when it is absent. Layers:
+    #
+    #   * rubocop present (bundled via the project Gemfile, or on PATH): run it.
+    #     `--fix` runs `rubocop -a` (safe autocorrect). rubocop reports syntax
+    #     too, so it is the whole pass when present.
+    #   * rubocop absent: silently `bundle add rubocop --group development` --
+    #     running `tina4ruby lint` is the consent to add it -- then run it. It
+    #     lands in the development group only, never the app's runtime
+    #     dependencies. `--no-install` skips this.
+    #   * Baseline (zero dependency): the built-in `ruby -c` syntax parse -- no
+    #     execution, nothing written, no dependency. Used with `--no-install` or
+    #     when the install cannot run (no bundler/Gemfile, offline).
+    #
+    # Contract (identical across all four frameworks): exit 0 = clean, non-zero =
+    # findings; the summary names the tool that ran in [brackets]. Scope is the
+    # user's app (`src/` recursively + `app.rb`), mirroring how `tina4ruby test`
+    # runs the project's own specs -- not the framework's code. Ruby mirror of
+    # the Python master's `_lint` (tina4-python/tina4_python/cli/__init__.py).
+    #
+    #   tina4ruby lint            # rubocop (installed dev-only on demand), else baseline
+    #   tina4ruby lint --fix      # rubocop -a
+    #   tina4ruby lint --no-install  # rubocop if already present, else the syntax baseline
+    def cmd_lint(argv)
+      flags, _positional = parse_flags(argv)
+      fix = flags["fix"] == true
+      no_install = flags["no-install"] == true
+
+      rb_files = []
+      rb_files.concat(Dir.glob(File.join("src", "**", "*.rb")).sort) if File.directory?("src")
+      rb_files << "app.rb" if File.file?("app.rb")
+
+      if rb_files.empty?
+        puts "  lint: nothing to lint (no src/ or app.rb)."
+        exit 0
+      end
+
+      rubocop = resolve_rubocop
+
+      # Silent on-demand install: running `tina4ruby lint` is the consent to add
+      # rubocop as a DEV dependency of the project. --no-install opts out (CI /
+      # offline) and falls through to the zero-dependency baseline. Needs bundler
+      # AND a Gemfile to mutate.
+      if rubocop.nil? && !no_install
+        bundle = which_executable("bundle")
+        if bundle && File.file?("Gemfile")
+          puts "  · rubocop not found -- adding it as a dev dependency (bundle add rubocop --group development)..."
+          if system(bundle, "add", "rubocop", "--group", "development")
+            rubocop = resolve_rubocop
+          else
+            puts "  · could not install rubocop -- using the zero-dependency syntax baseline."
+          end
+        end
+      end
+
+      if rubocop
+        label = fix ? "rubocop -a" : "rubocop"
+        command = rubocop + (fix ? ["-a"] : []) + rb_files
+        ok = system(*command)   # inherits stdio — rubocop prints its own report
+        if ok
+          puts "  ✓ lint clean -- #{rb_files.length} file(s) [#{label}]"
+          exit 0
+        end
+        puts "  ✗ lint failed -- #{rb_files.length} file(s) [#{label}]"
+        exit 1
+      end
+
+      # Zero-dependency baseline: the built-in `ruby -c` syntax parse. No
+      # execution, nothing written, no dependency added.
+      puts "  · syntax baseline has no autofix (--no-install, or rubocop unavailable)." if fix
+
+      syntax_errors = 0
+      rb_files.each do |rel|
+        output, status = Open3.capture2e("ruby", "-c", rel)
+        next if status.success?   # "Syntax OK"
+
+        syntax_errors += 1
+        # `ruby -c` names the file+line in its first diagnostic line
+        # (e.g. "ruby: src/broken.rb:2: syntax errors found (SyntaxError)"); drop
+        # the redundant leading "ruby: " so the shape matches the Python master's
+        # "file:lineno: msg".
+        first_line = output.strip.sub(/\Aruby:\s*/, "").lines.first.to_s.rstrip
+        first_line = "#{rel}: syntax error" if first_line.empty?
+        puts "  ✗ #{first_line}"
+      end
+
+      if syntax_errors.positive?
+        puts "  ✗ lint failed -- #{syntax_errors} syntax error(s) in #{rb_files.length} file(s) [ruby -c]"
+        exit 1
+      end
+      puts "  ✓ lint clean -- #{rb_files.length} file(s) [ruby -c, syntax only]"
+      exit 0
+    end
+
+    # Resolve a runnable rubocop for the rich lint pass. Returns the argv PREFIX
+    # to invoke it (`[<bundle>, "exec", "rubocop"]` when the project's Gemfile
+    # bundles it — the version the project pins — or `[<rubocop-path>]` on PATH),
+    # or nil to fall back to the `ruby -c` baseline. Mirrors the Python master's
+    # `_resolve_ruff` (resolve the project's OWN linter). The bundler probe
+    # (`bundle exec rubocop --version`) is a REAL resolve check: exit 0 only when
+    # the gem is actually in the bundle. Bundler is preferred over a bare PATH
+    # rubocop because inside a bundled project the pinned version is the correct
+    # one (and a bare `rubocop` may trip Bundler's "not part of the bundle").
+    def resolve_rubocop
+      bundle = which_executable("bundle")
+      if bundle && File.file?("Gemfile") &&
+         system(bundle, "exec", "rubocop", "--version", out: File::NULL, err: File::NULL)
+        return [bundle, "exec", "rubocop"]
+      end
+
+      direct = which_executable("rubocop")
+      return [direct] if direct
+
+      nil
     end
 
     # Locate an executable on PATH — the stdlib-only equivalent of Python's
