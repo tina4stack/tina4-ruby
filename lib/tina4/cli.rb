@@ -30,7 +30,7 @@ module Tina4
     # handlers take (name, flags); COMMANDS handlers take (argv).
 
     GENERATORS = {
-      "model"      => { handler: :generate_model,      usage: '<Name> [--fields "name:string,price:float"]', summary: "ORM model + matching migration" },
+      "model"      => { handler: :generate_model,      usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
       "route"      => { handler: :generate_route,      usage: "<name> [--model Name] [--public]",             summary: "CRUD route file, secure by default (--public opens writes)" },
       "crud"       => { handler: :generate_crud,       usage: '<Name> [--fields "..."] [--public]',           summary: "Model + migration + routes + form + view + test" },
       "migration"  => { handler: :generate_migration,  usage: "<description>",                                 summary: "Timestamped migration file (UP/DOWN)" },
@@ -282,6 +282,52 @@ module Tina4
     # (Category -> categorys). This routes both through `pluralize_table`.
     def to_route_name(name)
       pluralize_table(to_snake_case(name))
+    end
+
+    # The table name a generator uses, honouring `--table-name` and speaking up
+    # instead of renaming silently (issue #123). Mirrors `_resolve_table` in
+    # tina4-python/tina4_python/cli/__init__.py:98.
+    #
+    # `announce` prints the note/warning; it is TRUE only for `generate_model`
+    # (where the table is born). Composite generators (crud) let the model
+    # sub-call announce, and generators that target an EXISTING table
+    # (seeder/form/view) still honour `--table-name` but stay quiet so the note
+    # is not repeated. `build_model_resolution` calls it with announce:false too,
+    # so the envelope's table_name/migration_path equal what lands on disk.
+    #
+    # * `--table-name <name>` wins verbatim. If that name is ITSELF a reserved
+    #   word, warn loudly: Tina4 interpolates table names UNQUOTED, so the ORM's
+    #   generated SQL will fail on it and quoting it in raw SQL + migrations is
+    #   now the developer's job (we do NOT silently quote — identifier quoting is
+    #   a global storage invariant, not a local fix).
+    # * Otherwise fall back to `to_table_name`. When that auto-pluralises a
+    #   reserved-word class name (Order -> orders), print a one-line note naming
+    #   the rename and the `--table-name` escape hatch, so the developer is
+    #   informed rather than surprised.
+    def resolve_table(name, flags = {}, announce: false)
+      flags ||= {}
+      override = flags["table-name"]
+      # A real value only — a bare `--table-name` parses to `true` and an empty
+      # `--table-name ""` to "", both of which fall through to the pluralise path
+      # (parity with Python's `if override and not isinstance(override, bool)`).
+      if override.is_a?(String) && !override.empty?
+        if announce && SQL_RESERVED_TABLE_NAMES.include?(to_snake_case(override))
+          puts "  ! table_name '#{override}' is a SQL reserved word. Tina4 interpolates " \
+               "table names UNQUOTED, so the ORM's generated SQL will fail on it -- " \
+               "quote it yourself in raw SQL and migrations."
+        end
+        return override
+      end
+      bare = to_snake_case(name)
+      if SQL_RESERVED_TABLE_NAMES.include?(bare)
+        table = pluralize_table(bare)
+        if announce
+          puts "  · '#{bare}' is a SQL reserved word; using table_name '#{table}' " \
+               "(Tina4 interpolates table names unquoted). Override with --table-name <name>."
+        end
+        return table
+      end
+      bare
     end
 
     # Called without --fields, the generators fall back to a single `name`
@@ -1616,21 +1662,19 @@ module Tina4
 
     def build_model_resolution(name, flags)
       raw = to_snake_case(name)
+      # Honour --table-name (silent here; generate_model announces). The envelope
+      # thus reports the SAME table_name/migration_path the generator writes.
+      table = resolve_table(name, flags)
       transformations = []
-      table =
-        if SQL_RESERVED_TABLE_NAMES.include?(raw)
-          plural = pluralize_table(raw)
-          transformations << {
-            "kind"     => "reserved_word_pluralize",
-            "from"     => raw,
-            "to"       => plural,
-            "reason"   => "SQL reserved word '#{raw}' would break CREATE TABLE",
-            "override" => "--table #{raw} --quote (requires quoted-identifier mode, not yet implemented)"
-          }
-          plural
-        else
-          raw
-        end
+      if SQL_RESERVED_TABLE_NAMES.include?(raw) && raw != table
+        transformations << {
+          "kind"     => "reserved_word_pluralize",
+          "from"     => raw,
+          "to"       => table,
+          "reason"   => "SQL reserved word '#{raw}' would break CREATE TABLE",
+          "override" => "--table #{raw} --quote (requires quoted-identifier mode, not yet implemented)"
+        }
+      end
       # The migration filename embeds a timestamp; predict it deterministically
       # so a `--dry-run` and the real run agree on the same second. Two
       # generations within the same second collide anyway (existing behaviour).
@@ -1847,7 +1891,9 @@ module Tina4
 
     def generate_model(name, flags, emit_test: true)
       fields = fields_or_default(flags["fields"])
-      table = to_table_name(name)
+      # announce: this is where the table is born, so a reserved-word pluralise
+      # (Order -> orders) or a forced reserved --table-name speaks up (#123).
+      table = resolve_table(name, flags, announce: true)
       snake = to_snake_case(name)
 
       # Build field lines
@@ -2093,7 +2139,8 @@ module Tina4
     # ── Generator: crud ──────────────────────────────────────────────────
 
     def generate_crud(name, flags)
-      table = to_table_name(name)
+      # Quiet here — the generate_model sub-call below announces once (#123).
+      table = resolve_table(name, flags)
       # Always derive the plural route from the CLASS NAME, not by appending
       # "s" to the table — otherwise a reserved-word table (already plural,
       # Order -> orders) becomes orderss, and a `y`-ending class (Category)
@@ -2422,7 +2469,8 @@ module Tina4
 
     def generate_form(name, flags = {})
       fields = fields_or_default(flags["fields"])
-      table = to_table_name(name)
+      # Targets an existing table — honour --table-name but stay quiet (#123).
+      table = resolve_table(name, flags)
       route_name = to_route_name(name)
 
       # Input type mapping
@@ -2505,7 +2553,8 @@ module Tina4
 
     def generate_view(name, flags = {})
       fields = fields_or_default(flags["fields"])
-      table = to_table_name(name)
+      # Targets an existing table — honour --table-name but stay quiet (#123).
+      table = resolve_table(name, flags)
       route_name = to_route_name(name)
 
       cols = fields.map { |f, _| f }
@@ -2938,7 +2987,8 @@ module Tina4
     #
     #   tina4ruby generate seeder Product
     def generate_seeder(name, flags = {})
-      table = to_table_name(name)
+      # Targets an existing table — honour --table-name but stay quiet (#123).
+      table = resolve_table(name, flags)
       model_snake = to_snake_case(name)
       dir = "seeds"
       FileUtils.mkdir_p(dir)
