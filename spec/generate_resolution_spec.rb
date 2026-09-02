@@ -67,7 +67,11 @@ RSpec.describe "tina4ruby generate — resolution transparency" do
       expect(pluralize["from"]).to eq("order")
       expect(pluralize["to"]).to eq("orders")
       expect(pluralize["reason"]).to include("SQL reserved word 'order'")
-      expect(pluralize["override"]).to include("--table order --quote")
+      # #123: the override points at --table-name, never a quoting flag. Tina4
+      # never quotes identifiers, so the agent-facing contract must not advertise
+      # a --quote path it will never ship.
+      expect(pluralize["override"]).to include("--table-name")
+      expect(pluralize["override"]).not_to include("--quote")
 
       # actions_taken lists files actually written (this is NOT a --dry-run).
       expect(envelope["actions_taken"]).to include(a_string_matching(/wrote src\/orm\/order\.rb/))
@@ -113,8 +117,9 @@ RSpec.describe "tina4ruby generate — resolution transparency" do
       expect(stderr).to include("table      orders")
       expect(stderr).to include("auto-pluralized: 'order' is a SQL reserved word")
       expect(stderr).to include("routes     /orders, /orders/{id}")
-      expect(stderr).to include("To keep the raw name 'order' as the table:")
-      expect(stderr).to include("tina4ruby generate model Order --table order --quote")
+      expect(stderr).to include("To set the table name yourself:")
+      expect(stderr).to include("tina4ruby generate model Order --table-name")
+      expect(stderr).not_to include("--quote")
 
       # STDOUT keeps the generator's existing "Created" log, unchanged.
       expect(stdout).to include("Created src/orm/order.rb")

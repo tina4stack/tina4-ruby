@@ -1672,7 +1672,7 @@ module Tina4
           "from"     => raw,
           "to"       => table,
           "reason"   => "SQL reserved word '#{raw}' would break CREATE TABLE",
-          "override" => "--table #{raw} --quote (requires quoted-identifier mode, not yet implemented)"
+          "override" => "--table-name <name> (table names interpolate unquoted; forcing a reserved name is yours to quote in raw SQL)"
         }
       end
       # The migration filename embeds a timestamp; predict it deterministically
@@ -1841,8 +1841,9 @@ module Tina4
       pluralized = resolution["transformations"].find { |t| t["kind"] == "reserved_word_pluralize" }
       if pluralized
         lines << ""
-        lines << "  To keep the raw name '#{pluralized['from']}' as the table:"
-        lines << "    tina4ruby generate #{target} #{name} --table #{pluralized['from']} --quote  (opt-in, ADR-0062 forthcoming)"
+        lines << "  To set the table name yourself:"
+        lines << "    tina4ruby generate #{target} #{name} --table-name <name>"
+        lines << "  Tina4 interpolates table names unquoted; if you force the reserved '#{pluralized['from']}', you own the quoting in raw SQL."
       end
       # ADR-0063 v1.1: surface `edit_hints[]` under "Edit these lines:" and
       # `next[]` under "Next:" — both additive; missing / empty arrays elide
