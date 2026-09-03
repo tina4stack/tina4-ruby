@@ -1033,6 +1033,14 @@ module Tina4
                 el.className = 't4-ok';
                 el.innerHTML = 'Latest: <strong class="t4-ok">v' + latest + '</strong> &mdash; You are up to date!';
             }
+            // A check that did not happen is not a clean bill of health. The
+            // server sends latest: null when it could not reach the registry,
+            // and saying so is the whole point -- "up to date" here would be a
+            // guess dressed as a fact.
+            function couldNotCheck(el, why) {
+                el.className = 't4-err';
+                el.textContent = 'Could not check for updates' + (why ? ' (' + why + ')' : '');
+            }
             function checkVersion() {
                 if (modal.style.display === 'block') { modal.style.display = 'none'; return; }
                 modal.style.display = 'block';
@@ -1041,6 +1049,7 @@ module Tina4
                 el.textContent = 'Checking for updates...';
                 fetch('/__dev/api/version-check').then(function (r) { return r.json(); }).then(function (d) {
                     var latest = d.latest, current = d.current;
+                    if (!latest) { couldNotCheck(el, d.error); return; }
                     if (latest === current) { upToDate(el, latest); return; }
                     var cP = current.split('.').map(Number), lP = latest.split('.').map(Number);
                     var isNewer = false, i, c, l;

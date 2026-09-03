@@ -842,9 +842,18 @@ module Tina4
         [status, { "content-type" => "application/json; charset=utf-8" }, [body]]
       end
 
+      # A version check that did not happen says so.
+      #
+      # This used to fall back to latest = current on any failure, and the
+      # toolbar renders that as a green "Latest: vX — You are up to date!". A
+      # developer several releases behind, on a machine with no route out, was
+      # told the opposite of the truth — and the toolbar's own "Could not check
+      # for updates" branch could never fire, because the failure arrived as a
+      # success.
+      #
+      # latest is nil when the check could not be made, and error says why.
       def version_check_payload
         current = Tina4::VERSION
-        latest = current
         begin
           uri = URI.parse("https://rubygems.org/api/v1/versions/tina4ruby/latest.json")
           http = Net::HTTP.new(uri.host, uri.port)
@@ -853,12 +862,20 @@ module Tina4
           http.read_timeout = 5
           req = Net::HTTP::Get.new(uri)
           resp = http.request(req)
-          if resp.is_a?(Net::HTTPSuccess)
-            data = JSON.parse(resp.body)
-            latest = data["version"] || current
+          unless resp.is_a?(Net::HTTPSuccess)
+            return { current: current, latest: nil,
+                     error: "RubyGems answered #{resp.code}" }
           end
-        rescue StandardError
-          # Offline or timeout — return current as latest
+          latest = JSON.parse(resp.body)["version"]
+          # Reaching RubyGems is not the same as learning the version: an
+          # answer with none in it is the same lie by another route.
+          if latest.nil? || latest.to_s.empty?
+            return { current: current, latest: nil,
+                     error: "RubyGems did not report a version" }
+          end
+        rescue StandardError => e
+          return { current: current, latest: nil,
+                   error: "#{e.class}: #{e.message}" }
         end
         { current: current, latest: latest }
       end
