@@ -2489,6 +2489,40 @@ module Tina4
       }
     end
 
+    # Collect the body tokens of a {% <open_tag> %}...{% <close_tag> %} block,
+    # honoring nested same-tag pairs. `start` is the index of the opening tag;
+    # returns [body_tokens, index_just_past_the_matching_close]. Shared by
+    # handle_cache / handle_spaceless / handle_autoescape, whose collection
+    # loops were identical apart from the tag names.
+    def collect_block_body(tokens, start, open_tag, close_tag)
+      body_tokens = []
+      i = start + 1
+      depth = 0
+      while i < tokens.length
+        if tokens[i][0] == BLOCK
+          tc, _, _ = strip_tag(tokens[i][1])
+          tag = tc.split[0] || ""
+          if tag == open_tag
+            depth += 1
+            body_tokens << tokens[i]
+          elsif tag == close_tag
+            if depth == 0
+              i += 1
+              break
+            end
+            depth -= 1
+            body_tokens << tokens[i]
+          else
+            body_tokens << tokens[i]
+          end
+        else
+          body_tokens << tokens[i]
+        end
+        i += 1
+      end
+      [body_tokens, i]
+    end
+
     # {% cache "key" ttl %}...{% endcache %}
     def handle_cache(tokens, start, context)
       content, _, _ = strip_tag(tokens[start][1])
@@ -2523,31 +2557,7 @@ module Tina4
         end
       end
 
-      body_tokens = []
-      i = start + 1
-      depth = 0
-      while i < tokens.length
-        if tokens[i][0] == BLOCK
-          tc, _, _ = strip_tag(tokens[i][1])
-          tag = tc.split[0] || ""
-          if tag == "cache"
-            depth += 1
-            body_tokens << tokens[i]
-          elsif tag == "endcache"
-            if depth == 0
-              i += 1
-              break
-            end
-            depth -= 1
-            body_tokens << tokens[i]
-          else
-            body_tokens << tokens[i]
-          end
-        else
-          body_tokens << tokens[i]
-        end
-        i += 1
-      end
+      body_tokens, i = collect_block_body(tokens, start, "cache", "endcache")
 
       rendered = render_tokens(body_tokens.dup, context)
       cap_cache(@fragment_cache, TEMPLATE_CACHE_MAX)
@@ -2773,31 +2783,7 @@ module Tina4
     end
 
     def handle_spaceless(tokens, start, context)
-      body_tokens = []
-      i = start + 1
-      depth = 0
-      while i < tokens.length
-        if tokens[i][0] == BLOCK
-          tc, _, _ = strip_tag(tokens[i][1])
-          tag = tc.split[0] || ""
-          if tag == "spaceless"
-            depth += 1
-            body_tokens << tokens[i]
-          elsif tag == "endspaceless"
-            if depth == 0
-              i += 1
-              break
-            end
-            depth -= 1
-            body_tokens << tokens[i]
-          else
-            body_tokens << tokens[i]
-          end
-        else
-          body_tokens << tokens[i]
-        end
-        i += 1
-      end
+      body_tokens, i = collect_block_body(tokens, start, "spaceless", "endspaceless")
 
       rendered = render_tokens(body_tokens.dup, context)
       rendered = rendered.gsub(SPACELESS_RE, "><")
@@ -2809,31 +2795,7 @@ module Tina4
       mode_match = content.match(AUTOESCAPE_RE)
       auto_escape_on = !(mode_match && mode_match[1] == "false")
 
-      body_tokens = []
-      i = start + 1
-      depth = 0
-      while i < tokens.length
-        if tokens[i][0] == BLOCK
-          tc, _, _ = strip_tag(tokens[i][1])
-          tag = tc.split[0] || ""
-          if tag == "autoescape"
-            depth += 1
-            body_tokens << tokens[i]
-          elsif tag == "endautoescape"
-            if depth == 0
-              i += 1
-              break
-            end
-            depth -= 1
-            body_tokens << tokens[i]
-          else
-            body_tokens << tokens[i]
-          end
-        else
-          body_tokens << tokens[i]
-        end
-        i += 1
-      end
+      body_tokens, i = collect_block_body(tokens, start, "autoescape", "endautoescape")
 
       if !auto_escape_on
         old_auto_escape = @auto_escape
