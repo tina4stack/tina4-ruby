@@ -97,6 +97,26 @@ module Tina4
         AccessLog: []
       )
 
+      # Dual-stack loopback: ALSO listen on the sibling loopback family on the
+      # MAIN port, so `localhost` reaches this server whether the OS resolves it
+      # to IPv4 (127.0.0.1) or IPv6 (::1). On Windows `localhost` resolves to
+      # ::1 first, so a server bound only to 127.0.0.1 -- or to 0.0.0.0, the
+      # IPv4 wildcard, which does NOT cover IPv6 -- refuses the browser with
+      # ERR_CONNECTION_REFUSED even though it is serving. The primary bind above
+      # is unchanged (keeps its fail-closed throw + port-takeover); each sibling
+      # is BEST-EFFORT via WEBrick::GenericServer#listen, which appends to the
+      # listener set the accept loop already services. A family that is
+      # unavailable, or that the primary bind already answers, raises and is
+      # skipped -- a sibling failure NEVER fails the boot. Main port only
+      # (mirrors tina4-php PR #206); the AI/debug port is left alone.
+      self.class.loopback_bind_hosts(@host).each do |sibling_host|
+        begin
+          @server.listen(sibling_host, @port)
+        rescue Errno::EADDRINUSE, Errno::EADDRNOTAVAIL, SocketError, Errno::EAFNOSUPPORT => e
+          Tina4::Log.debug("Dual-stack loopback: skipped #{sibling_host}:#{@port} (#{e.class})")
+        end
+      end
+
       # Record THIS process as the Tina4 dev server on the main port, so a later
       # `tina4 serve` can identify it as reclaimable (TAKEOVER-DEC-01).
       Tina4::PortTakeover.write_pidfile(@port)
@@ -169,6 +189,31 @@ module Tina4
     # @return [Array] Rack-style response triple [status, headers, body]
     def handle(env)
       @app.call(env)
+    end
+
+    # Sibling loopback addresses to ALSO listen on, so `localhost` reaches this
+    # server whether the OS resolves it to IPv4 (127.0.0.1) or IPv6 (::1).
+    #
+    # Returns only the families a direct bind of *host* does not already cover;
+    # a host that is neither loopback nor a wildcard yields an empty list -- an
+    # explicit LAN address is bound exactly as asked, with no sibling. The host
+    # is normalised (downcased, surrounding whitespace and brackets stripped) so
+    # "[::1]", " ::1 " and "::1" all resolve alike.
+    #
+    # Mirrors the tina4-php Server::loopbackBindHosts mapping exactly. WEBrick
+    # binds "::1" WITHOUT brackets (PHP's stream URL needed "[::1]"; the brackets
+    # are not carried into Ruby).
+    #
+    # @param host [String] the host the main socket binds
+    # @return [Array<String>] extra bind addresses (possibly empty)
+    def self.loopback_bind_hosts(host)
+      normalized = host.to_s.strip.downcase.gsub(/\A\[+|\]+\z/, "")
+      case normalized
+      when "localhost"            then ["127.0.0.1", "::1"]
+      when "127.0.0.1", "0.0.0.0" then ["::1"]
+      when "::1", "::"            then ["127.0.0.1"]
+      else []
+      end
     end
 
     private
