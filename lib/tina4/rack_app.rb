@@ -941,7 +941,10 @@ module Tina4
       # data-reload gates the live reloader in toolbar.js: "1" on the human dev
       # port, "0" on the AI/stable port (the JS early-returns before starting the
       # reloader when it is not "1"). Matches Python's render_dev_toolbar.
-      reload = ai_port ? "0" : "1"
+      # Also suppress on the dev-admin dashboard (any /__dev page): its SPA reloads
+      # itself gently, so the toolbar's full-page reloader must not fire there --
+      # otherwise saving from the editor reloads the whole dashboard.
+      reload = (ai_port || request_info[:path].to_s.start_with?("/__dev")) ? "0" : "1"
       ai_badge = ai_port ? '<span class="t4-ai-badge">AI PORT</span>' : ""
 
       toolbar = <<~HTML.strip
