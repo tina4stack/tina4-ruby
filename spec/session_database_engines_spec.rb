@@ -80,6 +80,11 @@ RSpec.describe "Session database backend across engines" do
   pg_db   = ENV.fetch("TINA4_TEST_PG_DB", "tina4_rb")
 
   mysql_host = ENV.fetch("TINA4_TEST_MYSQL_HOST", "127.0.0.1")
+  # mysql2/libmysqlclient connects over a UNIX SOCKET whenever host is
+  # "localhost" (ignoring the port), and the lab's MySQL is a TCP-only container
+  # with no local socket. Force TCP for the raw out-of-band reader below -- the
+  # Tina4 MySQL driver already rewrites localhost+port to 127.0.0.1 itself.
+  mysql_host = "127.0.0.1" if mysql_host == "localhost"
   mysql_port = ENV.fetch("TINA4_TEST_MYSQL_PORT", "3306").to_i
   mysql_user = ENV.fetch("TINA4_TEST_MYSQL_USERNAME", "root")
   mysql_pass = ENV.fetch("TINA4_TEST_MYSQL_PASSWORD", "tina4")
