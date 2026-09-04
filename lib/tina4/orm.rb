@@ -250,16 +250,25 @@ module Tina4
 
       def find(id_or_filter = nil, filter = nil, **kwargs)
         include_list = kwargs.delete(:include)
+        # find(filter, limit:, offset:, order_by:) honours pagination on the
+        # filter/all form, matching the Python master (find -> select with
+        # limit/offset/order_by). Ruby used to swallow these into **kwargs and
+        # drop them, so find({...}, limit: 10) returned the default 100-row cap
+        # instead of 10 -- a parity divergence fixed alongside the ADR-0064 port.
+        # The PK branch (find_by_id) stays single and ignores them.
+        limit = kwargs.delete(:limit) || 100
+        offset = kwargs.delete(:offset)
+        order_by = kwargs.delete(:order_by)
 
         # find(id) — find by primary key
         # find(filter_hash) — find by criteria
         # find(name: "Alice") — keyword args as filter hash
         result = if id_or_filter.is_a?(Hash)
-          find_by_filter(id_or_filter)
+          find_by_filter(id_or_filter, limit: limit, offset: offset, order_by: order_by)
         elsif filter.is_a?(Hash)
-          find_by_filter(filter)
+          find_by_filter(filter, limit: limit, offset: offset, order_by: order_by)
         elsif !kwargs.empty?
-          find_by_filter(kwargs)
+          find_by_filter(kwargs, limit: limit, offset: offset, order_by: order_by)
         else
           find_by_id(id_or_filter)
         end
@@ -369,6 +378,23 @@ module Tina4
         end
       end
 
+      # Hydrate a fetch result into a ModelCollection (ADR-0064).
+      #
+      # The page of models AND the total for the query in one return: every read
+      # path already runs db.fetch, which computes a SELECT COUNT(*) probe and
+      # hands the TRUE total back on DatabaseResult#count. We carry it on the
+      # collection instead of throwing it away -- so get_total_records() /
+      # to_paginate() cost ZERO extra queries. limit/offset are what the fetch
+      # actually applied, so ModelCollection#to_paginate matches the same-query
+      # db.fetch(...).to_paginate exactly. The soft-delete filter lives in the SQL
+      # this fetch ran, so the probe already respects it.
+      def hydrate_collection(results, include: nil)
+        instances = results.map { |row| from_hash(row) }
+        eager_load(instances, include) if include
+        ModelCollection.new(instances, total: results.count,
+                            limit: results.limit, offset: results.offset)
+      end
+
       def where(conditions, params = [], limit: 100, offset: nil, order_by: nil, include: nil)
         sql = "SELECT * FROM #{table_name}"
         if soft_delete
@@ -377,10 +403,7 @@ module Tina4
           sql += " WHERE #{conditions}"
         end
         sql += " ORDER BY #{order_by}" if order_by
-        results = db.fetch(sql, params, limit: limit, offset: offset)
-        instances = results.map { |row| from_hash(row) }
-        eager_load(instances, include) if include
-        instances
+        hydrate_collection(db.fetch(sql, params, limit: limit, offset: offset), include: include)
       end
 
       def all(limit: 100, offset: nil, order_by: nil, include: nil)
@@ -389,17 +412,11 @@ module Tina4
           sql += " WHERE #{soft_delete_field} IS NULL OR #{soft_delete_field} = 0"
         end
         sql += " ORDER BY #{order_by}" if order_by
-        results = db.fetch(sql, [], limit: limit, offset: offset)
-        instances = results.map { |row| from_hash(row) }
-        eager_load(instances, include) if include
-        instances
+        hydrate_collection(db.fetch(sql, [], limit: limit, offset: offset), include: include)
       end
 
       def select(sql, params = [], limit: 100, offset: nil, include: nil)
-        results = db.fetch(sql, params, limit: limit, offset: offset)
-        instances = results.map { |row| from_hash(row) }
-        eager_load(instances, include) if include
-        instances
+        hydrate_collection(db.fetch(sql, params, limit: limit, offset: offset), include: include)
       end
 
       def select_one(sql, params = [], include: nil)
@@ -536,8 +553,7 @@ module Tina4
 
       def with_trashed(conditions = "1=1", params = [], limit: 100, offset: 0)
         sql = "SELECT * FROM #{table_name} WHERE #{conditions}"
-        results = db.fetch(sql, params, limit: limit, offset: offset)
-        results.map { |row| from_hash(row) }
+        hydrate_collection(db.fetch(sql, params, limit: limit, offset: offset))
       end
 
       def create_table
@@ -821,14 +837,17 @@ module Tina4
         Tina4.bind_database(Tina4::Database.new(url, username: ENV.fetch("TINA4_DATABASE_USERNAME", ""), password: ENV.fetch("TINA4_DATABASE_PASSWORD", "")))
       end
 
-      def find_by_filter(filter)
+      def find_by_filter(filter, limit: 100, offset: nil, order_by: nil)
         where_parts = filter.keys.map { |k| "#{k} = ?" }
         sql = "SELECT * FROM #{table_name} WHERE #{where_parts.join(' AND ')}"
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
         end
-        results = db.fetch(sql, filter.values)
-        results.map { |row| from_hash(row) }
+        sql += " ORDER BY #{order_by}" if order_by
+        # find(filter) returns a ModelCollection (ADR-0064); find(pk) stays single
+        # (find_by_id -> select_one -> .first). find() applies its own eager_load
+        # to the returned collection, which is an Array so nothing there changes.
+        hydrate_collection(db.fetch(sql, filter.values, limit: limit, offset: offset))
       end
 
       # Render a column DEFAULT literal for create_table.
