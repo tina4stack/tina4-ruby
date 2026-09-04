@@ -333,12 +333,17 @@ MyModel.belongs_to(name, class_name: nil, foreign_key: nil) # Declare many:1 rel
 MyModel.find(id) -> MyModel | nil
 MyModel.find_or_fail(id) -> MyModel   # Find or raise error
 MyModel.create(attributes = {}) -> MyModel
-MyModel.where(conditions, params = [], limit: 100, offset: nil, order_by: nil, include: nil) -> Array
-MyModel.all(limit: 100, offset: nil, order_by: nil, include: nil) -> Array
+MyModel.where(conditions, params = [], limit: 100, offset: nil, order_by: nil, include: nil) -> ModelCollection
+MyModel.all(limit: 100, offset: nil, order_by: nil, include: nil) -> ModelCollection
 MyModel.count(conditions = nil, params = []) -> Integer
-MyModel.select(sql, params = [], limit: 100, offset: nil, include: nil) -> Array
+MyModel.select(sql, params = [], limit: 100, offset: nil, include: nil) -> ModelCollection
 MyModel.select_one(sql, params = [], include: nil) -> MyModel | nil
-MyModel.with_trashed(conditions = "1=1", params = [], limit: 100, offset: 0) -> Array
+MyModel.with_trashed(conditions = "1=1", params = [], limit: 100, offset: 0) -> ModelCollection
+# where / all / select / find(filter) / with_trashed return a ModelCollection (ADR-0064):
+#   an Array of models that ALSO carries the filter total, independent of limit/offset.
+#   rows.get_total_records   # e.g. 250, reuses the query COUNT -- zero extra queries
+#   rows.to_paginate         # { records, total, page, per_page, total_pages, limit, offset }
+#   Method not .count (Array#count exists). Single-record finders (find, select_one) unchanged.
 MyModel.create_table -> Boolean
 MyModel.query -> QueryBuilder         # Fluent query builder
 MyModel.scope(name, filter_sql, params = [])  # Register reusable query scope
