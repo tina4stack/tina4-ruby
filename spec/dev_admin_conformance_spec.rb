@@ -320,4 +320,63 @@ RSpec.describe "Tina4::DevAdmin security conformance (feature 127)" do
       end
     end
   end
+
+# ── Agent chat removed -> real-wire 404 (feature/release3.13.132) ────────────
+# The dev-admin's agentic chat + supervisor proxy surface (all of which
+# proxied to the CLI agent on framework_port + 2000) was removed. Driven
+# through the REAL RackApp front controller (no mocks): a removed route is
+# disowned by handle_request (returns nil) so the pipeline falls through to a
+# genuine 404 on the wire, while the KEPT surfaces (MCP, grounding, editor)
+# still answer 200. Loopback peer (127.0.0.1) so the mutation gate allows the
+# POSTs -- the 404 is the route being gone, not the CSRF/same-origin gate.
+describe "agent chat surface removed (real wire)" do
+  REMOVED_AGENT_ROUTES = [
+    ["POST",  "/__dev/api/chat"],
+    ["GET",   "/__dev/api/threads"],
+    ["POST",  "/__dev/api/threads"],
+    ["PATCH", "/__dev/api/threads/abc"],
+    ["GET",   "/__dev/api/threads/abc/messages"],
+    ["GET",   "/__dev/api/thoughts"],
+    ["POST",  "/__dev/api/supervise/create"],
+    ["GET",   "/__dev/api/supervise/sessions"],
+    ["GET",   "/__dev/api/supervise/diff"],
+    ["POST",  "/__dev/api/supervise/commit"],
+    ["POST",  "/__dev/api/supervise/cancel"],
+    ["POST",  "/__dev/api/execute"]
+  ].freeze
+
+  REMOVED_AGENT_ROUTES.each do |method, path|
+    it "404s #{method} #{path} through the real front controller" do
+      ENV["TINA4_DEBUG"] = "true"
+      status, = dispatch(method, path, remote_addr: "127.0.0.1", json: {})
+      expect(status).to eq(404)
+    end
+  end
+
+  it "keeps the code-editor landing + editor endpoints (positive control)" do
+    ENV["TINA4_DEBUG"] = "true"
+
+    # The SPA shell still serves (its bundle lands on the "editor" tab).
+    status_ui, body_ui, headers_ui = dispatch("GET", "/__dev")
+    expect(status_ui).to eq(200)
+    expect(headers_ui["content-type"]).to include("text/html")
+    expect(body_ui).to include('id="app"')
+
+    # The editor file view -- the landing screen's backing endpoint -- stays.
+    status_files, = dispatch("GET", "/__dev/api/files?path=.")
+    expect(status_files).to eq(200)
+  end
+
+  it "keeps the MCP + grounding panels (positive control)" do
+    ENV["TINA4_DEBUG"] = "true"
+
+    status_ground, = dispatch("GET", "/__dev/api/grounding/status")
+    expect(status_ground).to eq(200)
+
+    # Loopback caller -> the MCP gate opens and the tool catalogue is served.
+    status_mcp, body_mcp = dispatch("GET", "/__dev/api/mcp/tools", remote_addr: "127.0.0.1")
+    expect(status_mcp).to eq(200)
+    expect(JSON.parse(body_mcp)["tools"]).to be_a(Array)
+  end
+end
 end

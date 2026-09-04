@@ -395,15 +395,6 @@ module Tina4
         denial = dev_mutation_denial(env)
         return denial if denial
 
-        # Dynamic-path routes can't live in the case-tuple below — match
-        # them up front. /__dev/api/threads/{id}[/messages] is forwarded
-        # verbatim to the Rust agent's /threads/{id}[/messages] surface
-        # (mirrors Python's `_api_threads_sub`).
-        if path.start_with?("/__dev/api/threads/")
-          suffix = path[("/__dev/api".length)..]  # leaves "/threads/{id}[/messages]"
-          return threads_sub_proxy(env, method, suffix)
-        end
-
         case [method, path]
         when ["GET", "/__dev"], ["GET", "/__dev/"]
           serve_dashboard
@@ -606,22 +597,6 @@ module Tina4
         when ["POST", "/__dev/api/grounding/token"]
           body = read_json_body(env) || {}
           json_response(grounding_token_save(body))
-        when ["POST", "/__dev/api/chat"]
-          # Proxy dev-admin chat to the Rust agent's /chat endpoint.
-          # The SPA POSTs {message, thread_id?, active_file?, settings?}
-          # and expects an SSE stream of `event: status/message/done`
-          # chunks. We forward the JSON body verbatim (active_file rides
-          # along) and pipe upstream bytes back as they arrive. Mirrors
-          # Python's `_api_chat` / `_proxy_to_supervisor` SSE path.
-          body = read_json_body(env) || {}
-          chat_proxy(body)
-        when ["GET", "/__dev/api/threads"]
-          # Parity with Python `_api_threads` (GET → list threads).
-          json_response(proxy_supervisor("/threads", method: "GET", query: env["QUERY_STRING"]))
-        when ["POST", "/__dev/api/threads"]
-          # Parity with Python `_api_threads` (POST → create thread).
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor("/threads", method: "POST", body: body))
         when ["GET", "/__dev/api/connections"]
           handle_connections_get
         when ["POST", "/__dev/api/connections/test"]
@@ -664,24 +639,6 @@ module Tina4
                        e.message.include?("needs a path")
             json_response({ "error" => e.message }, bad_path ? 404 : 503)
           end
-        when ["GET", "/__dev/api/thoughts"]
-          json_response(thoughts_payload)
-        when ["POST", "/__dev/api/supervise/create"]
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor("/supervise/create", method: "POST", body: body))
-        when ["GET", "/__dev/api/supervise/sessions"]
-          json_response(proxy_supervisor("/supervise/sessions", method: "GET", query: env["QUERY_STRING"]))
-        when ["GET", "/__dev/api/supervise/diff"]
-          json_response(proxy_supervisor("/supervise/diff", method: "GET", query: env["QUERY_STRING"]))
-        when ["POST", "/__dev/api/supervise/commit"]
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor("/supervise/commit", method: "POST", body: body))
-        when ["POST", "/__dev/api/supervise/cancel"]
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor("/supervise/cancel", method: "POST", body: body))
-        when ["POST", "/__dev/api/execute"]
-          body = read_json_body(env) || {}
-          execute_proxy(body)
         when ["GET", "/__dev/api/files"]
           json_response(files_list(env))
         when ["GET", "/__dev/api/file"]
@@ -1578,170 +1535,6 @@ module Tina4
         end
 
         { deployed: name, files: copied }
-      end
-
-      # ── New dev-admin surface area (parity with Python/PHP) ────
-
-      def supervisor_base
-        base = ENV["TINA4_SUPERVISOR_URL"].to_s.strip
-        return base unless base.empty?
-        port = (ENV["TINA4_PORT"] || ENV["PORT"] || "7147").to_i + 2000
-        "http://127.0.0.1:#{port}"
-      end
-
-      def thoughts_payload
-        base = supervisor_base
-        begin
-          uri = URI.parse("#{base}/thoughts")
-          req = Net::HTTP::Get.new(uri)
-          resp = Net::HTTP.start(uri.host, uri.port, open_timeout: 2, read_timeout: 5) { |h| h.request(req) }
-          return JSON.parse(resp.body) if resp.is_a?(Net::HTTPSuccess)
-          { thoughts: [], error: "Supervisor returned #{resp.code}" }
-        rescue StandardError => e
-          { thoughts: [], error: e.message }
-        end
-      end
-
-      def proxy_supervisor(path, method: "GET", body: nil, query: nil)
-        base = supervisor_base
-        url = "#{base}#{path}"
-        url += "?#{query}" if query && !query.empty?
-        begin
-          uri = URI.parse(url)
-          req = case method.upcase
-                when "POST"
-                  r = Net::HTTP::Post.new(uri)
-                  r["Content-Type"] = "application/json"
-                  r.body = JSON.generate(body || {})
-                  r
-                when "PATCH"
-                  r = Net::HTTP::Patch.new(uri)
-                  r["Content-Type"] = "application/json"
-                  r.body = JSON.generate(body || {})
-                  r
-                when "PUT"
-                  r = Net::HTTP::Put.new(uri)
-                  r["Content-Type"] = "application/json"
-                  r.body = JSON.generate(body || {})
-                  r
-                when "DELETE"
-                  r = Net::HTTP::Delete.new(uri)
-                  r["Content-Type"] = "application/json"
-                  r.body = JSON.generate(body) if body
-                  r
-                else
-                  Net::HTTP::Get.new(uri)
-                end
-          resp = Net::HTTP.start(uri.host, uri.port, open_timeout: 2, read_timeout: 30) { |h| h.request(req) }
-          begin
-            JSON.parse(resp.body)
-          rescue JSON::ParserError
-            { body: resp.body, status: resp.code.to_i }
-          end
-        rescue StandardError => e
-          { error: e.message, supervisor: base }
-        end
-      end
-
-      # Proxy /__dev/api/threads/{id}[/messages] through to the Rust
-      # agent. Mirrors Python's `_api_threads_sub`: we already stripped
-      # the dev-admin prefix in handle_request, so `suffix` is the path
-      # the agent expects (e.g. `/threads/abc` or `/threads/abc/messages`).
-      # PATCH /threads/{id} (archive/rename) and GET /threads/{id}/messages
-      # are the two shapes the SPA actually fires.
-      def threads_sub_proxy(env, method, suffix)
-        case method.upcase
-        when "GET"
-          json_response(proxy_supervisor(suffix, method: "GET", query: env["QUERY_STRING"]))
-        when "POST"
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor(suffix, method: "POST", body: body))
-        when "PATCH"
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor(suffix, method: "PATCH", body: body))
-        when "PUT"
-          body = read_json_body(env) || {}
-          json_response(proxy_supervisor(suffix, method: "PUT", body: body))
-        when "DELETE"
-          body = read_json_body(env)
-          json_response(proxy_supervisor(suffix, method: "DELETE", body: body))
-        else
-          [405, { "content-type" => "application/json; charset=utf-8" },
-           [JSON.generate({ error: "method not allowed" })]]
-        end
-      end
-
-      # POST /chat — proxy the SPA's chat payload to the Rust agent and
-      # pipe the upstream SSE response back to the browser. Active-file
-      # content (when present in the body) rides along verbatim.
-      #
-      # NOTE on streaming: Tina4 Ruby's Rack app does not currently
-      # expose a chunk-by-chunk streaming API to handlers (see
-      # response.rb — `response.stream(&block)` is not yet wired through
-      # the case-tuple dispatcher used here). We do the next best thing:
-      # use Net::HTTP#request_get with a block so we receive upstream
-      # SSE chunks as they arrive, buffer them, and return the assembled
-      # body with the upstream content-type intact. The SPA's
-      # EventSource reader works either way (it parses `data:` lines
-      # regardless of arrival cadence) — the TODO below tracks
-      # converting this to a true streamed Rack body once dev_admin
-      # routes are migrated off the case-tuple dispatcher.
-      def chat_proxy(body)
-        base = supervisor_base
-        begin
-          uri = URI.parse("#{base}/chat")
-          req = Net::HTTP::Post.new(uri)
-          req["Content-Type"] = "application/json"
-          req["Accept"] = "text/event-stream"
-          req.body = JSON.generate(body || {})
-          http = Net::HTTP.new(uri.host, uri.port)
-          http.open_timeout = 2
-          # /chat runs the supervisor → planner → coder loop with one or
-          # more LLM round-trips. Matches Python's 600s budget.
-          http.read_timeout = 600
-          chunks = []
-          upstream_status = 200
-          upstream_ct = "text/event-stream"
-          http.request(req) do |resp|
-            upstream_status = resp.code.to_i
-            upstream_ct = resp["content-type"] || upstream_ct
-            # TODO: stream chunks straight into the Rack response once
-            # dev_admin migrates to response.stream(). For now we
-            # buffer — the SPA's SSE reader still parses correctly.
-            resp.read_body { |chunk| chunks << chunk }
-          end
-          [upstream_status, { "content-type" => upstream_ct }, [chunks.join]]
-        rescue StandardError => e
-          body_str = JSON.generate({
-            error: "supervisor unavailable",
-            detail: e.message,
-            hint: "Run `tina4 serve` (starts the agent server) or set TINA4_SUPERVISOR_URL",
-            supervisor: base
-          })
-          [503, { "content-type" => "application/json; charset=utf-8" }, [body_str]]
-        end
-      end
-
-      def execute_proxy(body)
-        # Proxy POST /execute to the supervisor at framework_port + 2000.
-        # Pass through the response stream as-is (SSE or JSON).
-        base = supervisor_base
-        begin
-          uri = URI.parse("#{base}/execute")
-          req = Net::HTTP::Post.new(uri)
-          req["Content-Type"] = "application/json"
-          req["Accept"] = "text/event-stream"
-          req.body = JSON.generate(body || {})
-          http = Net::HTTP.new(uri.host, uri.port)
-          http.open_timeout = 2
-          http.read_timeout = 300
-          resp = http.request(req)
-          ct = resp["content-type"] || "application/json; charset=utf-8"
-          [resp.code.to_i, { "content-type" => ct }, [resp.body.to_s]]
-        rescue StandardError => e
-          body_str = JSON.generate({ error: e.message, supervisor: base })
-          [502, { "content-type" => "application/json; charset=utf-8" }, [body_str]]
-        end
       end
 
       def safe_project_path(rel_path)
