@@ -169,6 +169,8 @@ module Tina4
   autoload :MqttError,           File.expand_path("tina4/mqtt", __dir__)
   autoload :MqttTimeoutError,    File.expand_path("tina4/mqtt", __dir__)
   autoload :MqttMessage,         File.expand_path("tina4/mqtt_message", __dir__)
+  autoload :Push,                File.expand_path("tina4/push", __dir__)
+  autoload :PushError,           File.expand_path("tina4/push", __dir__)
   autoload :Testing,             File.expand_path("tina4/testing", __dir__)
   # Queue / Messenger / DocStore were the last three optional subsystems still
   # loaded eagerly, so every `require "tina4"` paid for a queue backend, an
