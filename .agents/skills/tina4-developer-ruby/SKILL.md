@@ -953,6 +953,10 @@ promotion silently drop or conflict with those commits.
 **No code without tests.** Write the spec first or alongside the code — never "later". Route handlers
 get request/response specs; ORM models get CRUD specs; business logic gets unit specs.
 
+### Web Push (Feature 140)
+
+Use `references/web-push.md` for the provider-neutral Web Push contract. Treat it as a standalone outbound integration, not WebSocket or Server-Sent Events. Keep it configuration-first, fail loudly on partial VAPID configuration, and use Ruby's OpenSSL capability without adding a Web Push gem.
+
 ## Communication
 
 - **Terse output, depth-scaled reasoning.** Default to the shortest output that conveys the result - a status line, a bullet, or a table. No preamble, no restating the task, no thinking-out-loud. Ask short questions. Elaborate ONLY when the user asks for more. Scale reasoning DEPTH (not word count) with difficulty: a hard call earns more STEPS in compact form (`claim -> check -> decision`, a decision tree, a checklist), an easy one gets a single line. This applies to replies, to questions, AND to the private thinking process - dense structure, minimal language. Verbosity costs the user time and tokens.
