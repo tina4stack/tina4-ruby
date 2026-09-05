@@ -15,7 +15,7 @@ Real HTTP benchmarks — identical JSON and 100-item list endpoints. All framewo
 | Sinatra | 7,348 | 5,796 | Puma | 2 |
 | Rails 8.1 | 4,918 | 4,007 | Puma | 40+ |
 
-**Key takeaway:** Tina4 Ruby delivers 17,637 req/s — competitive with Roda (19,530), 2.9x faster than Sinatra, and 3.6x faster than Rails, while shipping 98 features. (Ruby is the one language where the zero-dependency claim does NOT hold: the gemspec declares 12 runtime gems, see section 3). Roda is a micro-router with 3 features; Tina4 ships 98.
+**Key takeaway:** Tina4 Ruby delivers 17,637 req/s — competitive with Roda (19,530), 2.9x faster than Sinatra, and 3.6x faster than Rails, while shipping 140 cataloged features. (Ruby is the one language where the zero-dependency claim does NOT hold: the gemspec declares 12 runtime gems, see section 3). Roda is a micro-router with 3 features; Tina4 ships 140 cataloged features.
 
 ---
 
@@ -56,9 +56,9 @@ ahead-of-time compile layer (ADR-0001), and Ruby is the strongest case for it.
 Reproduce: `bundle config set --local with "databases:benchmarks" && bundle install && bundle exec ruby benchmarks/bench_templates.rb`
 
 
-## 2. Feature Comparison (40 of 98 built-in features)
+## 2. Feature Comparison (40 of 140 cataloged features)
 
-Tina4 ships **98 built-in features**. The table below compares the subset that has a
+Tina4 ships **140 cataloged features**. The table below compares the subset that has a
 meaningful equivalent in the competing frameworks, so it is a like-for-like comparison
 rather than the full inventory. Everything listed ships with the core install, with no
 extra packages needed.

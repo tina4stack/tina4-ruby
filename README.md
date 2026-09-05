@@ -102,7 +102,7 @@ Benchmarked with `wrk`: 5,000 requests, 50 concurrent, median of 3 runs:
 | **Tina4 Ruby** | **10,243** | 0 | 55 |
 | Sinatra | 9,548 | 5+ | ~4 |
 
-Tina4 Ruby outperforms Sinatra while delivering **98 features vs ~4**, with zero runtime dependencies.
+Tina4 Ruby outperforms Sinatra while delivering **140 cataloged features vs ~4**, with zero runtime dependencies.
 
 **Across all 4 Tina4 implementations:**
 
@@ -116,7 +116,7 @@ Tina4 Ruby outperforms Sinatra while delivering **98 features vs ~4**, with zero
 
 ## Cross-Framework Parity
 
-Tina4 ships identical features across four languages: same architecture, same conventions, same 98 features:
+Tina4 ships identical features across four languages: same architecture, same conventions, the same 140 cataloged features:
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|
