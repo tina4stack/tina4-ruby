@@ -25,14 +25,6 @@ module Tina4
       }
     end
 
-    def self.generate_keys
-      generate_vapid_keys
-    end
-
-    def self.from_env(**kwargs)
-      new(**kwargs)
-    end
-
     def initialize(subject: nil, public_key: nil, private_key: nil, ttl: 60, urgency: nil)
       @subject = (subject || ENV.fetch("TINA4_VAPID_SUBJECT", "")).strip
       @public_key = (public_key || ENV.fetch("TINA4_VAPID_PUBLIC", "")).strip
@@ -46,12 +38,27 @@ module Tina4
     end
 
     def send(subscription, payload)
+      endpoint, uri = endpoint_for(subscription)
+      subject, public_key, private_key = configuration
+      public, private = vapid_keys(public_key, private_key)
+      deliver(endpoint, uri, subject, public_key, private, public, encrypt(payload_bytes(payload), subscription))
+    rescue URI::InvalidURIError => e
+      raise PushError, "Push subscription endpoint must be a valid URL: #{e.message}"
+    rescue Net::HTTPError, SocketError, SystemCallError => e
+      raise PushError, "Web Push request failed: #{e.message}"
+    end
+
+    private
+
+    def endpoint_for(subscription)
       endpoint = subscription.is_a?(Hash) ? (subscription["endpoint"] || subscription[:endpoint]) : nil
       raise PushError, "A Web Push subscription with an endpoint is required" unless endpoint.is_a?(String) && !endpoint.empty?
       uri = URI.parse(endpoint)
       raise PushError, "Push subscription endpoint must use HTTP or HTTPS" unless %w[http https].include?(uri.scheme) && uri.host
+      [endpoint, uri]
+    end
 
-      subject, public_key, private_key = configuration
+    def vapid_keys(public_key, private_key)
       public = decode(public_key, "TINA4_VAPID_PUBLIC")
       private = decode(private_key, "TINA4_VAPID_PRIVATE")
       raise PushError, "TINA4_VAPID_PUBLIC must be a 65-byte P-256 public key" unless public.bytesize == 65 && public.getbyte(0) == 4
@@ -62,8 +69,10 @@ module Tina4
         raise PushError, "TINA4_VAPID_PRIVATE is not a valid P-256 private key: #{e.message}"
       end
       raise PushError, "TINA4_VAPID_PUBLIC does not match TINA4_VAPID_PRIVATE" unless derived == public
+      [public, private]
+    end
 
-      body = encrypt(payload_bytes(payload), subscription)
+    def deliver(endpoint, uri, subject, public_key, private, public, body)
       request = Net::HTTP::Post.new(uri)
       request["Authorization"] = "vapid t=#{vapid_token(uri, subject, private, public)}, k=#{public_key}"
       request["Content-Encoding"] = "aes128gcm"
@@ -76,13 +85,7 @@ module Tina4
       response = http.start { |client| client.request(request) }
       status = response.code.to_i
       { "ok" => status < 400, "status" => status, "dead" => [404, 410].include?(status), "retryable" => [408, 429].include?(status) || status >= 500, "endpoint" => endpoint, "response" => response.body.to_s }
-    rescue URI::InvalidURIError => e
-      raise PushError, "Push subscription endpoint must be a valid URL: #{e.message}"
-    rescue Net::HTTPError, SocketError, SystemCallError => e
-      raise PushError, "Web Push request failed: #{e.message}"
     end
-
-    private
 
     def configuration
       missing = []
@@ -136,9 +139,9 @@ module Tina4
 
     def encrypt(payload, subscription)
       raise PushError, "Push payload is too large; maximum is #{MAX_PAYLOAD} bytes" if payload.bytesize > MAX_PAYLOAD
-      keys = subscription.is_a?(Hash) ? (subscription["keys"] || subscription[:keys]) : nil
-      p256dh = keys.is_a?(Hash) ? (keys["p256dh"] || keys[:p256dh]) : nil
-      auth = keys.is_a?(Hash) ? (keys["auth"] || keys[:auth]) : nil
+      keys = subscription.is_a?(Hash) ? (subscription["keys"] || subscription[:keys] || {}) : {}
+      p256dh = keys["p256dh"] || keys[:p256dh]
+      auth = keys["auth"] || keys[:auth]
       client = decode(p256dh.to_s, "subscription.keys.p256dh")
       auth_secret = decode(auth.to_s, "subscription.keys.auth")
       raise PushError, "subscription.keys.p256dh must be a 65-byte P-256 public key" unless client.bytesize == 65 && client.getbyte(0) == 4
