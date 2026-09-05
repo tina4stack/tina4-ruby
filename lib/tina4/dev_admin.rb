@@ -395,6 +395,34 @@ module Tina4
         denial = dev_mutation_denial(env)
         return denial if denial
 
+        # Exact [method, path] dispatch, split by concern. Every route is an
+        # exact pair (no overlaps), so the groups form a partition: the first
+        # group that matches answers, and a group returns nil when it holds no
+        # matching route. Behaviour is identical to the former single 138-branch
+        # case — the only handler that legitimately returns nil is an MCP route
+        # with the capability disabled (with_mcp_gate), for which the original
+        # case also fell through to nil (RackApp then 404s it).
+        dispatch_dashboard(method, path, env) ||
+          dispatch_inspectors(method, path, env) ||
+          dispatch_mailbox(method, path, env) ||
+          dispatch_queue(method, path, env) ||
+          dispatch_data(method, path, env) ||
+          dispatch_config(method, path, env) ||
+          dispatch_files(method, path, env) ||
+          dispatch_mcp(method, path, env)
+      end
+
+
+      private
+
+      # ── /__dev request dispatch (split from a single 138-CC case) ──────
+      # Each dispatch_* owns one concern's exact [method, path] routes and
+      # returns a Rack triple, or nil when it holds no matching route. Branch
+      # bodies are the former case's, moved verbatim.
+
+      # Dashboard shell, injected-toolbar assets, the reload trigger and the
+      # core status / routes / system panels.
+      def dispatch_dashboard(method, path, env)
         case [method, path]
         when ["GET", "/__dev"], ["GET", "/__dev/"]
           serve_dashboard
@@ -413,54 +441,24 @@ module Tina4
         when ["GET", "/__dev/api/mtime"]
           json_response({ mtime: @reload_mtime || 0, file: @reload_file || "" })
         when ["POST", "/__dev/api/reload"]
-          body = read_json_body(env) || {}
-          @reload_mtime = Time.now.to_i
-          @reload_file = body["file"] || ""
-          reload_type = body["type"] || "reload"
-          Tina4::Log.info("External reload trigger: #{reload_type}#{@reload_file.empty? ? '' : " (#{@reload_file})"}")
-          # Re-discover so files dropped into src/routes/ register without
-          # a server restart. Idempotent — already-loaded files are skipped,
-          # changed files are re-loaded (mtime-tracked).
-          begin
-            Tina4::Router.rescan_routes!
-          rescue StandardError => e
-            Tina4::Log.error("Re-discover on reload failed: #{e.message}")
-          end
-          # Keep the code Context index LIVE on the same reload trigger: reindex
-          # just the changed file (UPSERT) so the dev-MCP code_search reflects
-          # the edit immediately. Only touches an already-built index
-          # (existing_context never creates one); guarded so a context failure
-          # never breaks the reload.
-          begin
-            unless @reload_file.to_s.empty?
-              ctx = Tina4::Context.existing_context
-              ctx&.reindex_file(@reload_file)
-            end
-          rescue StandardError => e
-            Tina4::Log.error("Context reindex on reload failed: #{e.message}")
-          end
-          # WebSocket-primary reload: push an instant message to every browser
-          # connected on /__dev_reload. The toolbar client (and the dev-admin
-          # dashboard) act on this immediately — the mtime poll above is only a
-          # fallback for when the socket is down. CSS changes swap stylesheets;
-          # everything else triggers a full page reload. We normalise the wire
-          # `type` to "css"/"reload" (the clients only react to css/reload/change)
-          # but still echo the caller's original type in the HTTP response.
-          # Wrapped so a broadcast failure — or zero connected clients — never
-          # 500s the reload endpoint.
-          begin
-            ws_type = reload_type == "css" ? "css" : "reload"
-            Tina4::DevReload.broadcast(
-              JSON.generate({ type: ws_type, file: @reload_file, mtime: @reload_mtime })
-            )
-          rescue StandardError => e
-            Tina4::Log.error("Dev-reload WebSocket broadcast failed: #{e.message}")
-          end
-          json_response({ ok: true, type: reload_type })
+          handle_reload(env)
         when ["GET", "/__dev/api/status"]
           json_response(status_payload)
         when ["GET", "/__dev/api/routes"]
           json_response(routes_payload)
+        when ["GET", "/__dev/api/system"]
+          json_response(system_payload)
+        when ["GET", "/__dev/api/version-check"]
+          json_response(version_check_payload)
+        when ["GET", "/__dev/api/git/status"]
+          json_response(git_status_payload)
+        end
+      end
+
+      # Observability panels: message log, request inspector and live
+      # WebSocket connections. (Mailbox + error tracker live in dispatch_mailbox.)
+      def dispatch_inspectors(method, path, env)
+        case [method, path]
         when ["GET", "/__dev/api/messages"]
           category = query_param(env, "category")
           messages = message_log.get(category: category)
@@ -471,68 +469,31 @@ module Tina4
           category = body["category"] if body
           message_log.clear(category: category)
           json_response({ cleared: true })
+        when ["GET", "/__dev/api/messages/search"]
+          keyword = query_param(env, "q") || query_param(env, "keyword") || ""
+          all_messages = message_log.get
+          filtered = keyword.empty? ? all_messages : all_messages.select { |m| m[:message].to_s.downcase.include?(keyword.downcase) }
+          json_response({ messages: filtered, count: filtered.size, keyword: keyword })
         when ["GET", "/__dev/api/requests"]
           limit = (query_param(env, "limit") || 50).to_i
           json_response({ requests: request_inspector.get(limit: limit), stats: request_inspector.stats })
         when ["POST", "/__dev/api/requests/clear"]
           request_inspector.clear
           json_response({ cleared: true })
-        when ["GET", "/__dev/api/system"]
-          json_response(system_payload)
-        when ["GET", "/__dev/api/queue/topics"]
-          json_response({ topics: queue_topics })
-        when ["GET", "/__dev/api/queue/dead-letters"]
-          topic = query_param(env, "topic") || "default"
-          jobs = begin
-            queue_dead_letters(topic)
-          rescue StandardError
-            []
-          end
-          json_response({ jobs: jobs, count: jobs.size, topic: topic })
-        when ["GET", "/__dev/api/queue"]
-          topic = query_param(env, "topic") || "default"
-          stats = { pending: 0, completed: 0, failed: 0, reserved: 0 }
-          jobs = []
-          begin
-            if defined?(Tina4::Queue)
-              queue = Tina4::Queue.new(backend: :file, topic: topic)
-              # Queue#size is keyword-only (def size(status:)). Calling it
-              # positionally raises ArgumentError, which the rescue below
-              # swallows — silently zeroing every stat. Use keyword form.
-              stats = {
-                pending: queue.size(status: "pending"),
-                completed: queue.size(status: "completed"),
-                failed: queue.size(status: "failed"),
-                reserved: queue.size(status: "reserved"),
-              }
-              jobs = queue_jobs(topic, query_param(env, "status"))
-            end
-          rescue StandardError
-            # fall through to empty stats
-          end
-          json_response({ jobs: jobs, stats: stats })
-        when ["GET", "/__dev/api/mailbox"]
-          messages = mailbox.inbox
-          json_response({ messages: messages, count: messages.size, unread: mailbox.unread_count })
-        when ["GET", "/__dev/api/broken"]
-          errors   = error_tracker.get(include_resolved: true)
-          h        = error_tracker.health
-          json_response({ errors: errors, count: errors.size, health: h })
-        when ["POST", "/__dev/api/broken/resolve"]
-          body = read_json_body(env)
-          id   = body && body["id"]
-          resolved = id ? error_tracker.resolve(id) : false
-          json_response({ resolved: resolved, id: id })
-        when ["POST", "/__dev/api/broken/clear"]
-          # "Clear All" button — flush every tracked error, not only the
-          # ones individually marked resolved. Matches PHP/Python.
-          error_tracker.clear_all
-          json_response({ cleared: true })
         when ["GET", "/__dev/api/websockets"]
           json_response(websockets_payload)
         when ["POST", "/__dev/api/websockets/disconnect"]
           body = read_json_body(env) || {}
           json_response(websockets_disconnect(body))
+        end
+      end
+
+      # Dev mailbox (email capture) and the error tracker panel.
+      def dispatch_mailbox(method, path, env)
+        case [method, path]
+        when ["GET", "/__dev/api/mailbox"]
+          messages = mailbox.inbox
+          json_response({ messages: messages, count: messages.size, unread: mailbox.unread_count })
         when ["GET", "/__dev/api/mailbox/read"]
           message_id = query_param(env, "id")
           message = mailbox.read(message_id)
@@ -550,11 +511,39 @@ module Tina4
         when ["POST", "/__dev/api/mailbox/clear"]
           mailbox.clear
           json_response({ cleared: true })
-        when ["GET", "/__dev/api/messages/search"]
-          keyword = query_param(env, "q") || query_param(env, "keyword") || ""
-          all_messages = message_log.get
-          filtered = keyword.empty? ? all_messages : all_messages.select { |m| m[:message].to_s.downcase.include?(keyword.downcase) }
-          json_response({ messages: filtered, count: filtered.size, keyword: keyword })
+        when ["GET", "/__dev/api/broken"]
+          errors   = error_tracker.get(include_resolved: true)
+          h        = error_tracker.health
+          json_response({ errors: errors, count: errors.size, health: h })
+        when ["POST", "/__dev/api/broken/resolve"]
+          body = read_json_body(env)
+          id   = body && body["id"]
+          resolved = id ? error_tracker.resolve(id) : false
+          json_response({ resolved: resolved, id: id })
+        when ["POST", "/__dev/api/broken/clear"]
+          # "Clear All" button — flush every tracked error, not only the
+          # ones individually marked resolved. Matches PHP/Python.
+          error_tracker.clear_all
+          json_response({ cleared: true })
+        end
+      end
+
+      # Queue panel: topic list, dead letters, per-topic overview and the
+      # retry / purge / replay mutations.
+      def dispatch_queue(method, path, env)
+        case [method, path]
+        when ["GET", "/__dev/api/queue/topics"]
+          json_response({ topics: queue_topics })
+        when ["GET", "/__dev/api/queue/dead-letters"]
+          topic = query_param(env, "topic") || "default"
+          jobs = begin
+            queue_dead_letters(topic)
+          rescue StandardError
+            []
+          end
+          json_response({ jobs: jobs, count: jobs.size, topic: topic })
+        when ["GET", "/__dev/api/queue"]
+          queue_overview(env)
         when ["POST", "/__dev/api/queue/retry"]
           body = read_json_body(env) || {}
           json_response(queue_retry(body))
@@ -564,18 +553,18 @@ module Tina4
         when ["POST", "/__dev/api/queue/replay"]
           body = read_json_body(env) || {}
           json_response(queue_replay(body))
+        end
+      end
+
+      # Data + tooling: table browser, seeding, the run-chips (migrate / test /
+      # seed), the SQL console, table list, the gallery and the metrics panels.
+      def dispatch_data(method, path, env)
+        case [method, path]
         when ["GET", "/__dev/api/table"]
           table_name = query_param(env, "name")
           json_response(table_detail_payload(table_name))
         when ["POST", "/__dev/api/seed"]
-          body = read_json_body(env)
-          table_name = (body && body["table"]) || ""
-          count = (body && body["count"]) || 10
-          seed = body && body["seed"]
-          seed = (Integer(seed) rescue nil) unless seed.nil?
-          clear = body && (body["clear"] == true || body["clear"].to_s == "true")
-          strict = body && (body["strict"] == true || body["strict"].to_s == "true")
-          json_response(seed_table_data(table_name, count.to_i, seed: seed, clear: clear, strict: strict))
+          handle_seed(env)
         when ["POST", "/__dev/api/tool"]
           body = read_json_body(env)
           tool = (body && body["tool"]) || ""
@@ -590,6 +579,28 @@ module Tina4
           json_response(run_tests_payload)
         when ["POST", "/__dev/api/seed/run"]
           json_response(run_seeds_payload)
+        when ["POST", "/__dev/api/query"]
+          body = read_json_body(env)
+          sql = (body && (body["query"] || body["sql"])) || ""
+          json_response(run_query(sql))
+        when ["GET", "/__dev/api/tables"]
+          json_response(tables_payload)
+        when ["GET", "/__dev/api/gallery"]
+          json_response(gallery_list)
+        when ["POST", "/__dev/api/gallery/deploy"]
+          body = read_json_body(env)
+          name = (body && body["name"]) || ""
+          json_response(gallery_deploy(name))
+        when ["GET", "/__dev/api/metrics/full"]
+          metrics_full_response
+        when ["GET", "/__dev/api/metrics/file"]
+          metrics_file_response(env)
+        end
+      end
+
+      # Grounding token panel and the database-connection editor.
+      def dispatch_config(method, path, env)
+        case [method, path]
         # Grounding panel — configure the tina4-coder MCP token used for
         # live-docs grounding. Self-contained (.env read/write); no proxy.
         when ["GET", "/__dev/api/grounding/status"]
@@ -605,40 +616,13 @@ module Tina4
         when ["POST", "/__dev/api/connections/save"]
           body = read_json_body(env)
           handle_connections_save(body)
-        when ["POST", "/__dev/api/query"]
-          body = read_json_body(env)
-          sql = (body && (body["query"] || body["sql"])) || ""
-          json_response(run_query(sql))
-        when ["GET", "/__dev/api/tables"]
-          json_response(tables_payload)
-        when ["GET", "/__dev/api/gallery"]
-          json_response(gallery_list)
-        when ["POST", "/__dev/api/gallery/deploy"]
-          body = read_json_body(env)
-          name = (body && body["name"]) || ""
-          json_response(gallery_deploy(name))
-        when ["GET", "/__dev/api/version-check"]
-          json_response(version_check_payload)
-        when ["GET", "/__dev/api/metrics/full"]
-          # No fallback (ADR-0002). A missing or stale CLI is a 503 naming the
-          # install command, never zeros that read as a healthy codebase.
-          begin
-            json_response(Tina4::Metrics.full_analysis)
-          rescue Tina4::MetricsEngineError => e
-            json_response({ "error" => e.message }, 503)
-          end
-        when ["GET", "/__dev/api/metrics/file"]
-          file_path = (query_param(env, "path") || "").to_s
-          begin
-            json_response(Tina4::Metrics.file_detail(file_path))
-          rescue Tina4::MetricsEngineError => e
-            # A bad path is the caller's mistake (404); anything else is the
-            # engine being unavailable (503).
-            bad_path = e.message.include?("no such file") ||
-                       e.message.include?("not a file") ||
-                       e.message.include?("needs a path")
-            json_response({ "error" => e.message }, bad_path ? 404 : 503)
-          end
+        end
+      end
+
+      # File browser + editor (read / raw / save / rename / delete) and the
+      # dependency search / install surface.
+      def dispatch_files(method, path, env)
+        case [method, path]
         when ["GET", "/__dev/api/files"]
           json_response(files_list(env))
         when ["GET", "/__dev/api/file"]
@@ -662,8 +646,13 @@ module Tina4
         when ["POST", "/__dev/api/deps/install"]
           body = read_json_body(env) || {}
           json_response(deps_install(body))
-        when ["GET", "/__dev/api/git/status"]
-          json_response(git_status_payload)
+        end
+      end
+
+      # The MCP surfaces (REST shim + JSON-RPC + SSE), scaffolding, and the
+      # live-docs (Live API RAG) + GraphQL-schema endpoints.
+      def dispatch_mcp(method, path, env)
+        case [method, path]
         # All four MCP surfaces (REST shim + JSON-RPC + SSE) go through
         # with_mcp_gate: capability (Tina4.mcp_enabled?) decides whether MCP
         # runs at all (off → route behaves as unmounted, nil → RackApp 404,
@@ -705,23 +694,133 @@ module Tina4
         when ["GET", "/__dev/api/docs/.well-known.json"]
           json_response(docs_well_known_payload)
         when ["GET", "/__dev/api/graphql/schema"]
-          begin
-            gql = Tina4::GraphQL.new
-            # Auto-discover and register all ORM subclasses
-            ObjectSpace.each_object(Class).select { |c| c < Tina4::ORM }.each do |model_class|
-              gql.from_orm(model_class.new)
-            end
-            json_response({ schema: gql.introspect, sdl: gql.schema_sdl })
-          rescue => e
-            json_response({ error: e.message }, 400)
-          end
-        else
-          nil
+          graphql_schema_response
         end
       end
 
+      # POST /__dev/api/reload — external reload trigger. Bumps the mtime
+      # counter, re-discovers routes, keeps the live docs index fresh, and
+      # broadcasts a WebSocket reload to connected browsers.
+      def handle_reload(env)
+        body = read_json_body(env) || {}
+        @reload_mtime = Time.now.to_i
+        @reload_file = body["file"] || ""
+        reload_type = body["type"] || "reload"
+        Tina4::Log.info("External reload trigger: #{reload_type}#{@reload_file.empty? ? '' : " (#{@reload_file})"}")
+        # Re-discover so files dropped into src/routes/ register without
+        # a server restart. Idempotent — already-loaded files are skipped,
+        # changed files are re-loaded (mtime-tracked).
+        begin
+          Tina4::Router.rescan_routes!
+        rescue StandardError => e
+          Tina4::Log.error("Re-discover on reload failed: #{e.message}")
+        end
+        # Keep the code Context index LIVE on the same reload trigger: reindex
+        # just the changed file (UPSERT) so the dev-MCP code_search reflects
+        # the edit immediately. Only touches an already-built index
+        # (existing_context never creates one); guarded so a context failure
+        # never breaks the reload.
+        begin
+          unless @reload_file.to_s.empty?
+            ctx = Tina4::Context.existing_context
+            ctx&.reindex_file(@reload_file)
+          end
+        rescue StandardError => e
+          Tina4::Log.error("Context reindex on reload failed: #{e.message}")
+        end
+        # WebSocket-primary reload: push an instant message to every browser
+        # connected on /__dev_reload. The toolbar client (and the dev-admin
+        # dashboard) act on this immediately — the mtime poll above is only a
+        # fallback for when the socket is down. CSS changes swap stylesheets;
+        # everything else triggers a full page reload. We normalise the wire
+        # `type` to "css"/"reload" (the clients only react to css/reload/change)
+        # but still echo the caller's original type in the HTTP response.
+        # Wrapped so a broadcast failure — or zero connected clients — never
+        # 500s the reload endpoint.
+        begin
+          ws_type = reload_type == "css" ? "css" : "reload"
+          Tina4::DevReload.broadcast(
+            JSON.generate({ type: ws_type, file: @reload_file, mtime: @reload_mtime })
+          )
+        rescue StandardError => e
+          Tina4::Log.error("Dev-reload WebSocket broadcast failed: #{e.message}")
+        end
+        json_response({ ok: true, type: reload_type })
+      end
 
-      private
+      # GET /__dev/api/queue — per-topic stats + job list. Queue#size is
+      # keyword-only; the rescue swallows a backend error into empty stats.
+      def queue_overview(env)
+        topic = query_param(env, "topic") || "default"
+        stats = { pending: 0, completed: 0, failed: 0, reserved: 0 }
+        jobs = []
+        begin
+          if defined?(Tina4::Queue)
+            queue = Tina4::Queue.new(backend: :file, topic: topic)
+            # Queue#size is keyword-only (def size(status:)). Calling it
+            # positionally raises ArgumentError, which the rescue below
+            # swallows — silently zeroing every stat. Use keyword form.
+            stats = {
+              pending: queue.size(status: "pending"),
+              completed: queue.size(status: "completed"),
+              failed: queue.size(status: "failed"),
+              reserved: queue.size(status: "reserved"),
+            }
+            jobs = queue_jobs(topic, query_param(env, "status"))
+          end
+        rescue StandardError
+          # fall through to empty stats
+        end
+        json_response({ jobs: jobs, stats: stats })
+      end
+
+      # POST /__dev/api/seed — seed fake rows into a table via the shared
+      # resilient seed_table helper.
+      def handle_seed(env)
+        body = read_json_body(env)
+        table_name = (body && body["table"]) || ""
+        count = (body && body["count"]) || 10
+        seed = body && body["seed"]
+        seed = (Integer(seed) rescue nil) unless seed.nil?
+        clear = body && (body["clear"] == true || body["clear"].to_s == "true")
+        strict = body && (body["strict"] == true || body["strict"].to_s == "true")
+        json_response(seed_table_data(table_name, count.to_i, seed: seed, clear: clear, strict: strict))
+      end
+
+      # GET /__dev/api/metrics/full — native metrics (ADR-0002). No fallback:
+      # a missing/stale CLI is a 503 naming the install command, never zeros
+      # that read as a healthy codebase.
+      def metrics_full_response
+        json_response(Tina4::Metrics.full_analysis)
+      rescue Tina4::MetricsEngineError => e
+        json_response({ "error" => e.message }, 503)
+      end
+
+      # GET /__dev/api/metrics/file — metrics for one file. A bad path is the
+      # caller's mistake (404); anything else is the engine being unavailable
+      # (503).
+      def metrics_file_response(env)
+        file_path = (query_param(env, "path") || "").to_s
+        json_response(Tina4::Metrics.file_detail(file_path))
+      rescue Tina4::MetricsEngineError => e
+        bad_path = e.message.include?("no such file") ||
+                   e.message.include?("not a file") ||
+                   e.message.include?("needs a path")
+        json_response({ "error" => e.message }, bad_path ? 404 : 503)
+      end
+
+      # GET /__dev/api/graphql/schema — introspect every ORM subclass into a
+      # GraphQL schema + SDL.
+      def graphql_schema_response
+        gql = Tina4::GraphQL.new
+        # Auto-discover and register all ORM subclasses
+        ObjectSpace.each_object(Class).select { |c| c < Tina4::ORM }.each do |model_class|
+          gql.from_orm(model_class.new)
+        end
+        json_response({ schema: gql.introspect, sdl: gql.schema_sdl })
+      rescue => e
+        json_response({ error: e.message }, 400)
+      end
 
       def query_param(env, key)
         qs = env["QUERY_STRING"] || ""
