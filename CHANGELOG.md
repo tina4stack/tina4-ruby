@@ -6,6 +6,15 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.135
+
+Fix release. The dev-admin version check returns no version and a reason when it cannot
+reach RubyGems (set TINA4_VERSION_CHECK_URL to override the registry), so the toolbar reports
+"could not check" instead of a false "up to date". Web Push pads the VAPID private scalar to
+the fixed 32-byte width, so a leading-zero scalar no longer produces a key the app's own
+validation rejects; the public point and the ECDH secret were already correct. Full notes:
+https://tina4.com/ruby/36-releases
+
 ## 3.13.134
 
 Feature 140 Web Push is now available with provider-neutral subscription delivery,
