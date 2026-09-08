@@ -66,6 +66,23 @@ RSpec.describe Tina4::Push do
     end
   end
 
+  it "never emits a VAPID key malformed by a short coordinate" do
+    # OpenSSL strips a leading zero byte, so ~0.3% of P-256 private scalars come
+    # back 31 bytes; the app's own 32-byte check would then reject the key it
+    # just generated. Generate enough to hit the case FOR REAL (no mock), assert
+    # the module always emits a fixed-width key, and assert the short case
+    # actually occurred so a green result proves the padding fired.
+    iterations = 3000
+    short_raw = 0
+    iterations.times do
+      keys = described_class.generate_vapid_keys
+      expect(Base64.urlsafe_decode64(keys.fetch("publicKey")).bytesize).to eq(65)
+      expect(Base64.urlsafe_decode64(keys.fetch("privateKey")).bytesize).to eq(32)
+      short_raw += 1 if OpenSSL::PKey::EC.generate("prime256v1").private_key.to_s(2).bytesize < 32
+    end
+    expect(short_raw).to be > 0
+  end
+
   it "classifies dead and retryable responses" do
     keys = described_class.generate_vapid_keys
     sender = described_class.new(subject: "mailto:test@tina4.com", public_key: keys["publicKey"], private_key: keys["privateKey"])

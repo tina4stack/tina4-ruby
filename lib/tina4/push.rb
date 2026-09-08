@@ -20,9 +20,18 @@ module Tina4
       require_openssl
       key = OpenSSL::PKey::EC.generate("prime256v1")
       {
+        # The public point keeps its width -- the 0x04 lead byte is non-zero, so
+        # to_s(2) never drops it. The private SCALAR has no such guard: OpenSSL
+        # strips a leading zero byte, so ~0.3% of keys come back 31 bytes and the
+        # app's own 32-byte validation would then reject the key it just made.
         "publicKey" => b64(key.public_key.to_bn.to_s(2)),
-        "privateKey" => b64(key.private_key.to_s(2))
+        "privateKey" => b64(pad32(key.private_key.to_s(2)))
       }
+    end
+
+    # Left-pad big-endian EC material to the fixed 32-byte P-256 field width.
+    def self.pad32(bytes)
+      bytes.b.rjust(32, "\x00".b)
     end
 
     def initialize(subject: nil, public_key: nil, private_key: nil, ttl: 60, urgency: nil)
