@@ -20,6 +20,7 @@
 # Real files on disk, the real try_static, real env vars. No doubles.
 
 require "spec_helper"
+require "rack"  # Rack::MockRequest -- real requests through the whole app, not try_static
 
 RSpec.describe "Swagger bundled-asset gate" do
   FRAMEWORK_PUBLIC = File.expand_path("../lib/tina4/public", __dir__)
@@ -97,6 +98,61 @@ RSpec.describe "Swagger bundled-asset gate" do
     with_env("TINA4_SWAGGER_ENABLED" => "false", "TINA4_DEBUG" => "false") do
       expect(app.send(:try_static, CONTROL_PATH))
         .not_to be_nil, "the swagger gate must not block ordinary static assets"
+    end
+  end
+
+  # The gate above answers "may this be served". It cannot answer "is what we
+  # serve any use", and that turned out to matter: the bundled index.html asked
+  # SwaggerUIBundle for
+  #
+  #   url: "{SWAGGER_ROUTE}/swagger.json"
+  #
+  # and SWAGGER_ROUTE was the only occurrence of that token in the gem, so
+  # nothing ever substituted it -- while swagger.json is not a path this
+  # framework routes either. Every gated path therefore answered 200 with a
+  # Swagger UI that could never load its document, and the server logged its own
+  # "404 Not Found: /swagger/swagger.json" behind it. /swagger and /swagger/ hid
+  # it, because the gated handler intercepts those two and never reaches the
+  # static file; the unguarded ways in were /swagger//, which index-resolves, and
+  # /swagger/index.html by name.
+  #
+  # So this is not about status codes. For every path that hands a browser a
+  # Swagger UI page, the document URL THAT PAGE NAMES must be one this app
+  # answers. Asserting a 200 on a hardcoded /swagger/openapi.json would have
+  # passed throughout. Real requests through the whole rack app, not try_static.
+  describe "the page a browser actually receives" do
+    # Every way to end up on a Swagger UI page. The first two are served by the
+    # gated handler, the last two by the bundled asset -- which is the point: the
+    # property must hold no matter which of the two answers.
+    UI_PATHS = %w[/swagger /swagger/ /swagger// /swagger/index.html].freeze
+
+    it "names a document that resolves, however the UI was reached" do
+      with_env("TINA4_SWAGGER_ENABLED" => "true", "TINA4_DEBUG" => "true") do
+        request = Rack::MockRequest.new(app)
+
+        UI_PATHS.each do |path|
+          page = request.get(path)
+          expect(page.status).to eq(200), "#{path} returned #{page.status}, expected 200"
+
+          document_url = page.body.to_s[/url:\s*['"]([^'"]+)['"]/, 1]
+          expect(document_url).not_to be_nil, "#{path} served a page with no document url: to check"
+
+          # Read out of the HTML that was actually served, then fetched. A page
+          # naming an unsubstituted {SWAGGER_ROUTE} placeholder fails right here
+          # -- and braces are not legal in a URI, so a placeholder makes the
+          # request itself raise. Rescued to 0 so the failure reports the URL and
+          # the reason rather than an opaque parse error from inside Rack.
+          status = begin
+            request.get(document_url).status
+          rescue StandardError
+            0
+          end
+          reason = status.zero? ? "is not even a fetchable URL" : "answered #{status}"
+          expect(status).to eq(200),
+                            "the page at #{path} asks for #{document_url.inspect}, which " \
+                            "#{reason} -- that UI can never load"
+        end
+      end
     end
   end
 end
