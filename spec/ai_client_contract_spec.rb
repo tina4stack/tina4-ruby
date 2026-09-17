@@ -753,4 +753,55 @@ RSpec.describe "ADR-0053 app-facing AI client" do
 
     expect(@server.counts["/agent-anthropic"]).to eq(2)
   end
+
+  # ── Gemini: rides the OpenAI wire family at Gemini's OpenAI-compatible base ──
+
+  it "ai_gemini_default_endpoint_is_openai_compatible" do
+    # Gemini's default base resolves to the OpenAI-compatible chat and embeddings
+    # endpoints, so reaching Gemini needs no TINA4_AI_URL override.
+    ENV.delete("TINA4_AI_MODEL")
+    ENV["TINA4_AI_KEY"] = "gem-key"
+    chat = Tina4::Ai.send(:resolve_config, "chat", nil, nil, "gemini")
+    expect(chat[:url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+    expect(chat[:model]).to eq("gemini-2.5-flash")
+    embed = Tina4::Ai.send(:resolve_config, "embed", nil, nil, "gemini")
+    expect(embed[:url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai/embeddings")
+  end
+
+  it "ai_gemini_chat_sends_openai_body_with_bearer" do
+    ENV.update("TINA4_AI_PROVIDER" => "gemini", "TINA4_AI_KEY" => "gem-key",
+               "TINA4_AI_MODEL" => "gemini-2.5-flash", "TINA4_AI_URL" => @server.url("/openai"))
+    result = Tina4::Ai.chat([{ role: "user", content: "hello" }])
+    expect(result.text).to eq("hello world")
+    expect(result.model).to eq("gemini-2.5-flash")
+    sent = @server.requests.last
+    expect(sent[:authorization]).to eq("Bearer gem-key")   # Gemini uses the OpenAI Bearer scheme
+    expect(sent[:x_api_key]).to be_nil                     # not the Anthropic header
+    expect(sent[:body]["model"]).to eq("gemini-2.5-flash")
+    expect(sent[:body]["messages"]).to eq([{ "role" => "user", "content" => "hello" }])
+  end
+
+  it "ai_gemini_embeddings_are_supported" do
+    # Unlike Anthropic, Gemini exposes embeddings on its OpenAI-compatible API.
+    ENV.update("TINA4_AI_PROVIDER" => "gemini", "TINA4_AI_KEY" => "gem-key",
+               "TINA4_EMBED_URL" => @server.url("/embeddings"))
+    expect(Tina4::Ai.embed("hello")).to eq([0.0, 0.25, 0.5])
+    expect(Tina4::Ai.embed(%w[one two])).to eq([[0.0, 0.25, 0.5], [1.0, 0.25, 0.5]])
+  end
+
+  it "ai_gemini_requires_a_key" do
+    ENV["TINA4_AI_PROVIDER"] = "gemini"   # the before hook already removed TINA4_AI_KEY
+    expect { Tina4::Ai.chat([{ role: "user", content: "hello" }]) }
+      .to raise_error(Tina4::AiConfigError, /TINA4_AI_KEY is required/)
+    expect(@server.requests).to be_empty
+  end
+
+  it "ai_gemini_streams_openai_style_deltas" do
+    ENV.update("TINA4_AI_PROVIDER" => "gemini", "TINA4_AI_KEY" => "gem-key",
+               "TINA4_AI_URL" => @server.url("/stream-openai"))
+    events = Tina4::Ai.chat([{ role: "user", content: "hello" }], stream: true).to_a
+    text = events.select { |e| e[:type] == :text_delta }.map { |e| e[:text] }.join
+    expect(text).to eq("hello world")
+    expect(events.last[:type]).to eq(:done)
+  end
 end

@@ -27,7 +27,7 @@ module Tina4
   # shape); ADR-0060 extended it with typed streaming events and multimodal
   # content parts. Both live here so the AI surface is a single file.
   class Ai
-    PROVIDERS = %w[local openai anthropic].freeze
+    PROVIDERS = %w[local openai anthropic gemini].freeze
 
     class << self
       # chat(stream: false) still returns a ChatResponse (ADR-0053).
@@ -219,16 +219,20 @@ module Tina4
 
       def resolve_config(capability, model, timeout, provider)
         selected = (provider || ENV["TINA4_AI_PROVIDER"] || "local").strip.downcase
-        raise AiConfigError, "TINA4_AI_PROVIDER must be local, openai, or anthropic" unless PROVIDERS.include?(selected)
+        raise AiConfigError, "TINA4_AI_PROVIDER must be local, openai, anthropic, or gemini" unless PROVIDERS.include?(selected)
 
         key = ENV["TINA4_AI_KEY"]
-        if %w[openai anthropic].include?(selected) && (key.nil? || key.empty?)
+        if %w[openai anthropic gemini].include?(selected) && (key.nil? || key.empty?)
           raise AiConfigError, "TINA4_AI_KEY is required for the #{selected} provider"
         end
         defaults = {
           "local" => ["http://localhost:11437", "llama3.2"],
           "openai" => ["https://api.openai.com/v1", "gpt-4o-mini"],
-          "anthropic" => ["https://api.anthropic.com/v1", "claude-3-5-haiku-latest"]
+          "anthropic" => ["https://api.anthropic.com/v1", "claude-3-5-haiku-latest"],
+          # Gemini speaks the OpenAI wire format at its OpenAI-compatible base, so it
+          # rides the openai body/parse/stream path — only the base URL, the endpoint
+          # suffix append, and the Bearer key differ.
+          "gemini" => ["https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash"]
         }
         value = capability == "embed" && ENV["TINA4_EMBED_URL"] ? ENV["TINA4_EMBED_URL"] : (ENV["TINA4_AI_URL"] || defaults[selected][0])
         total = timeout.nil? ? number("TINA4_AI_TIMEOUT", 60, 0.001) : Float(timeout)
@@ -255,7 +259,11 @@ module Tina4
         raise AiConfigError, "AI URL must be an http or https URL" unless %w[http https].include?(uri.scheme) && uri.host
 
         path = uri.path.to_s.sub(%r{/+$}, "")
-        if ["", "/v1", "/api"].include?(path)
+        # "/v1beta/openai" is Gemini's OpenAI-compatible base; append the suffix onto
+        # it exactly as onto a bare host / "/v1" / "/api", so the default gemini base
+        # resolves to .../v1beta/openai/chat/completions (or /embeddings). A full
+        # endpoint URL the caller supplies verbatim still passes through untouched.
+        if ["", "/v1", "/api", "/v1beta/openai"].include?(path)
           suffix = provider == "anthropic" ? "/messages" : (capability == "embed" ? "/embeddings" : "/chat/completions")
           uri.path = (path.empty? ? "/v1" : path) + suffix
         end
@@ -266,7 +274,7 @@ module Tina4
 
       def headers(config)
         result = { "Content-Type" => "application/json", "Accept" => "application/json" }
-        if config[:provider] == "openai"
+        if %w[openai gemini].include?(config[:provider])
           result["Authorization"] = "Bearer #{config[:key]}"
         elsif config[:provider] == "anthropic"
           result["x-api-key"] = config[:key]
