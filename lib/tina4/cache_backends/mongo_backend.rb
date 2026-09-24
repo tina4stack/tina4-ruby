@@ -23,6 +23,7 @@ module Tina4
         @hits = 0
         @misses = 0
         @coll = nil
+        @driver_missing = false
         begin
           require "mongo"
           Mongo::Logger.logger.level = Logger::FATAL if defined?(Mongo::Logger)
@@ -39,13 +40,27 @@ module Tina4
           @coll = client[:tina4_cache]
           @coll.indexes.create_one({ expires_at: 1 }, expire_after: 0)
           client.database.command(ping: 1)
-        rescue LoadError, StandardError
+        rescue LoadError
+          # Recorded apart from a service failure so the factory's fallback
+          # warning names the gem only when the gem is really what is missing.
+          @driver_missing = true
+          @coll = nil
+        rescue StandardError
           @coll = nil
         end
       end
 
       def available?
         !@coll.nil?
+      end
+
+      # The install hint for the factory's fallback warning, or nil when the
+      # gem loaded and the service is what failed.
+      def missing_driver_message
+        return nil unless @driver_missing
+
+        "The 'mongo' gem is required for the mongodb cache backend. Install it with: " \
+          "bundle add mongo (or add gem \"mongo\" to your Gemfile)"
       end
 
       def get(key)

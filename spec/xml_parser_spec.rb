@@ -70,10 +70,18 @@ RSpec.describe Tina4::WSDL::XmlParser do
       expect(parse("<r>  </r>").root.text).to eq("  ")
     end
 
-    it "skips a UTF-8 byte-order mark and keeps multi-byte text intact" do
-      root = parse("\xEF\xBB\xBF<r>caf\u00E9 \u6771\u4EAC</r>".b).root
+    it "keeps multi-byte UTF-8 text intact" do
+      root = parse("<r>caf\u00E9 \u6771\u4EAC</r>".b).root
       expect(root.text).to eq("caf\u00E9 \u6771\u4EAC")
       expect(root.text.encoding).to eq(Encoding::UTF_8)
+    end
+
+    # The shared SOAP body rule (all four frameworks): no byte order mark at
+    # all, the UTF-8 one included, and no declared encoding but UTF-8.
+    it "refuses a UTF-8 byte-order mark and a non-UTF-8 declared encoding" do
+      refuses("\xEF\xBB\xBF<r>x</r>".b)
+      refuses(%(<?xml version="1.0" encoding="ISO-8859-1"?><r>x</r>))
+      expect(parse(%(<?xml version="1.0" encoding="utf-8"?><r>x</r>)).root.text).to eq("x")
     end
 
     it "handles deep nesting without recursion" do

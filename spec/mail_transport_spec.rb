@@ -242,6 +242,26 @@ RSpec.describe "Messenger mail transport (own SMTP + IMAP clients)" do
         expect(result[:message]).to eq("STARTTLS was requested but #{host}:#{smtp_port} does not offer it")
       end
     end
+
+    # ADR-0071 section 1: the value is trimmed and compared without case. Before,
+    # " SSL " matched nothing, fell through to a plain connection, and this
+    # plaintext listener ACCEPTED the login and the message in clear (measured).
+    # Now it is "ssl", so the client opens TLS and the plaintext server fails it.
+    it "NEGATIVE: ' SSL ' is trimmed to ssl, so a plaintext-only listener fails instead of getting the mail in clear" do
+      subject = unique_subject("trimmed-ssl")
+      options = { messenger: { host: host, port: smtp_port, username: username, password: password,
+                               from_address: "sender@tina4.test", encryption: " SSL " },
+                  subject: subject, to: mailbox_address }
+      result = child(<<~RUBY, options)
+        messenger.send(to: INPUT[:to], subject: INPUT[:subject], body: "b")
+      RUBY
+      expect(result["success"]).to be(false), result.inspect
+      expect(result["message"]).to match(/SSL|TLS|wrong version/i)
+
+      reader = Tina4::Messenger.new(imap_host: host, imap_port: port(:imap_auth), imap_encryption: "none",
+                                    imap_username: username, imap_password: password)
+      expect(reader.inbox(limit: 50).map { |item| item[:subject] }).not_to include(subject)
+    end
   end
 
   # ── IMAP ──────────────────────────────────────────────────────────────────
