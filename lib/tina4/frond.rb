@@ -726,35 +726,54 @@ module Tina4
     # Tokenizer
     # -----------------------------------------------------------------------
 
-    # Regex to extract {% raw %}...{% endraw %} blocks before tokenizing
-    RAW_BLOCK_RE = /\{%-?\s*raw\s*-?%\}(.*?)\{%-?\s*endraw\s*-?%\}/m
-
+    # Walk literal delimiters instead of retrying a whole-template regex at
+    # every unmatched opener. This also bounds parsing on Ruby versions that
+    # do not memoize regexp backtracking.
     def tokenize(source)
-      # 1. Extract raw blocks and replace with placeholders
       raw_blocks = []
-      source = source.gsub(RAW_BLOCK_RE) do
-        idx = raw_blocks.length
-        raw_blocks << Regexp.last_match(1)
-        "\x00RAW_#{idx}\x00"
+      chunks = []
+      copied = 0
+      cursor = 0
+      raw_start = nil
+      while (start = source.index("{%", cursor))
+        cursor = start + 2
+        match = /\G\{%-?\s*(raw|endraw)\s*-?%\}/.match(source, start)
+        next unless match
+        finish = match.end(0) - 2
+        tag = match[1]
+        if tag == "raw" && raw_start.nil?
+          raw_start = [start, finish + 2]
+        elsif tag == "endraw" && raw_start
+          chunks << source[copied...raw_start[0]]
+          chunks << "\x00RAW_#{raw_blocks.length}\x00"
+          raw_blocks << source[raw_start[1]...start]
+          copied = finish + 2
+          raw_start = nil
+        end
       end
+      chunks << source[copied..]
+      source = chunks.join
 
-      # 2. Normal tokenization
       tokens = []
       pos = 0
-      source.scan(TOKEN_RE) do
-        m = Regexp.last_match
-        start = m.begin(0)
-        tokens << [TEXT, source[pos...start]] if start > pos
-
-        raw = m[0]
-        if raw.start_with?("{#")
-          tokens << [COMMENT, raw]
-        elsif raw.start_with?("{{")
-          tokens << [VAR, raw]
-        elsif raw.start_with?("{%")
-          tokens << [BLOCK, raw]
+      cursor = 0
+      missing_close = {}
+      closers = { "{%" => "%}", "{{" => "}}", "{#" => "#}" }
+      while (match = /\{%|\{\{|\{#/.match(source, cursor))
+        start = match.begin(0)
+        opener = match[0]
+        cursor = start + 2
+        next if missing_close[opener]
+        finish = source.index(closers.fetch(opener), cursor)
+        unless finish
+          missing_close[opener] = true
+          next
         end
-        pos = m.end(0)
+        tokens << [TEXT, source[pos...start]] if start > pos
+        raw = source[start...(finish + 2)]
+        type = { "{#" => COMMENT, "{{" => VAR, "{%" => BLOCK }.fetch(opener)
+        tokens << [type, raw]
+        pos = cursor = finish + 2
       end
       tokens << [TEXT, source[pos..]] if pos < source.length
 
