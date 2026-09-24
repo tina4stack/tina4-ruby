@@ -83,9 +83,8 @@ RSpec.describe "Security headers conformance" do
       "HTTP_HOST" => "localhost", "SERVER_NAME" => "localhost", "SERVER_PORT" => "7147",
       "rack.input" => StringIO.new(""), "rack.url_scheme" => "http"
     }
-    # A TLS-terminating proxy forwards plain HTTP to the app with this header;
-    # Request.secure_scheme? honours it. This is how HTTPS is expressed.
-    env["HTTP_X_FORWARDED_PROTO"] = "https" if https
+    # Native TLS is independent of forwarded-header trust.
+    env["rack.url_scheme"] = "https" if https
     _status, headers, _body = app.call(env)
     headers.transform_keys { |k| k.to_s.downcase }
   end

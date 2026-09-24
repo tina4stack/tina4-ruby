@@ -580,19 +580,19 @@ RSpec.describe Tina4::Session do
     end
 
     it "emits Secure on an https request via x-forwarded-proto (proxy-aware)" do
-      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
-        https_env = env.merge("HTTP_X_FORWARDED_PROTO" => "https")
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil, "TINA4_TRUSTED_PROXIES" => "127.0.0.1") do
+        https_env = env.merge("REMOTE_ADDR" => "127.0.0.1", "HTTP_X_FORWARDED_PROTO" => "https")
         expect(Tina4::Session.new(https_env, options).cookie_header).to include("Secure")
       end
     end
 
     it "reads only the first hop of an x-forwarded-proto chain" do
-      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil, "TINA4_TRUSTED_PROXIES" => "127.0.0.1") do
         # client-facing hop is https -> Secure
-        secure = env.merge("HTTP_X_FORWARDED_PROTO" => "https, http")
+        secure = env.merge("REMOTE_ADDR" => "127.0.0.1", "HTTP_X_FORWARDED_PROTO" => "https, http")
         expect(Tina4::Session.new(secure, options).cookie_header).to include("Secure")
         # client-facing hop is http -> not Secure (an inner https hop is irrelevant)
-        insecure = env.merge("HTTP_X_FORWARDED_PROTO" => "http, https")
+        insecure = env.merge("REMOTE_ADDR" => "127.0.0.1", "HTTP_X_FORWARDED_PROTO" => "http, https")
         expect(Tina4::Session.new(insecure, options).cookie_header).not_to include("Secure")
       end
     end

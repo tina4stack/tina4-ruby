@@ -121,9 +121,13 @@ RSpec.describe "CORS: same-origin requests are not warned about, and no warning 
     it "treats http:80 and https:443 as the default ports (Host without a port)" do
       _, _, warnings = cors_run(nil, "Host" => "app.example.com", "Origin" => "http://app.example.com:80")
       expect(warnings).to be_empty, warnings.join
+      prior_trust = ENV["TINA4_TRUSTED_PROXIES"]
+      ENV["TINA4_TRUSTED_PROXIES"] = "127.0.0.1"
       _, _, warnings = cors_run(nil, "Host" => "app.example.com", "X-Forwarded-Proto" => "https",
                                      "Origin" => "https://app.example.com")
       expect(warnings).to be_empty, warnings.join
+    ensure
+      prior_trust.nil? ? ENV.delete("TINA4_TRUSTED_PROXIES") : ENV["TINA4_TRUSTED_PROXIES"] = prior_trust
     end
   end
 

@@ -265,6 +265,7 @@ module Tina4
       headers = @headers.dup
       cookie = cookie_header
       headers["Cookie"] = cookie if @cookies_enabled && cookie
+      headers = origin_headers(uri, headers)
 
       return download_via_transport(uri, headers, dest_path) if @transport
 
@@ -458,6 +459,10 @@ module Tina4
       apply_headers(request, headers || {})
       cookie = cookie_header
       request["Cookie"] = cookie if @cookies_enabled && cookie
+      unless same_origin?(uri, URI.parse(@base_url))
+        request.delete("Authorization")
+        request.delete("Cookie")
+      end
       if body
         request.body = body.is_a?(String) ? body : JSON.generate(body)
         request["Content-Type"] = content_type if content_type
@@ -522,6 +527,10 @@ module Tina4
       uri
     end
 
+    def origin_headers(uri, headers)
+      same_origin?(uri, URI.parse(@base_url)) ? headers : strip_cross_origin(headers)
+    end
+
     def apply_headers(request, extra_headers)
       @headers.merge(extra_headers).each do |key, value|
         request[key] = value
@@ -557,6 +566,7 @@ module Tina4
       request.each_header { |key, value| headers[key] = value }
       cookie = cookie_header
       headers["cookie"] = cookie if @cookies_enabled && cookie
+      headers = origin_headers(uri, headers)
       body = request.body
 
       if @transport

@@ -225,7 +225,7 @@ RSpec.describe Tina4::RackApp do
         request.session["user"] = "alice"
         response.json({ ok: true })
       end
-      _status, headers, _body = app.call(mock_env("GET", "/needs-session", headers: request_headers))
+      _status, headers, _body = app.call(mock_env("GET", "/needs-session", headers: request_headers).merge("REMOTE_ADDR" => "127.0.0.1"))
       headers["set-cookie"] || headers["Set-Cookie"]
     end
 
@@ -237,7 +237,7 @@ RSpec.describe Tina4::RackApp do
     end
 
     it "emits Secure when the request is https via x-forwarded-proto" do
-      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil) do
+      with_env("TINA4_SESSION_SECURE" => nil, "TINA4_SESSION_SAMESITE" => nil, "TINA4_TRUSTED_PROXIES" => "127.0.0.1") do
         expect(emitted_set_cookie("X-Forwarded-Proto" => "https")).to include("Secure")
       end
     end
