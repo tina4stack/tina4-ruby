@@ -159,6 +159,8 @@ module Tina4
   autoload :CRUD,                File.expand_path("tina4/crud", __dir__)
   autoload :API,                 File.expand_path("tina4/api", __dir__)
   autoload :APIResponse,         File.expand_path("tina4/api", __dir__)
+  autoload :Ssrf,                File.expand_path("tina4/ssrf", __dir__)
+  autoload :SsrfError,           File.expand_path("tina4/ssrf", __dir__)
   autoload :GraphQLType,         File.expand_path("tina4/graphql", __dir__)
   autoload :GraphQLSchema,       File.expand_path("tina4/graphql", __dir__)
   autoload :GraphQLParser,       File.expand_path("tina4/graphql", __dir__)

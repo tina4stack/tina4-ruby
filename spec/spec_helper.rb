@@ -188,6 +188,18 @@ end
 TINA4_LOG_STATE_IVARS = %i[@snapshot @pid].freeze
 
 RSpec.configure do |config|
+  # SSRF guard opt-out for local-listener specs (ADR-0084). The Api client and
+  # Web Push refuse private/internal addresses by default, so every spec that
+  # points them at a 127.0.0.1 test server would now be refused. The suite
+  # legitimately talks to loopback (the internal-service case
+  # TINA4_ALLOW_PRIVATE_REQUESTS exists for), so it opts in by default. The
+  # dedicated guard spec (spec/ssrf_guard_contract_spec.rb) deletes this in its
+  # own before(:each), which runs after this one, so it still proves the
+  # default-blocked behaviour.
+  config.before(:each) do
+    ENV["TINA4_ALLOW_PRIVATE_REQUESTS"] = "true"
+  end
+
   config.after(:suite) do
     # Record every skip/pending the gate may not excuse (see above).
     if tina4_require_services?

@@ -11,6 +11,7 @@ require_relative "base64"
 require "json"
 require "net/http"
 require "uri"
+require_relative "ssrf"
 
 module Tina4
   class PushError < StandardError; end
@@ -40,7 +41,11 @@ module Tina4
       bytes.b.rjust(32, "\x00".b)
     end
 
-    def initialize(subject: nil, public_key: nil, private_key: nil, ttl: 60, urgency: nil)
+    def initialize(subject: nil, public_key: nil, private_key: nil, ttl: 60, urgency: nil, allow_hosts: nil)
+      # SSRF guard (ADR-0084): the push endpoint is refused when it resolves to a
+      # private/internal address unless TINA4_ALLOW_PRIVATE_REQUESTS is truthy or
+      # the host/CIDR is on this allow-list.
+      @allow_hosts = allow_hosts || []
       @subject = (subject || ENV.fetch("TINA4_VAPID_SUBJECT", "")).strip
       @public_key = (public_key || ENV.fetch("TINA4_VAPID_PUBLIC", "")).strip
       @private_key = (private_key || ENV.fetch("TINA4_VAPID_PRIVATE", "")).strip
@@ -88,6 +93,13 @@ module Tina4
     end
 
     def deliver(endpoint, uri, subject, public_key, private, public, body)
+      # SSRF guard (ADR-0084): refuse a private/internal push endpoint. Net::HTTP
+      # does not follow redirects, so guarding the endpoint is sufficient.
+      begin
+        Tina4::Ssrf.guard_url!(uri, @allow_hosts)
+      rescue Tina4::SsrfError => e
+        raise PushError, e.message
+      end
       request = Net::HTTP::Post.new(uri)
       request["Authorization"] = "vapid t=#{vapid_token(uri, subject, private, public)}, k=#{public_key}"
       request["Content-Encoding"] = "aes128gcm"
