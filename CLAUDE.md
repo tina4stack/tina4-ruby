@@ -1198,7 +1198,7 @@ mode and protected for remote callers. Environment variables (read by
 | --- | --- | --- |
 | `TINA4_MCP` / `TINA4_DEBUG` | (unset) | Capability gate - whether MCP is enabled at all. `TINA4_MCP` set explicitly wins (sysadmin override, any host); else a truthy `TINA4_DEBUG` enables it. |
 | `TINA4_MCP_REMOTE` | `false` | Set `true` to allow non-loopback MCP callers at all (still requires a valid token). Loopback callers never need a token. |
-| `TINA4_MCP_TOKEN` | falls back to `TINA4_API_KEY` | Bearer token authorising a REMOTE MCP request. Accepted as `Authorization: Bearer`, `X-MCP-Token`, or `X-Api-Key`, compared timing-safe. With NO token configured a remote caller is always denied. |
+| `TINA4_MCP_TOKEN` | (unset) | Bearer token authorising a REMOTE MCP or dev-admin request; `TINA4_API_KEY` never does (ADR-0078). Accepted as `Authorization: Bearer` or `X-MCP-Token`, compared timing-safe. With NO token configured a remote caller is always denied. |
 
 ## Built-in server
 
