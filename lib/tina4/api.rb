@@ -459,12 +459,22 @@ module Tina4
         request["Content-Type"] = content_type
       end
 
+      # ADR-0060: connect_timeout (else TINA4_API_CONNECT_TIMEOUT, else 10s)
+      # bounds establishment and raises Net::OpenTimeout; timeout (else
+      # TINA4_API_TIMEOUT, else the client timeout) bounds the WHOLE stream and
+      # raises APIStreamTimeoutError. Both are Timeout::Error. `timeout` used to
+      # be only Net::HTTP's per-read idle timeout, so a server that kept
+      # dripping data streamed forever.
+      connect_bound = connect_timeout || stream_env_seconds("TINA4_API_CONNECT_TIMEOUT", 10.0)
+      total_bound = timeout || stream_env_seconds("TINA4_API_TIMEOUT", @timeout)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + total_bound
+
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
       http.verify_mode = OpenSSL::SSL::VERIFY_NONE if @verify_ssl == false
-      http.open_timeout = connect_timeout || @timeout
-      http.read_timeout = timeout || @timeout
-      http.write_timeout = (timeout || @timeout) if http.respond_to?(:write_timeout=)
+      http.open_timeout = [connect_bound, total_bound].min
+      http.read_timeout = total_bound
+      http.write_timeout = total_bound if http.respond_to?(:write_timeout=)
 
       http.start do |conn|
         conn.request(request) do |response|
@@ -474,9 +484,26 @@ module Tina4
             raise APIStreamError.new("stream returned HTTP #{status}", status)
           end
           store_cookies(response.get_fields("Set-Cookie"))
-          response.read_body { |chunk| yield chunk }
+          response.read_body do |chunk|
+            remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            raise APIStreamTimeoutError, "stream exceeded its total timeout of #{total_bound}s" unless remaining.positive?
+
+            # The next read may wait only for what is left of the deadline.
+            # tina4: bounded per read, so a server dripping single bytes inside
+            # one chunk header can overrun by one read at most.
+            conn.read_timeout = remaining
+            yield chunk
+          end
         end
       end
+    rescue Net::ReadTimeout, Net::WriteTimeout
+      raise APIStreamTimeoutError, "stream exceeded its total timeout of #{total_bound}s"
+    end
+
+    # A positive number of seconds from an env var; anything else falls back.
+    def stream_env_seconds(name, fallback)
+      seconds = Float(ENV[name].to_s.strip, exception: false)
+      seconds&.positive? ? seconds : fallback
     end
 
     def build_uri(path, params = {})
@@ -803,6 +830,12 @@ module Tina4
       @status = status
     end
   end
+
+  # A stream_* call ran past its total timeout (timeout:, else
+  # TINA4_API_TIMEOUT). A Timeout::Error, as Python's ApiTimeoutError is a
+  # TimeoutError, and deliberately NOT an APIStreamError: callers such as
+  # AiClient treat APIStreamError as an HTTP status failure.
+  class APIStreamTimeoutError < Timeout::Error; end
 
   class APIResponse
     attr_reader :status, :body, :headers, :error, :path
