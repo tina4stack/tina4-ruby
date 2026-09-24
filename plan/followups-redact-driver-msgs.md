@@ -23,6 +23,22 @@ Branch: `fix/followups-redact-driver-msgs` (from origin/v3). Lab only for rspec.
 - [x] Item 7: SOAP parity table on v3 and on PR #49's parser (read-only)
 - [x] Item 8: PR #49 spec/mail_transport_spec.rb on the lab: 17/0/0; extra probes for
       port 465, ssl on a plaintext port, trimming, unknown value, wrong host
+- [x] Round 2 (after #49 merged): merge origin/v3 into the branch
+- [x] (b) ADR-0071 section 2 in messenger.rb: trim + lower-case, unknown/empty SMTP and
+      IMAP values raise ArgumentError at construction
+- [x] (WSDL) shared body rule in wsdl.rb/xml_parser.rb: any BOM, NUL, invalid UTF-8,
+      non-UTF-8 declared encoding -> "Malformed XML" before any parse (both entry points)
+- [x] (c) websocket_hardening_spec: FakeBackplane/Exploding/Capturing replaced by real
+      RedisBackplanes on TINA4_TEST_REDIS_URL
+- [x] (d) Kafka push to a dead broker: reproduced for real - it RAISES
+      Rdkafka::AbstractHandle::WaitTimeoutError after 60 s, it never returns success.
+      The round-1 "OK" was the lab's TINA4_KAFKA_BROKERS=localhost:9092 overriding the
+      probe's TINA4_QUEUE_URL (it published to the live lab Kafka). No fix needed.
+- [ ] (a) lib/tina4.rb:919 -> Tina4::DatabaseUrl.redact(db_url): waits for tina4-ruby#50
+      (tina4.rb is off-limits while #50 is open)
+- [ ] (e) OWED: NATS backplane URL redaction + a real test. There is no NATS server and
+      no nats-pure gem on the lab, so NATSBackplane (connect errors, URL in messages)
+      is unmeasured
 
 ## Parity
 | Item | Python | PHP | Ruby | Node |
@@ -44,10 +60,13 @@ Branch: `fix/followups-redact-driver-msgs` (from origin/v3). Lab only for rspec.
 - [x] Redis backplane subscriber died silently on WRONGPASS (only a stderr trace) - now logged
 - [x] mqtt.rb parse_url echoed the password in two ArgumentErrors
 - [ ] lib/tina4.rb:919 hand-rolled redactor leaks (OFF-LIMITS, reported to coordinator)
-- [ ] wsdl.rb on v3: UTF-16 BOM DOCTYPE body EXPANDS the entity; CDATA dropped from
-      Echo (AB instead of AB<c>). Both fixed by PR #49's parser (OFF-LIMITS here).
-- [ ] messenger.rb on PR #49: encryption not trimmed (" SSL " sends in CLEAR) and
-      unknown values send in clear - ADR-0071 section 2, owed after #49 merges.
+- [x] wsdl.rb on v3: UTF-16 BOM DOCTYPE body EXPANDED the entity; CDATA dropped from
+      Echo (AB instead of AB<c>). Both fixed by #49's parser (merged).
+- [x] wsdl after #49: a UTF-8 BOM was skipped and an ISO-8859-1-declared body served;
+      WSDL::Service answered refusals as "Internal server error" - fixed (030b458)
+- [x] messenger.rb: encryption not trimmed (" SSL " sent in CLEAR) and unknown values
+      sent in clear - fixed (4cd8309)
+- [x] websocket_hardening_spec used in-memory backplane stand-ins - replaced (f2de2ff)
 
 ## Commits
 - 6842f40  fix(security): redact the WebSocket backplane and MQTT URLs in error messages
@@ -55,5 +74,10 @@ Branch: `fix/followups-redact-driver-msgs` (from origin/v3). Lab only for rspec.
 - 44633b2  fix(websocket): log when the Redis backplane subscriber dies
 - e120fa1  plan: follow-ups (lab full suite at this HEAD: 5759 examples, 0 failures, 0 pending)
 - 0df7b1f  docs(example): drop TINA4_MAIL_TLS_INSECURE from .env.example (ADR-0071)
+- f7b21e0  plan: complete round 1 (lab full suite 5759 / 0 failures / 0 pending)
+- 3f5582f  Merge origin/v3 (tina4-ruby#49, #51)
+- 4cd8309  fix(messenger): refuse an unknown mail encryption value (ADR-0071 section 2)
+- 030b458  fix(wsdl): apply the shared SOAP body encoding rule before any parse
+- f2de2ff  test(websocket): run the backplane relay specs on a real Redis, no stand-ins
 
-## Status: Complete (Ruby side); tina4.rb:919, wsdl.rb and ADR-0071 section 2 reported, off-limits here
+## Status: In Progress - only (a) tina4.rb:919 waits for #50; (e) NATS owed
