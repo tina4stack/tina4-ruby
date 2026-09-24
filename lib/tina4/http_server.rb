@@ -373,7 +373,9 @@ module Tina4
       end
       return +"".b if lengths.empty?
 
-      raise RequestRefused.new(400, INVALID_LENGTH) unless lengths.uniq.length == 1 && lengths.first.match?(/\A\d+\z/)
+      # Exactly one Content-Length, all digits. Two are refused even when they
+      # agree (ADR-0068): a proxy in front may pick the other one.
+      raise RequestRefused.new(400, INVALID_LENGTH) unless lengths.length == 1 && lengths.first.match?(/\A\d+\z/)
 
       declared = lengths.first.to_i
       # Refused on the DECLARED length, before one body byte is read.
