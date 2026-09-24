@@ -74,8 +74,12 @@ RSpec.describe "Dotenv settings and header Content-Type (ADR-0072)" do
         gem "tina4ruby", path: #{File.expand_path("..", __dir__).inspect}
         gem "puma"
       GEMFILE
+      # CI installs development gems into Bundler's isolated vendor path.
+      # with_unbundled_env removes that path from the environment; retain the
+      # real installed gem locations while letting this app own its Gemfile.
       child_env.merge!("BUNDLE_GEMFILE" => File.join(dir, "Gemfile"), "BUNDLE_WITH" => nil,
-                       "BUNDLE_WITHOUT" => nil, "BUNDLE_FROZEN" => nil, "BUNDLE_DEPLOYMENT" => nil)
+                       "BUNDLE_WITHOUT" => nil, "BUNDLE_FROZEN" => nil, "BUNDLE_DEPLOYMENT" => nil,
+                       "GEM_PATH" => Gem.path.join(File::PATH_SEPARATOR))
       output, status = unbundled { Open3.capture2e(child_env, "bundle", "lock", "--local", chdir: dir) }
       raise "could not resolve the app bundle offline:\n#{output}" unless status.success?
 
