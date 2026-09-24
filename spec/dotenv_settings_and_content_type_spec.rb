@@ -12,12 +12,13 @@
 #
 # NO MOCKS: a real `ruby app.rb` booted by Tina4.run! from a project whose .env
 # carries the settings (the outer environment is scrubbed of them), on BOTH
-# servers Tina4 ships - Puma (the production default) and WEBrick
-# (TINA4_DEFAULT_WEBSERVER=true) - and every case is a real HTTP request over a
-# real loopback socket, with repeated headers read raw.
+# servers production can pick - Tina4's built-in server, and Puma when the
+# application bundles it (ADR-0067) - and every case is a real HTTP request over
+# a real loopback socket, with repeated headers read raw.
 
 require "spec_helper"
 require "net/http"
+require "open3"
 require_relative "support/shutdown_probe"
 
 RSpec.describe "Dotenv settings and header Content-Type (ADR-0072)" do
@@ -52,20 +53,42 @@ RSpec.describe "Dotenv settings and header Content-Type (ADR-0072)" do
     RUBY
   end
 
-  def boot(upload_limit, dotenv_health_path, built_in_webserver:)
+  def boot(upload_limit, dotenv_health_path, puma:)
     dir = SpecTmpdir.create("tina4-dotenv-settings")
     write_project(dir, upload_limit, dotenv_health_path)
     port = ShutdownProbe.free_port
     child_env = ShutdownProbe.base_env(
       "TINA4_OVERRIDE_CLIENT" => "true",
       "TINA4_PORT" => port.to_s, "TINA4_HOST" => "127.0.0.1", "PORT" => nil, "HOST" => nil,
-      "TINA4_DEFAULT_WEBSERVER" => built_in_webserver ? "true" : nil,
+      # Pin the built-in server when Puma is not wanted: a Puma installed as a
+      # system gem would otherwise be picked even without an app bundle.
+      "TINA4_DEFAULT_WEBSERVER" => puma ? nil : "true",
       # The settings under test must come from .env alone.
       "TINA4_MAX_UPLOAD_SIZE" => nil, "TINA4_HEALTH_PATH" => nil, "TINA4_ENV_FILE" => nil
     )
+    command = [RbConfig.ruby, "app.rb"]
+    if puma
+      # Production picks Puma only when the APPLICATION bundles it (ADR-0067).
+      File.write(File.join(dir, "Gemfile"), <<~GEMFILE)
+        source "https://rubygems.org"
+        gem "tina4ruby", path: #{File.expand_path("..", __dir__).inspect}
+        gem "puma"
+      GEMFILE
+      child_env.merge!("BUNDLE_GEMFILE" => File.join(dir, "Gemfile"), "BUNDLE_WITH" => nil,
+                       "BUNDLE_WITHOUT" => nil, "BUNDLE_FROZEN" => nil, "BUNDLE_DEPLOYMENT" => nil)
+      output, status = unbundled { Open3.capture2e(child_env, "bundle", "lock", "--local", chdir: dir) }
+      raise "could not resolve the app bundle offline:\n#{output}" unless status.success?
+
+      command = ["bundle", "exec", RbConfig.ruby, "app.rb"]
+    end
     log_path = File.join(dir, "server.log")
-    pid = spawn(child_env, RbConfig.ruby, "app.rb", chdir: dir, out: log_path, err: log_path, pgroup: true)
-    ShutdownProbe::Server.new(pid, port, dir, log_path).wait_until_serving!("/content-type/detected")
+    pid = unbundled { spawn(child_env, *command, chdir: dir, out: log_path, err: log_path, pgroup: true) }
+    ShutdownProbe::Server.new(pid, port, dir, log_path).wait_until_serving!("/content-type/detected", timeout: 60)
+  end
+
+  # The suite runs under `bundle exec`; the child must not inherit its bundle.
+  def unbundled(&block)
+    defined?(Bundler) ? Bundler.with_unbundled_env(&block) : yield
   end
 
   # [status, every Content-Type value the server sent]
@@ -85,10 +108,19 @@ RSpec.describe "Dotenv settings and header Content-Type (ADR-0072)" do
     exchange(port, request)
   end
 
-  { "Puma" => false, "WEBrick" => true }.each do |server_name, built_in_webserver|
+  { "the built-in server" => false, "Puma" => true }.each do |server_name, puma|
     context "on #{server_name}" do
-      before(:all) { @server = boot(upload_limit, dotenv_health_path, built_in_webserver: built_in_webserver) }
+      before(:all) { @server = boot(upload_limit, dotenv_health_path, puma: puma) }
       after(:all) { @server&.destroy! }
+
+      it "is really served by #{server_name}" do
+        if puma
+          expect(@server.log).to include("Production server: puma")
+        else
+          # Not the banner: run! prints it before the server is chosen.
+          expect(@server.log).not_to include("Production server: puma")
+        end
+      end
 
       it "header content type replaces the detected type" do
         expect(get(@server.port, "/content-type/header-with-bytes")).to eq([200, ["image/png"]])

@@ -8,7 +8,7 @@ the cross-framework plan is `tina4-python/plan/issue-143-144-dotenv-settings-con
 ## Scope
 - [x] Reproduce #144 and #143 for real on origin/v3 (Ruby)
 - [x] Scan for settings read at load time
-- [x] header()/add_header(): Content-Type (any case) is the one "content-type" key; call(data) keeps it (Puma and WEBrick)
+- [x] header()/add_header(): Content-Type (any case) is the one "content-type" key; call(data) keeps it (built-in server and Puma)
 - [x] TINA4_MAX_UPLOAD_SIZE constant no longer reads ENV at require time; a bad value warns once and uses the default
 - [x] .env upload cap and health path already honoured: locked in
 - [x] Regression suite `spec/dotenv_settings_and_content_type_spec.rb`, red first, mutation-proved
@@ -30,3 +30,8 @@ the cross-framework plan is `tina4-python/plan/issue-143-144-dotenv-settings-con
 - d7b66c0  fix: header Content-Type is the one Content-Type; bad upload limit falls back
 
 ## Status: Complete (PR open, not merged)
+
+## Rebase onto v3 e039081 (#50 built-in server replaced WEBrick, #57 :graph group)
+- [x] Conflict in response.rb resolved: header()/add_header() keep ADR-0068's check_header! and route through set_header
+- [x] Spec contexts are now the built-in server (TINA4_DEFAULT_WEBSERVER=true) and Puma via an app bundle; each asserts which server served
+- [x] Lab (Linux, Ruby 3.2.3, sudo -E, :graph group installed): new spec + response/file_upload/health/security_headers/server_selection/http_hardening/graph specs 223 examples, 0 failures; the new spec on v3 source 20 examples, 10 failures
