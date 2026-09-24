@@ -82,6 +82,7 @@ module Tina4
       @headers = { "content-type" => HTML_CONTENT_TYPE }
       @body = ""
       @cookies = nil  # Lazy -- most responses have no cookies
+      @content_type_from_header = false
     end
 
     # Chainable status setter
@@ -104,10 +105,10 @@ module Tina4
         @headers["content-type"] = content_type
         @body = data.is_a?(Hash) || data.is_a?(Array) ? JSON.generate(data) : data.to_s
       elsif data.is_a?(Hash) || data.is_a?(Array)
-        @headers["content-type"] = JSON_CONTENT_TYPE
+        detected_content_type(JSON_CONTENT_TYPE)
         @body = JSON.generate(data)
       else
-        @headers["content-type"] = HTML_CONTENT_TYPE
+        detected_content_type(HTML_CONTENT_TYPE)
         @body = data.to_s
       end
       self
@@ -302,12 +303,14 @@ module Tina4
       { error: true, code: code, message: message, status: status }
     end
 
-    # Chainable header setter
+    # Chainable header setter. Content-Type (any case) is not a second header:
+    # it replaces the response's one content type, and call(data) keeps it
+    # instead of detecting one (ADR-0072, tina4-python#144).
     def header(name, value = nil)
       if value.nil?
-        @headers[name]
+        @headers[content_type_key?(name) ? "content-type" : name]
       else
-        @headers[name] = Response.check_header!(name, value)
+        set_header(name, Response.check_header!(name, value))
         self
       end
     end
@@ -344,7 +347,7 @@ module Tina4
     end
 
     def add_header(key, value)
-      @headers[key] = Response.check_header!(key, value)
+      set_header(key, Response.check_header!(key, value))
       self
     end
 
@@ -411,6 +414,25 @@ module Tina4
       end
       to_rack
     end
+
+    def content_type_key?(name)
+      name.to_s.casecmp?("content-type")
+    end
+
+    def set_header(name, value)
+      if content_type_key?(name)
+        @headers["content-type"] = value
+        @content_type_from_header = true
+      else
+        @headers[name] = value
+      end
+    end
+
+    # A detected content type never replaces one the route set with header().
+    def detected_content_type(content_type)
+      @headers["content-type"] = content_type unless @content_type_from_header
+    end
+    private :content_type_key?, :set_header, :detected_content_type
 
     def to_rack
       final_headers = @headers.dup
