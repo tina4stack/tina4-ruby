@@ -124,7 +124,7 @@ RSpec.describe "ORM field column read-back" do
       Tina4::Database.new("sqlite:///#{Tempfile.new(['colrb', '.db']).path}")
     when "firebird"
       url = ENV["TINA4_TEST_FIREBIRD_URL"]
-      skip "firebird not set: TINA4_TEST_FIREBIRD_URL (needs a live Firebird)" if url.nil? || url.empty?
+      skip "[needs:firebird] firebird not set: TINA4_TEST_FIREBIRD_URL (needs a live Firebird)" if url.nil? || url.empty?
       Tina4::Database.new(url, username: "SYSDBA", password: "masterkey")
     else
       prefix, port, database, user, password = {
@@ -134,7 +134,7 @@ RSpec.describe "ORM field column read-back" do
       }.fetch(engine)
       host = ENV.fetch("TINA4_TEST_#{prefix}_HOST", "127.0.0.1")
       port = ENV.fetch("TINA4_TEST_#{prefix}_PORT", port).to_i
-      skip "#{engine} unreachable at #{host}:#{port} (set TINA4_TEST_#{prefix}_*)" unless reachable?(host, port)
+      skip "[needs:#{engine}] #{engine} unreachable at #{host}:#{port} (set TINA4_TEST_#{prefix}_*)" unless reachable?(host, port)
       Tina4::Database.new("#{engine}://#{host}:#{port}/#{ENV.fetch("TINA4_TEST_#{prefix}_DB", database)}",
                           username: ENV.fetch("TINA4_TEST_#{prefix}_USERNAME", user),
                           password: ENV.fetch("TINA4_TEST_#{prefix}_PASSWORD", password))
@@ -407,7 +407,7 @@ RSpec.describe "PostgreSQL last_id for a key not named id" do
     rescue StandardError
       false
     end
-    skip "postgres unreachable at #{host}:#{port} (set TINA4_TEST_PG_*)" unless reachable
+    skip "[needs:postgres] postgres unreachable at #{host}:#{port} (set TINA4_TEST_PG_*)" unless reachable
     db = Tina4::Database.new("postgres://#{host}:#{port}/#{ENV.fetch('TINA4_TEST_PG_DB', 'tina4_rb')}",
                              username: ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4"),
                              password: ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4"))
