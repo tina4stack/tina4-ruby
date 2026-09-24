@@ -13,6 +13,7 @@ require "json"
 require_relative "base64"
 require "securerandom"
 require_relative "parse_json"
+require_relative "ssrf"
 
 module Tina4
   # Statuses that warrant an automatic retry when max_retries > 0: rate-limit
@@ -108,7 +109,7 @@ module Tina4
     def initialize(base_url, headers: {}, timeout: 30,
                    bearer_token: nil, username: nil, password: nil,
                    verify_ssl: nil, max_retries: 0, retry_backoff: 0.5,
-                   transport: nil, cookies: false)
+                   transport: nil, cookies: false, allow_hosts: nil)
       if !transport.nil? && !transport.respond_to?(:call)
         raise ArgumentError, "transport must respond to #call(method, url, headers, body, timeout)"
       end
@@ -130,6 +131,8 @@ module Tina4
       @transport = transport
       @cookies_enabled = cookies ? true : false
       @cookies = {}
+      # SSRF guard (ADR-0084): explicit allow-list of hosts / host:port / CIDRs.
+      @allow_hosts = allow_hosts || []
 
       # Bearer wins over basic-auth when both passed
       if bearer_token
@@ -455,6 +458,13 @@ module Tina4
                       when "HEAD"   then Net::HTTP::Head
                       else raise ArgumentError, "unsupported stream method: #{method}"
                       end
+      # SSRF guard (ADR-0084): refuse a private/internal target before connect.
+      begin
+        Tina4::Ssrf.guard_url!(uri, @allow_hosts)
+      rescue Tina4::SsrfError => e
+        raise APIStreamError.new(e.message)
+      end
+
       request = request_class.new(uri)
       apply_headers(request, headers || {})
       cookie = cookie_header
@@ -596,6 +606,12 @@ module Tina4
       current_body = body
 
       loop do
+        # SSRF guard (ADR-0084): re-validated per hop, so a redirect to a
+        # private/internal address is refused even when the initial URL was
+        # public. Raises SsrfError; attempt_request/download turn it into a
+        # status-0 error response.
+        Tina4::Ssrf.guard_url!(current_uri, @allow_hosts)
+
         http = Net::HTTP.new(current_uri.host, current_uri.port)
         http.use_ssl = current_uri.scheme == "https"
         # Only disable verification when EXPLICITLY false — nil/true keep the
