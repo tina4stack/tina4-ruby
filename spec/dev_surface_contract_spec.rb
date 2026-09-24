@@ -271,4 +271,12 @@ RSpec.describe "Tina4 dev-surface gate contract (release security boundaries)" d
     end
   end
 
+  it "raw file preserves non UTF8 and CRLF bytes exactly" do
+    bytes = [0, 255, 254, 13, 10, 128, 65, 13, 10].pack("C*")
+    File.binwrite(File.join(@app_dir, "binary.dat"), bytes)
+    status, body = dispatch("GET", "/__dev/api/file/raw?path=binary.dat")
+    expect(status).to eq(200)
+    expect(body.b).to eq(bytes)
+  end
+
 end

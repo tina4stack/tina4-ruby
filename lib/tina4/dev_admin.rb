@@ -1886,6 +1886,7 @@ module Tina4
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
         flags |= File::NONBLOCK if defined?(File::NONBLOCK)
         File.open(target, flags) do |file|
+          file.binmode
           info = file.stat
           raise ArgumentError, "Not a regular file" unless info.file?
           file.read || "".b
