@@ -353,6 +353,13 @@ module Tina4
 /_/  /_/_/ /_/\__,_/  /_/
   BANNER
 
+  # Environment variables that mean "this is a CI run" - the ADR-0070 union
+  # across the four frameworks and the CLI. No one is there to see a tab.
+  CI_ENV_VARS = %w[CI CONTINUOUS_INTEGRATION GITHUB_ACTIONS GITLAB_CI BUILDKITE
+                   JENKINS_URL TF_BUILD TEAMCITY_VERSION].freeze
+  # A CI variable set to one of these does not mean CI (ADR-0070 ci_false).
+  CI_FALSE_VALUES = %w[false 0 no off].freeze
+
   class << self
     attr_accessor :root_dir
     attr_reader :database
@@ -528,21 +535,29 @@ module Tina4
       start
     end
 
-    # Environment variables that mean "this is a CI run": no one is there to
-    # look at a browser tab.
-    CI_ENV_VARS = %w[CI CONTINUOUS_INTEGRATION GITHUB_ACTIONS GITLAB_CI BUILDKITE JENKINS_URL TEAMCITY_VERSION].freeze
-
-    # Open the app in a browser only when ALL of these hold: TINA4_DEBUG is
-    # truthy (development only, never production or Puma), TINA4_NO_BROWSER is
-    # not truthy, --no-browser was not passed, and no CI variable is set.
+    # Open the app in a browser only when ALL of these hold (ADR-0070):
+    #   * development: TINA4_DEBUG is truthy - never production or Puma
+    #   * TINA4_NO_BROWSER is not truthy (true/1/yes/on, trimmed, any case)
+    #   * --no-browser was not passed
+    #   * no CI variable vetoes (see ci_run?)
     # open_browser used to check none of it, so every app.rb booted through
     # run! - and every spec that did so - popped a real tab.
-    def browser_launch_allowed?
+    def browser_launch_allowed?(argv: ARGV)
       return false unless Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
       return false if Tina4::Env.is_truthy(ENV["TINA4_NO_BROWSER"])
-      return false if ARGV.include?("--no-browser")
+      return false if argv.include?("--no-browser")
 
-      CI_ENV_VARS.none? { |name| !ENV[name].to_s.strip.empty? }
+      !ci_run?
+    end
+
+    # A CI variable vetoes when it is set to a non-empty value (after
+    # trimming) that is not one of CI_FALSE_VALUES, case-insensitively - so
+    # CI=woodpecker vetoes and CI=false does not (ADR-0070).
+    def ci_run?
+      CI_ENV_VARS.any? do |name|
+        value = ENV[name].to_s.strip.downcase
+        !value.empty? && !CI_FALSE_VALUES.include?(value)
+      end
     end
 
     # TINA4_BROWSER_COMMAND names the launcher to run instead of the OS default

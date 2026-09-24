@@ -25,7 +25,7 @@ require_relative "support/shutdown_probe"
 RSpec.describe "Tina4.run! browser launch", :slow do
   # A method, not a constant: a constant in a describe block lands on Object.
   def ci_variables
-    %w[CI CONTINUOUS_INTEGRATION GITHUB_ACTIONS GITLAB_CI BUILDKITE JENKINS_URL TEAMCITY_VERSION]
+    Tina4::CI_ENV_VARS
   end
 
   def boot(env: {}, argv: [])
