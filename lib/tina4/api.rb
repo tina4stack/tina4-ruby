@@ -523,7 +523,15 @@ module Tina4
     end
 
     def apply_headers(request, extra_headers)
-      @headers.merge(extra_headers).each do |key, value|
+      headers = @headers.merge(extra_headers)
+      # Attach the configured Authorization / Cookie only when the request target
+      # is same-origin as the configured base. An absolute off-origin path (e.g.
+      # the userinfo trick "@evil.com/x", which resolves the host to evil.com)
+      # otherwise leaks the bearer token / session cookie to an attacker-chosen
+      # host — the same cross-origin strip already applied to followed redirects,
+      # now for the initial target too.
+      headers = strip_cross_origin(headers) unless same_origin?(request.uri, URI.parse(@base_url))
+      headers.each do |key, value|
         request[key] = value
       end
     end
