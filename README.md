@@ -4,11 +4,11 @@
 <h1 align="center">Tina4 Ruby</h1>
 <h3 align="center">TINA4: The Intelligent Native Application 4ramework</h3>
 <p align="center"><em>Simple. Fast. Human. &nbsp;|&nbsp; Built for AI. Built for you.</em></p>
-<p align="center">One require, everything works. Runtime gems: the Rack server stack only (rack, rackup, puma, webrick; puma brings nio4r). Everything else is Tina4 code on the Ruby standard library.</p>
+<p align="center">One require, everything works. Zero runtime gems: Tina4 serves HTTP itself, and everything else is Tina4 code on the Ruby standard library.</p>
 <p align="center">
   <a href="https://rubygems.org/gems/tina4ruby"><img src="https://img.shields.io/gem/v/tina4ruby?color=7b1fa2&label=RubyGems" alt="RubyGems"></a>
   <a href="https://github.com/tina4stack/tina4-ruby/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/tina4stack/tina4-ruby/test.yml?label=tests" alt="Tests"></a>
-  <img src="https://img.shields.io/badge/runtime%20gems-Rack%20stack%20only-brightgreen" alt="Runtime gems: Rack stack only">
+  <img src="https://img.shields.io/badge/runtime%20gems-0-brightgreen" alt="Runtime gems: 0">
   <a href="https://tina4.com"><img src="https://img.shields.io/badge/docs-tina4.com-7b1fa2" alt="Docs"></a>
 </p>
 
@@ -69,7 +69,7 @@ db = Tina4::Database.new("sqlite://app.db")
 | **Developer Tools** (7) | Dev dashboard (11 tabs), dev toolbar, error overlay (Catppuccin Mocha), dev mailbox, hot reload + CSS hot-reload, code metrics (complexity, coupling, maintainability), AI context installer (7 tools) |
 | **Utilities** (7) | DI container (transient + singleton), HtmlElement builder, inline testing (`@tests` decorator), i18n (6 languages), Swagger/OpenAPI auto-generation, CLI scaffolding (`generate model/route/migration/middleware`), structured logging |
 
-**2,508 tests. No runtime gems beyond the Rack server stack. Full parity across Python, PHP, Ruby, and Node.js.**
+**2,508 tests. Zero runtime gems. Full parity across Python, PHP, Ruby, and Node.js.**
 
 ### AI Client
 
@@ -103,17 +103,17 @@ Benchmarked with `wrk`: 5,000 requests, 50 concurrent, median of 3 runs:
 
 | Framework | JSON req/s | Deps | Features |
 |-----------|-----------|------|----------|
-| **Tina4 Ruby** | **10,243** | Rack stack | 55 |
+| **Tina4 Ruby** | **10,243** | 0 | 55 |
 | Sinatra | 9,548 | 5+ | ~4 |
 
-Tina4 Ruby outperforms Sinatra while delivering **140 cataloged features vs ~4**, with no runtime gems beyond the Rack server stack.
+Tina4 Ruby outperforms Sinatra while delivering **140 cataloged features vs ~4**, with zero runtime gems.
 
 **Across all 4 Tina4 implementations:**
 
 | | Python | PHP | Ruby | Node.js |
 |---|--------|-----|------|---------|
 | **JSON req/s** | 6,508 | 29,293 | 10,243 | 84,771 |
-| **Dependencies** | 0 | 0 | Rack stack | 0 |
+| **Dependencies** | 0 | 0 | 0 | 0 |
 | **Features** | 55 | 55 | 55 | 55 |
 
 ---

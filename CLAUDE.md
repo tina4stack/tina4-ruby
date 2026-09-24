@@ -1230,9 +1230,11 @@ Response headers (ADR-0068): `Response#header`, `#add_header`, `#redirect`, an e
   so it was removed
 - Password hashing via PBKDF2-SHA256 (`OpenSSL::KDF.pbkdf2_hmac`, 260000 iterations, `$`
   delimited). There is NO bcrypt dependency and never was one in v3
-- Runtime gems: only the Rack server stack (rack, rackup, puma, webrick) is declared in the
-  gemspec. Everything else is Tina4 code on the standard library, guarded by
-  `spec/zero_dependency_gemspec_spec.rb` (it fails if any of these comes back):
+- Runtime gems: NONE. The gemspec declares no runtime dependency; the HTTP server
+  (`lib/tina4/http_server.rb`) and multipart parser (`lib/tina4/form_parser.rb`) replaced
+  rack, rackup and webrick, and Puma is the app's to install (ADR-0067). Everything else is
+  Tina4 code on the standard library, guarded by `spec/zero_dependency_gemspec_spec.rb`
+  (it fails if any runtime gem is declared, or any of these comes back):
   - `json`: a default gem on every supported Ruby, never declared. Because it is not pinned an app may
     resolve json 3.x, which RAISES on a duplicate key; JSON from outside the process goes through
     `Tina4.parse_json` (`lib/tina4/parse_json.rb`), which pins last-key-wins like Python/PHP/Node
