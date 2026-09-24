@@ -386,8 +386,10 @@ module Tina4
         path = env["PATH_INFO"] || "/"
         method = env["REQUEST_METHOD"]
 
+        # ADR-0078: ONE gate for every /__dev request, reads and writes alike -
+        # Host allow-list (DNS rebinding), same-origin, loopback peer.
         # DEVADMIN-DEC-01/02 (feature 127): fail-closed same-origin + loopback
-        # gate on every /__dev write, before ANY handler runs. Closes drive-by
+        # gate on every /__dev request, before ANY handler runs. Closes drive-by
         # CSRF (a page the developer also has open POSTing to /file/save then
         # /reload) and a network-exposed debug box. GET/HEAD/OPTIONS skip it;
         # the MCP surface keeps its own richer 404 gate (with_mcp_gate), so the
@@ -563,7 +565,8 @@ module Tina4
         case [method, path]
         when ["GET", "/__dev/api/table"]
           table_name = query_param(env, "name")
-          json_response(table_detail_payload(table_name))
+          payload = table_detail_payload(table_name)
+          json_response(payload.except(:status), payload[:status] || 200)
         when ["POST", "/__dev/api/seed"]
           handle_seed(env)
         when ["POST", "/__dev/api/tool"]
@@ -630,18 +633,22 @@ module Tina4
           rel = query_param(env, "path")
           # DEVADMIN-DEC-03: a secret path refuses with 403 (parity with Python);
           # file_read_payload also guards so the body never carries the content.
-          json_response(file_read_payload(rel), secret_path?(rel) ? 403 : 200)
+          # ADR-0078: judged on the RESOLVED path too; a path outside the
+          # project is refused 403 like Python.
+          payload = file_read_payload(rel)
+          refused = secret_path?(rel) || resolved_secret?(rel) || payload[:error].to_s.include?("escapes project")
+          json_response(payload, refused ? 403 : 200)
         when ["GET", "/__dev/api/file/raw"]
           file_raw_response(query_param(env, "path"))
         when ["POST", "/__dev/api/file/save"]
           body = read_json_body(env) || {}
-          json_response(file_save(body))
+          file_op_response(file_save(body))
         when ["POST", "/__dev/api/file/rename"]
           body = read_json_body(env) || {}
-          json_response(file_rename(body))
+          file_op_response(file_rename(body))
         when ["POST", "/__dev/api/file/delete"]
           body = read_json_body(env) || {}
-          json_response(file_delete(body))
+          file_op_response(file_delete(body))
         when ["GET", "/__dev/api/deps/search"]
           json_response(deps_search(query_param(env, "q") || query_param(env, "query") || ""))
         when ["POST", "/__dev/api/deps/install"]
@@ -802,7 +809,21 @@ module Tina4
       # (503).
       def metrics_file_response(env)
         file_path = (query_param(env, "path") || "").to_s
-        json_response(Tina4::Metrics.file_detail(file_path))
+        # ADR-0078: the path must resolve inside the project or the last scan
+        # root; an absolute path elsewhere is refused before the engine runs.
+        scan_root = Tina4::Metrics.instance_variable_get(:@last_scan_root)
+        resolved = begin
+          safe_project_path(file_path, extra_roots: [scan_root])
+        rescue ArgumentError
+          begin
+            scan_root ? safe_project_path(File.join(scan_root, file_path), extra_roots: [scan_root]) : nil
+          rescue ArgumentError
+            nil
+          end
+        end
+        return json_response({ "error" => "Path outside project" }, 403) if !file_path.empty? && resolved.nil?
+
+        json_response(Tina4::Metrics.file_detail(file_path.empty? ? file_path : resolved))
       rescue Tina4::MetricsEngineError => e
         bad_path = e.message.include?("no such file") ||
                    e.message.include?("not a file") ||
@@ -1433,8 +1454,17 @@ module Tina4
         return { error: "No database configured" } unless db
 
         begin
+          # ADR-0078: only a name the database itself reports is accepted, and
+          # it is quoted as an identifier - never spliced raw into SQL.
+          return { error: "unknown table", status: 404 } unless Array(db.tables).map(&:to_s).include?(table_name)
+
+          quoted = if db.respond_to?(:driver_name) && db.driver_name.to_s.include?("mysql")
+                     "`#{table_name.gsub('`', '``')}`"
+                   else
+                     "\"#{table_name.gsub('"', '""')}\""
+                   end
           columns = db.columns(table_name)
-          result = db.fetch("SELECT * FROM #{table_name} LIMIT 20")
+          result = db.fetch("SELECT * FROM #{quoted}", [], limit: 20)
           rows = result.respond_to?(:to_a) ? result.to_a : (result.is_a?(Array) ? result : [])
           { table: table_name, columns: columns, rows: rows, count: rows.size }
         rescue => e
@@ -1657,11 +1687,37 @@ module Tina4
         { deployed: name, files: copied }
       end
 
-      def safe_project_path(rel_path)
-        root = File.expand_path(Dir.pwd)
-        resolved = File.expand_path(rel_path.to_s, root)
-        raise ArgumentError, "path escapes project directory" unless resolved.start_with?(root)
+      # ADR-0078: resolve the path the way the OS will open it (".." collapsed,
+      # symlinks followed on the deepest existing part) and require it inside an
+      # allowed root, with a trailing separator so /app never contains /app-x.
+      def safe_project_path(rel_path, extra_roots: [])
+        root = real_path_of(File.expand_path(Dir.pwd))
+        resolved = real_path_of(File.expand_path(rel_path.to_s, root))
+        roots = [root] + extra_roots.compact.map { |r| real_path_of(File.expand_path(r.to_s)) }
+        unless roots.any? { |r| resolved == r || resolved.start_with?(r.chomp("/") + "/") }
+          raise ArgumentError, "path escapes project directory"
+        end
         resolved
+      end
+
+      # Real path of +path+: the deepest existing ancestor is realpath'd and the
+      # not-yet-existing tail (a new file being saved) is appended.
+      def real_path_of(path)
+        existing = path
+        tail = []
+        until File.exist?(existing) || File.symlink?(existing) || existing == File.dirname(existing)
+          tail.unshift(File.basename(existing))
+          existing = File.dirname(existing)
+        end
+        File.join(File.realpath(existing), *tail)
+      rescue SystemCallError
+        path
+      end
+
+      # Project-relative form of a resolved path, for the secret denylist.
+      def project_relative(resolved)
+        root = real_path_of(File.expand_path(Dir.pwd))
+        resolved == root ? "" : resolved.delete_prefix(root.chomp("/") + "/")
       end
 
       # Noise dirs + hidden dot-entries are hidden from the file browser,
@@ -1818,7 +1874,7 @@ module Tina4
         # DEVADMIN-DEC-03: never serve secret material (.env, keys, secrets/).
         # The dispatch statuses this 403; the guard here keeps the helper safe
         # for any other caller too. The secret content never enters the payload.
-        if secret_path?(rel)
+        if secret_path?(rel) || resolved_secret?(rel)
           return { error: "Refused: secret file", path: rel.to_s, content: "", language: "text", bytes: 0 }
         end
         begin
@@ -1835,7 +1891,7 @@ module Tina4
       def file_raw_response(rel)
         return json_response({ error: "path required" }) if rel.nil? || rel.empty?
         # DEVADMIN-DEC-03: never serve secret material (.env, keys, secrets/).
-        return json_response({ error: "Refused: secret file" }, 403) if secret_path?(rel)
+        return json_response({ error: "Refused: secret file" }, 403) if secret_path?(rel) || resolved_secret?(rel)
         begin
           target = safe_project_path(rel)
           return json_response({ error: "Not found" }) unless File.file?(target)
@@ -1852,6 +1908,8 @@ module Tina4
                else "text/plain; charset=utf-8"
                end
           [200, { "content-type" => ct }, [content]]
+        rescue ArgumentError => e
+          json_response({ error: e.message }, 403)
         rescue => e
           json_response({ error: e.message })
         end
@@ -2003,20 +2061,18 @@ module Tina4
 
       # Whether the request carried a token matching TINA4_MCP_TOKEN.
       #
-      # Token transports (in order): Authorization: Bearer, X-MCP-Token,
-      # X-Api-Key. Compared timing-safe against TINA4_MCP_TOKEN (fallback
-      # TINA4_API_KEY). With NO configured token this returns false, so a
+      # Token transports (in order): Authorization: Bearer, X-MCP-Token.
+      # Compared timing-safe against TINA4_MCP_TOKEN only (ADR-0078). With NO configured token this returns false, so a
       # remote caller can never present a "valid" token by accident.
       def mcp_token_ok?(env)
+        # ADR-0078: only TINA4_MCP_TOKEN; the app's TINA4_API_KEY never unlocks it.
         expected = ENV["TINA4_MCP_TOKEN"]
-        expected = ENV["TINA4_API_KEY"] if expected.nil? || expected.empty?
         return false if expected.nil? || expected.empty?
 
         provided = ""
         auth = (env["HTTP_AUTHORIZATION"] || "").to_s
         provided = auth[7..].to_s.strip if auth.downcase.start_with?("bearer ")
         provided = (env["HTTP_X_MCP_TOKEN"] || "").to_s if provided.empty?
-        provided = (env["HTTP_X_API_KEY"] || "").to_s if provided.empty?
         return false if provided.empty?
 
         secure_equal?(expected.to_s, provided)
@@ -2063,7 +2119,8 @@ module Tina4
       #     is allowed here and the loopback gate still constrains the peer.
       def dev_same_origin_ok?(env)
         sfs = (env["HTTP_SEC_FETCH_SITE"] || "").strip.downcase
-        return %w[same-origin same-site none].include?(sfs) unless sfs.empty?
+        # ADR-0078: same-site is a different origin (a sibling subdomain).
+        return %w[same-origin none].include?(sfs) unless sfs.empty?
 
         origin = (env["HTTP_ORIGIN"] || "").strip
         unless origin.empty?
@@ -2082,11 +2139,12 @@ module Tina4
       #           its own gate) - a network-exposed debug box.
       # Uses the RAW socket peer (env["REMOTE_ADDR"]), never X-Forwarded-For.
       def dev_mutation_denial(env)
-        method = (env["REQUEST_METHOD"] || "").to_s.upcase
-        return nil if DEV_SAFE_METHODS.include?(method)
         path = (env["PATH_INFO"] || "").to_s
         return nil unless path.start_with?("/__dev")
 
+        # A request carrying the valid TINA4_MCP_TOKEN is not a DNS-rebinding
+        # page (a browser cannot know the token), so it may name any Host.
+        return dev_refused("dev-admin: refused (host not allowed)") unless dev_host_allowed?(env) || mcp_token_ok?(env)
         return dev_refused("dev-admin: refused (cross-origin request)") unless dev_same_origin_ok?(env)
 
         unless path.start_with?(*DEV_MCP_PREFIXES)
@@ -2098,6 +2156,27 @@ module Tina4
         nil
       end
 
+      # ADR-0078: the Host header must name the loopback machine or the
+      # configured TINA4_HOST, so a rebound DNS name cannot reach /__dev. A
+      # missing Host is not a browser request; the peer gate governs it.
+      def dev_host_allowed?(env)
+        host = (env["HTTP_HOST"] || "").to_s.strip.downcase
+        return true if host.empty?
+
+        name = if host.start_with?("[")
+                 host.include?("]") ? host[1...host.index("]")] : host
+               elsif host.count(":") == 1
+                 host.split(":", 2).first
+               else
+                 host
+               end
+        allowed = %w[localhost 127.0.0.1 ::1]
+        configured = ENV["TINA4_HOST"].to_s.strip.downcase.delete("[]")
+        allowed << configured unless configured.empty?
+        allowed.include?(name)
+      end
+      public :dev_host_allowed?
+
       def dev_refused(message)
         [403, { "content-type" => "application/json; charset=utf-8" },
          [JSON.generate({ "ok" => false, "error" => message })]]
@@ -2106,6 +2185,20 @@ module Tina4
       # DEVADMIN-DEC-03: true when +rel+ names secret material the file endpoints
       # must never serve - .env / .env.* (the .env.example template is allowed),
       # anything under .git/ or secrets/, and private-key material.
+      # A file operation refused for leaving the project answers 403 (parity
+      # with Python); other failures keep their 200 + error body.
+      def file_op_response(payload)
+        json_response(payload, payload[:error].to_s.include?("escapes project") ? 403 : 200)
+      end
+
+      # ADR-0078: the secret denylist judged on the RESOLVED path, so ".env/.",
+      # ".env/x/.." or a symlink to .env cannot slip past the raw-string check.
+      def resolved_secret?(rel)
+        secret_path?(project_relative(safe_project_path(rel)))
+      rescue ArgumentError
+        false
+      end
+
       def secret_path?(rel)
         norm = rel.to_s.tr("\\", "/").gsub(%r{\A/+|/+\z}, "").downcase
         return false if norm.empty?
