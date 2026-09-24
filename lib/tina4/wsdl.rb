@@ -273,6 +273,14 @@ module Tina4
     def process_soap(xml_body)
       on_request(@request)
 
+      # The shared body rule, before anything reads the bytes: UTF-8 only, no
+      # byte order mark, no NUL byte, no other declared encoding.
+      begin
+        xml_body = XmlParser.utf8_text(xml_body)
+      rescue XmlParser::ParseError
+        return soap_fault("Client", "Malformed XML")
+      end
+
       # SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message, so
       # reject any DOCTYPE up front with the same Client fault as the other three
       # frameworks. The parser has no DTD support at all (no entity expansion, no
@@ -493,14 +501,27 @@ module Tina4
       end
 
       def handle_soap_request(xml_body)
+        # Malformed XML is the CLIENT's fault, as in Python and WSDL#process_soap.
+        # Both refusals below used to fall into the operation catch-all at the end
+        # of this method and answer "Internal server error" (a soap:Server fault).
+        begin
+          xml_body = XmlParser.utf8_text(xml_body) # the shared body encoding rule
+        rescue XmlParser::ParseError
+          return _soap_fault("Malformed XML", code: "Client")
+        end
+
         # SOAP 1.1 (§3) forbids a DOCTYPE/DTD. Reject before parsing; the parser
         # itself has no DTD support and accepts UTF-8 only. Mirrors the
         # class-based process_soap path.
-        if xml_body.to_s.b.match?(/<!DOCTYPE/in)
+        if xml_body.b.match?(/<!DOCTYPE/in)
           return _soap_fault("DOCTYPE declarations are not allowed in SOAP messages")
         end
 
-        doc = XmlParser.parse(xml_body)
+        begin
+          doc = XmlParser.parse(xml_body)
+        rescue XmlParser::ParseError
+          return _soap_fault("Malformed XML", code: "Client")
+        end
 
         # Find Body element (namespace-agnostic)
         body_el = _find_child(doc.root, "Body")
@@ -584,11 +605,11 @@ module Tina4
         xml
       end
 
-      def _soap_fault(message)
+      def _soap_fault(message, code: "soap:Server")
         '<?xml version="1.0" encoding="UTF-8"?>' \
         '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">' \
         "<soap:Body><soap:Fault>" \
-        "<faultcode>soap:Server</faultcode>" \
+        "<faultcode>#{code}</faultcode>" \
         "<faultstring>#{_escape_xml(message)}</faultstring>" \
         "</soap:Fault></soap:Body></soap:Envelope>"
       end

@@ -16,10 +16,11 @@ module Tina4
     #   * DTDs. `<!DOCTYPE` and every other `<!` declaration is a ParseError, so
     #     there is no entity expansion (billion laughs) and no external entity
     #     (XXE). The WSDL server also rejects DOCTYPE before parsing.
-    #   * Any encoding but UTF-8. A UTF-16/UTF-32 body (BOM or NUL bytes) or
-    #     invalid UTF-8 is a ParseError. A UTF-16 body used to slip past the
-    #     `<!DOCTYPE` regex guard, because the guard read "<\0!\0D\0..." while
-    #     REXML decoded the BOM and parsed the DTD. A UTF-8 BOM is skipped.
+    #   * Any encoding but UTF-8. Any byte order mark (UTF-8 included), a NUL
+    #     byte, invalid UTF-8, or an XML declaration naming another encoding is a
+    #     ParseError. A UTF-16 body used to slip past the `<!DOCTYPE` regex guard,
+    #     because the guard read "<\0!\0D\0..." while REXML decoded the BOM and
+    #     parsed the DTD.
     #
     # Element#text follows ElementTree (the Python master): the character data
     # before the first child element, entity- and CDATA-decoded; nil when there
@@ -65,7 +66,10 @@ module Tina4
 
       PREDEFINED_ENTITIES = { "lt" => "<", "gt" => ">", "amp" => "&", "quot" => '"', "apos" => "'" }.freeze
       NAME = /[A-Za-z_:\u00C0-\u{EFFFF}][A-Za-z0-9_:.\-\u00B7\u00C0-\u{EFFFF}]*/
-      UTF16_OR_32_BOMS = ["\xFE\xFF".b, "\xFF\xFE".b, "\x00\x00\xFE\xFF".b].freeze
+      # Every byte order mark, the UTF-8 one included (the shared SOAP body rule:
+      # a body is plain UTF-8, never a BOM, in all four frameworks).
+      BYTE_ORDER_MARKS = ["\xEF\xBB\xBF".b, "\xFE\xFF".b, "\xFF\xFE".b, "\x00\x00\xFE\xFF".b].freeze
+      DECLARED_ENCODING = /\A<\?xml\b[^>]*?\bencoding\s*=\s*["']([^"']*)["']/
 
       module_function
 
@@ -75,15 +79,20 @@ module Tina4
         Reader.new(utf8_text(xml)).document
       end
 
+      # The body as UTF-8 text, or a ParseError. Callers that must refuse BEFORE
+      # any parse (the WSDL server) call this first; #parse calls it too.
       def utf8_text(xml)
         bytes = xml.to_s.b
-        if UTF16_OR_32_BOMS.any? { |bom| bytes.start_with?(bom) } || bytes.include?("\x00")
-          raise ParseError, "only UTF-8 XML is accepted (UTF-16/UTF-32 body)"
-        end
+        raise ParseError, "only UTF-8 XML without a byte order mark is accepted" if BYTE_ORDER_MARKS.any? { |bom| bytes.start_with?(bom) }
+        raise ParseError, "only UTF-8 XML is accepted (NUL byte, UTF-16/UTF-32 body)" if bytes.include?("\x00")
 
-        bytes = bytes.byteslice(3..) if bytes.start_with?("\xEF\xBB\xBF".b)
         text = bytes.force_encoding(Encoding::UTF_8)
         raise ParseError, "only UTF-8 XML is accepted (invalid UTF-8 bytes)" unless text.valid_encoding?
+
+        declared = text[DECLARED_ENCODING, 1]
+        if declared && !declared.casecmp?("UTF-8")
+          raise ParseError, "only UTF-8 XML is accepted (declared encoding #{declared.inspect})"
+        end
 
         text
       end

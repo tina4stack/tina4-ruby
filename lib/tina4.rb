@@ -966,7 +966,7 @@ module Tina4
       if db_url && !db_url.empty?
         begin
           bind_database(Tina4::Database.new(db_url))
-          Tina4::Log.info("Database connected: #{db_url.sub(/:[^:@]+@/, ':***@')}")
+          Tina4::Log.info("Database connected: #{Tina4::DatabaseUrl.redact(db_url)}")
         rescue => e
           Tina4::Log.error("Database connection failed: #{e.message}")
         end

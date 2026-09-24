@@ -17,6 +17,8 @@
 #     backplane.publish("chat", '{"user":"A","text":"hello"}')
 #   end
 
+require_relative "database_url"
+
 module Tina4
   # Base backplane interface for scaling WebSocket broadcast across instances.
   #
@@ -81,8 +83,17 @@ module Tina4
       end
 
       @url = url || ENV.fetch("TINA4_WS_BACKPLANE_URL", "redis://localhost:6379")
-      @redis = Redis.new(url: @url)
-      @subscriber = Redis.new(url: @url)
+      begin
+        @redis = Redis.new(url: @url)
+        @subscriber = Redis.new(url: @url)
+      rescue StandardError => e
+        # A URL the client cannot parse raises URI::InvalidURIError quoting the
+        # WHOLE raw URL, password included, and WebSocket#ensure_backplane logs
+        # e.message. Re-raise naming only the redacted form.
+        raise ArgumentError,
+              "Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane: " \
+              "#{Tina4::DatabaseUrl.redact(@url)} (#{e.class})"
+      end
       @threads = {}
       @running = true
     end
@@ -98,6 +109,12 @@ module Tina4
             block.call(msg) if @running
           end
         end
+      rescue StandardError => e
+        # A refused login or a dropped connection ends this listener for good.
+        # Say so in the framework log: before, the thread died with only a raw
+        # stack trace on stderr while "backplane active" stood as the last word.
+        # The redis client's messages carry the URL without its userinfo.
+        Tina4::Log.error("WebSocket backplane subscriber stopped on '#{channel}': #{e.message}") if @running && defined?(Tina4::Log)
       end
     end
 
