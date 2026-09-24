@@ -227,6 +227,14 @@ module Tina4
       @source = source
       @tokens = tokenize(source)
       @pos = 0
+      # F2: bound the parser's own recursion. A deeply nested query
+      # ("{a{a{a...}}}") otherwise recurses in parse_selection_set until Ruby
+      # raises SystemStackError — which is NOT a StandardError, so the public
+      # execute's `rescue => e` misses it and it escapes as a 500. Raising a
+      # GraphQLError (a StandardError) at the depth bound keeps it caught and
+      # returned as a clean GraphQL error. Reuses TINA4_GRAPHQL_MAX_DEPTH.
+      @depth = 0
+      @max_depth = Integer(ENV.fetch("TINA4_GRAPHQL_MAX_DEPTH", "50"), exception: false) || 50
     end
 
     def parse
@@ -439,6 +447,19 @@ module Tina4
     end
 
     def parse_selection_set
+      @depth += 1
+      if @max_depth.positive? && @depth > @max_depth
+        @depth -= 1
+        raise GraphQLError, "Query exceeds maximum depth of #{@max_depth}"
+      end
+      begin
+        parse_selection_set_inner
+      ensure
+        @depth -= 1
+      end
+    end
+
+    def parse_selection_set_inner
       expect(:punct, "{")
       selections = []
       until current&.value == "}"
@@ -599,11 +620,44 @@ module Tina4
   class GraphQLExecutor
     # max_depth bounds selection-set nesting (DoS / stack-overflow guard).
     # Threaded down from the owning GraphQL instance; <= 0 disables the guard.
-    attr_accessor :max_depth
+    attr_accessor :max_depth, :max_nodes
 
-    def initialize(schema, max_depth: 50)
+    def initialize(schema, max_depth: 50, max_nodes: 1000)
       @schema = schema
       @max_depth = max_depth
+      # F2: maximum expanded selection nodes per query. The depth guard bounds
+      # NESTING but not WIDTH — a fragment bomb stays shallow while expanding to
+      # millions of fields, and an alias explosion is not deep at all. This
+      # budget bounds the expanded selection tree (fragments expanded, each
+      # alias counted) so both are rejected before any resolver runs.
+      @max_nodes = max_nodes
+    end
+
+    # F2: count the expanded selection nodes, aborting past max_nodes. Fragment
+    # spreads are expanded (so a fragment bomb is counted, not the small
+    # unexpanded document) and every field — including each alias — counts once.
+    # Capped by max_nodes and by the depth cap, so a circular fragment trips the
+    # budget instead of looping and the check can never cost more than the budget.
+    def query_complexity(selections, fragments, depth, count)
+      depth_cap = (@max_depth && @max_depth.positive?) ? @max_depth : 1000
+      return count if depth > depth_cap
+
+      selections.each do |sel|
+        count += 1
+        return count if count > @max_nodes
+
+        case sel[:kind]
+        when :fragment_spread
+          frag = fragments[sel[:name]]
+          count = query_complexity(frag[:selection_set], fragments, depth + 1, count) if frag
+        when :inline_fragment
+          count = query_complexity(sel[:selection_set] || [], fragments, depth + 1, count)
+        else
+          count = query_complexity(sel[:selection_set], fragments, depth + 1, count) if sel[:selection_set]
+        end
+        return count if count > @max_nodes
+      end
+      count
     end
 
     def execute(document, variables: {}, context: {}, operation_name: nil, allow_mutations: true)
@@ -630,6 +684,16 @@ module Tina4
                   end
 
       raise GraphQLError, "Unknown operation: #{operation_name}" unless operation
+
+      # F2: reject an over-complex query (fragment bomb / alias explosion) before
+      # any resolver runs.
+      if @max_nodes && @max_nodes.positive?
+        complexity = query_complexity(operation[:selection_set], fragments, 1, 0)
+        if complexity > @max_nodes
+          return { "data" => nil,
+                   "errors" => [{ "message" => "Query exceeds maximum complexity of #{@max_nodes} nodes" }] }
+        end
+      end
 
       # Resolve variables
       resolved_vars = resolve_variables(operation[:variables], variables)
@@ -906,6 +970,15 @@ module Tina4
       @executor&.max_depth = value
     end
 
+    # F2 complexity budget — see GraphQLExecutor#max_nodes. Writer keeps the
+    # executor in sync so tests/app code can override it.
+    attr_reader :max_nodes
+
+    def max_nodes=(value)
+      @max_nodes = value
+      @executor&.max_nodes = value
+    end
+
     # Class-level toggle for ORM auto-schema generation. Defaults to true,
     # can be disabled via TINA4_GRAPHQL_AUTO_SCHEMA=false. Initializers and
     # user app code can branch on this before calling `schema.from_orm(...)`.
@@ -978,7 +1051,10 @@ module Tina4
       # GraphQL DoS / stack-overflow vector. Default 50 is far beyond any
       # legitimate query; TINA4_GRAPHQL_MAX_DEPTH <= 0 disables the guard.
       @max_depth = Integer(ENV.fetch("TINA4_GRAPHQL_MAX_DEPTH", "50"), exception: false) || 50
-      @executor = GraphQLExecutor.new(@schema, max_depth: @max_depth)
+      # F2: expanded-node (complexity) budget — bounds query WIDTH (fragment
+      # bombs, alias explosions), which the depth guard does not.
+      @max_nodes = Integer(ENV.fetch("TINA4_GRAPHQL_MAX_NODES", "1000"), exception: false) || 1000
+      @executor = GraphQLExecutor.new(@schema, max_depth: @max_depth, max_nodes: @max_nodes)
       @field_resolvers = {}
 
       # Drain any resolvers registered via the class-level GraphQL.resolve()
