@@ -33,6 +33,14 @@ module Tina4
 
         @connection = SQLite3::Database.new(db_path)
         @connection.results_as_hash = true
+        # Wait up to 5 s for another process's write lock instead of failing at
+        # once with SQLite3::BusyException. The sqlite3 gem's default is NO wait,
+        # so two processes writing the same file collided on the first overlap:
+        # MEASURED on the lab, five of six processes racing a first session write
+        # died with "database is locked". 5000 ms matches PHP's busyTimeout(5000)
+        # and Python's sqlite3 default. Set BEFORE the WAL pragma so that write
+        # waits too.
+        @connection.busy_timeout = 5000
         @connection.execute("PRAGMA journal_mode=WAL")
         @connection.execute("PRAGMA foreign_keys=ON")
       end
