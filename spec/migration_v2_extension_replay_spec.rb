@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 
 # Parity lock-in for the tina4-python #128 fix (its regression suite is
 # tina4-python/tests/test_issue_115_v2_upgrade.py): a migration history recorded

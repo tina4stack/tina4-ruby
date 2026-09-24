@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 #
 # Lock-in spec for D12 (feature-recount audit): the two documentation claims the
 # audit found drifting from the code, pinned so the drift cannot silently return.

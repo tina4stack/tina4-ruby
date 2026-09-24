@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 
 # Locks in the 503-retry in Tina4::AI.fetch_bytes (lib/tina4/ai.rb) --
 # mirrors tina4-python's tests/test_ai_fetch_retry.py and the equivalent

@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 #
 # Real-subprocess lock-in for scripts/check_version_consistency.rb -- the pre-tag
 # guard that catches a partial version bump BEFORE a tag is cut (rather than on

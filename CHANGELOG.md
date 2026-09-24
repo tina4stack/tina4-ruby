@@ -8,6 +8,8 @@ https://tina4.com/ruby/36-releases
 
 ## 3.13.138
 
+This release is available under MPL-2.0, with separate commercial terms available from Code Infinity. Copyright Code Infinity. Previously published releases retain their original licences.
+
 Security, zero-dependency server and interoperability release, integrating the reviewed changes since 3.13.137.
 
 - Ruby now serves HTTP/1.1 with its built-in stdlib socket server and parses multipart forms itself. Rack, Rackup, WEBrick and Puma are no longer runtime dependencies; applications can opt into Puma. Native SMTP, IMAP, XML and Base64 implementations remove the remaining bundled/default-gem dependencies; SQLite is loaded only when used with an actionable missing-driver error. JSON duplicate keys consistently use the last value, including json 3.

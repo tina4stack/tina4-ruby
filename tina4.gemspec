@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 
 require_relative "lib/tina4/version"
 
@@ -10,7 +16,7 @@ Gem::Specification.new do |spec|
   spec.summary = "Transitional package — use tina4ruby instead."
   spec.description = "This gem has been renamed to tina4ruby. Install tina4ruby for the latest version."
   spec.homepage = "https://tina4.com"
-  spec.license = "MIT"
+  spec.license = "MPL-2.0"
   spec.required_ruby_version = ">= 3.1.0"
   spec.metadata["homepage_uri"] = spec.homepage
   spec.files = ["lib/tina4ruby.rb", "lib/tina4/version.rb"]
