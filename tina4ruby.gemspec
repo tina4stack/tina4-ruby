@@ -8,7 +8,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Tina4 Team"]
   spec.email = ["info@tina4.com"]
   spec.summary = "Tina4 for Ruby — native Ruby conventions and shared Tina4 contracts"
-  spec.description = "TINA4: The Intelligent Native Application 4ramework for Ruby. A Rack-based backend with native Ruby conventions and shared cross-language contracts."
+  spec.description = "TINA4: The Intelligent Native Application 4ramework for Ruby. A zero-dependency backend with its own HTTP server, native Ruby conventions and shared cross-language contracts."
   spec.homepage = "https://tina4.com"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
@@ -17,9 +17,12 @@ Gem::Specification.new do |spec|
   spec.bindir = "exe"
   spec.executables = ["tina4ruby"]
   spec.require_paths = ["lib"]
-  spec.add_dependency "rack", "~> 3.0"
-  spec.add_dependency "rackup", "~> 2.1"
-  spec.add_dependency "puma", "~> 6.0"
+  # NO web-server gems: no rack, rackup, puma or webrick. Tina4 serves HTTP
+  # itself (lib/tina4/http_server.rb, stdlib socket) in development AND
+  # production, and parses multipart forms itself (lib/tina4/form_parser.rb).
+  # The app is still a Rack-style call(env) object, so an application that
+  # WANTS Puma adds `gem "puma"` to its own Gemfile and production uses it
+  # (ADR-0067); TINA4_DEFAULT_WEBSERVER=TRUE pins the built-in server anyway.
   # NO jwt gem. Tina4 signs and verifies every JWT with stdlib OpenSSL:
   # OpenSSL::HMAC for the standard HS256/HS384/HS512 family, and
   # OpenSSL::PKey::RSA#sign/#verify for the opt-in RS256. The gem was declared
@@ -28,7 +31,6 @@ Gem::Specification.new do |spec|
   # minted by the stdlib path verifies under PHP openssl_verify AND Node
   # crypto.createVerify, with a tampered payload INVALID in both.)
 
-  spec.add_dependency "webrick", "~> 1.8"
   # NOT declared, and never to come back (spec/zero_dependency_gemspec_spec.rb):
   #   json    a DEFAULT gem on every Ruby this gem supports (3.1 to 4.0), so it is
   #           always loadable, Bundler or not.
@@ -72,6 +74,10 @@ Gem::Specification.new do |spec|
 
   spec.add_development_dependency "sqlite3", "~> 2.0"
   spec.add_development_dependency "listen", "~> 3.8"
+  # puma is a DEVELOPMENT dependency only, so spec/puma_shutdown_spec.rb can
+  # boot the opt-in production path for real (ADR-0067). It is never installed
+  # for an application unless that application asks for it.
+  spec.add_development_dependency "puma", "~> 6.0"
   # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
   # it lazily, exactly like pg. It is a development/optional dependency only so
   # it is never force-installed; the backend degrades gracefully if it is absent.
