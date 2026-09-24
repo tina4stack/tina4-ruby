@@ -284,6 +284,18 @@ module Tina4
       # the normal path. This method did not exist at all, and Queue#failed
       # silently returned [] for it — indistinguishable from "nothing has
       # failed" (ADR-0022 decision 7).
+      # Reject a job permanently — dead-letter it NOW, no retry (ADR-0023).
+      def reject(job, reason = "")
+        job.attempts = [job.attempts + 1, @max_retries].max
+        job.error = reason
+        collection.find_one_and_update(
+          { _id: job.id },
+          { "$set" => { status: "dead", topic: "#{job.topic}.dead_letter",
+                        attempts: job.attempts, error: reason, reserved_at: nil } },
+          upsert: true
+        )
+      end
+
       def failed(topic, max_retries: 3)
         collection.find(
           topic: topic,

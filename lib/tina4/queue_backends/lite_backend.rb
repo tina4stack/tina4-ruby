@@ -177,6 +177,18 @@ module Tina4
       # Aligns with retry_job(id) which had always unlinked the dead-letter
       # file — two spellings of the same intent that previously diverged.
       # Increments attempts, clears the error.
+      # Reject a job permanently — dead-letter it NOW, no retry (ADR-0023).
+      # Unlike fail(), which requeues until max_retries is spent, reject() moves
+      # a known-poison job straight to the dead-letter store. attempts is floored
+      # at max_retries so dead_letters (attempts >= limit) returns it and
+      # dead_letter_count agrees.
+      def reject(job, reason = "")
+        clear_reservation(job.topic, job.id)
+        job.attempts = [job.attempts + 1, @max_retries].max
+        job.error = reason
+        move_to_dead_letter(job, reason)
+      end
+
       def retry(job, delay_seconds: 0)
         clear_reservation(job.topic, job.id)
         # Drop any dead-letter file for this id BEFORE the re-queue: if this

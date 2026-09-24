@@ -113,9 +113,22 @@ module Tina4
       self
     end
 
-    # Reject this job with a reason. Alias for fail().
+    # Reject this job permanently — dead-letter it NOW, no retry (ADR-0023).
+    #
+    # Distinct from fail(): fail() records a failed attempt and only
+    # dead-letters once max_retries is exhausted (the job is retried first).
+    # reject() is for a message the consumer KNOWS is poison — it goes straight
+    # to the dead-letter store on this call. AMQP basic.reject(requeue=false)
+    # semantics. Was a literal alias for fail() before 3.13.139.
     def reject(reason = "")
-      fail(reason)
+      unless @queue
+        @attempts += 1
+        @status = :dead
+        return self
+      end
+      @queue.backend.reject(self, reason)
+      @status = :dead
+      self
     end
   end
 end
