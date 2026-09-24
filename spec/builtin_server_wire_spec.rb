@@ -449,7 +449,7 @@ RSpec.describe "Built-in server dual port and reload WebSocket", :slow do
   def upgrade_status(port, path)
     sock = Socket.tcp("127.0.0.1", port, connect_timeout: 5)
     key = [SecureRandom.random_bytes(16)].pack("m0")
-    sock.write("GET #{path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
+    sock.write("GET #{path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
                "Sec-WebSocket-Key: #{key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
     return "" unless sock.wait_readable(5)
 

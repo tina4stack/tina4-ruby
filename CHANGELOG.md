@@ -8,6 +8,8 @@ https://tina4.com/ruby/36-releases
 
 ## 3.13.138
 
+HTTP clients strip configured-origin Authorization and Cookie credentials from off-origin initial targets across normal, upload, download and streaming paths. Forwarded Host and Proto require a trusted raw transport peer. Every development HTTP method uses the peer, Host and Origin boundary; resolved file paths and database identifiers are confined. Remote non-MCP development routes require the dedicated token while the accepted MCP transport API_KEY fallback remains supported. Development file readers validate and read one descriptor, preserving public in-project symlinks and existing size behavior. Database, MQTT and malformed Redis backplane diagnostics redact connection credentials; raw file responses preserve exact binary bytes.
+
 - Persist generated secrets, dashboard credentials, and RSA private keys with owner-only permissions; refuse symlink, hardlink, and non-regular targets before writing. Preserve the development in-memory secret when persistence fails.
 
 This release is available under MPL-2.0, with separate commercial terms available from Code Infinity. Copyright Code Infinity. Previously published releases retain their original licences.

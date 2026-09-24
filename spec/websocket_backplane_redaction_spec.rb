@@ -40,12 +40,12 @@ require "rbconfig"
 
 RSpec.describe "WebSocket backplane log redaction (real password Redis)" do
   let(:repository_root) { File.expand_path("..", __dir__) }
-  let(:auth_url) { ENV.fetch("TINA4_TEST_REDIS_AUTH_URL", "redis://:s3cret@127.0.0.1:6381/3") }
+  let(:auth_url) { "redis://:s3cret@127.0.0.1:6381/3" }
   let(:password) { URI.parse(auth_url).password.to_s }
 
   before do
-    skip "[needs:redis] password redis not set: TINA4_TEST_REDIS_AUTH_URL not set" if auth_url.empty?
-    skip "[needs:redis] password redis TINA4_TEST_REDIS_AUTH_URL has no password - not set" if password.empty?
+    skip "[needs:redis] password redis not set: authenticated Redis fixture not set" if auth_url.empty?
+    skip "[needs:redis] password redis authenticated Redis fixture has no password - not set" if password.empty?
   end
 
   # A same-shape URL whose password is wrong, so the failure path is exercised.
