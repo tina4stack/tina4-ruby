@@ -11,12 +11,15 @@ RSpec.describe "ADR-0060 Api streaming primitives" do
   # pick chunked vs Content-Length framing, plus an early-close mode for the
   # transport-drop case. Each request is captured for later inspection.
   class ApiStreamServer
-    attr_reader :port, :requests
+    attr_reader :port, :requests, :closed_connections
 
     def initialize
       @server = TCPServer.new("127.0.0.1", 0)
       @port = @server.addr[1]
       @requests = []
+      # One entry per /hold-for-close connection, pushed the moment the SERVER
+      # sees the client's side of the socket go away.
+      @closed_connections = Queue.new
       @running = true
       @thread = Thread.new { serve }
     end
@@ -101,6 +104,27 @@ RSpec.describe "ADR-0060 Api streaming primitives" do
         socket.write("5\r\nhello\r\n")
         socket.flush
         socket.close
+      when "/drip-forever"
+        # A healthy connection that never ends: a chunk every 50 ms. Only a
+        # TOTAL deadline stops it; a per-read idle timeout never fires.
+        socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+        loop do
+          socket.write("4\r\ndrip\r\n")
+          socket.flush
+          sleep 0.05
+        end
+      when "/hold-for-close"
+        # One chunk, then wait for the client. The client never sends another
+        # byte, so read returns only when the client closes its socket.
+        socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+        socket.write("5\r\nfirst\r\n")
+        socket.flush
+        begin
+          socket.read(1)
+        rescue Errno::ECONNRESET
+          nil
+        end
+        @closed_connections << :closed_by_client
       when "/echo-post"
         # Confirm stream_bytes actually POSTed our body — echo it back.
         chunked(socket, [@requests.last[:body]])
@@ -238,6 +262,132 @@ RSpec.describe "ADR-0060 Api streaming primitives" do
   it "stream-sse-retry-field-captured" do
     events = api.stream_sse("/sse-retry-field").to_a
     expect(events).to eq([{ data: "reconnect-me", retry: 5000 }])
+  end
+
+  # ── api-stream-timeouts-and-close ────────────────────────────────────────
+
+  # Run a stream on its own thread and report what it did within `limit`
+  # seconds: the exception it raised, :returned, or :still_streaming. A stream
+  # still running at the limit is killed, which unwinds it and closes its socket.
+  def stream_outcome_within(limit)
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    worker = Thread.new do
+      yield
+      :returned
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      e
+    end
+    worker.report_on_exception = false
+    outcome = worker.join(limit) ? worker.value : :still_streaming
+    worker.kill
+    [outcome, Process.clock_gettime(Process::CLOCK_MONOTONIC) - started]
+  end
+
+  def with_env(name, value)
+    previous = ENV[name]
+    ENV[name] = value
+    yield
+  ensure
+    ENV[name] = previous
+  end
+
+  # A REAL loopback listener that never completes a TCP handshake: it listens
+  # with a backlog of 0 and never accepts, and filler connections occupy the
+  # accept queue, so the kernel drops every further SYN. A connect to it stalls
+  # the way a connect to a dead host does.
+  def with_stalled_listener
+    listener = Socket.new(:INET, :STREAM)
+    listener.bind(Addrinfo.tcp("127.0.0.1", 0))
+    listener.listen(0)
+    address = listener.local_address
+    fillers = Array.new(8) do
+      filler = Socket.new(:INET, :STREAM)
+      begin
+        filler.connect_nonblock(address)
+      rescue IO::WaitWritable, Errno::EISCONN
+        nil
+      end
+      filler
+    end
+    # Precondition, proved rather than assumed: a fresh connect must NOT
+    # complete. If it does, this platform accepts past the backlog and the case
+    # below would prove nothing.
+    probe = Socket.new(:INET, :STREAM)
+    begin
+      probe.connect_nonblock(address)
+      raise "the stalled listener accepted a connection; the connect case cannot be staged here"
+    rescue IO::WaitWritable
+      _readable, writable, = IO.select(nil, [probe], nil, 0.5)
+      raise "the stalled listener completed a handshake; the connect case cannot be staged here" if writable
+    ensure
+      probe.close
+    end
+    yield address.ip_port
+  ensure
+    fillers&.each(&:close)
+    listener&.close
+  end
+
+  it "stream-connect-timeout-honoured" do
+    with_stalled_listener do |stalled_port|
+      stalled_api = Tina4::API.new("http://127.0.0.1:#{stalled_port}")
+
+      # Per call: connect_timeout bounds the handshake, well inside timeout.
+      outcome, elapsed = stream_outcome_within(5) do
+        stalled_api.stream_bytes("/never", connect_timeout: 0.2, timeout: 5) { |_chunk| nil }
+      end
+      expect(outcome).to be_a(Timeout::Error)
+      expect(elapsed).to be < 2.0
+
+      # From the environment: TINA4_API_CONNECT_TIMEOUT, no argument.
+      with_env("TINA4_API_CONNECT_TIMEOUT", "0.2") do
+        outcome, elapsed = stream_outcome_within(5) do
+          stalled_api.stream_bytes("/never") { |_chunk| nil }
+        end
+        expect(outcome).to be_a(Timeout::Error)
+        expect(elapsed).to be < 2.0
+      end
+    end
+  end
+
+  it "stream-total-timeout-honoured" do
+    # Per call: the connection is healthy and delivering data every 50 ms, so
+    # only a TOTAL deadline can end it.
+    outcome, elapsed = stream_outcome_within(5) do
+      api.stream_bytes("/drip-forever", timeout: 0.3, connect_timeout: 1.0) { |_chunk| nil }
+    end
+    expect(outcome).to be_a(Timeout::Error)
+    expect(outcome).to be_a(Tina4::APIStreamTimeoutError)
+    expect(elapsed).to be < 2.0
+
+    # From the environment: TINA4_API_TIMEOUT, no argument.
+    with_env("TINA4_API_TIMEOUT", "0.3") do
+      outcome, elapsed = stream_outcome_within(5) do
+        api.stream_lines("/drip-forever") { |_line| nil }
+      end
+      expect(outcome).to be_a(Timeout::Error)
+      expect(outcome).to be_a(Tina4::APIStreamTimeoutError)
+      expect(elapsed).to be < 2.0
+    end
+  end
+
+  it "stream-early-close-releases-socket" do
+    @server.closed_connections.clear
+
+    # Block form: break out after the first chunk.
+    first = nil
+    api.stream_bytes("/hold-for-close", timeout: 30) do |chunk|
+      first = chunk
+      break
+    end
+    expect(first).to eq("first")
+    # The SERVER sees the client's socket close. A leaked socket keeps the
+    # server's read blocked and this pop times out with nil.
+    expect(@server.closed_connections.pop(timeout: 2)).to eq(:closed_by_client)
+
+    # Enumerator form: #first stops the iteration before EOF.
+    expect(api.stream_bytes("/hold-for-close", timeout: 30).first).to eq("first")
+    expect(@server.closed_connections.pop(timeout: 2)).to eq(:closed_by_client)
   end
 
   # ── ai-chat-uses-api-stream-sse-under-the-hood ───────────────────────────
