@@ -538,11 +538,12 @@ module Tina4
     # Open the app in a browser only when ALL of these hold (ADR-0070):
     #   * development: TINA4_DEBUG is truthy - never production or Puma
     #   * TINA4_NO_BROWSER is not truthy (true/1/yes/on, trimmed, any case)
-    #   * --no-browser was not passed
+    #   * --no-browser was not passed, and no_browser: true was not given
     #   * no CI variable vetoes (see ci_run?)
     # open_browser used to check none of it, so every app.rb booted through
     # run! - and every spec that did so - popped a real tab.
-    def browser_launch_allowed?(argv: ARGV)
+    def browser_launch_allowed?(argv: ARGV, no_browser: false)
+      return false if no_browser
       return false unless Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
       return false if Tina4::Env.is_truthy(ENV["TINA4_NO_BROWSER"])
       return false if argv.include?("--no-browser")
@@ -562,8 +563,8 @@ module Tina4
 
     # TINA4_BROWSER_COMMAND names the launcher to run instead of the OS default
     # (open / start / xdg-open); it receives the URL as its only argument.
-    def open_browser(url)
-      return unless browser_launch_allowed?
+    def open_browser(url, no_browser: false)
+      return unless browser_launch_allowed?(no_browser: no_browser)
 
       require "rbconfig"
       command = ENV["TINA4_BROWSER_COMMAND"].to_s.strip
@@ -588,12 +589,15 @@ module Tina4
       Tina4::Frond.register_live_endpoint!
     end
 
-    def run!(root_dir = nil, port: nil, host: nil, debug: nil)
+    # no_browser: true keeps the browser shut (Python run(no_browser=True));
+    # false never forces one open (ADR-0070).
+    def run!(root_dir = nil, port: nil, host: nil, debug: nil, no_browser: false)
       # Handle legacy call: run!(port: 7147) where root_dir receives the hash
       if root_dir.is_a?(Hash)
         port ||= root_dir[:port]
         host ||= root_dir[:host]
         debug = root_dir[:debug] if debug.nil? && root_dir.key?(:debug)
+        no_browser ||= root_dir[:no_browser]
         root_dir = nil
       end
       root_dir ||= Dir.pwd
@@ -648,7 +652,7 @@ module Tina4
         return
       end
 
-      open_browser(url)
+      open_browser(url, no_browser: no_browser)
       server = Tina4::WebServer.new(app, host: host, port: port)
       server.start
     end
