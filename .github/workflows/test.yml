@@ -284,6 +284,20 @@ jobs:
           bash spec/support/mqtt-infra.sh "$RUNNER_TEMP/tina4-mqtt-infra"
           echo "TINA4_TEST_MQTT_CA_FILE=$RUNNER_TEMP/tina4-mqtt-infra/certs/ca.crt" >> "$GITHUB_ENV"
 
+      # TLS + AUTH mail servers for the Messenger transport specs
+      # (spec/mail_transport_spec.rb): GreenMail with a pre-registered account
+      # (SMTP AUTH 4025, SMTPS 4465, IMAP 4143, IMAPS 4993), Mailpit with STARTTLS
+      # required (4587, API 4825) and Dovecot with STARTTLS (4144), all on a CA the
+      # script generates. Tina4 speaks SMTP and IMAP with its own clients, so
+      # STARTTLS, implicit TLS, AUTH and certificate verification are proven on
+      # the wire here. The plain GreenMail service above stays for the IMAP shape
+      # specs. The script FAILS the job if a server never greets.
+      - name: Start TLS mail servers (GreenMail TLS + AUTH, Mailpit STARTTLS, Dovecot STARTTLS)
+        run: |
+          bash spec/support/mail-infra.sh "$RUNNER_TEMP/tina4-mail-infra"
+          echo "TINA4_TEST_MAIL_TLS_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "TINA4_TEST_MAIL_TLS_CA_FILE=$RUNNER_TEMP/tina4-mail-infra/certs/ca.crt" >> "$GITHUB_ENV"
+
       # Kafka in KRaft mode (single node, no ZooKeeper). GitHub service
       # containers can't express the KRaft listener config cleanly, so run it as
       # a plain container and FAIL the job if the broker never serves metadata.

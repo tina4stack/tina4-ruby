@@ -54,8 +54,8 @@ RSpec.describe Tina4::Push do
 
   it "generates VAPID keys and delivers to a real endpoint" do
     keys = described_class.generate_vapid_keys
-    expect(Base64.urlsafe_decode64(keys.fetch("publicKey"))).to have_attributes(bytesize: 65)
-    expect(Base64.urlsafe_decode64(keys.fetch("privateKey"))).to have_attributes(bytesize: 32)
+    expect(Tina4::Base64.urlsafe_decode64(keys.fetch("publicKey"))).to have_attributes(bytesize: 65)
+    expect(Tina4::Base64.urlsafe_decode64(keys.fetch("privateKey"))).to have_attributes(bytesize: 32)
 
     with_http_server do |url, request|
       result = described_class.new(subject: "mailto:test@tina4.com", public_key: keys["publicKey"], private_key: keys["privateKey"]).send(subscription("#{url}?status=201"), { "message" => "hello" })
@@ -76,8 +76,8 @@ RSpec.describe Tina4::Push do
     short_raw = 0
     iterations.times do
       keys = described_class.generate_vapid_keys
-      expect(Base64.urlsafe_decode64(keys.fetch("publicKey")).bytesize).to eq(65)
-      expect(Base64.urlsafe_decode64(keys.fetch("privateKey")).bytesize).to eq(32)
+      expect(Tina4::Base64.urlsafe_decode64(keys.fetch("publicKey")).bytesize).to eq(65)
+      expect(Tina4::Base64.urlsafe_decode64(keys.fetch("privateKey")).bytesize).to eq(32)
       short_raw += 1 if OpenSSL::PKey::EC.generate("prime256v1").private_key.to_s(2).bytesize < 32
     end
     expect(short_raw).to be > 0

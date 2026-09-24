@@ -2,7 +2,6 @@
 
 require "spec_helper"
 require "json"
-require "base64"
 
 RSpec.describe "form_token template function" do
   let(:engine) { Tina4::Frond.new(template_dir: SpecTmpdir.create) }
@@ -15,7 +14,7 @@ RSpec.describe "form_token template function" do
     payload_b64 = parts[1]
     remainder = payload_b64.length % 4
     payload_b64 += "=" * (4 - remainder) if remainder != 0
-    payload_json = Base64.decode64(payload_b64.tr("-_", "+/"))
+    payload_json = Tina4::Base64.decode64(payload_b64.tr("-_", "+/"))
     JSON.parse(payload_json)
   end
 

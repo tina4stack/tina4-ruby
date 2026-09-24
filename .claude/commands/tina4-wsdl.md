@@ -107,4 +107,4 @@ end
 - Use Ruby type annotations -- WSDL is auto-generated from them
 - GET returns the WSDL definition, POST processes SOAP requests
 - Use lifecycle hooks for logging, validation, and transformation
-- All XML parsing uses stdlib `REXML` -- zero dependencies
+- XML parsing uses Tina4's own `Tina4::WSDL::XmlParser` (UTF-8 only, no DTDs, so no entity expansion or XXE) -- no XML gem

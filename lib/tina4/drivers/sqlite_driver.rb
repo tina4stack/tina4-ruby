@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "schema_split"
+require_relative "../sqlite3_gem"
 
 module Tina4
   module Drivers
@@ -27,7 +28,7 @@ module Tina4
       # hang. Every other driver's bound lives in its own connect; this is the
       # one that has nothing to bind.
       def connect(connection_string, username: nil, password: nil)
-        require "sqlite3"
+        Tina4.require_sqlite3!
         db_path = self.class.resolve_path(connection_string)
 
         @connection = SQLite3::Database.new(db_path)

@@ -56,6 +56,18 @@ RSpec.describe Tina4::CLI do
         expect(File.exist?(File.join(project_dir, "app.rb"))).to be true
         expect(File.exist?(File.join(project_dir, "Gemfile"))).to be true
       end
+
+      # sqlite3 is an app dependency (ADR-0067), so the scaffold must declare it
+      # or a fresh project's default SQLite database cannot open. The gem is
+      # published as "tina4ruby"; the scaffold used to write "tina4-ruby", which
+      # does not exist on rubygems.org, so `bundle install` failed outright.
+      it "writes a Gemfile that bundles tina4ruby and sqlite3" do
+        Dir.chdir(tmpdir) { cli.run(["init", "testproject"]) }
+        gemfile = File.read(File.join(tmpdir, "testproject", "Gemfile"))
+        expect(gemfile).to match(/^gem "tina4ruby"/)
+        expect(gemfile).to match(/^gem "sqlite3"/)
+        expect(gemfile).not_to include("tina4-ruby")
+      end
     end
   end
 

@@ -6,7 +6,6 @@ require "tmpdir"
 require "fileutils"
 require "json"
 require "digest"
-require "base64"
 
 # Comprehensive smoke test for Tina4 Ruby framework.
 # Validates all key features work end-to-end using in-memory/temp resources.
@@ -624,7 +623,7 @@ RSpec.describe "Tina4 Smoke Test" do
   describe "WebSocket" do
     it "computes a valid accept key from client key + GUID" do
       client_key = "dGhlIHNhbXBsZSBub25jZQ=="
-      accept = Base64.strict_encode64(
+      accept = Tina4::Base64.strict_encode64(
         Digest::SHA1.digest("#{client_key}#{Tina4::WebSocket::GUID}")
       )
       # The accept key should be a non-empty Base64 string

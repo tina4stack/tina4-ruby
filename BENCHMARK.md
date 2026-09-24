@@ -146,6 +146,13 @@ Command: `gem install <gem> --install-dir ./h`, then `du -sh h/gems`.
    language where the zero-dependency promise does not hold, and the docs should not have
    said otherwise.
 
+   Update (September 2026): json, base64 and logger are gone (the stdlib has them or Tina4
+   owns the few lines), sqlite3 is an app dependency in the scaffold Gemfile (ADR-0067),
+   and net-smtp, net-imap and rexml are replaced by Tina4's own SMTP, IMAP and XML code.
+   The gemspec now declares only the Rack server stack: `rack`, `rackup`, `puma`,
+   `webrick`. `gem install tina4ruby --explain` lists 5 gems besides tina4ruby (those
+   four plus puma's nio4r), down from 15.
+
 Also worth knowing when you install: `gem install tina4` installs a 2-file alias gem. The
 framework itself is the `tina4ruby` gem that the alias depends on.
 

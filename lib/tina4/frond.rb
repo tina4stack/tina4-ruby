@@ -8,13 +8,14 @@
 
 require "json"
 require "digest"
-require "base64"
-require "cgi"
+require_relative "base64"
+require "cgi/escape"
 require "erb"
 require "uri"
 require "date"
 require "time"
 require "securerandom"
+require_relative "parse_json"
 
 module Tina4
   # Marker class for strings that should not be auto-escaped in Frond.
@@ -2860,17 +2861,17 @@ module Tina4
         # Infinity/NaN float, and the old `rescue v.to_s` answered that raise with
         # Ruby inspect output that no JSON.parse will read. See Frond.json_safe.
         "json_encode"   => ->(v, *_a) { Frond.json_safe(v) },
-        "json_decode"   => ->(v, *_a) { v.is_a?(String) ? (JSON.parse(v) rescue v) : v },
-        "base64_encode" => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
-        "base64encode"  => ->(v, *_a) { Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
-        "base64_decode" => ->(v, *_a) { Base64.decode64(v.to_s) },
-        "base64decode"  => ->(v, *_a) { Base64.decode64(v.to_s) },
+        "json_decode"   => ->(v, *_a) { v.is_a?(String) ? (Tina4.parse_json(v) rescue v) : v },
+        "base64_encode" => ->(v, *_a) { Tina4::Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
+        "base64encode"  => ->(v, *_a) { Tina4::Base64.strict_encode64(v.is_a?(String) ? v : v.to_s) },
+        "base64_decode" => ->(v, *_a) { Tina4::Base64.decode64(v.to_s) },
+        "base64decode"  => ->(v, *_a) { Tina4::Base64.decode64(v.to_s) },
         "data_uri" => ->(v, *_a) {
           if v.is_a?(Hash)
             ct = v[:type] || v["type"] || "application/octet-stream"
             raw = v[:content] || v["content"] || ""
             raw = raw.respond_to?(:read) ? raw.read : raw
-            "data:#{ct};base64,#{Base64.strict_encode64(raw.to_s)}"
+            "data:#{ct};base64,#{Tina4::Base64.strict_encode64(raw.to_s)}"
           else
             v.to_s
           end

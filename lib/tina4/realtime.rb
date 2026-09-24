@@ -3,7 +3,7 @@
 require "json"
 require "time"
 require "openssl"
-require "base64"
+require_relative "base64"
 
 require_relative "realtime/workspace"
 require_relative "realtime/channel"
@@ -14,6 +14,7 @@ require_relative "realtime/storage_backend"
 require_relative "realtime/local_storage"
 require_relative "realtime/s3_storage"
 require_relative "realtime/storage"
+require_relative "parse_json"
 
 module Tina4
   # Real-time collaboration mount for Tina4 (Ruby), parity with the Python
@@ -57,7 +58,7 @@ module Tina4
       if turn_url && !turn_url.empty? && secret && !secret.empty?
         ttl = (ENV["TINA4_RTC_TURN_TTL"] || "3600").to_i
         username = (Time.now.to_i + ttl).to_s
-        credential = Base64.strict_encode64(OpenSSL::HMAC.digest("SHA1", secret, username))
+        credential = Tina4::Base64.strict_encode64(OpenSSL::HMAC.digest("SHA1", secret, username))
         servers << { "urls" => split_urls(turn_url), "username" => username, "credential" => credential }
       end
       servers
@@ -312,7 +313,7 @@ module Tina4
     def parse_json(data)
       return data if data.is_a?(Hash)
 
-      JSON.parse(data.to_s)
+      Tina4.parse_json(data.to_s)
     rescue JSON::ParserError, TypeError
       nil
     end

@@ -23,6 +23,7 @@ require "socket"
 require "fileutils"
 require "open3"
 require "securerandom"
+require_relative "parse_json"
 
 module Tina4
   # ── JSON-RPC 2.0 codec ────────────────────────────────────────────
@@ -69,7 +70,7 @@ module Tina4
       case data
       when String
         begin
-          msg = JSON.parse(data)
+          msg = Tina4.parse_json(data)
         rescue JSON::ParserError => e
           raise ArgumentError, "Invalid JSON: #{e.message}"
         end
@@ -453,7 +454,7 @@ module Tina4
               raw_data
             else
               str = raw_data.to_s
-              str.empty? ? {} : (JSON.parse(str) rescue nil)
+              str.empty? ? {} : (Tina4.parse_json(str) rescue nil)
             end
       obj.is_a?(Hash) ? obj["method"] : nil
     end
@@ -828,7 +829,7 @@ module Tina4
       server.register_tool("database_query", lambda { |sql:, params: "[]"|
         db = Tina4.database
         return { "error" => "No database connection" } if db.nil?
-        param_list = params.is_a?(String) ? JSON.parse(params) : params
+        param_list = params.is_a?(String) ? Tina4.parse_json(params) : params
         param_list = [] unless param_list.is_a?(Array)
         # Defense-in-depth: this tool is read-only. Strip comments, reject
         # multiple statements, and require a leading SELECT/WITH so it can
@@ -851,7 +852,7 @@ module Tina4
       server.register_tool("database_execute", lambda { |sql:, params: "[]"|
         db = Tina4.database
         return { "error" => "No database connection" } if db.nil?
-        param_list = params.is_a?(String) ? JSON.parse(params) : params
+        param_list = params.is_a?(String) ? Tina4.parse_json(params) : params
         # db.execute() now RAISES on a SQL error (it no longer returns false).
         # Catch it and return a clean { error: } payload instead of letting the
         # exception escape the tool handler.
@@ -897,7 +898,7 @@ module Tina4
 
       server.register_tool("route_test", lambda { |method:, path:, body: "", headers: "{}"|
         client = Tina4::TestClient.new
-        header_hash = headers.is_a?(String) ? JSON.parse(headers) : headers
+        header_hash = headers.is_a?(String) ? Tina4.parse_json(headers) : headers
         m = method.upcase
         r = case m
             when "GET"    then client.get(path, headers: header_hash)
@@ -915,7 +916,7 @@ module Tina4
 
       # ── Template Tools ────────────────────────────────
       server.register_tool("template_render", lambda { |template:, data: "{}"|
-        ctx = data.is_a?(String) ? JSON.parse(data) : data
+        ctx = data.is_a?(String) ? Tina4.parse_json(data) : data
         # render_string is an INSTANCE method of Frond (Tina4::Template has none).
         # Mirrors Python tools.py: Frond("src/templates").render_string(...).
         Tina4::Frond.new(template_dir: "src/templates").render_string(template, ctx)
@@ -998,8 +999,8 @@ module Tina4
         target = safe_path.call("src/public/#{filename}")
         FileUtils.mkdir_p(File.dirname(target))
         if encoding == "base64"
-          require "base64"
-          File.binwrite(target, Base64.decode64(content))
+          require_relative "base64"
+          File.binwrite(target, Tina4::Base64.decode64(content))
         else
           File.write(target, content, encoding: "utf-8")
         end

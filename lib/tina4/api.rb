@@ -4,8 +4,9 @@ require "net/http"
 require "openssl"
 require "uri"
 require "json"
-require "base64"
+require_relative "base64"
 require "securerandom"
+require_relative "parse_json"
 
 module Tina4
   # Statuses that warrant an automatic retry when max_retries > 0: rate-limit
@@ -277,7 +278,7 @@ module Tina4
     end
 
     def set_basic_auth(username, password)
-      @headers["Authorization"] = "Basic #{Base64.strict_encode64("#{username}:#{password}")}"
+      @headers["Authorization"] = "Basic #{Tina4::Base64.strict_encode64("#{username}:#{password}")}"
       self
     end
 
@@ -821,7 +822,7 @@ module Tina4
     end
 
     def json
-      @json ||= JSON.parse(@body)
+      @json ||= Tina4.parse_json(@body)
     rescue JSON::ParserError, TypeError
       {}
     end

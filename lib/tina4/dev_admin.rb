@@ -10,6 +10,7 @@ require "shellwords"
 require "rbconfig" # RbConfig.ruby for scaffold_run's Open3.capture3 call to exe/tina4ruby
 require "open3"    # scaffold_run shells to exe/tina4ruby generate <kind> <name>
 require_relative "metrics"
+require_relative "parse_json"
 
 module Tina4
   # Thread-safe in-memory message log for dev dashboard
@@ -834,7 +835,7 @@ module Tina4
         input.rewind if input.respond_to?(:rewind)
         raw = input.read
         return nil if raw.nil? || raw.empty?
-        JSON.parse(raw) rescue nil
+        Tina4.parse_json(raw) rescue nil
       end
 
       def json_response(data, status = 200)
@@ -869,7 +870,7 @@ module Tina4
             return { current: current, latest: nil,
                      error: "RubyGems answered #{resp.code}" }
           end
-          latest = JSON.parse(resp.body)["version"]
+          latest = Tina4.parse_json(resp.body)["version"]
           # Reaching RubyGems is not the same as learning the version: an
           # answer with none in it is the same lie by another route.
           if latest.nil? || latest.to_s.empty?
@@ -1915,7 +1916,7 @@ module Tina4
           http.read_timeout = 8
           resp = http.request(Net::HTTP::Get.new(uri))
           if resp.is_a?(Net::HTTPSuccess)
-            gems = JSON.parse(resp.body)
+            gems = Tina4.parse_json(resp.body)
             results = gems.first(20).map do |g|
               { name: g["name"], version: g["version"], info: g["info"].to_s[0, 200] }
             end
@@ -2143,7 +2144,7 @@ module Tina4
         })
         raw = server.handle_message(payload)
         return {} if raw.nil? || raw.empty?
-        JSON.parse(raw)
+        Tina4.parse_json(raw)
       end
 
       # Native MCP JSON-RPC endpoint (POST /__dev/mcp[/message]). Real MCP

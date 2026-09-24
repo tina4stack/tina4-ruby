@@ -2,11 +2,6 @@
 source "https://rubygems.org"
 gemspec name: "tina4ruby"
 
-gem "net-smtp", "~> 0.5.1"
-
-gem "net-imap", "~> 0.6.3"
-gem "net-pop", "~> 0.1.2"
-
 # Optional service-client gems for the live cross-engine / cross-service test
 # suite (#262). mysql2 + tiny_tds compile native extensions against system
 # client libraries (libmysqlclient, FreeTDS); redis is the RESP client the

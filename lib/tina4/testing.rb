@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require "json"
 require "stringio"
+require_relative "parse_json"
 
 module Tina4
   module Testing
@@ -281,7 +282,7 @@ module Tina4
       end
 
       def assert_json(response_body)
-        JSON.parse(response_body)
+        Tina4.parse_json(response_body)
       rescue JSON::ParserError => e
         raise TestFailure, "Invalid JSON: #{e.message}"
       end

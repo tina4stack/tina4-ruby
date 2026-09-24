@@ -18,6 +18,7 @@
 require "net/http"
 require "json"
 require "uri"
+require_relative "../parse_json"
 
 module Tina4
   module Drivers
@@ -221,7 +222,7 @@ module Tina4
       end
 
       def parse_response(response)
-        parsed = response.body && !response.body.empty? ? JSON.parse(response.body) : {}
+        parsed = response.body && !response.body.empty? ? Tina4.parse_json(response.body) : {}
         code = response.code.to_i
         if code >= 400 || parsed["error"] == true
           message = parsed["errorMessage"] || parsed["error"] || "HTTP #{response.code}"

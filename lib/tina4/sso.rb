@@ -1,12 +1,13 @@
 # frozen_string_literal: true
 
-require "base64"
+require_relative "base64"
 require "digest"
 require "json"
 require "net/http"
 require "openssl"
 require "securerandom"
 require "uri"
+require_relative "parse_json"
 
 module Tina4
   class SsoError < StandardError; end
@@ -42,7 +43,7 @@ module Tina4
 
     def json_env(name, fallback)
       raw = ENV[name]
-      raw.nil? || raw.empty? ? fallback : JSON.parse(raw)
+      raw.nil? || raw.empty? ? fallback : Tina4.parse_json(raw)
     rescue JSON::ParserError => e
       raise SsoError, "#{name} must be valid JSON", cause: e
     end
@@ -83,7 +84,7 @@ module Tina4
       http.read_timeout = 10
       response = http.request(request)
       raise SsoError, "OIDC provider request failed" unless response.is_a?(Net::HTTPSuccess)
-      result = JSON.parse(response.body)
+      result = Tina4.parse_json(response.body)
       raise SsoError, "OIDC provider returned a non-object response" unless result.is_a?(Hash)
       result
     rescue JSON::ParserError, IOError, SystemCallError, Timeout::Error => e
@@ -119,7 +120,7 @@ module Tina4
       state = SecureRandom.urlsafe_base64(32)
       nonce = SecureRandom.urlsafe_base64(32)
       verifier = SecureRandom.urlsafe_base64(64)
-      challenge = Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false)
+      challenge = Tina4::Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false)
       current.set(PENDING_KEY, {
                     "state" => state, "nonce" => nonce, "verifier" => verifier,
                     "return_to" => self.class.safe_return(return_to), "created_at" => Time.now.to_i
@@ -140,7 +141,7 @@ module Tina4
 
     def self.jwt_payload(token)
       part = token.split(".")[1].to_s
-      JSON.parse(Base64.urlsafe_decode64(part.ljust((part.length + 3) / 4 * 4, "=")))
+      Tina4.parse_json(Tina4::Base64.urlsafe_decode64(part.ljust((part.length + 3) / 4 * 4, "=")))
     rescue JSON::ParserError, ArgumentError
       raise SsoError, "provider returned an invalid ID token"
     end

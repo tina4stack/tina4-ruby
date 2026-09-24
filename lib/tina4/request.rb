@@ -3,6 +3,7 @@ require "uri"
 require "json"
 require "ipaddr"
 require "stringio"
+require_relative "parse_json"
 
 module Tina4
   # A Hash subclass that supports indifferent access (both string and symbol keys).
@@ -395,7 +396,7 @@ module Tina4
 
     def json_body
       @json_body ||= begin
-        JSON.parse(body_raw)
+        Tina4.parse_json(body_raw)
       rescue JSON::ParserError, TypeError
         {}
       end
@@ -521,7 +522,7 @@ module Tina4
         # NOT delegating to #json_body: that method keeps its own documented
         # always-a-Hash, {}-on-failure contract for direct callers.
         begin
-          JSON.parse(body_raw)
+          Tina4.parse_json(body_raw)
         rescue JSON::ParserError, TypeError
           body_raw
         end

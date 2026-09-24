@@ -4,6 +4,7 @@ require "securerandom"
 require "time"
 require "uri"
 require "cgi"
+require_relative "parse_json"
 
 module Tina4
   # Middleware wrapper that tags requests arriving on the AI dev port.
@@ -1316,7 +1317,7 @@ module Tina4
 
       if content_type.include?("application/json")
         begin
-          parsed = JSON.parse(body_str)
+          parsed = Tina4.parse_json(body_str)
           return parsed["formToken"] if parsed.is_a?(Hash) && parsed["formToken"]
         rescue JSON::ParserError
           # Not valid JSON — fall through

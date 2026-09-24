@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../parse_json"
+
 module Tina4
   module QueueBackends
     class RabbitmqBackend
@@ -62,7 +64,7 @@ module Tina4
         delivery_info, _properties, payload = queue.pop(manual_ack: true)
         return nil unless payload
 
-        data = JSON.parse(payload)
+        data = Tina4.parse_json(payload)
         # attempts and error MUST be carried back. Rebuilding the Job from
         # topic/payload/id alone reset attempts to 0 on every redelivery, so
         # fail()'s attempts >= max_retries check could never trip and a poison
@@ -282,7 +284,7 @@ module Tina4
           _info, _props, payload = queue.pop(manual_ack: false)
           break unless payload
 
-          out << JSON.parse(payload)
+          out << Tina4.parse_json(payload)
         end
         out.each { |data| publish_to(name, data) }
         out

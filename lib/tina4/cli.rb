@@ -8,6 +8,7 @@ require "tmpdir"    # Dir.mktmpdir — used by the ADR-0063 sandbox edit-hint sc
 require "stringio"  # StringIO — captures generator stdout during the sandbox run
 require "open3"     # Open3.capture2e — captures `ruby -c` output+status for `lint`
 require_relative "port_takeover"
+require_relative "env"       # Tina4::Env.is_truthy -- resolve_config runs before lib/tina4 loads
 
 module Tina4
   class CLI
@@ -3806,7 +3807,7 @@ module Tina4
         # loopback, not 0.0.0.0. Only the DEFAULT changes: production
         # (TINA4_DEBUG off) keeps 0.0.0.0, and a developer who WANTS network
         # exposure sets TINA4_HOST=0.0.0.0 to override deliberately.
-        Tina4.truthy?(ENV["TINA4_DEBUG"]) ? "127.0.0.1" : DEFAULT_HOST
+        Tina4::Env.is_truthy(ENV["TINA4_DEBUG"]) ? "127.0.0.1" : DEFAULT_HOST
       end
     end
 
@@ -3875,9 +3876,18 @@ module Tina4
 
       # Gemfile
       unless File.exist?(File.join(dir, "Gemfile"))
+        # Same Gemfile `tina4 init ruby` writes. The gem is published as
+        # "tina4ruby" ("tina4-ruby" does not exist, so bundle install failed),
+        # and sqlite3 is an app dependency (ADR-0067): tina4ruby loads it lazily
+        # for the default SQLite database but never declares it.
         File.write(File.join(dir, "Gemfile"), <<~RUBY)
           source "https://rubygems.org"
-          gem "tina4-ruby", "~> 3.0"
+
+          gem "tina4ruby", "~> 3.0"
+
+          # SQLite driver for the default database (TINA4_DATABASE_URL=sqlite:...).
+          # tina4ruby loads it lazily; it is an app dependency, like pg or mysql2.
+          gem "sqlite3"
         RUBY
       end
 

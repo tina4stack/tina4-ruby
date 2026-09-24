@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 require "openssl"
-require "base64"
+require_relative "base64"
 require "json"
 require "fileutils"
 require "securerandom"
+require_relative "parse_json"
 
 module Tina4
   module Auth
@@ -139,7 +140,7 @@ module Tina4
 
       # Base64url-encode without padding (JWT spec)
       def base64url_encode(data)
-        Base64.urlsafe_encode64(data, padding: false)
+        Tina4::Base64.urlsafe_encode64(data, padding: false)
       end
 
       # Base64url-decode (handles missing padding)
@@ -147,7 +148,7 @@ module Tina4
         # Add back padding
         remainder = str.length % 4
         str += "=" * ((4 - remainder) % 4) if remainder != 0
-        Base64.urlsafe_decode64(str)
+        Tina4::Base64.urlsafe_decode64(str)
       end
 
       # Pick the JWT algorithm: explicit argument, else TINA4_JWT_ALGORITHM, else
@@ -200,10 +201,10 @@ module Tina4
       def decode_envelope(token, algorithm)
         parts = token.to_s.split(".")
         return nil unless parts.length == 3
-        return nil unless JSON.parse(base64url_decode(parts[0]))["alg"] == algorithm
+        return nil unless Tina4.parse_json(base64url_decode(parts[0]))["alg"] == algorithm
         return nil unless yield("#{parts[0]}.#{parts[1]}", base64url_decode(parts[2]))
 
-        payload = JSON.parse(base64url_decode(parts[1]))
+        payload = Tina4.parse_json(base64url_decode(parts[1]))
         now = Time.now.to_i
 
         # RFC 7519 s4.1.4: "The processing of the 'exp' claim requires that the
@@ -361,7 +362,7 @@ module Tina4
         return nil unless parts.length == 3
 
         payload_json = base64url_decode(parts[1])
-        JSON.parse(payload_json)
+        Tina4.parse_json(payload_json)
       rescue ArgumentError, JSON::ParserError
         nil
       end
