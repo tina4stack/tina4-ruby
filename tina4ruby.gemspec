@@ -42,11 +42,12 @@ Gem::Specification.new do |spec|
   #           its own files. (It was declared when log.rb used ::Logger.)
   #   ostruct never required by tina4. (A scaffold may still need it if the app
   #           pulls in oj, which does declare it.)
-  # sqlite3 is a runtime dependency because Tina4 Ruby promises "SQLite
-  # works out of the box with zero configuration" (see Chapter 5 of the
-  # book). Without this, `tina4 init ruby && tina4 serve` crashes on
-  # first run with LoadError — see tina4-book#100.
-  spec.add_dependency "sqlite3", "~> 2.0"
+  # sqlite3 is an APPLICATION dependency (ADR-0067), exactly like pg and mysql2:
+  # tina4ruby requires it lazily through Tina4.require_sqlite3!
+  # (lib/tina4/sqlite3_gem.rb), which raises an actionable LoadError naming the
+  # fix when it is missing. "SQLite works out of the box" still holds because
+  # `tina4 init ruby` writes gem "sqlite3" into the new project's Gemfile
+  # (tina4-book#100). It stays a development dependency for this repo's suite.
 
   # Graph databases (Feature 139) — NO runtime gem is added for them:
   #   * Ultipa uses the OPTIONAL, separately-published `tina4-ultipa` gem,
@@ -65,6 +66,7 @@ Gem::Specification.new do |spec|
   # All three are REAL drivers proven live (no mocks); bolt + arango add zero
   # third-party dependencies, keeping the framework core zero-dependency.
 
+  spec.add_development_dependency "sqlite3", "~> 2.0"
   spec.add_development_dependency "listen", "~> 3.8"
   # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
   # it lazily, exactly like pg. It is a development/optional dependency only so

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../sqlite3_gem"
+
 module Tina4
   module Adapters
     class Sqlite3Adapter
@@ -13,7 +15,7 @@ module Tina4
       end
 
       def connect(connection_string)
-        require "sqlite3"
+        Tina4.require_sqlite3!
         @db_path = self.class.resolve_path(connection_string)
         @connection = SQLite3::Database.new(@db_path)
         @connection.results_as_hash = true

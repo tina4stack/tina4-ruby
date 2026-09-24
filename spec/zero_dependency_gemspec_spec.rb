@@ -11,7 +11,7 @@ RSpec.describe "zero-dependency gemspec" do
   # A `let`, not a bare constant: a constant declared inside an RSpec.describe
   # lands on Object and leaks across spec files.
   let(:baseline) do
-    %w[rack rackup puma net-smtp net-imap rexml webrick sqlite3]
+    %w[rack rackup puma net-smtp net-imap rexml webrick]
   end
 
   # Gems Ruby itself provides, or that Tina4 replaced with its own code. None
@@ -19,7 +19,8 @@ RSpec.describe "zero-dependency gemspec" do
   #   json            default gem on every supported Ruby
   #   base64          replaced by Tina4::Base64 (core Array#pack)
   #   logger          never required: Tina4::Log writes its own files
-  let(:replaced) { %w[json base64 logger] }
+  #   sqlite3         an APP dependency (ADR-0067): the scaffold Gemfile declares it
+  let(:replaced) { %w[json base64 logger sqlite3] }
 
   it "declares no runtime gem outside the pinned baseline" do
     gemspec = Gem::Specification.load(File.expand_path("../tina4ruby.gemspec", __dir__))

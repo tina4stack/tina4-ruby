@@ -47,6 +47,7 @@ require "json"
 require "time"
 require "securerandom"
 require "delegate"
+require_relative "sqlite3_gem"
 
 module Tina4
   module DocStore
@@ -813,7 +814,7 @@ module Tina4
 
       def initialize(path = nil)
         @path = path || ENV["TINA4_DOC_STORE_PATH"] || "data/tina4_docstore.db"
-        require "sqlite3"
+        Tina4.require_sqlite3!
         if @path != ":memory:"
           dir = File.dirname(@path)
           require "fileutils"

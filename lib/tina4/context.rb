@@ -6,9 +6,10 @@
 #
 # Lets a Tina4 app ground its own AI assistant on its own source, offline: it
 # walks the project, chunks code on def/class/module boundaries and docs as
-# prose, and answers keyword/fuzzy queries over a SQLite FTS5 index. The
-# sqlite3 gem is already a Tina4-Ruby runtime dependency and modern SQLite ships
-# FTS5 + bm25() built in, so this adds NO new dependency.
+# prose, and answers keyword/fuzzy queries over a SQLite FTS5 index. It uses the
+# sqlite3 gem the APP declares (the `tina4 init ruby` Gemfile carries it; tina4ruby
+# itself does not, ADR-0067) and modern SQLite ships FTS5 + bm25() built in, so
+# this adds NO dependency. Without the gem the index reports itself unavailable.
 #
 # The retrieval core is a thin port of tina4-python's tina4_python/context
 # (itself the proven slice of neemee: SqliteFTS + the stable
@@ -29,6 +30,7 @@ require "pathname"
 require "fileutils"
 require "set"
 require_relative "context/chunker"
+require_relative "sqlite3_gem"
 
 module Tina4
   class Context
@@ -70,7 +72,7 @@ module Tina4
       @available = !!check.call
       return unless @available
 
-      require "sqlite3"
+      Tina4.require_sqlite3!
       parent = File.dirname(@path)
       FileUtils.mkdir_p(parent) unless parent.empty? || parent == "." || File.directory?(parent)
       # One connection guarded by a Mutex — the dev-MCP reload hook may run on a
@@ -82,7 +84,7 @@ module Tina4
     # ── FTS5 availability ───────────────────────────────────────
     # Whether this Ruby's sqlite3 build supports FTS5 (a real in-memory probe).
     def self.fts5_available?
-      require "sqlite3"
+      Tina4.require_sqlite3!
       db = SQLite3::Database.new(":memory:")
       begin
         db.execute("CREATE VIRTUAL TABLE _probe USING fts5(x)")

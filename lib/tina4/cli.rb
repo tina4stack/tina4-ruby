@@ -3876,9 +3876,18 @@ module Tina4
 
       # Gemfile
       unless File.exist?(File.join(dir, "Gemfile"))
+        # Same Gemfile `tina4 init ruby` writes. The gem is published as
+        # "tina4ruby" ("tina4-ruby" does not exist, so bundle install failed),
+        # and sqlite3 is an app dependency (ADR-0067): tina4ruby loads it lazily
+        # for the default SQLite database but never declares it.
         File.write(File.join(dir, "Gemfile"), <<~RUBY)
           source "https://rubygems.org"
-          gem "tina4-ruby", "~> 3.0"
+
+          gem "tina4ruby", "~> 3.0"
+
+          # SQLite driver for the default database (TINA4_DATABASE_URL=sqlite:...).
+          # tina4ruby loads it lazily; it is an app dependency, like pg or mysql2.
+          gem "sqlite3"
         RUBY
       end
 

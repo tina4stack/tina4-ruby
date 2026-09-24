@@ -16,8 +16,8 @@ and is not touched here.
 - [x] Step 2b: every `Base64.*` call replaced by `Tina4::Base64` on `pack("m")`, `base64` gem dropped
 - [x] Step 2c: `logger` declaration dropped (nothing requires it); boot + log proven on Ruby 4.0 under Bundler
 - [x] Step 2d: `require "cgi"` (removed library on Ruby 4.0, warns every boot) -> `cgi/escape` in files this branch owns
-- [ ] Step 3a: sqlite3 required lazily everywhere with one actionable error
-- [ ] Step 3b: sqlite3 moved from runtime to development dependency
+- [x] Step 3a: sqlite3 required lazily everywhere with one actionable error
+- [x] Step 3b: sqlite3 moved from runtime to development dependency
 - [ ] Step 3c: tina4 CLI `init ruby` / upgrade paths write `gem "sqlite3"` (separate PR, tina4 repo)
 - [ ] Step 3d: proof: fresh `tina4 init ruby` + serve works; project without sqlite3 gets the actionable error
 - [ ] Step 4a: own SMTP client (plain, STARTTLS, implicit TLS on 465, AUTH PLAIN/LOGIN)
@@ -38,12 +38,13 @@ and is not touched here.
 ## Tests (written first, real, no mocks, positive + negative)
 - [x] `Tina4::Base64` byte-for-byte equal to the gem for strict/urlsafe/MIME encode and decode, strict decode raises
 - [x] zero_dependency_gemspec_spec: baseline shrinks to the web stack (red before gemspec edit)
-- [ ] sqlite3 missing -> actionable LoadError (real subprocess with sqlite3 hidden from the load path)
+- [x] sqlite3 missing -> actionable LoadError (real subprocess with sqlite3 hidden from the load path)
 - [ ] SMTP: plain, STARTTLS, implicit TLS, AUTH PLAIN, AUTH LOGIN, bad password, STARTTLS not offered (real servers)
 - [ ] IMAP: every existing GreenMail example on the new client; STARTTLS and implicit TLS against real servers
 - [ ] WSDL: UTF-16 DOCTYPE body rejected; entities/CDATA decoded; malformed rejected
 
 ## Bugs
+- [x] `tina4ruby init` wrote gem "tina4-ruby" (not a published gem) into the Gemfile -- fixed with the sqlite3 scaffold change
 - [x] bare `tina4ruby serve` raised NoMethodError (Tina4.truthy? before lib/tina4 loads) -- found by the step-2 boot proof
 - [ ] Ruby SMTP on port 465 attempted STARTTLS (Python/PHP use implicit TLS)
 - [ ] Ruby IMAP `starttls` opened implicit TLS instead of STARTTLS
@@ -51,5 +52,6 @@ and is not touched here.
 
 ## Commits
 - 1d7df9d  fix(cli): bare `tina4ruby serve` no longer crashes resolving the default host
+- 62de235  build(deps): drop json, base64 and logger -- Ruby ships or Tina4 replaces them
 
 ## Status: In Progress
