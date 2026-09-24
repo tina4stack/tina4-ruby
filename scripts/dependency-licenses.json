@@ -1,0 +1,663 @@
+{
+  "schema": 1,
+  "scope": "Resolved development and optional dependencies; not a bundled-code licence grant",
+  "components": [
+    {
+      "ecosystem": "gem",
+      "name": "tina4ruby",
+      "version": "3.13.138",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MPL-2.0",
+      "evidence": "tina4ruby.gemspec"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "amq-protocol",
+      "version": "2.9.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/amq-protocol/versions/2.9.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "base64",
+      "version": "0.3.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Ruby; BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/base64/versions/0.3.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "bigdecimal",
+      "version": "4.1.3",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Ruby; BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/bigdecimal/versions/4.1.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "bson",
+      "version": "5.2.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "https://rubygems.org/api/v2/rubygems/bson/versions/5.2.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "bunny",
+      "version": "2.24.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/bunny/versions/2.24.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "aarch64-linux",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "aarch64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "arm-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "arm64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "x86_64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "x86_64-linux",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "commonmarker",
+      "version": "2.10.0",
+      "platform": "x86_64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/commonmarker/versions/2.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "connection_pool",
+      "version": "3.0.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/connection_pool/versions/3.0.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "diff-lcs",
+      "version": "1.6.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT; Artistic-1.0-Perl; GPL-2.0-or-later",
+      "evidence": "https://rubygems.org/api/v2/rubygems/diff-lcs/versions/1.6.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "erubi",
+      "version": "1.13.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/erubi/versions/1.13.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "fb",
+      "version": "0.10.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/fb/versions/0.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "aarch64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "aarch64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "arm-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "arm64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "x86_64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "x86_64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ffi",
+      "version": "1.17.4",
+      "platform": "x86_64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/ffi/versions/1.17.4.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "http-2",
+      "version": "1.2.3",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/http-2/versions/1.2.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "json",
+      "version": "3.0.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Ruby",
+      "evidence": "https://rubygems.org/api/v2/rubygems/json/versions/3.0.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "listen",
+      "version": "3.10.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/listen/versions/3.10.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "logger",
+      "version": "1.7.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Ruby; BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/logger/versions/1.7.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "mini_portile2",
+      "version": "2.8.9",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/mini_portile2/versions/2.8.9.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "mongo",
+      "version": "2.26.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Apache-2.0",
+      "evidence": "https://rubygems.org/api/v2/rubygems/mongo/versions/2.26.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "mysql2",
+      "version": "0.5.7",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/mysql2/versions/0.5.7.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "nio4r",
+      "version": "2.7.5",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT; BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/nio4r/versions/2.7.5.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "openapi3_parser",
+      "version": "0.10.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/openapi3_parser/versions/0.10.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "aarch64-linux",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "aarch64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "arm64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "x86_64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "x86_64-linux",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "pg",
+      "version": "1.6.3",
+      "platform": "x86_64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/pg/versions/1.6.3.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "puma",
+      "version": "6.6.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/puma/versions/6.6.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rake",
+      "version": "13.4.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rake/versions/13.4.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rb-fsevent",
+      "version": "0.11.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rb-fsevent/versions/0.11.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rb-inotify",
+      "version": "0.11.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rb-inotify/versions/0.11.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rbtree",
+      "version": "0.4.7",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rbtree/versions/0.4.7.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rdkafka",
+      "version": "0.29.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rdkafka/versions/0.29.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rdkafka",
+      "version": "0.29.2",
+      "platform": "aarch64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rdkafka/versions/0.29.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rdkafka",
+      "version": "0.29.2",
+      "platform": "aarch64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rdkafka/versions/0.29.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rdkafka",
+      "version": "0.29.2",
+      "platform": "arm64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rdkafka/versions/0.29.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rdkafka",
+      "version": "0.29.2",
+      "platform": "x86_64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rdkafka/versions/0.29.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rdkafka",
+      "version": "0.29.2",
+      "platform": "x86_64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rdkafka/versions/0.29.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "redis",
+      "version": "5.4.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/redis/versions/5.4.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "redis-client",
+      "version": "0.30.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/redis-client/versions/0.30.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rspec",
+      "version": "3.13.2",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rspec/versions/3.13.2.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rspec-core",
+      "version": "3.13.6",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rspec-core/versions/3.13.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rspec-expectations",
+      "version": "3.13.5",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rspec-expectations/versions/3.13.5.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rspec-mocks",
+      "version": "3.13.8",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rspec-mocks/versions/3.13.8.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "rspec-support",
+      "version": "3.13.7",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/rspec-support/versions/3.13.7.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "ruby-odbc",
+      "version": "0.999993",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "Ruby/ODBC is copyrighted free software by Christian Werner chw at ch-werner.de\nYou can redistribute it and/or modify it under either the terms of the GPL\n(see the file GPL), or the conditions below:\n\n  1. You may make and give away verbatim copies of the source form of the\n     software without restriction, provided that you duplicate all of the\n     original copyright notices and associated disclaimers.\n\n  2. You may modify your copy of the software in any way, provided that\n     you do at least ONE of the following:\n\n       a) place your modifications in the Public Domain or otherwise\n          make them Freely Available, such as by posting said\n\t  modifications to Usenet or an equivalent medium, or by allowing\n\t  the author to include your modifications in the software.\n\n       b) use the modified software only within your corporation or\n          organization.\n\n       c) give non-standard binaries non-standard names, with\n          instructions on where to get the original software distribution.\n\n       d) make other distribution arrangements with the author.\n\n  3. You may distribute the software in object code or binary form,\n     provided that you do at least ONE of the following:\n\n       a) distribute the binaries and library files of the software,\n\t  together with instructions (in the manual page or equivalent)\n\t  on where to get the original distribution.\n\n       b) accompany the distribution with the machine-readable source of\n\t  the software.\n\n       c) give non-standard binaries non-standard names, with\n          instructions on where to get the original software distribution.\n\n       d) make other distribution arrangements with the author.\n\n  4. You may modify and include the part of the software into any other\n     software (possibly commercial).\n\n  5. The scripts and library files supplied as input to or produced as \n     output from the software do not automatically fall under the\n     copyright of the software, but belong to whomever generated them, \n     and may be sold commercially, and may be aggregated with this\n     software.\n\n  6. THIS SOFTWARE IS PROVIDED \"AS IS\" AND WITHOUT ANY EXPRESS OR\n     IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED\n     WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR\n     PURPOSE.",
+      "evidence": "https://rubygems.org/downloads/ruby-odbc-0.999993.gem (COPYING)"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sorted_set",
+      "version": "1.1.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-2-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sorted_set/versions/1.1.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "aarch64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "aarch64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "arm-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "arm64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "x86_64-darwin",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "x86_64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "sqlite3",
+      "version": "2.9.6",
+      "platform": "x86_64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "BSD-3-Clause",
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "tina4-ultipa",
+      "version": "0.2.1",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/tina4-ultipa/versions/0.2.1.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "tiny_tds",
+      "version": "3.4.0",
+      "platform": "",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/tiny_tds/versions/3.4.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "tiny_tds",
+      "version": "3.4.0",
+      "platform": "aarch64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/tiny_tds/versions/3.4.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "tiny_tds",
+      "version": "3.4.0",
+      "platform": "aarch64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/tiny_tds/versions/3.4.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "tiny_tds",
+      "version": "3.4.0",
+      "platform": "x86_64-linux-gnu",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/tiny_tds/versions/3.4.0.json"
+    },
+    {
+      "ecosystem": "gem",
+      "name": "tiny_tds",
+      "version": "3.4.0",
+      "platform": "x86_64-linux-musl",
+      "lock_license": "NOASSERTION",
+      "upstream_declaration": "MIT",
+      "evidence": "https://rubygems.org/api/v2/rubygems/tiny_tds/versions/3.4.0.json"
+    }
+  ]
+}

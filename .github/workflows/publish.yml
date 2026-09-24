@@ -28,6 +28,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
+      - name: Check inbound dependency licence policy
+        run: |
+          ruby -e 'core = Gem::Specification.load("tina4ruby.gemspec"); shim = Gem::Specification.load("tina4.gemspec"); abort "Core runtime dependencies violate zero-dependency contract" unless core && core.runtime_dependencies.empty?; abort "Unexpected transitional package dependency" unless shim && shim.runtime_dependencies.map { |d| [d.name, d.requirement.to_s] } == [["tina4ruby", "~> 3.0"]]'
+          python3 scripts/check_dependency_licenses.py
+          python3 -m unittest discover -s scripts -p test_dependency_licenses.py
       - name: Build release packages and integrity evidence
         run: |
           version=$(ruby -Ilib -e 'require "tina4/version"; print Tina4::VERSION')

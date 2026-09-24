@@ -19,7 +19,7 @@ Gem::Specification.new do |spec|
   spec.license = "MPL-2.0"
   spec.required_ruby_version = ">= 3.1.0"
   spec.metadata["homepage_uri"] = spec.homepage
-  spec.files = ["lib/tina4ruby.rb", "lib/tina4/version.rb"]
+  spec.files = ["lib/tina4ruby.rb", "lib/tina4/version.rb", "LICENSE", "LICENSE.txt", "NOTICE", "COMMERCIAL-LICENSE.md"]
   spec.require_paths = ["lib"]
   spec.add_dependency "tina4ruby", "~> 3.0"
   spec.post_install_message = "NOTE: The 'tina4' gem has been renamed to 'tina4ruby'. Please update your Gemfile: gem 'tina4ruby'"
