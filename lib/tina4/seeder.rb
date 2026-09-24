@@ -856,10 +856,10 @@ module Tina4
         db = ref_class.get_db
         next unless db
 
-        pk = ref_class.primary_key_field || :id
-        rows = db.fetch("SELECT #{pk} FROM #{ref_class.table_name}", [], limit: 100_000)
+        pk_column = ref_class.get_db_column(ref_class.primary_key_field || :id)
+        rows = db.fetch("SELECT #{pk_column} FROM #{ref_class.table_name}", [], limit: 100_000)
         list = rows.respond_to?(:to_a) ? rows.to_a : Array(rows)
-        values = list.map { |r| r[pk] || r[pk.to_s] }.compact
+        values = list.map { |r| r[pk_column] || r[pk_column.to_s] }.compact
         pools[name] = values unless values.empty?
       rescue => e
         Tina4::Log.warning("Seeder: could not resolve FK pool for #{name}: #{e.message}")

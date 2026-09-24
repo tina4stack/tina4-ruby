@@ -207,7 +207,7 @@ RSpec.describe "Seeder + fake-data cross-engine contract (feature 28)" do
   end
 
   it "seed_table_inserts_on_every_engine (firebird)" do
-    skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if SDRC_FIREBIRD_URL.nil? || SDRC_FIREBIRD_URL.empty?
+    skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if SDRC_FIREBIRD_URL.nil? || SDRC_FIREBIRD_URL.empty?
     # Firebird has no AUTOINCREMENT - the real idiom is a generator + a BEFORE
     # INSERT trigger, so `id` is assigned without seed_table needing to know it.
     assert_seed_table_roundtrips(

@@ -316,6 +316,11 @@ RSpec.describe "HTTP hardening contract (ADR-0068)" do
       expect_rejection(response, 400, '{"error":"Invalid Content-Length"}')
     end
 
+    it "two content length headers answer 400 even when they agree" do
+      response = request("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello")
+      expect_rejection(response, 400, '{"error":"Invalid Content-Length"}')
+    end
+
     it "conflicting content length and transfer encoding answer 400" do
       response = request("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n" \
                          "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n")

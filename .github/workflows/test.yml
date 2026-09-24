@@ -82,6 +82,23 @@ jobs:
           --health-timeout 3s
           --health-retries 20
 
+      # PostGIS — exercised by spec/gis_contract_spec.rb (feature 137). Same
+      # image, port and database as tina4-python's CI. Before this the GIS spec
+      # skipped here on every run; the TINA4_REQUIRE_SERVICES gate now fails an
+      # unexcused skip, so the service it needs is provisioned.
+      postgis:
+        image: postgis/postgis:16-3.4
+        ports: ['55433:5432']
+        env:
+          POSTGRES_USER: tina4
+          POSTGRES_PASSWORD: tina4
+          POSTGRES_DB: tina4_gis
+        options: >-
+          --health-cmd "pg_isready -U tina4 -d tina4_gis"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
       # MySQL — exercised by spec/database_mysql_mssql_live_spec.rb (#262).
       # DB/user/pass match the spec defaults (localhost:3306 / tina4 / tina4_test).
       mysql:
@@ -132,9 +149,11 @@ jobs:
       # mirror the local docker harness so the same values work locally and here.
       TINA4_TEST_PG_HOST: localhost
       TINA4_TEST_PG_PORT: '55432'
+      TINA4_TEST_POSTGIS_URL: postgres://tina4:tina4@localhost:55433/tina4_gis
       TINA4_TEST_PG_USERNAME: tina4
       TINA4_TEST_PG_PASSWORD: tina4
       TINA4_TEST_PG_DB: tina4_rb
+      TINA4_TEST_PG_URL: postgres://tina4:tina4@localhost:55432/tina4_rb
       # Second Postgres database for the two-DB named-connection test
       # (spec/bind_database_spec.rb). A later step creates it once PG is healthy.
       TINA4_TEST_PG_DB_2: tina4_rb2
@@ -161,6 +180,12 @@ jobs:
       TINA4_TEST_MSSQL_USERNAME: sa
       TINA4_TEST_MSSQL_PASSWORD: 'TinaSQL123!Secure'
       TINA4_TEST_MSSQL_DB: tina4_test
+      # The ADR-0069 test gate reads the engine URLs (PG above, these two) as the
+      # promise that the engine is provisioned. Without them a [needs:postgres] /
+      # [needs:mysql] / [needs:mssql] skip
+      # would be excused here even though both services run in this job.
+      TINA4_TEST_MYSQL_URL: mysql://tina4:tina4@127.0.0.1:3306/tina4_test
+      TINA4_TEST_MSSQL_URL: 'mssql://sa:TinaSQL123!Secure@127.0.0.1:1433/tina4_test'
       # ODBC (feature 13) — reuses the postgres service above (127.0.0.1:55432)
       # through the unixODBC "PostgreSQL Unicode" driver instead of a second
       # database container. odbcprovider_contract_spec.rb reads exactly these
@@ -387,6 +412,29 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
 
+      # MongoDB 8 as a single-node REPLICA SET, beside the mongo:7 STANDALONE
+      # service above. A replica-set member (7 and 8 alike) adds electionId
+      # (ObjectId), opTime / operationTime / $clusterTime (Timestamp) and a
+      # BinData signature to every write reply; a standalone never does. The
+      # zero-dependency wire clients mis-sized those types and failed every
+      # write against a replica set (Atlas, most production) while CI stayed
+      # green on the standalone. This leg keeps that from regressing.
+      - name: Start MongoDB 8 replica set (27018)
+        run: |
+          docker run -d --name tina4-mongo8-rs -p 27018:27018 mongo:8 \
+            mongod --replSet rs0 --bind_ip_all --port 27018
+          for i in $(seq 1 30); do
+            docker exec tina4-mongo8-rs mongosh --port 27018 --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec tina4-mongo8-rs mongosh --port 27018 --quiet \
+            --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27018'}]})"
+          for i in $(seq 1 30); do
+            [ "$(docker exec tina4-mongo8-rs mongosh --port 27018 --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+            sleep 2
+          done
+          echo "::error::mongo:8 replica set never became primary"; exit 1
+
       - name: Install native Tina4 CLI 3.8.77
         run: |
           cli_dir="$(mktemp -d)"
@@ -422,6 +470,16 @@ jobs:
       # native engine above and proves that boundary instead of excluding it.
       - name: Run tests
         run: bundle exec rspec
+
+      - name: Run the Mongo suites against the MongoDB 8 replica set
+        env:
+          TINA4_TEST_MONGO_URI: mongodb://127.0.0.1:27018
+          TINA4_TEST_MONGO_HOST: 127.0.0.1
+          TINA4_TEST_MONGO_PORT: '27018'
+          TINA4_MONGO_URI: mongodb://127.0.0.1:27018
+          TINA4_SESSION_MONGO_URI: mongodb://127.0.0.1:27018
+        run: |
+          bundle exec rspec spec/mongo_wire_bson_types_spec.rb spec/session_handlers_spec.rb spec/session_zero_dependency_fallback_spec.rb spec/session_ttl_contract_spec.rb spec/session_expiry_contract_spec.rb spec/cache_null_round_trip_spec.rb spec/cache_backends_spec.rb spec/docstore_substitutability_spec.rb spec/queue_mongo_retry_and_purge_spec.rb spec/mongo_sql_fail_closed_spec.rb
 
       # ADR-0024 rule 4: the ZERO-DEPENDENCY default counts double.
       #
@@ -588,8 +646,8 @@ jobs:
       # (fb gem present + server up). Before this these three files (primary_key,
       # provider contract, column_case) ran NOWHERE in CI — they gate purely on
       # TINA4_TEST_FIREBIRD_URL (same as the rollback spec above), which the main
-      # `test` job never sets by design (see spec/spec_helper.rb's
-      # TINA4_GATE_SERVICE_KEYWORDS), so they sat permanently pending there with
+      # `test` job never sets by design (Firebird was outside the old gate's
+      # service keyword list), so they sat permanently pending there with
       # no live run anywhere. This job already provisions the exact live Firebird
       # + fb gem they need, so reuse it instead of standing up a second server.
       #

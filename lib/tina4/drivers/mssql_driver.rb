@@ -225,49 +225,58 @@ module Tina4
         end
       end
 
+      # tiny_tds has no parameter binding, so each PLACEHOLDER `?` is replaced by
+      # its escaped value in ONE pass over the SQL (python #138). This used to
+      # `sub` the first `?` once per param, so a `?` inside a string literal, a
+      # [bracketed] or "quoted" identifier or a comment took a value, and so did
+      # a `?` inside a value spliced in by the previous param ("a?b" then 2 gave
+      # 'a2b' and left a placeholder behind). A `?` beyond the params is left as
+      # it was.
       def interpolate_params(sql, params)
         return sql if params.empty?
-        result = sql.dup
-        params.each do |param|
-          escaped =
-            if param.nil?
-              "NULL"
-            elsif param == true
-              # SQL Server has no boolean literal — BIT stores 0/1. A raw `true`
-              # would interpolate as the bareword `true` ("Invalid column name
-              # 'true'"). Coerce at the bind boundary, parity with the SQLite
-              # driver's coerce_params and the Python/PHP/Node bind contract.
-              "1"
-            elsif param == false
-              "0"
-            elsif param.is_a?(Time) || param.is_a?(DateTime)
-              "'#{(param.respond_to?(:iso8601) ? param.iso8601 : param.to_s).gsub("'", "''")}'"
-            elsif param.is_a?(String)
-              interpolate_string(param)
-            elsif param.is_a?(Integer)
-              param.to_s
-            elsif param.is_a?(Float)
-              # A finite Float is a valid numeric literal; NaN/Infinity are not
-              # representable in T-SQL and would stringify to a bareword.
-              raise ArgumentError, "MssqlDriver cannot bind a non-finite Float (#{param})" unless param.finite?
 
-              param.to_s
-            elsif param.is_a?(Numeric)
-              # BigDecimal / Rational -> a plain decimal literal.
-              param.to_s
-            else
-              # MSSQL-INTERP-RUBY: the old `else param.to_s` emitted a BAREWORD for
-              # any unrecognised type (a Symbol became `WHERE x = active`, invalid
-              # or unintended SQL - a breakage / injection vector). Refuse it loudly
-              # instead of splicing an arbitrary object's #to_s into the statement.
-              raise ArgumentError,
-                    "MssqlDriver cannot safely bind a #{param.class} parameter to MSSQL " \
-                    "(#{param.inspect}); pass nil, true/false, a Time, a String " \
-                    "(text, or ASCII-8BIT bytes), or a Numeric - never a bareword"
-            end
-          result = result.sub("?", escaped)
+        Tina4::SQLTranslator.replace_placeholders(sql, brackets: true) do |index|
+          index < params.length ? sql_literal(params[index]) : "?"
         end
-        result
+      end
+
+      # One parameter as a T-SQL literal.
+      def sql_literal(param)
+        if param.nil?
+          "NULL"
+        elsif param == true
+          # SQL Server has no boolean literal — BIT stores 0/1. A raw `true`
+          # would interpolate as the bareword `true` ("Invalid column name
+          # 'true'"). Coerce at the bind boundary, parity with the SQLite
+          # driver's coerce_params and the Python/PHP/Node bind contract.
+          "1"
+        elsif param == false
+          "0"
+        elsif param.is_a?(Time) || param.is_a?(DateTime)
+          "'#{(param.respond_to?(:iso8601) ? param.iso8601 : param.to_s).gsub("'", "''")}'"
+        elsif param.is_a?(String)
+          interpolate_string(param)
+        elsif param.is_a?(Integer)
+          param.to_s
+        elsif param.is_a?(Float)
+          # A finite Float is a valid numeric literal; NaN/Infinity are not
+          # representable in T-SQL and would stringify to a bareword.
+          raise ArgumentError, "MssqlDriver cannot bind a non-finite Float (#{param})" unless param.finite?
+
+          param.to_s
+        elsif param.is_a?(Numeric)
+          # BigDecimal / Rational -> a plain decimal literal.
+          param.to_s
+        else
+          # MSSQL-INTERP-RUBY: the old `else param.to_s` emitted a BAREWORD for
+          # any unrecognised type (a Symbol became `WHERE x = active`, invalid
+          # or unintended SQL - a breakage / injection vector). Refuse it loudly
+          # instead of splicing an arbitrary object's #to_s into the statement.
+          raise ArgumentError,
+                "MssqlDriver cannot safely bind a #{param.class} parameter to MSSQL " \
+                "(#{param.inspect}); pass nil, true/false, a Time, a String " \
+                "(text, or ASCII-8BIT bytes), or a Numeric - never a bareword"
+        end
       end
 
       # Bind a String parameter. ASCII-8BIT (binary) bytes become a T-SQL

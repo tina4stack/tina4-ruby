@@ -28,14 +28,14 @@ module RealFullDisk
     return with_real_tiny_tmpfs(blocks: blocks) { |dir, fill| yield dir, fill } if linux?
 
     unless RUBY_PLATFORM.include?("darwin")
-      skip "real full-filesystem test needs a disposable ram disk; " \
+      skip "[needs:os=darwin-or-linux] real full-filesystem test needs a disposable ram disk; " \
            "neither the macOS hdiutil path nor the Linux tmpfs path applies " \
            "to #{RUBY_PLATFORM}"
     end
 
     dev = `hdiutil attach -nomount ram://#{blocks} 2>/dev/null`.strip
     if dev.empty?
-      skip "could not attach a ram disk via `hdiutil attach -nomount ram://#{blocks}` — " \
+      skip "[needs:ramdisk] could not attach a ram disk via `hdiutil attach -nomount ram://#{blocks}` — " \
            "cannot produce a real ENOSPC, and simulating one is not permitted"
     end
 
@@ -43,7 +43,7 @@ module RealFullDisk
     erase = `diskutil eraseVolume HFS+ #{volume_name} #{dev} 2>&1`
     unless File.directory?(mount_point)
       `hdiutil detach #{dev} -force >/dev/null 2>&1`
-      skip "could not format/mount the ram disk at #{mount_point}: #{erase.lines.last.to_s.strip}"
+      skip "[needs:ramdisk] could not format/mount the ram disk at #{mount_point}: #{erase.lines.last.to_s.strip}"
     end
 
     # Fills the REAL filesystem until the REAL kernel refuses another byte.
@@ -86,7 +86,7 @@ module RealFullDisk
     unless system("mount", "-t", "tmpfs", "-o", "size=#{kib}k", "tmpfs", mount_point,
                   out: File::NULL, err: File::NULL)
       FileUtils.remove_entry(mount_point) rescue nil
-      skip "could not mount a size-capped tmpfs at #{mount_point} " \
+      skip "[needs:cap-sys-admin] could not mount a size-capped tmpfs at #{mount_point} " \
            "(`mount -t tmpfs -o size=#{kib}k`) -- needs root or CAP_SYS_ADMIN; " \
            "cannot produce a real ENOSPC, and simulating one is not permitted"
     end

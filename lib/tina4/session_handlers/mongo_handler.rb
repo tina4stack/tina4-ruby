@@ -51,36 +51,90 @@ module Tina4
         @database = options[:database] || ENV["TINA4_SESSION_MONGO_DB"] || "tina4"
         @collection_name = options[:collection] || ENV["TINA4_SESSION_MONGO_COLLECTION"] || "sessions"
         @gem_available = gem_available?
-        @client = nil
-        @wire_client = nil
-        @collection = nil
-        @index_ready = false
       end
 
-      # Release whichever transport was opened.
+      # ONE TRANSPORT PER PROCESS (issue #136, parity with tina4-python #136).
       #
-      # Mongo::Client owns a pool of REAL sockets. Before the client was lazy it
-      # was a local variable in #initialize, reachable only through the
-      # collection, so every construction leaked a pool and nothing could give it
-      # back. Now the handler holds the client, so the handler can close it -
-      # parity with the Python master's MongoDBSessionHandler.close() and with
-      # Tina4::DocStore.close_doc_store, which already closes its Mongo clients
-      # the same way. The zero-dependency transport owns ONE raw socket and is
-      # closed the same way, so neither path leaks. Safe to call on a handler
-      # that never connected.
-      def close
-        # Each close is guarded on its own: a failure on one transport must not
-        # skip the other, and neither may mask the caller's work.
-        [@client, @wire_client].each do |transport|
+      # Every request builds a Session and every Session builds a NEW handler,
+      # so a transport owned by the handler is a transport per REQUEST. The
+      # handler used to open its own Mongo::Client on first use - each with its
+      # own SDAM monitor threads and connection pool - and nothing ever closed
+      # it. MEASURED on the lab: 21 requests left 87 extra threads behind; on the
+      # zero-dependency path 40 sessions left 40 sockets open to MongoDB.
+      #
+      # A Mongo::Client is thread-safe and pools internally, so the driver
+      # expects exactly one per (uri, database) - the same shape
+      # Tina4::DocStore.mongo_client already uses. The zero-dependency
+      # MongoWireClient is bound to one collection and serialises its commands
+      # on its single socket, so it is shared per (uri, database, collection).
+      # Handlers hold no transport of their own: they look it up here on every
+      # operation, so a released transport is simply rebuilt on next use.
+      @shared = {}
+      @index_ready = {}
+      @shared_lock = Mutex.new
+
+      class << self
+        # The shared transport for +key+, built by the block on first use. The
+        # double-checked lock stops two threads racing the first request from
+        # both building a client and orphaning one - the same leak, just rarer.
+        def shared_transport(key)
+          transport = @shared[key]
+          return transport if transport
+
+          @shared_lock.synchronize { @shared[key] ||= yield }
+        end
+
+        # True exactly once per process for +key+ - used so the TTL index round
+        # trip runs once per (store, ttl), not once per request.
+        def claim_index(key)
+          @shared_lock.synchronize do
+            next false if @index_ready[key]
+
+            @index_ready[key] = true
+          end
+        end
+
+        # Close and forget the shared transport for +key+ (MongoHandler#close).
+        def release_shared(key)
+          close_transport(@shared_lock.synchronize { @shared.delete(key) })
+        end
+
+        # Close every shared session transport - process shutdown, or a test
+        # that must leave no connection behind. Safe to call at any time: the
+        # next session operation simply reconnects.
+        def close_shared_clients
+          transports = @shared_lock.synchronize do
+            values = @shared.values
+            @shared.clear
+            @index_ready.clear
+            values
+          end
+          transports.each { |transport| close_transport(transport) }
+          true
+        end
+
+        private
+
+        # A close failure must never mask the caller's work.
+        def close_transport(transport)
           transport&.close
         rescue StandardError
           nil
         end
-      ensure
-        @client = nil
-        @wire_client = nil
-        @collection = nil
-        @index_ready = false
+      end
+
+      # Release the transport this handler's configuration uses.
+      #
+      # The transport is SHARED per process (see .shared_transport), so this
+      # closes it for every handler pointed at the same store - exactly what an
+      # owner that is done with the store wants, and harmless to the rest: they
+      # look the transport up on every operation and reconnect on next use. The
+      # Mongo::Client (a pool of real sockets) and the zero-dependency socket
+      # are both closed this way, so neither path leaks. Safe to call on a
+      # handler that never connected. Parity with the Python master's
+      # MongoDBSessionHandler.close() and Tina4::DocStore.close_doc_store.
+      def close
+        self.class.release_shared(transport_key)
       end
 
       # Decide whether a stored document has expired, FROM THE DOCUMENT ALONE.
@@ -189,17 +243,25 @@ module Tina4
       # handler takes the other. A per-operation branch is a branch that can be
       # wrong on one path only - which is exactly how a fallback ships untested.
       def collection
-        return @collection if @collection
-
         if @gem_available
-          @client = Mongo::Client.new(@uri, database: @database)
-          @collection = @client[@collection_name]
-          ensure_ttl_index
+          client = self.class.shared_transport(transport_key) { Mongo::Client.new(@uri, database: @database) }
+          collection = client[@collection_name]
+          ensure_ttl_index(collection)
+          collection
         else
-          @wire_client = build_wire_client
-          @collection = @wire_client
+          self.class.shared_transport(transport_key) { build_wire_client }
         end
-        @collection
+      end
+
+      # The registry key for this handler's transport: one Mongo::Client per
+      # (uri, database); one wire client per (uri, database, collection), since
+      # a MongoWireClient is bound to a single collection.
+      def transport_key
+        if @gem_available
+          [:gem, @uri, @database]
+        else
+          [:wire, @uri, @database, @collection_name]
+        end
       end
 
       # The zero-dependency transport, pointed at the host and port parsed out of
@@ -258,18 +320,19 @@ module Tina4
       # does not exist when the gem is absent, so evaluating them would raise
       # NameError rather than the LoadError anyone would expect.
       #
-      # Runs ONCE per handler (@index_ready), on the first operation. The flag is
-      # set BEFORE the round trip so an unreachable server is not re-probed on
-      # every read - the same ordering the Python master uses for _table_ready.
-      def ensure_ttl_index
-        return if @index_ready
+      # Runs ONCE per process for each (store, collection, ttl), on the first
+      # operation - not once per handler, which is once per REQUEST (issue
+      # #136). The claim is taken BEFORE the round trip so an unreachable server
+      # is not re-probed on every read - the same ordering the Python master
+      # uses for _table_ready.
+      def ensure_ttl_index(collection)
+        return unless self.class.claim_index([@uri, @database, @collection_name, @ttl])
 
-        @index_ready = true
-        @collection.indexes.create_one({ updated_at: 1 }, expire_after_seconds: @ttl)
+        collection.indexes.create_one({ updated_at: 1 }, expire_after_seconds: @ttl)
       rescue Mongo::Error::OperationFailure => e
         raise unless e.code == 85 || e.message.include?("IndexOptionsConflict")
-        @collection.indexes.drop_one("updated_at_1")
-        @collection.indexes.create_one({ updated_at: 1 }, expire_after_seconds: @ttl)
+        collection.indexes.drop_one("updated_at_1")
+        collection.indexes.create_one({ updated_at: 1 }, expire_after_seconds: @ttl)
       rescue Mongo::Error => e
         # The index is the background REAPER, not the expiry authority - #read
         # checks expires_at on the document itself - so failing to create it must

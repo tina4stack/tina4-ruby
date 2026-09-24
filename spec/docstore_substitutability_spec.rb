@@ -61,8 +61,17 @@ RSpec.describe "DocStore substitutability" do
     Tina4::DocStore.get_collection("ds_contract_#{SecureRandom.hex(5)}")
   end
 
-  after do
-    %w[TINA4_MONGO_URI TINA4_SESSION_MONGO_URI TINA4_SESSION_MONGO_URL TINA4_DOC_STORE_PATH].each { |k| ENV.delete(k) }
+  # Preserve service coordinates supplied by CI/lab. Deleting these after an
+  # example redirected later Session writers to localhost:27017 while their
+  # independent readers still used the configured MongoDB 8 replica set.
+  around do |example|
+    keys = %w[TINA4_MONGO_URI TINA4_SESSION_MONGO_URI TINA4_SESSION_MONGO_URL TINA4_DOC_STORE_PATH]
+    original = keys.to_h { |key| [key, ENV[key]] }
+    begin
+      example.run
+    ensure
+      original.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
   end
 
   # ── the ROOT invariant ───────────────────────────────────────────────────

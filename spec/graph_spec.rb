@@ -120,7 +120,7 @@ RSpec.describe "Graph data layer (Feature 139)" do
 
       before(:each) do
         unless GraphSpecEnv.live?(engine_name)
-          skip "live #{engine_name} not configured/reachable (set #{GraphSpecEnv::ENGINES[engine_name][:env]})"
+          skip "[needs:#{engine_name}] live #{engine_name} not configured/reachable (set #{GraphSpecEnv::ENGINES[engine_name][:env]})"
         end
 
         @graph = Tina4::GraphDatabase.create(ENV[cfg[:env]])

@@ -48,7 +48,12 @@ RSpec.describe "Dispatch pipeline contract" do
     # FIRST - before head_strip - so a HEAD response's preserved
     # Content-Length reflects the (possibly compressed) body the equivalent
     # GET would have sent.
-    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[compress_and_tag conditional_get head_strip apply_cors])
+    # security_headers joined them for the same reason: a CSRF 403, a legacy
+    # auth_handler 403, a pre-match refusal, a 404 and a static file are all
+    # produced outside the post-match pass that runs SecurityHeadersMiddleware
+    # (spec/security_headers_on_refusals_spec.rb).
+    expect(Tina4::DispatchPipeline::ALWAYS_STAGES).to eq(%i[compress_and_tag conditional_get head_strip apply_cors
+                                                             security_headers])
     expect(Tina4::DispatchPipeline::RESPONSE_STAGES).to eq(%i[
       dev_inspector_capture
       request_log

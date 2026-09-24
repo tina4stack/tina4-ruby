@@ -37,6 +37,13 @@ module Tina4
         @warned = nil
       end
 
+      # The reasons warned about so far in this process - bounded by
+      # construction, never an origin (ADR-0048). Node's corsWarningReasons(),
+      # PHP's CorsMiddleware::warnedReasons().
+      def warned_reasons
+        (@warned || {}).keys.map(&:to_s)
+      end
+
       # The configured origins, split and emptied of blanks.
       def allowed_origins
         config[:origins].split(",").map(&:strip).reject(&:empty?)
@@ -56,8 +63,13 @@ module Tina4
         allowed = allowed_origins
         request_origin = env["HTTP_ORIGIN"]
 
+        # A same-origin request (browsers send Origin on every same-origin
+        # POST/PUT/PATCH/DELETE) is not a CORS request: it is never warned
+        # about. That ONLY silences the warning - it grants no CORS access.
+        cross_origin = present?(request_origin) && !same_origin?(env)
+
         if allowed.empty?
-          warn_once(:unconfigured, request_origin) if present?(request_origin)
+          warn_once(:unconfigured, request_origin) if cross_origin
           return {}
         end
 
@@ -70,7 +82,7 @@ module Tina4
 
         origin = resolve_origin(env)
         if origin.nil?
-          warn_once(:denied, request_origin) if present?(request_origin)
+          warn_once(:denied, request_origin) if cross_origin
           return headers
         end
 
@@ -150,6 +162,22 @@ module Tina4
         %w[true 1 yes].include?(config[:credentials].to_s.downcase)
       end
 
+      # Whether the request's Origin is the request's OWN origin
+      # (tina4-python #139). Own origin = scheme://host[:port], the scheme
+      # proxy-aware (Request.secure_scheme?, X-Forwarded-Proto first hop) and
+      # the host from X-Forwarded-Host, else Host. Both sides are normalised:
+      # lower-cased, default ports (http:80, https:443) dropped.
+      def same_origin?(env)
+        origin = normalize_origin(env["HTTP_ORIGIN"])
+        return false if origin.nil?
+
+        scheme = Tina4::Request.secure_scheme?(env) ? "https" : "http"
+        host = (env["HTTP_X_FORWARDED_HOST"] || env["HTTP_HOST"]).to_s.split(",").first.to_s.strip
+        return false if host.empty?
+
+        origin == normalize_origin("#{scheme}://#{host}")
+      end
+
       private
 
       def load_config
@@ -186,6 +214,20 @@ module Tina4
         !value.nil? && !value.to_s.empty?
       end
 
+      DEFAULT_PORTS = { "http" => 80, "https" => 443 }.freeze
+
+      # "scheme://host[:port]" lower-cased with a default port dropped, or nil
+      # for anything that is not an http(s) origin (e.g. "null").
+      def normalize_origin(value)
+        match = value.to_s.strip.chomp("/").match(%r{\A(https?)://([^/:\s]+|\[[^\]]+\])(?::(\d+))?\z}i)
+        return nil unless match
+
+        scheme = match[1].downcase
+        host = match[2].downcase
+        port = match[3]&.to_i
+        port.nil? || port == DEFAULT_PORTS[scheme] ? "#{scheme}://#{host}" : "#{scheme}://#{host}:#{port}"
+      end
+
       def merge_vary(current, field_name)
         parts = current.to_s.split(",").map(&:strip).reject(&:empty?)
         return parts.join(", ") if parts.any? { |p| p.casecmp?(field_name) }
@@ -193,17 +235,22 @@ module Tina4
         (parts + [field_name]).join(", ")
       end
 
-      # Log an actionable warning at most once per reason per process.
+      # Log an actionable warning at most once per REASON per process.
       #
       # A rejected cross-origin request is otherwise invisible: the browser
       # reports a generic CORS failure and the server log says nothing, so the
       # operator has to read the framework source to find the env var to set.
+      #
+      # BOUNDED (ADR-0048): keyed by reason only, never by origin. Keying
+      # :denied by "denied:<origin>" gave every attacker-chosen Origin header its
+      # own @warned entry (never freed) and its own log line - an unbounded
+      # ledger and an unbounded log. The message still names the origin that
+      # triggered it, the first time per reason.
       def warn_once(reason, request_origin)
         @warned ||= {}
-        key = reason == :denied ? "denied:#{request_origin}" : reason
-        return if @warned[key]
+        return if @warned[reason]
 
-        @warned[key] = true
+        @warned[reason] = true
         Tina4::Log.warning(warning_message(reason, request_origin))
       rescue StandardError
         nil # logging must never break a request
@@ -211,13 +258,16 @@ module Tina4
 
       def warning_message(reason, request_origin)
         case reason
+        # Neither message ever suggests the wildcard: allowing every website to
+        # silence one warning is the wrong fix. Each names the ONE origin to add.
         when :unconfigured
-          "CORS: refused cross-origin request from #{request_origin} - no policy is configured. " \
-            "Set TINA4_CORS_ORIGINS to the origins you want to allow, e.g. " \
-            "TINA4_CORS_ORIGINS=https://app.example.com (or '*' to allow any origin)."
+          "CORS: cross-origin request from #{request_origin}, but no CORS policy is configured, " \
+            "so the browser will block this response. If that origin should be allowed, " \
+            "add it: TINA4_CORS_ORIGINS=#{request_origin}"
         when :denied
           "CORS: origin #{request_origin} is not in TINA4_CORS_ORIGINS (#{config[:origins]}) " \
-            "- the browser will block this response."
+            "- the browser will block this response. If it should be allowed, add it: " \
+            "TINA4_CORS_ORIGINS=#{config[:origins]},#{request_origin}"
         else
           "CORS: TINA4_CORS_CREDENTIALS is true but TINA4_CORS_ORIGINS is '*'. The Fetch Standard " \
             "forbids Access-Control-Allow-Origin: * with credentials, so credentials are NOT being " \

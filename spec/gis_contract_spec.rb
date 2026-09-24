@@ -20,7 +20,7 @@ RSpec.describe "Feature 137 real PostGIS fixture" do
       socket = TCPSocket.new(uri.host, uri.port)
       socket.close
     rescue StandardError
-      skip "PostGIS not reachable at #{uri.host}:#{uri.port}"
+      skip "[needs:postgis] PostGIS not reachable at #{uri.host}:#{uri.port}"
     end
     @db = Tina4::Database.new("postgres://#{uri.host}:#{uri.port}#{uri.path}", username: URI.decode_www_form_component(uri.user), password: URI.decode_www_form_component(uri.password))
     GisFixtureSite.db = @db

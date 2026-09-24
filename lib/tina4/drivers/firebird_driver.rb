@@ -7,6 +7,15 @@ module Tina4
       include Tina4::DatabaseAdapter
       attr_reader :connection
 
+      # Raised when a statement that returns values from a WRITE
+      # (INSERT/UPDATE/DELETE ... RETURNING, or EXECUTE PROCEDURE with outputs)
+      # is read through fetch/fetch_one. See #execute_query.
+      class ReturningNotSupported < StandardError; end
+
+      # The `fb` gem's error for a fetch from a cursor Firebird never opened
+      # (SQLCODE -504) - what a singleton RETURNING result produces.
+      CURSOR_NOT_OPEN_MARKERS = ["cursor is not open", "unknown cursor"].freeze
+
       # Substring markers (lowercased) that identify a dead-socket Firebird
       # error worth reconnecting for. Idle Firebird connections die silently
       # behind NAT timeouts, server-side ConnectionIdleTimeout, or Docker
@@ -219,14 +228,45 @@ module Tina4
         @connection&.close
       end
 
+      # Run a statement that returns rows and hydrate them.
+      #
+      # The cursor is driven HERE rather than through Connection#query so that a
+      # failed fetch can be cleaned up. Connection#query (and #execute) start an
+      # AUTOMATIC transaction when none is open and end it only when the cursor
+      # is closed after a SUCCESSFUL fetch - and closing it COMMITS. A fetch that
+      # raised used to skip all of that: the automatic transaction, holding any
+      # write the statement made, stayed open on the connection, every later
+      # statement ran inside it, and DDL on the table blocked ("object in use").
+      #
+      # The one statement that always fails that way is a write that returns
+      # values - INSERT/UPDATE/DELETE ... RETURNING. Firebird runs it as an
+      # EXECUTE PROCEDURE-type statement whose values come back only through
+      # isc_dsql_execute2's OUTPUT sqlda, which the `fb` gem never passes: it
+      # opens no cursor and the first fetch raises "Cursor is not open" (-504).
+      # There is no other call in the gem that returns them (measured, fb 0.10.0
+      # on Firebird 5), so it is refused with a clear ReturningNotSupported.
+      #
+      # On ANY fetch failure: outside an explicit transaction the automatic one
+      # is ROLLED BACK first (nothing is written, nothing stays locked, and the
+      # cursor's close can no longer commit it); inside an explicit transaction
+      # it is left for the caller's own rollback. The cursor is then dropped so
+      # its prepared statement does not hold the table.
       def execute_query(sql, params = [])
-        rows = with_reconnect do
-          if params.empty?
-            @connection.query(:hash, sql)
-          else
-            @connection.query(:hash, sql, *params)
-          end
+        cursor = with_reconnect do
+          params.empty? ? @connection.execute(sql) : @connection.execute(sql, *params)
         end
+        # A statement with no result set: execute already ran (and, outside a
+        # transaction, committed) it and returned a count.
+        return [] unless cursor.respond_to?(:fetchall)
+
+        rows = begin
+          cursor.fetchall(:hash)
+        rescue StandardError => e
+          abandon_cursor(cursor)
+          raise returning_not_supported if cursor_not_open?(e)
+          raise
+        end
+        cursor.close
         rows.map { |row| decode_blobs(symbolize_keys(row)) }
       end
 
@@ -436,6 +476,49 @@ module Tina4
         raise unless self.class.dead_connection?(e) && !@in_transaction
         reconnect!
         yield
+      end
+
+      # Clean up after a fetch that raised: roll back the AUTOMATIC transaction
+      # (never an explicit one - that is the caller's) BEFORE the cursor is
+      # released, then free the cursor's prepared statement.
+      #
+      # Cursor#close, not #drop: #drop raises on the DSQL_close of a cursor
+      # Firebird never opened and so never reaches DSQL_drop, leaving the
+      # statement - and the table - held until GC ("object in use" on DDL).
+      # #close only warns on that step and always drops. It commits only the
+      # cursor's OWN automatic transaction, which is already rolled back here
+      # (the handle no longer matches), and never an explicit one.
+      def abandon_cursor(cursor)
+        begin
+          @connection.rollback if !@in_transaction && @connection.transaction_started
+        rescue StandardError
+          nil # the original error is the one worth reporting
+        end
+        begin
+          cursor.close
+        rescue StandardError
+          nil
+        end
+      end
+
+      def cursor_not_open?(error)
+        message = error.message.to_s.downcase
+        CURSOR_NOT_OPEN_MARKERS.any? { |marker| message.include?(marker) }
+      end
+
+      def returning_not_supported
+        outcome = if @in_transaction
+                    "It ran inside your explicit transaction, which is still open: roll it back."
+                  else
+                    "The statement was rolled back: nothing was written and no transaction is left open."
+                  end
+        ReturningNotSupported.new(
+          "Firebird: a write that returns values (INSERT/UPDATE/DELETE ... RETURNING, or " \
+          "EXECUTE PROCEDURE with outputs) cannot be read back through the `fb` gem - it never " \
+          "opens a cursor for a singleton result. #{outcome} Run the write without RETURNING " \
+          "and read the row back with a SELECT, use db.insert(...), or write it as " \
+          "INSERT ... SELECT ... RETURNING, which Firebird returns as a real cursor."
+        )
       end
 
       # Hydrate a raw fb-gem row into a SYMBOL-keyed Hash — parity with the

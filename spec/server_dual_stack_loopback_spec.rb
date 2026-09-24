@@ -116,7 +116,7 @@ RSpec.describe "Tina4::WebServer dual-stack loopback" do
 
   describe "a server bound to 127.0.0.1" do
     it "ALSO answers on ::1 -- the Windows `localhost` browser depends on it" do
-      skip "IPv6 loopback (::1) is unavailable here" unless ipv6_loopback_available?
+      skip "[needs:ipv6-loopback] IPv6 loopback (::1) is unavailable here" unless ipv6_loopback_available?
 
       port = free_port
       srv, thread = boot_server(port)

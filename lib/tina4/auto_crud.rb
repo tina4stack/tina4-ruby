@@ -105,17 +105,46 @@ module Tina4
             page     = [page, 1].max
             limit    = per_page
             offset   = req.query["offset"] ? req.query["offset"].to_i : (page - 1) * per_page
-            order_by = parse_sort(req.query["sort"])
 
-            # Filter support: ?filter[field]=value
+            # Filter support: ?filter[field]=value. ADR-0069: ANY bracket key is
+            # captured and must resolve to a declared field (attribute or its
+            # mapped column); an unknown key is a 400 before any SQL runs.
+            #
+            # The query parser keeps bracketed keys flat, so a list or map shows
+            # up as "sort[...]" or "filter[name][...]": a 400, never ignored.
+            if req.query.keys.any? { |key| key.start_with?("sort[") }
+              next res.error("INVALID_QUERY_PARAMETER",
+                             "Query parameter 'sort' must be a single comma-separated string", 400)
+            end
+
             filter_conditions = []
             filter_values = []
+            unknown_filter_field = nil
+            nested_filter_field = nil
             req.query.each do |key, value|
-              if key =~ /\Afilter\[(\w+)\]\z/
-                filter_conditions << "#{$1} = ?"
-                filter_values << value
+              next unless key =~ /\Afilter\[(.*)\]\z/m
+
+              filter_key = Regexp.last_match(1)
+              if filter_key.include?("][")
+                nested_filter_field = filter_key.split("][", 2).first
+                break
               end
+              column = model_class.resolve_field_column(filter_key)
+              unless column
+                unknown_filter_field = filter_key
+                break
+              end
+              filter_conditions << "#{column} = ?"
+              filter_values << value
             end
+            if nested_filter_field
+              next res.error("INVALID_QUERY_PARAMETER",
+                             "Filter value for '#{nested_filter_field}' must be a single value", 400)
+            end
+            next res.error("UNKNOWN_FIELD", "Unknown filter field '#{unknown_filter_field}'", 400) if unknown_filter_field
+
+            order_by, unknown_sort_field = parse_sort(model_class, req.query["sort"])
+            next res.error("UNKNOWN_FIELD", "Unknown sort field '#{unknown_sort_field}'", 400) if unknown_sort_field
 
             if filter_conditions.empty?
               records = model_class.all(limit: limit, offset: offset, order_by: order_by)
@@ -150,8 +179,7 @@ module Tina4
         # GET /api/{table}/{id} -- get single record
         Tina4::Router.add("GET", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
-            id = req.params["id"]
-            record = model_class.find_by_id(id.to_i)
+            record = find_addressed_record(model_class, req.params["id"])
             if record
               res.json({ data: record.to_h })
             else
@@ -200,8 +228,7 @@ module Tina4
         # PUT /api/{table}/{id} -- update record
         put_route = Tina4::Router.add("PUT", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
-            id = req.params["id"]
-            record = model_class.find_by_id(id.to_i)
+            record = find_addressed_record(model_class, req.params["id"])
             unless record
               next res.json({ error: "Not found" }, status: 404)
             end
@@ -236,8 +263,7 @@ module Tina4
         # DELETE /api/{table}/{id} -- delete record
         delete_route = Tina4::Router.add("DELETE", "#{prefix}/#{table}/{id}", proc { |req, res|
           begin
-            id = req.params["id"]
-            record = model_class.find_by_id(id.to_i)
+            record = find_addressed_record(model_class, req.params["id"])
             unless record
               next res.json({ error: "Not found" }, status: 404)
             end
@@ -314,27 +340,51 @@ module Tina4
         auto_increment = single_pk && defs[single_pk.to_sym] && defs[single_pk.to_sym][:auto_increment]
         strip_pk = is_create ? !(single_pk && !auto_increment) : true
 
+        # ADR-0069: a body key is written only when it resolves to a DECLARED
+        # field, by attribute name or its mapped column - the SAME resolver the
+        # list route's filter/sort use. Anything else is dropped (writes drop,
+        # reads 400).
         data.each_with_object({}) do |(key, value), allowed|
-          key_s = key.to_s
-          next unless defs.key?(key_s.to_sym)
-          next if key_s == "is_deleted"
-          next if strip_pk && pk_fields.include?(key_s)
+          attribute = model_class.resolve_field(key)
+          next unless attribute
 
-          allowed[key] = value
+          attribute_name = attribute.to_s
+          next if attribute_name == "is_deleted"
+          next if strip_pk && pk_fields.include?(attribute_name)
+
+          allowed[attribute_name] = value
         end
       end
 
-      # Parse sort parameter: "-name,created_at" => "name DESC, created_at ASC"
-      def parse_sort(sort_str)
-        return nil if sort_str.nil? || sort_str.empty?
-        sort_str.split(",").map do |field|
-          field = field.strip
-          if field.start_with?("-")
-            "#{field[1..-1]} DESC"
-          else
-            "#{field} ASC"
-          end
-        end.join(", ")
+      # The row a URL {id} addresses, or nil. The id is bound, never
+      # interpolated; ORM.coerce_primary_key keeps a string natural key as-is
+      # and answers nil for a non-integer id on an integer key (-> 404).
+      def find_addressed_record(model_class, raw_id)
+        id = model_class.coerce_primary_key(raw_id)
+        id.nil? ? nil : model_class.find_by_id(id)
+      end
+
+      # Parse the sort parameter: "-name,created_at" => "name DESC, created_at ASC".
+      #
+      # ADR-0069: each part (empty parts skipped, a leading "-" means DESC) must
+      # resolve to a declared field; the ORDER BY is built ONLY from resolved
+      # columns plus ASC/DESC. Returns [order_by_or_nil, unknown_field_or_nil].
+      def parse_sort(model_class, sort_str)
+        return [nil, nil] if sort_str.nil? || sort_str.empty?
+
+        parts = []
+        sort_str.split(",").each do |part|
+          part = part.strip
+          next if part.empty?
+
+          descending = part.start_with?("-")
+          field = descending ? part[1..].strip : part
+          column = model_class.resolve_field_column(field)
+          return [nil, field] unless column
+
+          parts << "#{column} #{descending ? 'DESC' : 'ASC'}"
+        end
+        [parts.empty? ? nil : parts.join(", "), nil]
       end
     end
   end

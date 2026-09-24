@@ -140,7 +140,8 @@ module Tina4
         @soft_delete_field = val
       end
 
-      # Field mapping: { 'db_column' => 'ruby_attribute' }
+      # Field mapping: { 'ruby_attribute' => 'db_column' } (get_db_column,
+      # to_db_hash and from_hash all read it in this direction).
       def field_mapping
         @field_mapping || {}
       end
@@ -311,13 +312,13 @@ module Tina4
             # REL-SOFTDELETE-TRAVERSAL: a soft-deleted child must not surface
             # through eager traversal (parity with lazy + the finders).
             soft = klass.soft_delete ? " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)" : ""
-            order_col = klass.primary_key_field || :id
+            order_col = klass.get_db_column(klass.primary_key_field || :id)
             # REL-EAGER-UNBOUNDED: chunk the parent PKs so the IN list stays
             # bounded, and page each chunk so no relation is truncated.
             related_records = []
             pk_values.each_slice(EAGER_IN_CHUNK) do |chunk|
               placeholders = chunk.map { "?" }.join(",")
-              sql = "SELECT * FROM #{klass.table_name} WHERE #{fk} IN (#{placeholders})#{soft} ORDER BY #{order_col}"
+              sql = "SELECT * FROM #{klass.table_name} WHERE #{klass.get_db_column(fk)} IN (#{placeholders})#{soft} ORDER BY #{order_col}"
               offset = 0
               loop do
                 batch = klass.db.fetch(sql, chunk, limit: EAGER_PAGE_SIZE, offset: offset).to_a
@@ -332,8 +333,9 @@ module Tina4
 
             # Group by FK
             grouped = {}
+            fk_attribute = klass.attribute_for(fk)
             related_records.each do |record|
-              fk_val = record.__send__(fk.to_sym) if record.respond_to?(fk.to_sym)
+              fk_val = record.__send__(fk_attribute) if record.respond_to?(fk_attribute)
               (grouped[fk_val] ||= []) << record
             end
 
@@ -348,7 +350,7 @@ module Tina4
             end
 
           when :belongs_to
-            fk = rel[:foreign_key] || "#{rel_name}_id"
+            fk = attribute_for(rel[:foreign_key] || "#{rel_name}_id")
             fk_values = instances.map { |inst|
               inst.respond_to?(fk.to_sym) ? inst.__send__(fk.to_sym) : nil
             }.compact.uniq
@@ -361,7 +363,7 @@ module Tina4
             related_records = []
             fk_values.each_slice(EAGER_IN_CHUNK) do |chunk|
               placeholders = chunk.map { "?" }.join(",")
-              sql = "SELECT * FROM #{klass.table_name} WHERE #{related_pk} IN (#{placeholders})#{soft}"
+              sql = "SELECT * FROM #{klass.table_name} WHERE #{klass.get_db_column(related_pk)} IN (#{placeholders})#{soft}"
               # One row per distinct PK, so limit == chunk size (default 100 would truncate a full chunk).
               related_records.concat(klass.db.fetch(sql, chunk, limit: chunk.length).to_a.map { |row| klass.from_hash(row) })
             end
@@ -792,7 +794,7 @@ module Tina4
       # spec/orm_spec.rb:78 verifies public access. find_by_filter stays
       # public for the same reason; both are part of the documented API.
       def find_by_id(id)
-        pk = primary_key_field || :id
+        pk = get_db_column(primary_key_field || :id)
         sql = "SELECT * FROM #{table_name} WHERE #{pk} = ?"
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
@@ -830,6 +832,46 @@ module Tina4
         col.to_sym
       end
 
+      # tina4: ADR-0069 - the ONE resolver for caller-supplied field names that
+      # become SQL identifiers (AutoCrud filter/sort/write body, find(hash)). A
+      # key resolves only when it is a DECLARED field's attribute name or that
+      # field's mapped DB column, and the declared attribute is returned.
+      # Anything else returns nil, so the caller rejects or drops it before any
+      # SQL is built.
+      def resolve_field(key) # -> Symbol or nil
+        wanted = key.to_s
+        field_definitions.each_key do |attribute|
+          # the model's own attribute -> column mapping
+          return attribute if wanted == attribute.to_s || wanted == get_db_column(attribute).to_s
+        end
+        nil
+      end
+
+      # A primary-key value that arrived as text (a URL {id}, a GraphQL ID),
+      # ready to bind. An integer key accepts only an integer string and answers
+      # nil otherwise, so "3x" can never address row 3; any other key type (a
+      # string natural key) is returned unchanged rather than coerced.
+      def coerce_primary_key(raw) # -> value or nil
+        pk = primary_key_field || :id
+        return raw unless field_definitions.dig(pk.to_sym, :type) == :integer
+        return raw if raw.is_a?(Integer)
+
+        raw.to_s.match?(/\A-?\d+\z/) ? raw.to_s.to_i : nil
+      end
+
+      # The DB column of the declared field +key+ resolves to (see resolve_field).
+      def resolve_field_column(key) # -> String or nil
+        attribute = resolve_field(key)
+        attribute && get_db_column(attribute).to_s
+      end
+
+      # The attribute that holds +name+, whether +name+ is the attribute itself
+      # or the DB column it maps to (the reverse of get_db_column). Relationship
+      # foreign keys accept either spelling.
+      def attribute_for(name) # -> Symbol
+        resolve_field(name) || name.to_sym
+      end
+
       private
 
       def auto_discover_db
@@ -839,7 +881,13 @@ module Tina4
       end
 
       def find_by_filter(filter, limit: 100, offset: nil, order_by: nil)
-        where_parts = filter.keys.map { |k| "#{k} = ?" }
+        # ADR-0069: every key must resolve to a declared field's column.
+        where_parts = filter.keys.map do |key|
+          column = resolve_field_column(key)
+          raise ArgumentError, "Unknown filter field '#{key}' for model #{name.to_s.split('::').last}" unless column
+
+          "#{column} = ?"
+        end
         sql = "SELECT * FROM #{table_name} WHERE #{where_parts.join(' AND ')}"
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"
@@ -974,9 +1022,10 @@ module Tina4
     # Addressing a row by one column of a composite key matches every row
     # sharing that value. Feature 4 removed that from the raw write path; this
     # is the same rule for the ORM above it.
+    # { db_column => value } for every key column: it addresses the row in SQL.
     def pk_filter
       self.class.primary_key_fields.each_with_object({}) do |name, acc|
-        acc[name] = __send__(name) if respond_to?(name)
+        acc[self.class.get_db_column(name)] = __send__(name) if respond_to?(name)
       end
     end
 
@@ -1501,7 +1550,7 @@ module Tina4
       pk_value = __send__(pk)
       return nil unless pk_value
 
-      where = "#{fk} = ?"
+      where = "#{klass.get_db_column(fk)} = ?"
       # REL-SOFTDELETE-TRAVERSAL: exclude a soft-deleted related row.
       if klass.soft_delete
         where += " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)"
@@ -1521,13 +1570,13 @@ module Tina4
       pk_value = __send__(pk)
       return [] unless pk_value
 
-      where = "#{fk} = ?"
+      where = "#{klass.get_db_column(fk)} = ?"
       # REL-SOFTDELETE-TRAVERSAL: a soft-deleted child must not surface through
       # parent.children, consistent with the finders' default exclusion.
       if klass.soft_delete
         where += " AND (#{klass.soft_delete_field} IS NULL OR #{klass.soft_delete_field} = 0)"
       end
-      order_col = klass.primary_key_field || :id
+      order_col = klass.get_db_column(klass.primary_key_field || :id)
       sql = "SELECT * FROM #{klass.table_name} WHERE #{where} ORDER BY #{order_col}"
       # REL-EAGER-UNBOUNDED: page through ALL children rather than silently capping
       # at the default fetch limit (was 100), so the tail is never lost.
@@ -1548,8 +1597,8 @@ module Tina4
       return nil unless rel
 
       klass = Object.const_get(rel[:class_name])
-      fk = rel[:foreign_key] || "#{name}_id"
-      fk_value = __send__(fk.to_sym) if respond_to?(fk.to_sym)
+      fk = self.class.attribute_for(rel[:foreign_key] || "#{name}_id")
+      fk_value = __send__(fk) if respond_to?(fk)
       return nil unless fk_value
 
       @relationship_cache[name] = klass.find(fk_value)
