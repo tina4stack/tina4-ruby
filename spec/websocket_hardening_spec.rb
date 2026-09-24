@@ -1,10 +1,9 @@
 # frozen_string_literal: true
 #
 # Lock-in specs for the WebSocket + SSE hardening sweep (parity with the
-# Python master tests/test_websocket_hardening.py). Engine-agnostic — no real
-# Redis/NATS/sockets. A tiny in-memory FakeBackplane proves the relay path
-# end-to-end:
-#   - Backplane relay across simulated instances + origin-guard-no-echo
+# Python master tests/test_websocket_hardening.py). The backplane relay runs on a
+# REAL Redis (TINA4_TEST_REDIS_URL) through real RedisBackplanes:
+#   - Backplane relay across two manager instances + origin-guard-no-echo
 #   - bytes round-trip through the envelope (base64)
 #   - broadcast resilience (one dead client never aborts delivery; it is pruned)
 #   - SSE streaming error handling (generator raises / client disconnect)
@@ -12,8 +11,9 @@
 
 require "spec_helper"
 require "json"
+require "securerandom"
 
-# ── Fakes ─────────────────────────────────────────────────────
+# ── Connection stand-in ───────────────────────────────────────
 
 # Minimal stand-in for WebSocketConnection — records what was sent and can be
 # told to raise on send (to exercise broadcast resilience / pruning) or to flag
@@ -47,111 +47,143 @@ class FakeWsConnection
   end
 end
 
-# In-memory pub/sub backplane. publish synchronously fans the raw message out
-# to every subscribed block — exactly what a real backplane does, minus the
-# network and background thread.
-class FakeBackplane < Tina4::WebSocketBackplane
-  def initialize
-    @subs = Hash.new { |h, k| h[k] = [] }
+# ── Backplane relay + origin guard (REAL Redis) ───────────────
+#
+# Every backplane here is a real Tina4::RedisBackplane on the lab/CI Redis
+# (TINA4_TEST_REDIS_URL), wired by the manager's own ensure_backplane from
+# TINA4_WS_BACKPLANE / TINA4_WS_BACKPLANE_URL - the path a real app takes. These
+# used to be in-memory stand-ins (FakeBackplane and two subclasses), which proved
+# the relay logic but never that a message crosses a real pub/sub bus.
+#
+# Redis pub/sub channels are global to the server (not per database) and the lab
+# Redis is shared, so each example relays on its OWN channel (set on the manager
+# before wiring). The example that pins the default channel listens on the real
+# "tina4:ws" and keeps only envelopes from its own manager's instance id.
+
+RSpec.describe "WebSocket backplane relay (real Redis)" do
+  let(:redis_url) { ENV["TINA4_TEST_REDIS_URL"].to_s }
+  let(:channel) { "tina4:ws:spec:#{SecureRandom.hex(6)}" }
+
+  before do
+    skip "redis not set: TINA4_TEST_REDIS_URL not set" if redis_url.empty?
+    begin
+      require "redis"
+    rescue LoadError
+      skip "redis gem not installed (bundle group :databases)"
+    end
+    begin
+      probe = Redis.new(url: redis_url)
+      probe.ping
+      probe.close
+    rescue StandardError => e
+      skip "redis not reachable at #{redis_url}: #{e.class}"
+    end
+    @opened = []
+    @saved_env = %w[TINA4_WS_BACKPLANE TINA4_WS_BACKPLANE_URL].to_h { |key| [key, ENV[key]] }
   end
 
-  def publish(channel, message)
-    @subs[channel].each { |blk| blk.call(message) }
+  after do
+    (@opened || []).each do |closable|
+      closable.close
+    rescue StandardError
+      nil
+    end
+    (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 
-  def subscribe(channel, &block)
-    @subs[channel] << block
+  # A manager wired to a real RedisBackplane by its own ensure_backplane.
+  def wired_manager(url: redis_url, on_channel: channel)
+    ENV["TINA4_WS_BACKPLANE"] = "redis"
+    ENV["TINA4_WS_BACKPLANE_URL"] = url
+    manager = Tina4::WebSocket.new
+    manager.instance_variable_set(:@backplane_channel, on_channel)
+    manager.send(:ensure_backplane)
+    backplane = manager.instance_variable_get(:@backplane)
+    expect(backplane).to be_a(Tina4::RedisBackplane)
+    @opened << backplane
+    manager
   end
 
-  def unsubscribe(channel)
-    @subs.delete(channel)
+  # Wait until +count+ subscribers are really listening on +on_channel+, so a
+  # publish cannot race the SUBSCRIBE and vanish.
+  def wait_for_subscribers(count, on_channel: channel)
+    client = Redis.new(url: redis_url)
+    deadline = Time.now + 5
+    until client.pubsub("numsub", on_channel).last.to_i >= count
+      raise "only #{client.pubsub("numsub", on_channel).last} subscriber(s) on #{on_channel}" if Time.now > deadline
+
+      sleep 0.02
+    end
+  ensure
+    client&.close
   end
 
-  def close
-    @subs.clear
-  end
-end
-
-# A backplane whose publish always blows up — proves a flaky bus never undoes a
-# local broadcast.
-class ExplodingBackplane < FakeBackplane
-  def publish(_channel, _message)
-    raise RuntimeError, "bus down"
-  end
-end
-
-# A backplane that records the (channel, message) of every publish so a test can
-# prove which channel the manager actually published a broadcast on.
-class CapturingBackplane < FakeBackplane
-  attr_reader :published
-
-  def initialize
-    super
-    @published = []
+  def wait_until(seconds = 5)
+    deadline = Time.now + seconds
+    sleep 0.02 until yield || Time.now > deadline
   end
 
-  def publish(channel, message)
-    @published << [channel, message]
-    super
+  # An independent Redis subscriber (shares no code with RedisBackplane) that
+  # collects every raw message on +on_channel+.
+  def listen(on_channel)
+    received = Queue.new
+    client = Redis.new(url: redis_url)
+    thread = Thread.new do
+      client.subscribe(on_channel) { |on| on.message { |_channel, raw| received << raw } }
+    rescue StandardError
+      nil
+    end
+    @opened << Struct.new(:client, :thread) { def close = (thread.kill; client.close) }.new(client, thread)
+    [received, client]
   end
-end
 
-# Attach a fake backplane to a manager the way ensure_backplane would, wiring
-# the subscribe callback to the manager's on_backplane_message.
-def wire_backplane(manager, backplane)
-  manager.instance_variable_set(:@backplane, backplane)
-  manager.instance_variable_set(:@backplane_started, true)
-  backplane.subscribe(manager.backplane_channel) { |raw| manager.on_backplane_message(raw) }
-end
+  def drain(queue)
+    items = []
+    items << queue.pop until queue.empty?
+    items
+  end
 
-# ── Backplane relay + origin guard ────────────────────────────
-
-RSpec.describe "WebSocket backplane relay" do
   it "relays a remote broadcast to the relaying instance's local connections" do
-    backplane = FakeBackplane.new
-    mgr_a = Tina4::WebSocket.new
-    mgr_b = Tina4::WebSocket.new
-    wire_backplane(mgr_a, backplane)
-    wire_backplane(mgr_b, backplane)
+    mgr_a = wired_manager
+    mgr_b = wired_manager
+    wait_for_subscribers(2)
 
     conn_b = FakeWsConnection.new("b1")
     mgr_b.register_connection(conn_b)
 
-    # A broadcasts to all — delivers locally (A has none) then publishes.
     mgr_a.broadcast_all("hello-cluster")
 
+    wait_until { conn_b.sent.any? }
     expect(conn_b.sent).to eq(["hello-cluster"])
   end
 
-  it "drops our own echo (origin guard) — no double delivery" do
-    backplane = FakeBackplane.new
-    mgr = Tina4::WebSocket.new
-    wire_backplane(mgr, backplane)
-
+  it "drops our own echo (origin guard) - no double delivery" do
+    mgr = wired_manager
+    wait_for_subscribers(1)
     conn = FakeWsConnection.new("c1")
     mgr.register_connection(conn)
 
-    # Hand-craft an envelope whose src == this manager's instance id.
-    echo = JSON.generate(
-      "src" => mgr.instance_id,
-      "kind" => "all",
-      "exclude" => nil,
-      "room" => nil,
-      "path" => nil,
-      "text" => "echo-should-be-dropped"
-    )
-    mgr.on_backplane_message(echo)
+    # The manager's own broadcast comes back to it over the real bus. It was
+    # delivered locally once; the echo must not deliver it again.
+    mgr.broadcast_all("echo-should-be-dropped-once")
 
-    # Origin guard: the connection must NOT have received the echo.
-    expect(conn.sent).to eq([])
+    # A second, foreign-origin envelope published straight onto the channel
+    # proves the listener is live, so the echo check is not passing on silence.
+    Redis.new(url: redis_url).tap do |client|
+      client.publish(channel, JSON.generate("src" => "another-instance", "kind" => "all", "exclude" => nil,
+                                            "room" => nil, "path" => nil, "text" => "marker"))
+      client.close
+    end
+    wait_until { conn.sent.include?("marker") }
+    sleep 0.2
+
+    expect(conn.sent).to eq(["echo-should-be-dropped-once", "marker"])
   end
 
   it "delivers a single broadcast exactly once on each instance (no echo loop)" do
-    backplane = FakeBackplane.new
-    mgr_a = Tina4::WebSocket.new
-    mgr_b = Tina4::WebSocket.new
-    wire_backplane(mgr_a, backplane)
-    wire_backplane(mgr_b, backplane)
+    mgr_a = wired_manager
+    mgr_b = wired_manager
+    wait_for_subscribers(2)
 
     conn_a = FakeWsConnection.new("a1")
     conn_b = FakeWsConnection.new("b1")
@@ -160,17 +192,16 @@ RSpec.describe "WebSocket backplane relay" do
 
     mgr_a.broadcast_all("ping")
 
-    # Exactly once each — the origin guard prevents A from re-delivering.
+    wait_until { conn_b.sent.any? }
+    sleep 0.3 # time for any echo or loop to show up
     expect(conn_a.sent).to eq(["ping"])
     expect(conn_b.sent).to eq(["ping"])
   end
 
   it "relays a room broadcast only to remote room members" do
-    backplane = FakeBackplane.new
-    mgr_a = Tina4::WebSocket.new
-    mgr_b = Tina4::WebSocket.new
-    wire_backplane(mgr_a, backplane)
-    wire_backplane(mgr_b, backplane)
+    mgr_a = wired_manager
+    mgr_b = wired_manager
+    wait_for_subscribers(2)
 
     in_room = FakeWsConnection.new("b_in")
     out_room = FakeWsConnection.new("b_out")
@@ -180,16 +211,16 @@ RSpec.describe "WebSocket backplane relay" do
 
     mgr_a.broadcast_to_room("lobby", "room-msg")
 
+    wait_until { in_room.sent.any? }
+    sleep 0.2
     expect(in_room.sent).to eq(["room-msg"])
     expect(out_room.sent).to eq([])
   end
 
   it "relays a path broadcast only to remote connections on that path" do
-    backplane = FakeBackplane.new
-    mgr_a = Tina4::WebSocket.new
-    mgr_b = Tina4::WebSocket.new
-    wire_backplane(mgr_a, backplane)
-    wire_backplane(mgr_b, backplane)
+    mgr_a = wired_manager
+    mgr_b = wired_manager
+    wait_for_subscribers(2)
 
     on_path = FakeWsConnection.new("b_chat")
     on_path.path = "/chat"
@@ -200,16 +231,16 @@ RSpec.describe "WebSocket backplane relay" do
 
     mgr_a.broadcast("hi", path: "/chat")
 
+    wait_until { on_path.sent.any? }
+    sleep 0.2
     expect(on_path.sent).to eq(["hi"])
     expect(off_path.sent).to eq([])
   end
 
   it "carries binary payloads through the envelope via base64 (bytes round-trip)" do
-    backplane = FakeBackplane.new
-    mgr_a = Tina4::WebSocket.new
-    mgr_b = Tina4::WebSocket.new
-    wire_backplane(mgr_a, backplane)
-    wire_backplane(mgr_b, backplane)
+    mgr_a = wired_manager
+    mgr_b = wired_manager
+    wait_for_subscribers(2)
 
     conn_b = FakeWsConnection.new("b1")
     mgr_b.register_connection(conn_b)
@@ -217,23 +248,22 @@ RSpec.describe "WebSocket backplane relay" do
     payload = [0x00, 0x01, 0x02, 0xFF].pack("C*") + "foo".b
     mgr_a.broadcast_all(payload)
 
+    wait_until { conn_b.sent.any? }
     expect(conn_b.sent.length).to eq(1)
     expect(conn_b.sent.first.bytes).to eq(payload.bytes)
     expect(conn_b.sent.first.encoding).to eq(Encoding::ASCII_8BIT)
   end
 
   it "encodes bytes under 'b64' and text under 'text' in the published envelope" do
-    backplane = FakeBackplane.new
-    captured = []
-    backplane.subscribe(Tina4::WEBSOCKET_BACKPLANE_CHANNEL) { |raw| captured << JSON.parse(raw) }
-
-    mgr = Tina4::WebSocket.new
-    mgr.instance_variable_set(:@backplane, backplane)
-    mgr.instance_variable_set(:@backplane_started, true)
+    received, = listen(channel)
+    mgr = wired_manager
+    wait_for_subscribers(2) # the independent listener + the manager's own
 
     mgr.publish_envelope("all", [0x10, 0x20].pack("C*"))
     mgr.publish_envelope("all", "plain text")
 
+    wait_until { received.size >= 2 }
+    captured = drain(received).map { |raw| JSON.parse(raw) }
     expect(captured[0]).to have_key("b64")
     expect(Tina4::Base64.strict_decode64(captured[0]["b64"]).bytes).to eq([0x10, 0x20])
     expect(captured[1]["text"]).to eq("plain text")
@@ -241,43 +271,56 @@ RSpec.describe "WebSocket backplane relay" do
   end
 
   it "publish_envelope truly publishes nothing (no local or remote delivery) without a backplane" do
+    ENV.delete("TINA4_WS_BACKPLANE")
+    received, = listen(Tina4::WEBSOCKET_BACKPLANE_CHANNEL)
+    wait_for_subscribers(1, on_channel: Tina4::WEBSOCKET_BACKPLANE_CHANNEL)
     mgr = Tina4::WebSocket.new
     conn = FakeWsConnection.new("c1")
     mgr.register_connection(conn)
 
     # No backplane wired. publish_envelope is the publish-only half of a
-    # broadcast — with no bus it must early-return: never raise, AND never
-    # deliver to the local connection (publish does not fan out locally).
+    # broadcast - with no bus it must early-return: never raise, never deliver
+    # to the local connection, and never reach the real channel.
     expect { mgr.publish_envelope("all", "noop") }.not_to raise_error
+    sleep 0.3
     expect(conn.sent).to eq([])
+    ours = drain(received).select { |raw| JSON.parse(raw)["src"] == mgr.instance_id rescue false }
+    expect(ours).to eq([])
   end
 
   it "publishes broadcasts on the shared 'tina4:ws' channel (the constant is the channel actually used)" do
-    backplane = CapturingBackplane.new
-    mgr = Tina4::WebSocket.new
-    wire_backplane(mgr, backplane)
+    received, = listen("tina4:ws")
+    wait_for_subscribers(1, on_channel: "tina4:ws")
+    ENV["TINA4_WS_BACKPLANE"] = "redis"
+    ENV["TINA4_WS_BACKPLANE_URL"] = redis_url
+    mgr = Tina4::WebSocket.new # default channel, wired lazily by the broadcast itself
+    expect(mgr.backplane_channel).to eq(Tina4::WEBSOCKET_BACKPLANE_CHANNEL)
 
     mgr.broadcast_all("x")
+    @opened << mgr.instance_variable_get(:@backplane)
 
-    # Prove the constant is not just a literal but the channel the manager
-    # actually published on — captured live during the broadcast.
-    expect(backplane.published.length).to eq(1)
-    published_channel, = backplane.published.first
-    expect(published_channel).to eq("tina4:ws")
-    expect(published_channel).to eq(mgr.backplane_channel)
-    expect(published_channel).to eq(Tina4::WEBSOCKET_BACKPLANE_CHANNEL)
+    # The lab Redis is shared: keep only this manager's envelopes.
+    ours = []
+    wait_until do
+      ours.concat(drain(received).map { |raw| JSON.parse(raw) }.select { |env| env["src"] == mgr.instance_id })
+      ours.any?
+    end
+    expect(ours.length).to eq(1)
+    expect(ours.first["text"]).to eq("x")
+    expect(Tina4::WEBSOCKET_BACKPLANE_CHANNEL).to eq("tina4:ws")
   end
 
   it "does not let a flaky bus undo the local broadcast" do
-    mgr = Tina4::WebSocket.new
-    mgr.instance_variable_set(:@backplane, ExplodingBackplane.new)
-    mgr.instance_variable_set(:@backplane_started, true)
-
+    # A REAL backplane whose Redis is not there: nothing listens on port 1, so
+    # every publish raises Redis::CannotConnectError on the real client.
+    mgr = wired_manager(url: "redis://127.0.0.1:1/0")
     conn = FakeWsConnection.new("c1")
     mgr.register_connection(conn)
 
     expect { mgr.broadcast_all("survive") }.not_to raise_error
     expect(conn.sent).to eq(["survive"])
+    # And the bus really was down: publishing on it raises.
+    expect { mgr.instance_variable_get(:@backplane).publish(channel, "x") }.to raise_error(Redis::BaseConnectionError)
   end
 end
 
