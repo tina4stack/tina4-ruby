@@ -211,25 +211,49 @@ module Tina4
       # spells "already exists" differently ("There is already an object named",
       # "already exists", SQLSTATE 42S01) and a string match would rot the first
       # time an engine reworded itself or ran under another locale.
+      #
+      # The re-check is RETRIED, a bounded number of times, because the loser
+      # can fail BEFORE the winner has committed. MEASURED on MySQL 8.4: CREATE
+      # TABLE IF NOT EXISTS takes a shared metadata lock on the name, checks,
+      # then upgrades it to exclusive, and two sessions upgrading at once is a
+      # metadata-lock deadlock. MySQL backs the victim off silently only when the
+      # session holds no other metadata lock; otherwise the victim gets 1213
+      # "Deadlock found" while the winner's table is still invisible, and one
+      # immediate re-check turned that lost race into a failed request (tina4-php
+      # CI run 35972320442). Same attempts and delays in all four frameworks.
+      CREATE_ATTEMPTS = 5
+      CREATE_RETRY_DELAY = 0.05
+
       def ensure_table
         return if @table_ready
 
         @table_ready = true
-        begin
-          db.execute(create_table_sql)
-        rescue StandardError
-          # A failed statement leaves PostgreSQL's transaction ABORTED, so
-          # without this the re-check would fail for the wrong reason and report
-          # a missing table that is right there. Best effort: an engine with no
-          # open transaction is entitled to object to being rolled back.
+        attempt = 1
+        until db.table_exists?(TABLE_NAME)
           begin
-            db.rollback
+            db.execute(create_table_sql)
+            return
           rescue StandardError
-            nil
+            # A failed statement leaves PostgreSQL's transaction ABORTED, so
+            # without this the re-check would fail for the wrong reason and
+            # report a missing table that is right there. Best effort: an engine
+            # with no open transaction is entitled to object to being rolled back.
+            begin
+              db.rollback
+            rescue StandardError
+              nil
+            end
+            # Somebody else created it - that is the race, and it is a success.
+            # Still absent after the last attempt is a real failure, re-raised
+            # untouched.
+            if attempt >= CREATE_ATTEMPTS
+              return if db.table_exists?(TABLE_NAME)
+
+              raise
+            end
+            sleep(CREATE_RETRY_DELAY * attempt)
+            attempt += 1
           end
-          # Somebody else created it - that is the race, and it is a success.
-          # Anything else is a real failure and is re-raised untouched.
-          raise unless db.table_exists?(TABLE_NAME)
         end
       end
     end

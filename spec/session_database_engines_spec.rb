@@ -59,6 +59,9 @@
 #      MSSQL AT ALL, and Firebird rejected it twice over (no IF NOT EXISTS
 #      clause, no TEXT type). Case 3 therefore drives FIVE engines, two more
 #      than case 1: sqlite, postgres, mysql, mssql AND firebird.
+#   4. the same race with REAL PROCESSES at the same instant - case 3 runs the
+#      losing side one step after the winner, which cannot reach a failure that
+#      needs true concurrency (SQLite "database is locked", MySQL 1213).
 
 require "spec_helper"
 require "tina4"
@@ -538,5 +541,108 @@ RSpec.describe "Session database backend across engines" do
     )
 
     RSpec.configuration.reporter.message("     race covered on: #{ran.join(', ')}")
+  end
+
+  # The case above makes the LOSING side deterministic but runs it in one
+  # process, one step after the other. It cannot reach an interleave that needs
+  # real concurrency, and two were live: SQLite had no busy timeout, so racing
+  # processes died with "database is locked" (five of six, measured), and on
+  # MySQL the loser of the metadata-lock deadlock inside CREATE TABLE IF NOT
+  # EXISTS got 1213 before the winner had committed, so the single re-check
+  # still saw no table (nine of twelve died with a named lock held). This case
+  # races REAL processes, the same shape as PHP's SessionDatabaseEnginesTest.
+  #
+  # MySQL runs twice. The second pass holds a named lock in every worker: MySQL
+  # backs the deadlock victim off silently only when the session holds no other
+  # metadata lock, so without one the losing path is reached rarely (tina4-php
+  # CI run 35972320442) and with one it is reached every run.
+  it "concurrent_first_use_is_safe_with_real_processes_on_every_engine" do
+    worker_script = File.expand_path("fixtures/session_concurrent_first_use.rb", __dir__)
+    scenarios = [
+      { name: "sqlite", url: "sqlite:#{File.join(work_dir, 'race.db')}", username: nil, password: nil, workers: 6 },
+      { name: "postgres", url: "postgres://#{pg_host}:#{pg_port}/#{pg_db}", username: pg_user, password: pg_pass, workers: 6 },
+      { name: "mysql", url: "mysql://#{mysql_host}:#{mysql_port}/#{mysql_db}", username: mysql_user, password: mysql_pass, workers: 6 },
+      { name: "mysql+named-lock", url: "mysql://#{mysql_host}:#{mysql_port}/#{mysql_db}", username: mysql_user,
+        password: mysql_pass, workers: 12, hold_named_lock: true },
+      { name: "mssql", url: "mssql://#{mssql_host}:#{mssql_port}/#{mssql_db}", username: mssql_user, password: mssql_pass, workers: 6 }
+    ]
+    unless firebird_url.empty?
+      scenarios << { name: "firebird", url: firebird_url, username: firebird_user, password: firebird_pass, workers: 6 }
+    end
+
+    drop_table = lambda do |scenario|
+      database = Tina4::Database.new(scenario[:url], username: scenario[:username], password: scenario[:password])
+      begin
+        if database.table_exists?(session_table)
+          database.execute("DROP TABLE #{session_table}")
+          begin
+            database.commit
+          rescue StandardError
+            nil
+          end
+        end
+      ensure
+        database.close
+      end
+    end
+
+    survived = []
+    failures = []
+    scenarios.each do |scenario|
+      begin
+        drop_table.call(scenario)
+        environment = {
+          "T4_RACE_URL" => scenario[:url],
+          "T4_RACE_USERNAME" => scenario[:username].to_s,
+          "T4_RACE_PASSWORD" => scenario[:password].to_s,
+          "T4_RACE_HOLD_NAMED_LOCK" => scenario[:hold_named_lock] ? "1" : ""
+        }
+        # Enough lead for every worker to boot Ruby and CONNECT first - a
+        # worker still connecting is not in the race.
+        start_at = format("%.6f", Time.now.to_f + 4.0)
+        workers = Array.new(scenario[:workers]) do |index|
+          reader, writer = IO.pipe
+          pid = spawn(environment, RbConfig.ruby, worker_script, start_at, "race-#{scenario[:name]}-#{index}",
+                      out: File::NULL, err: writer)
+          writer.close
+          [pid, reader, index]
+        end
+        # Reap every worker; nothing is left running when this returns.
+        workers.each do |pid, reader, index|
+          error_output = reader.read
+          reader.close
+          _, status = Process.wait2(pid)
+          next if status.success?
+
+          failures << "#{scenario[:name]} worker #{index} exited #{status.exitstatus}: #{error_output.strip[-300..] || error_output.strip}"
+        end
+
+        # OUT OF BAND on a fresh connection: a worker that swallowed its own
+        # failure would otherwise look exactly like one that wrote.
+        probe = Tina4::Database.new(scenario[:url], username: scenario[:username], password: scenario[:password])
+        row = probe.fetch_one("SELECT COUNT(*) AS n FROM #{session_table}")
+        probe.close
+        rows = row ? row.values.first.to_i : -1
+        if rows == scenario[:workers]
+          survived << scenario[:name]
+        else
+          failures << "#{scenario[:name]} ended the race with #{rows} of #{scenario[:workers]} rows"
+        end
+      rescue StandardError, LoadError => e
+        failures << "#{scenario[:name]} (#{e.class}: #{e.message.to_s[0, 200]})"
+      ensure
+        begin
+          drop_table.call(scenario)
+        rescue StandardError, LoadError
+          nil
+        end
+      end
+    end
+
+    RSpec.configuration.reporter.message("     concurrent first use survived on: #{survived.join(', ')}")
+    expect(failures).to be_empty,
+                        "concurrent first use is NOT safe on: #{failures.join('; ')} - every app that starts " \
+                        "more than one process races here, and the loser must not take a request down"
+    expect(survived).to eq(scenarios.map { |scenario| scenario[:name] })
   end
 end
