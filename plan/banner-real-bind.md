@@ -51,6 +51,6 @@ Mutations (lab, Ruby 3.2.3, Puma 6.6.1):
 - [x] run!(port:) lost to TINA4_PORT (ADR-0041) and logged a false "PORT is deprecated" warning
 
 ## Commits
-- 9d04ea6  fix(banner): print the host and port the server really binds (tina4-ruby#54)
+- 1304df0  fix(banner): print the host and port the server really binds (tina4-ruby#54)
 
 ## Status: Complete (PR #54 open, CI green; not merged)
