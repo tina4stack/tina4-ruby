@@ -3,6 +3,7 @@
 require "socket"
 require "securerandom"
 require_relative "mqtt_message"
+require_relative "database_url"
 
 module Tina4
   # Any MQTT protocol / connection failure.
@@ -166,7 +167,7 @@ module Tina4
       scheme = raw[%r{\A([A-Za-z][A-Za-z0-9+.-]*)://}, 1]&.downcase
       unless scheme.nil? || %w[mqtt tcp mqtts].include?(scheme)
         raise ArgumentError,
-              "unsupported MQTT url scheme #{scheme.inspect} in #{raw.inspect} — " \
+              "unsupported MQTT url scheme #{scheme.inspect} in #{Tina4::DatabaseUrl.redact(raw).inspect} — " \
               "this client speaks mqtt://, tcp:// or mqtts:// (TLS). " \
               "WebSocket transports are not implemented."
       end
@@ -185,7 +186,7 @@ module Tina4
       end
 
       match = rest.match(%r{\A(?<host>\[[^\]]+\]|[^:/]+)(?::(?<port>\d+))?(?:/.*)?\z})
-      raise ArgumentError, "malformed MQTT url #{raw.inspect} — expected mqtt://host:port" unless match
+      raise ArgumentError, "malformed MQTT url #{Tina4::DatabaseUrl.redact(raw).inspect} — expected mqtt://host:port" unless match
 
       {
         host: match[:host].delete_prefix("[").delete_suffix("]"),

@@ -160,6 +160,26 @@ RSpec.describe "Tina4::Mqtt authentication and TLS" do
       expect { Tina4::Mqtt.parse_url("ws://broker.example:8083/mqtt") }
         .to raise_error(ArgumentError, /mqtt:\/\/, tcp:\/\/ or mqtts:\/\//)
     end
+
+    # SECURITY: both refusals used to interpolate the raw url, so a TINA4_MQTT_URL
+    # with a typo wrote its password into the exception (and every log that
+    # prints it). They now go through Tina4::DatabaseUrl.redact, and still name
+    # the user and host so the typo stays diagnosable.
+    it "never echoes the password when refusing an unsupported scheme" do
+      expect { Tina4::Mqtt.parse_url("ws://device:s3cret@broker.example:8083/mqtt") }
+        .to raise_error(ArgumentError) { |error|
+          expect(error.message).not_to include("s3cret")
+          expect(error.message).to include("ws://device:***@broker.example:8083")
+        }
+    end
+
+    it "never echoes the password when refusing a malformed url" do
+      expect { Tina4::Mqtt.parse_url("mqtt://device:s3cret@broker.example:notaport") }
+        .to raise_error(ArgumentError, /malformed MQTT url/) { |error|
+          expect(error.message).not_to include("s3cret")
+          expect(error.message).to include("device:***@broker.example")
+        }
+    end
   end
 
   # ── TLS ──────────────────────────────────────────────────────────────────
