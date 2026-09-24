@@ -443,8 +443,10 @@ module Tina4
     def initialize!(root_dir = Dir.pwd)
       @root_dir = root_dir
 
-      # Print banner
-      print_banner
+      # No banner here. The server start prints it (start_puma_server,
+      # WebServer#start) once the bind host and port are resolved; printed from
+      # here it named print_banner's defaults, localhost:7147, whatever the
+      # server really bound. Python prints it from run() for the same reason.
 
       # Load environment. Precedence: real-env > .env.local > .env
       # (.env.local loads first, both first-wins, so a real env var always wins).
@@ -602,8 +604,12 @@ module Tina4
       end
       root_dir ||= Dir.pwd
 
-      ENV["PORT"] = port.to_s if port
-      ENV["HOST"] = host.to_s if host
+      # An explicit argument beats the environment (ADR-0041), so it goes into
+      # the framework's own variables, which outrank everything else. Written
+      # into the bare PORT/HOST it lost to TINA4_PORT/TINA4_HOST and warned the
+      # app about a deprecated variable it never set.
+      ENV["TINA4_PORT"] = port.to_s if port
+      ENV["TINA4_HOST"] = host.to_s if host
       ENV["TINA4_DEBUG"] = debug.to_s unless debug.nil?
 
       initialize!(root_dir) unless @root_dir
@@ -717,6 +723,7 @@ module Tina4
         user_config.raise_exception_on_sigterm false
       end
 
+      print_banner(host: host, port: port, server_name: "puma")
       Tina4::Log.info("Production server: puma (TINA4_SHUTDOWN_TIMEOUT=#{shutdown_timeout}s)")
       begin
         Puma::Launcher.new(config).run
