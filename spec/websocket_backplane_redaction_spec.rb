@@ -18,6 +18,9 @@
 #                          bad URI(is not URI?): "redis://:s3cret@local host:xx/3"
 #                        LEAK. Fixed at the source: RedisBackplane re-raises with
 #                        Tina4::DatabaseUrl.redact(url), the one redaction primitive.
+#   * also measured: a refused login killed the subscriber thread with only a raw
+#     report_on_exception trace on stderr, while "backplane active" stood as the
+#     last framework log line. The listener now logs "subscriber stopped".
 #
 # HOW IT IS OBSERVED, WITHOUT A DOUBLE: a REAL ruby subprocess (the bundle's own
 # environment, so the real `redis` gem) drives a REAL RedisBackplane and a REAL
@@ -129,6 +132,9 @@ RSpec.describe "WebSocket backplane log redaction (real password Redis)" do
       expect(everything_written).to include("WebSocket backplane active")
       expect(everything_written).to include("WebSocket backplane publish failed")
       expect(everything_written).to include("WebSocket backplane wiring failed")
+      # The wrong-password listener's death is reported through the framework
+      # log, not only as a raw thread trace on stderr.
+      expect(everything_written).to include("WebSocket backplane subscriber stopped on 'tina4:ws': WRONGPASS")
       expect(report["wired_malformed"]).to be(false)
 
       # The malformed URL is still diagnosable: the redacted form names the host.
