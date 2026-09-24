@@ -3,8 +3,8 @@
 # Real end-to-end specs for the dev-admin run-chip / grounding / queue /
 # websocket parity routes added to lib/tina4/dev_admin.rb.
 #
-# NO MOCKS. A real Puma server (Puma gives us rack.hijack, which the WebSocket
-# upgrade needs) is booted from a throwaway scaffolded Tina4 project on a
+# NO MOCKS. The real built-in server (it provides rack.hijack, which the
+# WebSocket upgrade needs) is booted from a throwaway scaffolded Tina4 project on a
 # unique high port, and every assertion is made over real HTTP / a real RFC
 # 6455 client against a real SQLite database and the real file-backed queue.
 #
@@ -26,8 +26,7 @@ require "timeout"
 require "fileutils"
 require "tmpdir"
 
-RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order: :defined do
-  require "puma"
+RSpec.describe "dev-admin run-chip parity (live server, real deps)", :slow, order: :defined do
 
   PROJECT = Dir.mktmpdir("tina4-devadmin-chips-")
 
@@ -114,15 +113,16 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     RB
 
     lib = File.expand_path("../lib", __dir__)
-    File.write(File.join(proj, "config.ru"), <<~RU)
+    File.write(File.join(proj, "app.rb"), <<~RB)
       $LOAD_PATH.unshift(#{lib.inspect})
       require "tina4"
       Tina4.initialize!(#{proj.inspect})
       Tina4::Health.register!
       Tina4::Frond.register_live_endpoint!
       Tina4::Router.load_routes(File.join(#{proj.inspect}, "src", "routes"))
-      run Tina4::RackApp.new(root_dir: #{proj.inspect})
-    RU
+      Tina4::WebServer.new(Tina4::RackApp.new(root_dir: #{proj.inspect}),
+                           host: "127.0.0.1", port: #{PORT}).start
+    RB
 
     # Pin the queue store INSIDE this project, for the server and for this
     # process alike. TINA4_QUEUE_PATH is an ABSOLUTE store shared by everything
@@ -133,8 +133,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     @saved_queue_path = ENV["TINA4_QUEUE_PATH"]
     ENV["TINA4_QUEUE_PATH"] = File.join(proj, "queue-store")
 
-    puma_bin = Gem.bin_path("puma", "puma")
-    @log_path = File.join(proj, "puma.log")
+    @log_path = File.join(proj, "server.log")
     child_env = {
       "TINA4_DEBUG" => "true",
       "TINA4_LOG_LEVEL" => "NONE",
@@ -151,7 +150,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     }
     @pid = spawn(
       child_env,
-      RbConfig.ruby, puma_bin, "-b", "tcp://127.0.0.1:#{PORT}", File.join(proj, "config.ru"),
+      RbConfig.ruby, File.join(proj, "app.rb"),
       chdir: proj, out: @log_path, err: @log_path
     )
 
@@ -169,7 +168,7 @@ RSpec.describe "dev-admin run-chip parity (live Puma, real deps)", :slow, order:
     end
     unless ready
       log = File.exist?(@log_path) ? File.read(@log_path) : "(no log)"
-      raise "Puma dev server never came up on #{PORT}\n--- puma.log ---\n#{log}"
+      raise "dev server never came up on #{PORT}\n--- server.log ---\n#{log}"
     end
   end
 
