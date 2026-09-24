@@ -440,7 +440,35 @@ module Tina4
     # Same dual-callable semantics as ``add_filter`` — see that method for
     # the static-facade pattern.
     def self.add_global(name, value)
-      @@class_globals[name.to_s] = value
+      @@class_globals[name.to_s] = wrap_global(value) # ADR-0085
+    end
+
+    # Wrap a bare zero-argument Proc/lambda/Method so a bare reference to it
+    # auto-calls (ADR-0085). Node auto-calls any function reached by a bare
+    # reference and uses the return value; Ruby stored the proc instead, so
+    # `{% if admin_only %}` with `add_global("admin_only", -> { ... })` was
+    # always truthy. A callable that declares parameters is left unwrapped and
+    # behaves exactly as before; anything that is not a Proc/Method is untouched
+    # (matching Node, which only auto-calls plain functions).
+    def self.wrap_global(value)
+      if (value.is_a?(Proc) || value.is_a?(Method)) && value.arity.zero?
+        AutoGlobal.new(value)
+      else
+        value
+      end
+    end
+
+    # Marker for a zero-argument callable global (see wrap_global). `resolve`
+    # invokes it once for a bare reference; `admin_only()` still calls it via
+    # the ordinary function-call path (`call` forwards).
+    class AutoGlobal
+      def initialize(fn)
+        @fn = fn
+      end
+
+      def call(*args)
+        @fn.call(*args)
+      end
     end
 
     # Register a custom filter.
@@ -464,7 +492,7 @@ module Tina4
     #
     # Updates this instance's live globals map only.
     def add_global(name, value)
-      @globals[name.to_s] = value
+      @globals[name.to_s] = self.class.wrap_global(value) # ADR-0085
       self
     end
 
@@ -2209,7 +2237,10 @@ module Tina4
         return nil if value.nil?
       end
 
-      value
+      # ADR-0085: a bare reference to a zero-argument callable global uses its
+      # return value. `g()` never reaches here as a marker -- the function-call
+      # path invokes it directly -- so each global is called at most once.
+      value.is_a?(AutoGlobal) ? value.call : value
     end
 
     # -----------------------------------------------------------------------
