@@ -127,6 +127,7 @@ module Tina4
         result = execute_query(sql, data.values)
         row = result.is_a?(Array) ? result.first : nil
         id = normalize_returned_id(row)
+        id = sequence_value_in(row) if id.nil? && row.is_a?(Hash)
         # Remember the real id so a follow-up #last_insert_id / db.get_last_id
         # surfaces THIS value (incl. a UUID string) instead of re-probing
         # lastval(), which has no sequence for a UUID PK and would return a
@@ -324,6 +325,18 @@ module Tina4
         else
           value.nil? ? nil : value
         end
+      end
+
+      # A key column not named ``id`` (``person_id SERIAL``) is invisible to
+      # row_id_value, so ask the sequence. lastval() is session-wide: on a table
+      # with no sequence it is a value from some EARLIER insert, so it is only
+      # trusted when the row this INSERT returned actually holds it.
+      def sequence_value_in(row)
+        @last_returning_id = nil
+        value = last_insert_id
+        return nil if value.nil?
+
+        row.values.any? { |column_value| column_value.to_s == value.to_s } ? value : nil
       end
 
       # Read the ``id`` column from a RETURNING row regardless of key style
