@@ -26,10 +26,13 @@ RSpec.describe "Browser-open contract (ADR-0070)" do
 
   around do |example|
     saved = ENV.to_h
+    loaded_keys = Tina4::Env.instance_variable_get(:@loaded_keys)&.dup
     managed.each { |key| ENV.delete(key) }
     example.run
   ensure
     ENV.replace(saved)
+    # Dotenv reset must not remove process defaults restored by this fixture.
+    Tina4::Env.instance_variable_set(:@loaded_keys, loaded_keys)
   end
 
   it "ci env vars match the contract fixture" do
