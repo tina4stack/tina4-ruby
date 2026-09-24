@@ -152,6 +152,7 @@ jobs:
       TINA4_TEST_POSTGIS_URL: postgres://tina4:tina4@localhost:55433/tina4_gis
       TINA4_TEST_PG_USERNAME: tina4
       TINA4_TEST_PG_PASSWORD: tina4
+      TINA4_TEST_PG_URL: postgres://localhost:55432/tina4_rb
       TINA4_TEST_PG_DB: tina4_rb
       TINA4_TEST_PG_URL: postgres://tina4:tina4@localhost:55432/tina4_rb
       # Second Postgres database for the two-DB named-connection test
@@ -174,11 +175,13 @@ jobs:
       TINA4_TEST_MYSQL_PORT: '3306'
       TINA4_TEST_MYSQL_USERNAME: tina4
       TINA4_TEST_MYSQL_PASSWORD: tina4
+      TINA4_TEST_MYSQL_URL: mysql://127.0.0.1:3306/tina4_test
       TINA4_TEST_MYSQL_DB: tina4_test
       TINA4_TEST_MSSQL_HOST: localhost
       TINA4_TEST_MSSQL_PORT: '1433'
       TINA4_TEST_MSSQL_USERNAME: sa
       TINA4_TEST_MSSQL_PASSWORD: 'TinaSQL123!Secure'
+      TINA4_TEST_MSSQL_URL: mssql://localhost:1433/tina4_test
       TINA4_TEST_MSSQL_DB: tina4_test
       # The ADR-0069 test gate reads the engine URLs (PG above, these two) as the
       # promise that the engine is provisioned. Without them a [needs:postgres] /

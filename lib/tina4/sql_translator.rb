@@ -150,9 +150,96 @@ module Tina4
         [out, literals]
       end
 
+      # Rewrite every PLACEHOLDER `?` in +sql+ with the block's answer for its
+      # zero-based index, leaving every `?` that is not a placeholder alone
+      # (tina4-python #138). Skipped: string literals ('...' with '' escapes,
+      # Postgres E'...' with backslash escapes, $$...$$ and $tag$...$tag$),
+      # quoted identifiers ("..." and `...`, plus [...] when +brackets+ is true
+      # for SQL Server - never elsewhere, where arr[?] is a real placeholder)
+      # and comments (-- and /* */). A `%` is never special here.
+      #
+      # The two Ruby drivers that rewrite `?` both did a plain text rewrite:
+      # Postgres (? -> $n) turned SELECT 'why?', ? into 'why$1', $2; MSSQL
+      # (? -> escaped value, one sub at a time) also rewrote a `?` inside a
+      # value it had just spliced in.
+      def replace_placeholders(sql, brackets: false)
+        out = +""
+        index = 0
+        i = 0
+        n = sql.length
+        while i < n
+          span_end = placeholder_skip_span(sql, i, brackets)
+          if span_end
+            out << sql[i...span_end]
+            i = span_end
+          elsif sql[i] == "?"
+            out << yield(index).to_s
+            index += 1
+            i += 1
+          else
+            out << sql[i]
+            i += 1
+          end
+        end
+        out
+      end
+
       # Inverse of #mask_literals.
       def restore_literals(masked, literals)
         masked.gsub(/\x00(\d+)\x00/) { literals[::Regexp.last_match(1).to_i] }
+      end
+
+      # When a literal, quoted identifier or comment STARTS at +i+, the index
+      # just past its end; otherwise nil. An unterminated span runs to the end.
+      def placeholder_skip_span(sql, i, brackets)
+        ch = sql[i]
+        nxt = sql[i + 1]
+        return sql.index("\n", i) || sql.length if ch == "-" && nxt == "-"
+        return (sql.index("*/", i + 2)&.+(2)) || sql.length if ch == "/" && nxt == "*"
+        return quoted_span_end(sql, i, "'", backslash: e_string?(sql, i)) if ch == "'"
+        return quoted_span_end(sql, i, ch) if ch == '"' || ch == "`"
+        return quoted_span_end(sql, i, "]") if brackets && ch == "["
+        return dollar_span_end(sql, i) if ch == "$"
+
+        nil
+      end
+
+      # The end of a span opened at +i+ and closed by +close+, where a doubled
+      # closer is an escaped one ('' "" `` ]]) and, for an E'...' string, a
+      # backslash escapes the next character.
+      def quoted_span_end(sql, i, close, backslash: false)
+        j = i + 1
+        n = sql.length
+        while j < n
+          if backslash && sql[j] == "\\"
+            j += 2
+          elsif sql[j] == close
+            return j + 1 unless sql[j + 1] == close
+
+            j += 2
+          else
+            j += 1
+          end
+        end
+        n
+      end
+
+      # A Postgres escape string: E'...' / e'...' where the E is its own token.
+      def e_string?(sql, i)
+        i.positive? && sql[i - 1].match?(/[eE]/) && (i < 2 || !sql[i - 2].match?(/[A-Za-z0-9_$]/))
+      end
+
+      # A Postgres dollar-quoted string ($$...$$ or $tag$...$tag$) starting at
+      # +i+, or nil. `$1` is a numbered parameter, not a tag (tags cannot start
+      # with a digit), and a `$` inside an identifier (a$b) opens nothing.
+      def dollar_span_end(sql, i)
+        return nil if i.positive? && sql[i - 1].match?(/[A-Za-z0-9_]/)
+
+        tag = sql[i..][/\A\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/]
+        return nil unless tag
+
+        close = sql.index(tag, i + tag.length)
+        close ? close + tag.length : sql.length
       end
 
       # Convert || string concatenation to CONCAT() for MySQL/MSSQL. Rewrites ONLY

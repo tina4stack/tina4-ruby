@@ -77,12 +77,23 @@ module Tina4
     # Content-Length reflects the (possibly compressed) body the equivalent
     # GET would have sent, mirroring the Python master's build_headers() ->
     # app() ordering (compress -> tag -> 304-decide -> strip-for-HEAD).
+    #
+    # `security_headers` is here for the same reason: a refusal (a CSRF 403, a
+    # legacy auth_handler 403, a pre-match middleware's 429), a 404 and a
+    # static file are all produced OUTSIDE the post-match middleware pass that
+    # runs SecurityHeadersMiddleware, so they left without CSP, nosniff and
+    # X-Frame-Options (python #137, php CSRF-403 parity).
     ALWAYS_STAGES = %i[
       compress_and_tag
       conditional_get
       head_strip
       apply_cors
+      security_headers
     ].freeze
+
+    # The three headers whose presence shows SecurityHeadersMiddleware already
+    # ran for this response (lower-case: how the pipeline stores them).
+    SECURITY_HEADER_PROBE = %w[content-security-policy x-content-type-options x-frame-options].freeze
 
     RESPONSE_STAGES = %i[
       dev_inspector_capture
@@ -130,7 +141,7 @@ module Tina4
     DispatchContext = Struct.new(
       :env, :method, :path, :started_at,
       :pre_request, :pre_response, :matched_pattern, :matched,
-      :bypass_response_stages,
+      :bypass_response_stages, :security_exempt,
       keyword_init: true
     )
 
@@ -181,6 +192,7 @@ module Tina4
       return nil unless ws_result
 
       ws_route, ws_params = ws_result
+      ctx.security_exempt = true # a protocol switch, not a document
       handle_websocket_upgrade(ctx.env, ws_route, ws_params)
     end
 
@@ -194,6 +206,9 @@ module Tina4
         return [404, { "content-type" => "text/plain" }, ["Not available on AI port"]]
       end
 
+      # The dev dashboard is a debug-only surface with its own inline scripts;
+      # it keeps its historical headers.
+      ctx.security_exempt = true
       Tina4::DevAdmin.handle_request(ctx.env)
     end
 
@@ -288,11 +303,15 @@ module Tina4
     # 9110 s9.3.2. Recorded as a finding and fixed separately with its own test
     # pair - NOT silently inside this extraction.
     def not_found(ctx)
+      # The swagger UI loads its assets from TINA4_SWAGGER_UI_CDN, which the
+      # default CSP (default-src 'self') would block, so it stays exempt.
       if ctx.path == "/swagger" || ctx.path == "/swagger/"
         ctx.bypass_response_stages = true
+        ctx.security_exempt = true
         return serve_swagger_ui
       elsif ctx.path == "/swagger/openapi.json"
         ctx.bypass_response_stages = true
+        ctx.security_exempt = true
         return serve_openapi_json
       end
 
@@ -303,6 +322,56 @@ module Tina4
       end
 
       handle_404(ctx.path, ctx.env["HTTP_ACCEPT"])
+    end
+
+    # ALWAYS stage: every response gets the security headers a route response
+    # gets, whichever stage produced it. See ALWAYS_STAGES.
+    def security_headers(ctx, response)
+      return nil if ctx.security_exempt
+
+      with_security_headers(ctx, response)
+    end
+
+    # Issue #137 (parity with tina4-python #137): a static file gets the SAME
+    # security headers a route response gets.
+    #
+    # SecurityHeadersMiddleware is post-match global middleware, so it only ever
+    # ran for a MATCHED route; a file from public/ or src/public/ answers from
+    # this not-found fallback and skipped it. The same HTML carried CSP, nosniff
+    # and X-Frame-Options from a route and none of them as a file - and since
+    # "/" resolves to index.html, an SPA's front door was frameable
+    # (clickjacking) and ran without a CSP.
+    #
+    # Only this middleware is applied, and only when it is ATTACHED (which
+    # Tina4.initialize! does by default), so removing it still opts a static
+    # file out too. The headers come from the middleware's own before hook, so
+    # the TINA4_CSP / TINA4_FRAME_OPTIONS / TINA4_HSTS rules stay in one place.
+    # Other global middleware (auth, CSRF, rate limits) is deliberately NOT run
+    # here: static serving has never been subject to it. A header the file
+    # response already set is never overwritten.
+    def with_security_headers(ctx, triple)
+      return nil unless Tina4::Middleware.global_middleware.include?(Tina4::SecurityHeadersMiddleware)
+
+      status, headers, body = triple
+      # Header names are compared case-insensitively: a route response carries
+      # them as the middleware spelled them ("X-Frame-Options").
+      present = headers.keys.map { |name| name.to_s.downcase }
+      # A matched route already ran the middleware's hook.
+      return nil if SECURITY_HEADER_PROBE.all? { |name| present.include?(name) }
+
+      probe = Tina4::Response.new
+      defaults = probe.headers.keys
+      request = ctx.pre_request || Tina4::Request.new(ctx.env)
+      Tina4::SecurityHeadersMiddleware.before_security(request, probe)
+
+      merged = headers.dup
+      probe.headers.each do |name, value|
+        next if defaults.include?(name)
+
+        key = name.to_s.downcase
+        merged[key] = value unless present.include?(key)
+      end
+      [status, merged, body]
     end
 
     # ── ALWAYS STAGES (compression / ETag / conditional-GET) ──────────

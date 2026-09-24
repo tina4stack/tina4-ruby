@@ -250,6 +250,87 @@ module Tina4
       TRAILING_LIMIT_RE.match?(scrub_sql_text(sql))
     end
 
+    # Strip a trailing TOP-LEVEL ORDER BY, for the COUNT probe ONLY.
+    #
+    # SQL Server rejects an ORDER BY inside a derived table unless TOP/OFFSET/
+    # FETCH legalises it (error 1033), so wrapping "... ORDER BY id" in
+    # SELECT COUNT(*) FROM (...) failed on MSSQL, the best-effort probe returned
+    # nil, and fetch reported the PAGE LENGTH as the total - measured on the lab:
+    # 10 for a 10-row page of 22 matching rows. ORDER BY cannot change a count,
+    # so the probe drops it; the paginated query keeps it. An ORDER BY nested in
+    # a subquery, or one already followed by OFFSET/FETCH/FOR/LIMIT/ROWS, is left
+    # alone. Positions are found on the scrubbed text (same length as the
+    # original), so an "ORDER BY" inside a literal or comment is never cut.
+    # Parity with Python's _strip_trailing_order_by and PHP's
+    # SqlNormalizerTrait::stripTrailingOrderBy.
+    ORDER_BY_RE = /\bORDER\s+BY\b/i.freeze
+    ORDER_TAIL_KEEP_RE = /\b(?:OFFSET|FETCH|FOR|LIMIT|ROWS)\b/i.freeze
+
+    def self.strip_trailing_order_by(sql)
+      return sql if sql.nil? || sql.empty?
+
+      scrubbed = scrub_sql_text(sql)
+      last_top_level = nil
+      scrubbed.to_enum(:scan, ORDER_BY_RE).each do
+        pos = Regexp.last_match.begin(0)
+        last_top_level = pos if top_level_position?(scrubbed, pos)
+      end
+      return sql if last_top_level.nil?
+      return sql if ORDER_TAIL_KEEP_RE.match?(scrubbed[last_top_level..])
+
+      sql[0...last_top_level].rstrip
+    end
+
+    # True when +pos+ sits outside every bracket of the (scrubbed) statement.
+    def self.top_level_position?(scrubbed, pos)
+      scrubbed[0...pos].count("(") == scrubbed[0...pos].count(")")
+    end
+
+    # True when the statement WRITES, even though it may also return rows
+    # (issue #133): INSERT/UPDATE/DELETE ... RETURNING, MSSQL's OUTPUT, MERGE,
+    # or a Postgres data-modifying CTE (WITH x AS (INSERT ...) SELECT ...).
+    #
+    # THE CROSS-FRAMEWORK CONTRACT (identical in Python, PHP, Node and Ruby):
+    # after string literals, quoted identifiers and comments are scrubbed and
+    # leading whitespace/brackets stripped, the statement is a write when its
+    # FIRST WORD is one of WRITE_VERBS, or when it starts with WITH and its body
+    # holds INSERT, UPDATE, DELETE or MERGE. `WHERE note = 'DELETE'` stays a
+    # read because the literal is scrubbed first; a locking read
+    # (`SELECT ... FOR UPDATE`) starts with SELECT and stays a read. Erring
+    # towards "write" is the safe direction: a misread read is merely committed.
+    #
+    # #fetch / #fetch_one run a write exactly once, as written - no COUNT probe,
+    # no pagination, never cached - and commit it like #execute outside an
+    # explicit transaction, so the caller is never handed the id of a row that
+    # does not persist.
+    WRITE_VERBS = %w[INSERT UPDATE DELETE MERGE UPSERT REPLACE].freeze
+    CTE_WRITE_RE = /\b(INSERT|UPDATE|DELETE|MERGE)\b/i.freeze
+
+    def self.write_statement?(sql)
+      scrubbed = scrub_sql_text(sql.to_s).sub(/\A[\s(]+/, "")
+      verb = scrubbed[/\A[A-Za-z]+/].to_s.upcase
+      return true if WRITE_VERBS.include?(verb)
+
+      verb == "WITH" && CTE_WRITE_RE.match?(scrubbed)
+    end
+
+    # True when the statement produces rows (the #execute contract): after
+    # literals and comments are scrubbed, it starts with SELECT, WITH, VALUES,
+    # CALL, EXEC or EXECUTE, or it is a write (.write_statement?) carrying
+    # RETURNING or MSSQL's OUTPUT. A data-modifying CTE starts with WITH, so it
+    # is included. SELECT ... INTO (a table-creating write) is a known edge: it
+    # returns an empty row set.
+    ROW_LEAD_VERBS = %w[SELECT WITH VALUES CALL EXEC EXECUTE].freeze
+    RETURNING_CLAUSE_RE = /\b(?:RETURNING|OUTPUT)\b/i.freeze
+
+    def self.returns_rows?(sql)
+      scrubbed = scrub_sql_text(sql.to_s).sub(/\A[\s(]+/, "")
+      verb = scrubbed[/\A[A-Za-z]+/].to_s.upcase
+      return true if ROW_LEAD_VERBS.include?(verb)
+
+      write_statement?(sql) && RETURNING_CLAUSE_RE.match?(scrubbed)
+    end
+
     # Static factory — cross-framework consistency: Database.create(url)
     def self.create(url, username: "", password: "", pool: nil)
       new(url, username: username.empty? ? nil : username,
@@ -582,6 +663,11 @@ module Tina4
       # subqueries downstream survive a user-supplied semicolon.
       sql = Tina4::Database.strip_trailing_semicolons(sql)
 
+      # Issue #133: a write that returns rows is a WRITE - run it once, as
+      # written (no pagination, no count probe, no cache), and commit it like
+      # #execute outside an explicit transaction.
+      return fetch_write(drv, sql, params) if Tina4::Database.write_statement?(sql)
+
       effective_sql = sql
       # Skip appending LIMIT if the statement already ENDS with its own.
       #
@@ -656,6 +742,10 @@ module Tina4
     # never populated either. Default `false` preserves cached behaviour.
     def fetch_one(sql, params = [], no_cache: false)
       sql = Tina4::Database.strip_trailing_semicolons(sql)
+      # Issue #133: INSERT/UPDATE/DELETE ... RETURNING through fetch_one is a
+      # write - commit it like #execute (never cached), see .write_statement?.
+      return fetch_write(current_driver, sql, params).records.first if Tina4::Database.write_statement?(sql)
+
       if @cache_enabled && !no_cache
         key = cache_key(sql + ":ONE", params)
         cached = cache_get(key)
@@ -935,8 +1025,14 @@ module Tina4
     # into a silent partial-write footgun. This mirrors fetch()/fetch_one(),
     # which already raise, and the Python master (database.execute).
     #
-    # On SUCCESS the return is unchanged: a DatabaseResult when the SQL contains
-    # RETURNING, CALL, EXEC, or SELECT (truthy), otherwise true. Never false.
+    # ROWS: a statement that produces rows - SELECT, WITH ... SELECT, a write
+    # with RETURNING (MSSQL: OUTPUT), CALL/EXEC - returns a Tina4::DatabaseResult
+    # carrying them, the SAME type #fetch returns (cross-framework contract,
+    # matching PHP). It runs exactly once, as written: no COUNT probe, no
+    # LIMIT/OFFSET. A write among them commits like any other write outside an
+    # explicit transaction. This used to hand back the DRIVER's raw result (a
+    # PG::Result, a Mysql2 result, an Fb::Cursor), and `true` for WITH and
+    # OUTPUT. A write that returns no rows still returns true. Never false.
     #
     # Higher-level callers that promise a boolean (ORM save/create_table) wrap
     # this in begin/rescue and return false themselves; the migration runner and
@@ -945,14 +1041,15 @@ module Tina4
     def execute(sql, params = [])
       cache_invalidate if @cache_enabled
       drv = current_driver
-      result = drv.execute(sql, params)
-      @last_error = nil
-      autocommit_standalone_write(drv)
-      sql_upper = sql.strip.upcase
-      if sql_upper.include?("RETURNING") || sql_upper.start_with?("CALL ") ||
-         sql_upper.start_with?("EXEC ") || sql_upper.start_with?("SELECT ")
+      if Tina4::Database.returns_rows?(sql)
+        result = fetch_direct(drv, Tina4::Database.strip_trailing_semicolons(sql), params)
+        autocommit_standalone_write(drv) if Tina4::Database.write_statement?(sql)
         return result
       end
+
+      drv.execute(sql, params)
+      @last_error = nil
+      autocommit_standalone_write(drv)
       true
     rescue => e
       @last_error = e.message
@@ -1317,7 +1414,8 @@ module Tina4
 
       alias_name = driver_implements?(drv, :count_subquery_alias) ? drv.count_subquery_alias.to_s : ""
       suffix = alias_name.empty? ? "" : " AS #{alias_name}"
-      rows = drv.execute_query("SELECT COUNT(*) AS tina4_total FROM (#{sql}\n)#{suffix}", params)
+      probe_sql = Tina4::Database.strip_trailing_order_by(sql)
+      rows = drv.execute_query("SELECT COUNT(*) AS tina4_total FROM (#{probe_sql}\n)#{suffix}", params)
       row = rows.is_a?(Array) ? rows.first : nil
       return nil unless row.is_a?(Hash)
 
@@ -1325,6 +1423,24 @@ module Tina4
       value.nil? ? nil : value.to_i
     rescue StandardError
       nil
+    end
+
+    # Issue #133: run a write that returns rows (INSERT/UPDATE/DELETE ...
+    # RETURNING, MSSQL OUTPUT) reached through #fetch / #fetch_one.
+    #
+    # The Python master ended fetch/fetch_one with a ROLLBACK outside a
+    # transaction, so the caller got the id of a row that was then discarded -
+    # silent data loss. Here the write gets exactly what #execute gives it: the
+    # query cache is invalidated (and never populated), the statement runs once
+    # AS WRITTEN on ONE driver (no LIMIT/OFFSET or COUNT probe wrapped round it),
+    # and autocommit_standalone_write commits it on that same driver unless an
+    # explicit transaction owns the connection - inside start_transaction the
+    # caller's commit/rollback still decides.
+    def fetch_write(drv, sql, params)
+      cache_invalidate if @cache_enabled
+      result = fetch_direct(drv, sql, params)
+      autocommit_standalone_write(drv)
+      result
     end
 
     def fetch_direct(drv, effective_sql, params, limit: 0, offset: 0, total: nil)
