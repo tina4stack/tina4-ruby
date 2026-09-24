@@ -96,8 +96,8 @@ RSpec.describe "Issue #136: the MongoDB session backend shares one client per pr
   end
 
   it "reuses ONE Mongo::Client across many real HTTP requests (gem path)" do
-    skip "mongo not reachable at #{issue136_host}:#{issue136_port}" unless issue136_reachable?
-    skip "mongo gem not installed - mongo gem path cannot be measured" unless issue136_mongo_gem?
+    skip "[needs:mongo] mongo not reachable at #{issue136_host}:#{issue136_port}" unless issue136_reachable?
+    skip "[needs:mongo] mongo gem not installed - mongo gem path cannot be measured" unless issue136_mongo_gem?
 
     ENV["TINA4_SESSION_BACKEND"] = "mongodb"
     ENV["TINA4_SESSION_MONGO_URI"] = issue136_uri
@@ -145,7 +145,7 @@ RSpec.describe "Issue #136: the MongoDB session backend shares one client per pr
   end
 
   it "reuses ONE socket across many sessions on the zero-dependency wire path" do
-    skip "mongo not reachable at #{issue136_host}:#{issue136_port}" unless issue136_reachable?
+    skip "[needs:mongo] mongo not reachable at #{issue136_host}:#{issue136_port}" unless issue136_reachable?
 
     source = <<~RUBY
       require "json"
