@@ -79,10 +79,10 @@ RSpec.describe "scaffolded Dockerfile" do
       "without this the container prints the must-use-the-CLI banner and exits 1"
   end
 
-  it "starts the production server, not WEBrick" do
+  it "starts in production mode" do
     cmd = dockerfile.lines.grep(/^\s*CMD /).first.to_s
     expect(cmd).to include("--production"),
-      "cmd_start falls through to WEBrick without --production, so a " \
+      "without --production the image would run in development mode, so a " \
       "production image would serve from the development server"
   end
 

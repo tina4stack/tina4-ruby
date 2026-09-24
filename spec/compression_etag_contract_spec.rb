@@ -18,7 +18,7 @@ require "fileutils"
 # unified on RFC-7232 weak comparison -- Ruby's was already correct and is
 # reused, not reimplemented, by the new dynamic conditional-GET path).
 #
-# NO MOCKS. A REAL Tina4::WebServer (WEBrick/Puma) is booted on a REAL TCP
+# NO MOCKS. A REAL Tina4::WebServer (the built-in server) is booted on a REAL TCP
 # port (the same boot_server pattern server_parity_spec.rb uses) and driven
 # with genuine Net::HTTP requests -- real Accept-Encoding / If-None-Match /
 # If-Modified-Since headers, and a real Zlib::GzipReader decode of the wire

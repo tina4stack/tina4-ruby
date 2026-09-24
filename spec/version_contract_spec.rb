@@ -19,7 +19,7 @@
 # resolver itself was not touched.
 #
 # Ruby has no ASCII-art startup banner tied to server boot (unlike
-# Python/PHP/Node) -- WebServer#start only logs "Development server: WEBrick".
+# Python/PHP/Node) -- WebServer#start logs "Server started ... (tina4-server)".
 # Its closest real analog to a human-facing "here is my version" surface is
 # the separate `tina4ruby version` CLI subcommand (cmd_version, distinct code
 # path from `commands --json`'s cmd_commands), so that is what this suite

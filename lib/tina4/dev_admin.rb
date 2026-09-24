@@ -988,7 +988,7 @@ module Tina4
             limit: "N/A"
           },
           server: {
-            software: "Ruby/WEBrick",
+            software: "Ruby/#{Tina4::HttpServer::SOFTWARE}",
             hostname: host_name,
             document_root: Tina4.root_dir || Dir.pwd
           },

@@ -96,6 +96,6 @@ ENV TINA4_SWAGGER_DESCRIPTION="Auto-generated API documentation"
 ENV TINA4_OVERRIDE_CLIENT=true
 ENV TINA4_DEBUG=false
 
-# --production selects puma. Without it cmd_start falls through to WEBrick, so a
-# PRODUCTION image was serving from the development server.
+# --production is production mode. The image bundles no Puma, so it serves from
+# Tina4's built-in server; an app that adds `gem "puma"` gets Puma (ADR-0067).
 CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0", "--production"]

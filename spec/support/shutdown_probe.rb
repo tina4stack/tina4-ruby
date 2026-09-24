@@ -2,8 +2,8 @@
 
 # Shared harness for the graceful-shutdown specs (feature 9).
 #
-# Both the development path (spec/graceful_shutdown_spec.rb, WEBrick) and the
-# production path (spec/puma_shutdown_spec.rb, Puma) need the same thing: a REAL
+# Both the built-in server (spec/graceful_shutdown_spec.rb) and the opt-in
+# Puma path (spec/puma_shutdown_spec.rb) need the same thing: a REAL
 # server in its own process group, a REAL signal, and the REAL exit status -
 # with the child's stdout/stderr on a FILE, because an inherited fd wedges a
 # piped rspec run forever, and with the whole process GROUP killed afterwards.

@@ -9,7 +9,7 @@ module Tina4
   #
   # Ruby has no asyncio event loop, so each task runs in its own dedicated OS
   # thread, started at registration time. Because the thread runs regardless of
-  # which web server (Puma/WEBrick) is in front, a Ruby background task is never
+  # which web server (the built-in server or Puma) is in front, a Ruby background task is never
   # a silent no-op under production — the thread IS the runtime (contrast the
   # Python ASGI / PHP-FPM silent-no-op the other frameworks had to fix). The GIL
   # keeps it cooperative-enough for the periodic work this is meant for (queue
