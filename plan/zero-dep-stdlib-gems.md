@@ -24,7 +24,7 @@ and is not touched here.
 - [x] Step 4b: own IMAP client (LOGIN, SELECT, UID SEARCH/FETCH/STORE, EXPUNGE, LIST, STARTTLS)
 - [x] Step 4c: own XML parser for WSDL (no DTD/entity support at all; non-UTF-8 bodies rejected)
 - [x] Step 4d: net-smtp, net-imap, rexml dropped from gemspec + Gemfile
-- [ ] README / CLAUDE.md / gemspec comments / tina4-documentation updated; ADR-0067 written
+- [x] README / CLAUDE.md / gemspec comments / tina4-documentation updated; ADR-0067 written
 
 ## Parity
 | Component | Python | PHP | Node | Ruby before | Ruby after |
@@ -56,9 +56,19 @@ and is not touched here.
 - [x] WSDL: UTF-16 body with a DOCTYPE slipped past the `<!DOCTYPE` guard into REXML
 
 ## Commits
-- 1d7df9d  fix(cli): bare `tina4ruby serve` no longer crashes resolving the default host
-- 62de235  build(deps): drop json, base64 and logger -- Ruby ships or Tina4 replaces them
-- c8263dc  build(deps): sqlite3 is an app dependency -- lazy require with an actionable error
-- tina4 CLI 317b7f7  fix(init/ruby): scaffold Gemfile declares sqlite3; update/upgrade add it
+- be1c1ba  fix(cli): bare `tina4ruby serve` no longer crashes resolving the default host
+- 92c5f2e  build(deps): drop json, base64 and logger -- Ruby ships or Tina4 replaces them
+- ca960d5  build(deps): sqlite3 is an app dependency -- lazy require with an actionable error
+- 29e1b07  build(deps): own SMTP, IMAP and XML code replaces net-smtp, net-imap and rexml
+- 984f671  docs: runtime gems are the Rack server stack only; sqlite3 is the app's
+- tina4 CLI 317b7f7 (PR tina4#33)  fix(init/ruby): scaffold Gemfile declares sqlite3; update/upgrade add it
+- tina4-documentation 3f931ad (PR #63)  ADR-0067 + Ruby pages
+- test-env fixture MAIL_TLS in python#142, php#215, nodejs#66 (ADR-0038 byte-identical)
 
-## Status: In Progress
+## Verification
+- Lab (Linux, Ruby 3.2.3, TINA4_REQUIRE_SERVICES=1, OIDC required, mail-infra.sh up): 5819 examples, 0 failures, 36 pending (all 36 are the env-gated graph-database examples, identical to the v3 baseline: 5753 / 0 / 36).
+- Local (macOS, Ruby 4.0.7): 5816 examples, 66 failures, 124 pending; 65 failures are the same engine-connection files as the v3 baseline run on this Mac (local MySQL/MSSQL/PG), the 66th is session_ttl_units (memcached remaining-ttl off by 62s against a docker VM clock; passes on the lab).
+- `gem install ./tina4ruby.gem --explain`: 15 gems before, 5 after (webrick, nio4r, puma, rack, rackup).
+- Clean app bundle (only tina4ruby) boots, logs, parses XML and raises the sqlite3 message on Ruby 3.1, 3.2, 3.4 and 4.0.7.
+
+## Status: Complete (PRs open, merge blocked on review; the built-in-server branch will conflict on gemspec/README/zero-dep spec)
