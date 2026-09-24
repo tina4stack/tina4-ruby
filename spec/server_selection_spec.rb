@@ -60,7 +60,13 @@ RSpec.describe "Production server selection", :slow do
     port = ShutdownProbe.free_port
     log_path = File.join(dir, "server.log")
     pid = unbundled do
-      spawn(bundle_env(dir), "bundle", "exec", "tina4ruby", "serve", "--production",
+      # `bundle exec ruby <checkout>/exe/tina4ruby`, not `bundle exec tina4ruby`:
+      # Bundler 2.x (what Ruby 3.2 ships, and what CI runs) finds a PATH gem's
+      # executable only after `bundle install` has written its binstub, so the
+      # bare form fails there with "command not found". The app's bundle still
+      # governs the load path either way - which is the whole point here.
+      spawn(bundle_env(dir), "bundle", "exec", "ruby", File.expand_path("../exe/tina4ruby", __dir__),
+            "serve", "--production",
             "--host", "127.0.0.1", "--port", port.to_s, "--no-browser",
             chdir: dir, out: log_path, err: log_path, pgroup: true)
     end
