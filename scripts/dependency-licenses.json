@@ -365,11 +365,11 @@
     {
       "ecosystem": "gem",
       "name": "puma",
-      "version": "6.6.1",
+      "version": "7.2.1",
       "platform": "",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/puma/versions/6.6.1.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/puma/versions/7.2.1.json"
     },
     {
       "ecosystem": "gem",

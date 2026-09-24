@@ -83,7 +83,8 @@ Gem::Specification.new do |spec|
   # puma is a DEVELOPMENT dependency only, so spec/puma_shutdown_spec.rb can
   # boot the opt-in production path for real (ADR-0067). It is never installed
   # for an application unless that application asks for it.
-  spec.add_development_dependency "puma", "~> 6.0"
+  # Puma 7.2.1 fixes the reported request-framing advisories; upstream requires Ruby >=3.0, preserving the framework Ruby >=3.1 floor.
+  spec.add_development_dependency "puma", "~> 7.2", ">= 7.2.1"
   # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
   # it lazily, exactly like pg. It is a development/optional dependency only so
   # it is never force-installed; the backend degrades gracefully if it is absent.
