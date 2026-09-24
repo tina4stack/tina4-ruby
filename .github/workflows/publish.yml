@@ -36,7 +36,6 @@ jobs:
       - name: Build release packages and integrity evidence
         run: |
           version=$(ruby -Ilib -e 'require "tina4/version"; print Tina4::VERSION')
-          bundle lock
           ruby scripts/check_version_consistency.rb "$version"
           mkdir -p dist
           gem build tina4ruby.gemspec --output "dist/tina4ruby-$version.gem"
