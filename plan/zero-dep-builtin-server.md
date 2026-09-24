@@ -43,8 +43,9 @@ Concurrent worker owns base64/json/logger/sqlite3/net-smtp/net-imap/rexml
       explicit content type, download filename, cookie name + attributes
 - [x] constants.rb no longer consults Rack::Utils; 408/431/505 phrases
 - [x] Puma opt-in: production uses Puma only when loadable; otherwise the built-in server
-- [x] gemspec: rack, rackup, puma, webrick removed from runtime; puma kept as a
-      DEVELOPMENT dependency only, so the opt-in path is booted for real in specs
+- [x] gemspec: rack, rackup, puma, webrick removed from runtime; with #49 merged the
+      gemspec declares ZERO runtime gems; puma kept as a DEVELOPMENT dependency only, so
+      the opt-in path is booted for real in specs
 - [x] specs that booted Puma for rack.hijack moved to the built-in server
 - [x] Rack::MockRequest / require "rack" removed from specs
 - [x] docs: CLAUDE.md, skill references, Dockerfile comment, tina4-documentation
@@ -91,21 +92,26 @@ Python's differences are the ADR-0068 defects its own worker is fixing; Ruby mee
       inside filename= - d8254ab
 - [x] WEBrick read the whole body before Tina4's upload cap (ADR-0068 s3) - ed6da78/2284036
 - [x] Tina4.run! opened a browser regardless of TINA4_NO_BROWSER, production or CI;
-      now debug-only, never under NO_BROWSER / --no-browser / CI; spec_helper defaults
-      TINA4_NO_BROWSER=true - d04338e (first commit, red-first on the lab)
-- [x] `tina4ruby init` scaffolded the nonexistent gem "tina4-ruby" - 9cd00ac
-- [ ] (other repos, surfaced not fixed here) PHP App opens a browser ignoring
-      TINA4_NO_BROWSER; tina4 CLI Dockerfile.ruby / install_production_server still
-      `gem install puma`, which no longer reaches a bundled app
+      now debug-only, never under NO_BROWSER / --no-browser / CI (ADR-0070 union of 8 CI
+      variables incl. TF_BUILD; CI=false/0/no/off does not veto); spec_helper defaults
+      TINA4_NO_BROWSER=true (first commit, red-first on the lab)
+- [x] `tina4ruby init` scaffolded the nonexistent gem "tina4-ruby" - fixed on v3 by #49
+      (cli_spec covers it); my duplicate commit dropped in the rebase
+- [x] tina4 CLI Dockerfile.ruby / install_production_server `gem install puma` -
+      tina4stack/tina4#34 (with the per-language `docker run` port hint)
+- [ ] ADR-0068 / ADR-0070 fixtures not on docs main yet: register the Ruby runners
+      (spec/http_hardening_contract_spec.rb; a browser_open runner) when they land
 
-## Commits
-- d04338e  fix(run!): open a browser only in debug, never under NO_BROWSER or CI
-- d8254ab  feat(request): Tina4's own multipart parser replaces Rack::Request#POST
-- ed6da78  feat(server): built-in HTTP/1.1 server on stdlib socket replaces WEBrick
-- 05054d8  test: boot the built-in server where specs booted Puma for rack.hijack
-- 2284036  feat(server): ADR-0068 - refuse CR/LF/NUL headers, one rejection shape
-- 5f115bc  build: drop rack, rackup, puma and webrick (Puma is opt-in, ADR-0067)
-- 1909538  docs: describe the built-in server; retire WEBrick-era claims
-- 9cd00ac  fix(init): scaffold gem "tina4ruby", not the nonexistent "tina4-ruby"
+## Commits (rebased onto v3 bc90fc7, after #49)
+- a074018  fix(run!): open a browser only in debug, never under NO_BROWSER or CI
+- 488dddb  feat(request): Tina4's own multipart parser replaces Rack::Request#POST
+- 71ef874  feat(server): built-in HTTP/1.1 server on stdlib socket replaces WEBrick
+- f453fe0  test: boot the built-in server where specs booted Puma for rack.hijack
+- a188ab7  feat(server): ADR-0068 - refuse CR/LF/NUL headers, one rejection shape
+- 46f463c  build: drop rack, rackup, puma and webrick (Puma is opt-in, ADR-0067)
+- 30e6db5  docs: describe the built-in server; retire WEBrick-era claims
+- 0e4c4ea  plan: zero-dep built-in server - scope, parity, tests, commits
+- 12820f1  fix(run!): ADR-0070 browser gate - TF_BUILD, and CI=false does not veto
+- 6b1dcaa  docs: zero runtime gems - README, CLAUDE.md, BENCHMARK.md
 
 ## Status: Complete (pending review; PRs open, not merged)
