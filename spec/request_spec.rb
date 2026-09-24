@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "spec_helper"
-require "rack"
 
 RSpec.describe Tina4::Request do
   def build_env(method: "GET", path: "/", query: "", body: "", content_type: nil, headers: {})

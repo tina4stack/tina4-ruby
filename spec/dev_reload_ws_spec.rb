@@ -13,7 +13,7 @@
 #     broadcast raises or there are zero clients.
 #   * The /__dev_reload WebSocket route is registered in debug mode.
 #   * A real browser connecting on /__dev_reload receives the broadcast
-#     end-to-end against a live Puma server (no Rust CLI — the POST is issued
+#     end-to-end against the live built-in server (no Rust CLI — the POST is issued
 #     directly, exactly as the CLI watcher does), and the server is not
 #     respawned (same PID, V1 -> V2 in-process).
 
@@ -128,12 +128,11 @@ RSpec.describe "DevReload WebSocket" do
     end
   end
 
-  describe "live end-to-end (Puma)", :slow do
-    # Boot a real Puma server (Puma provides rack.hijack, which the WS upgrade
-    # requires; WEBrick does not), connect a raw RFC 6455 client, edit a route
-    # V1 -> V2, POST the reload the CLI would, and assert the client receives
-    # the broadcast, the new code is served in-process, and the PID is stable.
-    require "puma"
+  describe "live end-to-end (built-in server)", :slow do
+    # Boot the framework's own server (it provides rack.hijack, which the WS
+    # upgrade requires), connect a raw RFC 6455 client, edit a route V1 -> V2,
+    # POST the reload the CLI would, and assert the client receives the
+    # broadcast, the new code is served in-process, and the PID is stable.
 
     def free_port
       s = TCPServer.new("127.0.0.1", 0)
@@ -202,19 +201,19 @@ RSpec.describe "DevReload WebSocket" do
         RB
 
         lib = File.expand_path("../lib", __dir__)
-        config_ru = File.join(proj, "config.ru")
-        File.write(config_ru, <<~RU)
+        port = free_port
+        app_rb = File.join(proj, "app.rb")
+        File.write(app_rb, <<~RB)
           $LOAD_PATH.unshift(#{lib.inspect})
           require "tina4"
           Tina4.initialize!(#{proj.inspect})
           # load_routes (not bare require) sets @last_routes_dir so rescan_routes!
           # re-loads changed files in-process — the framework's real discovery path.
           Tina4::Router.load_routes(File.join(#{proj.inspect}, "src", "routes"))
-          run Tina4::RackApp.new(root_dir: #{proj.inspect})
-        RU
+          Tina4::WebServer.new(Tina4::RackApp.new(root_dir: #{proj.inspect}),
+                               host: "127.0.0.1", port: #{port}).start
+        RB
 
-        port = free_port
-        puma_bin = Gem.bin_path("puma", "puma")
         # Strip the Bundler env we inherit from `bundle exec rspec`: the
         # throwaway project has no Gemfile, so a child that still tries to
         # honour BUNDLE_GEMFILE / RUBYOPT=-rbundler/setup fails to boot. nil
@@ -224,16 +223,11 @@ RSpec.describe "DevReload WebSocket" do
           "TINA4_LOG_LEVEL" => "NONE", "TINA4_NO_AI_PORT" => "true",
           "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "BUNDLER_SETUP" => nil,
           # Force a UTF-8 locale: with the Bundler env stripped the child can
-          # default to US-ASCII, and Rack::Builder.load_file then raises
-          # "invalid byte sequence in US-ASCII" while parsing config.ru.
+          # default to US-ASCII.
           "LANG" => "en_US.UTF-8", "LC_ALL" => "en_US.UTF-8"
         }
-        log_path = File.join(proj, "puma.log")
-        pid = spawn(
-          child_env,
-          RbConfig.ruby, puma_bin, "-b", "tcp://127.0.0.1:#{port}", config_ru,
-          chdir: proj, out: log_path, err: log_path
-        )
+        log_path = File.join(proj, "server.log")
+        pid = spawn(child_env, RbConfig.ruby, app_rb, chdir: proj, out: log_path, err: log_path)
 
         begin
           # Wait for the server to serve Version 1.
@@ -253,7 +247,7 @@ RSpec.describe "DevReload WebSocket" do
           end
           unless ready
             log = File.exist?(log_path) ? File.read(log_path) : "(no log)"
-            raise "server did not start serving Version 1\n--- puma log ---\n#{log}"
+            raise "server did not start serving Version 1\n--- server log ---\n#{log}"
           end
 
           # Connect a browser-like WS client, then edit + POST after it is up.

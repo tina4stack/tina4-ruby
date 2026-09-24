@@ -376,7 +376,7 @@ Multipart file uploads are available via `request.files` (hash keyed by field na
 {
   filename: "photo.png",
   type: "image/png",
-  tempfile: <File>,          # Rack tempfile — for large-file streaming (.read)
+  tempfile: <StringIO>,      # IO over the bytes — for streaming-style (.read) access
   size: 102400,
   content: "<raw bytes>"     # raw file bytes (NOT base64) — parity with Python/PHP/Node
 }
@@ -1200,9 +1200,25 @@ mode and protected for remote callers. Environment variables (read by
 | `TINA4_MCP_REMOTE` | `false` | Set `true` to allow non-loopback MCP callers at all (still requires a valid token). Loopback callers never need a token. |
 | `TINA4_MCP_TOKEN` | falls back to `TINA4_API_KEY` | Bearer token authorising a REMOTE MCP request. Accepted as `Authorization: Bearer`, `X-MCP-Token`, or `X-Api-Key`, compared timing-safe. With NO token configured a remote caller is always denied. |
 
+## Built-in server
+
+`Tina4::WebServer` (`lib/tina4/webserver.rb`) boots `Tina4::HttpServer` (`lib/tina4/http_server.rb`): one thread per connection, HTTP/1.1 keep-alive, chunked request bodies, `Expect: 100-continue`, per-chunk streaming (SSE is EOF-delimited with `Connection: close`), `rack.hijack` for WebSocket upgrades, `REMOTE_ADDR` from the raw socket peer, the AI/test port (+1000) in debug and the dual-stack loopback siblings. `PATH_INFO` is percent-decoded and dot-segment normalised before routing. Multipart bodies are parsed by `Tina4::FormParser` (`lib/tina4/form_parser.rb`), which nests field names the way Rack did (`user[name]`, `tags[]`, `a[][x]`).
+
+Request limits (ADR-0068, same names and defaults as PHP's socket server):
+
+| Env var | Default | Answer |
+| --- | --- | --- |
+| `TINA4_MAX_REQUEST_HEADER` | 65536 | 431 once the head passes it, even before the blank line arrives |
+| `TINA4_MAX_UPLOAD_SIZE` | 10485760 | 413 on the DECLARED `Content-Length` before any body byte is read, and on the running count while reading (chunked included) |
+| `TINA4_REQUEST_TIMEOUT` | 30 (0 disables) | 408 on a partial request that goes quiet; an idle keep-alive connection is closed without an answer |
+
+A bare CR, LF or NUL in the head, a non-token header name or obs-fold is 400 `Malformed request head`; a bad or conflicting `Content-Length` is 400 `Invalid Content-Length`; `Transfer-Encoding` other than exactly `chunked`, or with `Content-Length`, is 400 `Invalid Transfer-Encoding`. Every rejection is JSON `{"error": ...}` with the canonical security headers and `Connection: close`.
+
+Response headers (ADR-0068): `Response#header`, `#add_header`, `#redirect`, an explicit content type and a download filename raise `ArgumentError` (`Header name must be a valid HTTP token ["<name>"]` / `Invalid character in header content ["<name>"]`) for a non-token name or a value carrying CR, LF or NUL. Cookie names are token-checked and cookie attributes refuse CR, LF, NUL and `;`; cookie VALUES stay percent-encoded. A header appended to `response.headers` directly is checked again by the server, which answers 500 `{"error":"Invalid response header"}` rather than write it.
+
 ## Key Architecture
 
-- Rack 3-based web server with Puma (falls back to WEBrick)
+- Own HTTP/1.1 server (`lib/tina4/http_server.rb`, stdlib `socket`, no gems) serves development AND production. The app is a Rack-style `call(env)` object (`Tina4::RackApp`), so an app that adds `gem "puma"` gets Puma in production instead (ADR-0067); `TINA4_DEFAULT_WEBSERVER=TRUE` pins the built-in server anyway. rack, rackup, puma and webrick are not dependencies. See "Built-in server" below
 - Routes auto-discovered from `routes/`
 - ORM uses DSL methods (`integer_field`, `string_field`) with `FieldTypes` module
 - Templates use ERB and Twig (custom engine)
@@ -1214,9 +1230,11 @@ mode and protected for remote callers. Environment variables (read by
   so it was removed
 - Password hashing via PBKDF2-SHA256 (`OpenSSL::KDF.pbkdf2_hmac`, 260000 iterations, `$`
   delimited). There is NO bcrypt dependency and never was one in v3
-- Runtime gems: only the Rack server stack (rack, rackup, puma, webrick) is declared in the
-  gemspec. Everything else is Tina4 code on the standard library, guarded by
-  `spec/zero_dependency_gemspec_spec.rb` (it fails if any of these comes back):
+- Runtime gems: NONE. The gemspec declares no runtime dependency; the HTTP server
+  (`lib/tina4/http_server.rb`) and multipart parser (`lib/tina4/form_parser.rb`) replaced
+  rack, rackup and webrick, and Puma is the app's to install (ADR-0067). Everything else is
+  Tina4 code on the standard library, guarded by `spec/zero_dependency_gemspec_spec.rb`
+  (it fails if any runtime gem is declared, or any of these comes back):
   - `json`: a default gem on every supported Ruby, never declared. Because it is not pinned an app may
     resolve json 3.x, which RAISES on a duplicate key; JSON from outside the process goes through
     `Tina4.parse_json` (`lib/tina4/parse_json.rb`), which pins last-key-wins like Python/PHP/Node
@@ -1256,7 +1274,7 @@ mode and protected for remote callers. Environment variables (read by
 - Messenger (.env driven SMTP/IMAP). IMAP reads FAIL LOUD: `inbox`/`read`/`unread`/`search`/`folders`/`delete` LOG and RAISE `Tina4::MessengerConnectionError` (a `Tina4::MessengerError` subclass) on a connection/auth/protocol failure instead of returning empty — empty would be indistinguishable from a genuinely empty mailbox. A successful fetch with no messages still returns empty (`[]`/`nil`/`0`) normally. `send` is unchanged — it keeps returning `{success, message, id}` and logging. **Item shapes (cross-framework parity):** `inbox(folder="INBOX", limit=20, offset=0)` (callable positionally OR by keyword) returns items of EXACTLY `{uid:String, subject, from:String, to:String, date:ISO-8601, snippet, seen:Boolean}` — `from`/`to` are header strings, `snippet` is decoded/tag-stripped/≤200-char text. `read(uid, folder="INBOX", mark_read=true)` (positional or keyword) returns `{uid, subject, from, to, cc, date, body_text, body_html, attachments, headers}` (Message-ID lives in `headers`). Methods: `mark_read`, `mark_unread`, `delete`, `send_template(to:, subject:, template:, data:)`. IMAP auth uses `TINA4_MAIL_IMAP_USERNAME`/`_PASSWORD` (constructor `imap_username:`/`imap_password:`), falling back to `TINA4_MAIL_USERNAME`/`_PASSWORD`.
 - CLI scaffolding: `tina4 generate model/route/migration/middleware`
 - `tina4ruby` is the Ruby package's own CLI; the `tina4` client forwards `generate` to it.
-- Production server auto-detect: `tina4ruby serve --production` (auto-installs Puma, 2.8x improvement)
+- Production server: `tina4ruby serve --production` uses Puma only when the app bundles it, otherwise the built-in server (it never installs anything)
 - Frond pre-compilation for 2.8x template render improvement
 - DB query caching: request-scoped auto cache **off by default — opt-in** via `TINA4_AUTO_CACHING=true` (TTL `TINA4_AUTO_CACHING_TTL=5`s) for read-heavy endpoints; it dedupes identical reads within a request and flushes on writes. It defaults OFF because a request-scoped cache that defaults on is a footgun: a `SELECT MAX(id)`/generator read right before an `INSERT` in the **same** request would return a cached pre-write value (duplicate keys), and any read-after-write in one request would show stale state. Persistent cross-request cache is also opt-in via `TINA4_DB_CACHE=true` (TTL `TINA4_DB_CACHE_TTL=30`s) routed through the unified backend set via `TINA4_DB_CACHE_BACKEND` (memory/file/redis/valkey/memcached/mongodb/database) + `TINA4_DB_CACHE_URL` so instances share one cache with global write-invalidation; `cache_stats` reports `mode` (request/persistent/off — `off` when neither layer is enabled) and `backend`, `cache_clear`
 - ORM relationships: `has_many`, `has_one`, `belongs_to` with eager loading (`include:`)
@@ -1265,7 +1283,7 @@ mode and protected for remote callers. Environment variables (read by
 - Session handlers: file, Redis, MongoDB. `TINA4_SESSION_SAMESITE` env var (default: Lax)
 - QueryBuilder with NoSQL/MongoDB support (`to_mongo()`)
 - WebSocket backplane (Redis/NATS pub/sub) for horizontal scaling — **wired for real**: each `broadcast`/`broadcast_all`/`broadcast_to_room` delivers to LOCAL connections first (resilient — one dead/slow client never aborts the rest; it is logged + pruned), then publishes an envelope `{src,kind,exclude,room,path,+text|b64}` to the shared channel `tina4:ws`. A sibling instance's backplane listener thread relays it to its own LOCAL connections only (origin guard drops the instance's own echo by `src`; the relay never re-publishes, so no cluster loop). Lazily started on first broadcast (best-effort — a backplane failure logs + degrades to local-only, never crashes a broadcast). Configured via `TINA4_WS_BACKPLANE` and `TINA4_WS_BACKPLANE_URL`. Rooms API: `conn.join_room(name)`, `conn.leave_room(name)`, `conn.rooms`, `conn.broadcast_to_room(name, msg)`, `ws.room_count(name)`, `ws.get_room_connections(name)`, `ws.broadcast_to_room(name, msg, exclude: nil)`
-- WebSocket upgrade security — origin allow-list via `TINA4_WS_ALLOWED_ORIGINS` (comma-separated exact origins). Empty/unset = allow all (non-breaking, current behaviour); when set, an upgrade whose `Origin` isn't listed is refused 403. Enforced on every upgrade path (`Tina4.websocket_origin_allowed?`). Idle reaper via `TINA4_WS_IDLE_TIMEOUT` (seconds; 0/unset = disabled) — tracks last-activity per connection and closes/prunes connections idle past the timeout. WS upgrades need a hijack-capable server (Puma); under WEBrick the upgrade is correctly rejected 426
+- WebSocket upgrade security — origin allow-list via `TINA4_WS_ALLOWED_ORIGINS` (comma-separated exact origins). Empty/unset = allow all (non-breaking, current behaviour); when set, an upgrade whose `Origin` isn't listed is refused 403. Enforced on every upgrade path (`Tina4.websocket_origin_allowed?`). Idle reaper via `TINA4_WS_IDLE_TIMEOUT` (seconds; 0/unset = disabled) — tracks last-activity per connection and closes/prunes connections idle past the timeout. WS upgrades need `rack.hijack`: the built-in server and Puma both provide it; under a Rack server without it the upgrade is rejected 426
 - Per-route WebSocket auth — a WS route is **PUBLIC by default** (mirrors GET). Declare a route secured either way (both set the same `auth_required` flag): declaratively via `Tina4::Router.secure_websocket(path)` / `Tina4.secure_websocket(path)` / `Tina4::Router.websocket(path, secure: true)`, or imperatively by chaining `.secure` on the returned `WebSocketRoute` (`.no_auth` flips back). On EVERY upgrade (in `WebSocket#handle_upgrade`, after the origin allow-list, before accepting the handshake) a secured route requires a valid JWT — missing/invalid → the upgrade is **rejected with 401, never accepted**; public routes always pass. Token transports (checked in order, all three accepted): `Authorization: Bearer <jwt>` header, the `Sec-WebSocket-Protocol: "bearer, <jwt>"` subprotocol (browsers — `new WebSocket(url, ['bearer', token])`), and `?token=<jwt>`. Validated via `Tina4::Auth.valid_token` (the same one HTTP uses). When the client offered the `bearer` subprotocol, the handshake **echoes `Sec-WebSocket-Protocol: bearer`** back. The verified payload is exposed on `connection.auth` (a Hash; `nil` on public routes). Helpers: `Tina4.ws_token(headers, query_string, subprotocol)` and `Tina4.ws_authorized(auth_required, headers, query_string, subprotocol) -> [payload, ok]`
 - SameSite=Lax default on session cookies (`TINA4_SESSION_SAMESITE`)
 - `tina4 deploy docker` generates Dockerfile and .dockerignore

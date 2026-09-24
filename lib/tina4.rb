@@ -144,6 +144,8 @@ module Tina4
 
   # ── Lazy-loaded: web server ───────────────────────────────────────────
   autoload :WebServer, File.expand_path("tina4/webserver", __dir__)
+  autoload :HttpServer, File.expand_path("tina4/http_server", __dir__)
+  autoload :FormParser, File.expand_path("tina4/form_parser", __dir__)
 
   # ── Lazy-loaded: optional modules ─────────────────────────────────────
   autoload :Swagger,             File.expand_path("tina4/swagger", __dir__)
@@ -351,6 +353,13 @@ module Tina4
 /_/  /_/_/ /_/\__,_/  /_/
   BANNER
 
+  # Environment variables that mean "this is a CI run" - the ADR-0070 union
+  # across the four frameworks and the CLI. No one is there to see a tab.
+  CI_ENV_VARS = %w[CI CONTINUOUS_INTEGRATION GITHUB_ACTIONS GITLAB_CI BUILDKITE
+                   JENKINS_URL TF_BUILD TEAMCITY_VERSION].freeze
+  # A CI variable set to one of these does not mean CI (ADR-0070 ci_false).
+  CI_FALSE_VALUES = %w[false 0 no off].freeze
+
   class << self
     attr_accessor :root_dir
     attr_reader :database
@@ -404,18 +413,14 @@ module Tina4
       log_level = (ENV["TINA4_LOG_LEVEL"] || "ALL").upcase
       display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
 
-      # Auto-detect server name if not provided
+      # Auto-detect server name if not provided: Puma only when production
+      # would actually pick it (ADR-0067), otherwise Tina4's own server.
       if server_name.nil?
-        if is_debug
-          server_name = "WEBrick"
-        else
-          begin
-            require "puma"
-            server_name = "puma"
-          rescue LoadError
-            server_name = "WEBrick"
-          end
-        end
+        server_name = if !is_debug && !builtin_webserver_pinned? && puma_available?
+                        "puma"
+                      else
+                        Tina4::HttpServer::SOFTWARE
+                      end
       end
 
       puts "#{color}#{BANNER}#{reset}"
@@ -530,14 +535,48 @@ module Tina4
       start
     end
 
-    def open_browser(url)
+    # Open the app in a browser only when ALL of these hold (ADR-0070):
+    #   * development: TINA4_DEBUG is truthy - never production or Puma
+    #   * TINA4_NO_BROWSER is not truthy (true/1/yes/on, trimmed, any case)
+    #   * --no-browser was not passed, and no_browser: true was not given
+    #   * no CI variable vetoes (see ci_run?)
+    # open_browser used to check none of it, so every app.rb booted through
+    # run! - and every spec that did so - popped a real tab.
+    def browser_launch_allowed?(argv: ARGV, no_browser: false)
+      return false if no_browser
+      return false unless Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
+      return false if Tina4::Env.is_truthy(ENV["TINA4_NO_BROWSER"])
+      return false if argv.include?("--no-browser")
+
+      !ci_run?
+    end
+
+    # A CI variable vetoes when it is set to a non-empty value (after
+    # trimming) that is not one of CI_FALSE_VALUES, case-insensitively - so
+    # CI=woodpecker vetoes and CI=false does not (ADR-0070).
+    def ci_run?
+      CI_ENV_VARS.any? do |name|
+        value = ENV[name].to_s.strip.downcase
+        !value.empty? && !CI_FALSE_VALUES.include?(value)
+      end
+    end
+
+    # TINA4_BROWSER_COMMAND names the launcher to run instead of the OS default
+    # (open / start / xdg-open); it receives the URL as its only argument.
+    def open_browser(url, no_browser: false)
+      return unless browser_launch_allowed?(no_browser: no_browser)
+
       require "rbconfig"
+      command = ENV["TINA4_BROWSER_COMMAND"].to_s.strip
       Thread.new do
         sleep 2
-        case RbConfig::CONFIG["host_os"]
-        when /darwin/i then system("open", url)
-        when /mswin|mingw/i then system("start", url)
-        else system("xdg-open", url)
+        if !command.empty? then system(command, url)
+        else
+          case RbConfig::CONFIG["host_os"]
+          when /darwin/i then system("open", url)
+          when /mswin|mingw/i then system("start", url)
+          else system("xdg-open", url)
+          end
         end
       end
     end
@@ -550,12 +589,15 @@ module Tina4
       Tina4::Frond.register_live_endpoint!
     end
 
-    def run!(root_dir = nil, port: nil, host: nil, debug: nil)
+    # no_browser: true keeps the browser shut (Python run(no_browser=True));
+    # false never forces one open (ADR-0070).
+    def run!(root_dir = nil, port: nil, host: nil, debug: nil, no_browser: false)
       # Handle legacy call: run!(port: 7147) where root_dir receives the hash
       if root_dir.is_a?(Hash)
         port ||= root_dir[:port]
         host ||= root_dir[:host]
         debug = root_dir[:debug] if debug.nil? && root_dir.key?(:debug)
+        no_browser ||= root_dir[:no_browser]
         root_dir = nil
       end
       root_dir ||= Dir.pwd
@@ -603,22 +645,21 @@ module Tina4
       app = Tina4::RackApp.new(root_dir: root_dir)
       is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
-      # Try Puma first (production-grade), fall back to WEBrick
+      # Puma when the APPLICATION bundles it (ADR-0067), otherwise the
+      # built-in server - in development AND production, as in Python.
       if !is_debug && !builtin_webserver_pinned? && puma_available?
-        open_browser(url)
         start_puma_server(app, host: host, port: port)
         return
       end
 
-      Tina4::Log.info("Development server: WEBrick")
-      open_browser(url)
+      open_browser(url, no_browser: no_browser)
       server = Tina4::WebServer.new(app, host: host, port: port)
       server.start
     end
 
-    # TINA4_DEFAULT_WEBSERVER=TRUE pins Tina4's BUILT-IN server (WEBrick) even
-    # in production, where Puma would otherwise be chosen. Unset/FALSE keeps
-    # today's behaviour, so this is non-breaking.
+    # TINA4_DEFAULT_WEBSERVER=TRUE pins Tina4's BUILT-IN server even when the
+    # application bundles Puma, which production would otherwise pick
+    # (ADR-0067). Unset/FALSE: Puma if it is loadable, else the built-in server.
     #
     # This is NOT the remedy for a production shutdown problem - an operator
     # must never have to give up Puma to get their database connections closed.
@@ -628,8 +669,10 @@ module Tina4
       Tina4::Env.is_truthy(ENV["TINA4_DEFAULT_WEBSERVER"])
     end
 
-    # Is Puma loadable? Separate from start_puma_server so the caller can fall
-    # back to WEBrick BEFORE any side effect (opening a browser) happens.
+    # Is Puma loadable? Puma is NOT a Tina4 dependency (ADR-0067): it is used
+    # only when the application installs it (under Bundler, when its Gemfile
+    # lists it). Separate from start_puma_server so the caller can fall back to
+    # the built-in server BEFORE any side effect (opening a browser) happens.
     def puma_available?
       require "puma"
       require "puma/configuration"

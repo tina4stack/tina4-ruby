@@ -17,7 +17,7 @@
 # server_parity_spec) -- none of them is touched here; this is a NEW spec that
 # simply never sets that var. Node's test/aiPortRange.test.ts was the only real
 # dual-port test in any of the four frameworks. This suite ports that shape:
-# boot a REAL child server (Tina4::WebServer -- the same WEBrick path
+# boot a REAL child server (Tina4::WebServer -- the same built-in server path
 # Tina4.run!/`tina4ruby serve` take in debug mode) with TINA4_DEBUG=true and
 # assert, over REAL sockets:
 #
@@ -78,7 +78,7 @@ module DualPortProbe
     raise "could not find a free base port with room for +1000"
   end
 
-  # The child app: the framework's OWN Tina4::WebServer (WEBrick), which is
+  # The child app: the framework's OWN Tina4::WebServer, which is
   # what wires the AI dual-port logic to the live listening socket -- the
   # SAME path Tina4.run!/`tina4ruby serve` take in debug mode. No custom
   # routes are registered: /health is auto-registered by Tina4.initialize!,
@@ -160,23 +160,18 @@ RSpec.describe "Dual development/test port (feature 128)", :slow do
   end
 
   it "the ai port refuses a reload websocket upgrade" do
-    # Two REAL, DIFFERENT mechanisms both refuse, and this proves both:
+    # Two REAL refusals, and this proves both:
     #
-    # 1. Tina4::WebServer is WEBrick, which offers NO rack.hijack at all
-    #    (Ruby CLAUDE.md: "WS upgrades need a hijack-capable server (Puma);
-    #    under WEBrick the upgrade is rejected"). A REAL RFC 6455 upgrade
-    #    request to /__dev_reload is matched as a WS ROUTE first (it IS
-    #    registered in debug mode) and handle_websocket_upgrade refuses with
-    #    426 for lack of rack.hijack -- on BOTH ports alike, main included.
-    #    It never reaches 101 on the AI port, which is the literal claim.
+    # 1. A REAL RFC 6455 upgrade request to /__dev_reload on the AI port never
+    #    reaches 101. The built-in server supports upgrades (rack.hijack), and
+    #    the SAME upgrade on the main port does succeed (proven in
+    #    spec/builtin_server_wire_spec.rb), so this is the AI-port gate at
+    #    work, not a server that cannot upgrade anything.
     #
     # 2. The AI-port-SPECIFIC gate (RackApp::DispatchPipeline#dev_routes) is
-    #    real and separately provable with a PLAIN (non-upgrade) GET, which
-    #    Router.find_ws_route does not intercept: the AI port answers 404
+    #    also provable with a PLAIN (non-upgrade) GET: the AI port answers 404
     #    "Not available on AI port" while the SAME request on the MAIN port
-    #    gets the app's ordinary 404 page -- proving the AI-port suppression
-    #    is a real, wired, AI-port-SPECIFIC branch, not the blanket WEBrick
-    #    hijack refusal in disguise.
+    #    gets the app's ordinary 404 page.
     @server = DualPortProbe.boot(ai_port: true)
 
     status_line = DualPortProbe.ws_upgrade_status_line("127.0.0.1", @server.port + 1000, "/__dev_reload")

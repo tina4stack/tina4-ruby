@@ -80,10 +80,9 @@ module Tina4
         @shutdown_complete = true
         return if drained
 
-        # The deadline expired with requests still in flight. WEBrick's accept
-        # loop joins its worker threads with NO timeout of its own, so simply
-        # returning here would hang the process for as long as the slowest
-        # handler runs - exactly what TINA4_SHUTDOWN_TIMEOUT exists to prevent.
+        # The deadline expired with requests still in flight. Returning here
+        # would let the process live for as long as the slowest handler runs -
+        # exactly what TINA4_SHUTDOWN_TIMEOUT exists to prevent.
         # Flush first: exit! runs no at_exit handlers and does not flush stdio,
         # which would swallow the warning that explains the forced exit.
         $stdout.flush
@@ -107,10 +106,9 @@ module Tina4
 
       # Block until initiate_shutdown has finished every teardown step.
       #
-      # stop_accepting unblocks WEBrick's accept loop immediately, so its #start
-      # returns as soon as the in-flight workers are joined - which can be while
-      # the signal handler's thread is still stopping background tasks and
-      # closing database connections. The server's main thread calls this so the
+      # stop_accepting unblocks the built-in server's accept loop immediately, so
+      # its #start returns while the signal handler's thread is still draining
+      # requests, stopping background tasks and closing database connections. The server's main thread calls this so the
       # process does not exit out from under that teardown.
       def wait_for_completion(timeout = nil)
         return unless @shutting_down
@@ -144,13 +142,12 @@ module Tina4
         DEFAULT_TIMEOUT
       end
 
-      # Close the listening socket BEFORE draining. WEBrick's #shutdown wakes its
-      # accept loop and closes the listeners; it does not touch the worker
-      # threads already running, which the loop's own ensure joins - so new
+      # Close the listening socket BEFORE draining. Tina4::HttpServer#shutdown
+      # closes every listener and every keep-alive connection that is waiting
+      # for its next request; it does not touch a request being served - so new
       # connections are refused while in-flight requests still run to completion
-      # and write their full response. Measured on webrick 1.9.2 / Ruby 4.0.2:
-      # #shutdown returns in ~0.1ms, a connection attempted 0.3s later is
-      # ECONNREFUSED, and the 2s handler mid-flight still returns a full 200.
+      # and write their full response (spec/graceful_shutdown_spec.rb proves all
+      # three on a real SIGTERM).
       def stop_accepting
         return unless @server.respond_to?(:shutdown)
 

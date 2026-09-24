@@ -4,6 +4,7 @@ require "json"
 require "ipaddr"
 require "stringio"
 require_relative "parse_json"
+require_relative "form_parser"
 
 module Tina4
   # A Hash subclass that supports indifferent access (both string and symbol keys).
@@ -140,7 +141,7 @@ module Tina4
     # Read an IO in bounded chunks, raising PayloadTooLarge the MOMENT the
     # running total exceeds the upload cap, so an over-limit body is refused as
     # it arrives instead of after the whole thing is buffered. Rewinds the input
-    # before and after so a later reader (Rack's parser, form-token extraction)
+    # before and after so a later reader (the form parser, form-token extraction)
     # sees the same stream. Parity with the Python/Node per-chunk body readers.
     def self.read_stream_capped(input, limit = nil)
       return "" unless input
@@ -475,36 +476,47 @@ module Tina4
       data
     end
 
-    # Resolve the parsed multipart form fields (+ file entries) for this request.
+    # The parsed multipart body, memoised: { fields:, files:, error: } from
+    # Tina4::FormParser, or nil when there is no raw body to parse.
     #
-    # A live Rack server (Puma/WEBrick) does NOT parse the request body for us -
-    # it hands the app the raw `rack.input` stream. `Rack::Request#POST` parses
-    # a multipart (or urlencoded) body and caches the result into the standard
-    # `rack.request.form_hash` env key, which both #parse_body and #extract_files
-    # then read. We only invoke it when the key isn't already populated, so a
-    # spec that injects `rack.request.form_hash` directly still short-circuits
-    # here (and we never re-parse a body twice). Without this, live multipart
-    # uploads arrived empty (fields AND files) - the parse only ran in specs.
+    # A live server hands the app the raw `rack.input` stream and parses nothing,
+    # so Tina4 parses it here. The body is read through read_stream_capped, so the
+    # running upload cap refuses an over-limit body as it arrives - OUTSIDE any
+    # rescue on purpose: PayloadTooLarge must reach the 413 handler.
+    def multipart_parsed
+      return @multipart_parsed if defined?(@multipart_parsed)
+
+      body = Tina4::Request.read_stream_capped(@env["rack.input"])
+      @multipart_parsed =
+        if body.nil? || body.empty?
+          nil
+        else
+          parsed = Tina4::FormParser.parse_multipart(body, @content_type)
+          if parsed[:error] && defined?(Tina4::Log)
+            Tina4::Log.warning("multipart parse failed: #{parsed[:error].message}")
+          end
+          parsed
+        end
+    end
+
+    # The request's form hash: fields plus file entries under the standard
+    # `rack.request.form_hash` env key, the same key (and shape) Rack::Request#POST
+    # used to fill, so middleware reading it keeps working. A spec or middleware
+    # that INJECTS the key short-circuits the parse entirely.
     def multipart_form_hash
       existing = @env["rack.request.form_hash"] rescue nil
       return existing if existing
 
-      # Enforce the running per-chunk upload cap BEFORE Rack reads the body, so
-      # an over-limit body is refused as it arrives rather than after Rack has
-      # buffered the whole thing. Outside the begin/rescue below on purpose: the
-      # PayloadTooLarge must propagate to the 413 handler, not be swallowed.
-      Tina4::Request.read_stream_capped(@env["rack.input"])
+      parsed = multipart_parsed
+      return nil unless parsed
 
-      parsed = begin
-        require "rack"
-        Rack::Request.new(@env).POST
-      rescue Tina4::Request::PayloadTooLarge
-        raise
-      rescue StandardError => e
-        Tina4::Log.warning("multipart parse failed: #{e.message}") if defined?(Tina4::Log)
-        nil
+      form = parsed[:fields].dup
+      parsed[:files].each do |name, list|
+        # Rack left an empty file field (filename="") out of the form hash.
+        kept = list.reject { |descriptor| descriptor[:filename].empty? }
+        form[name] = kept.length == 1 ? kept.first : kept unless kept.empty?
       end
-      @env["rack.request.form_hash"] || parsed
+      @env["rack.request.form_hash"] = form
     end
 
     def parse_body
@@ -529,7 +541,7 @@ module Tina4
       elsif @content_type.include?("application/x-www-form-urlencoded")
         parse_query_to_hash(body_raw)
       elsif @content_type.include?("multipart/form-data")
-        # Extract form fields from Rack's parsed multipart data.
+        # Form fields from the parsed multipart body (Tina4::FormParser).
         # Files are handled separately by extract_files.
         result = {}
         form_hash = multipart_form_hash
@@ -561,38 +573,27 @@ module Tina4
     def extract_files
       result = {}
       return result unless @content_type.include?("multipart/form-data")
-      begin
-        # LIVE path: hand-scan the raw body so a REPEATED file field name is
-        # preserved as a LIST (Rack's POST collapses a repeated non-bracket name
-        # to last-wins - the multi-file data-loss this fixes). The scan reads the
-        # body through the capped reader, so an over-limit upload is refused as
-        # it arrives. Falls through to the parsed form_hash when there is no raw
-        # body (e.g. a spec injecting rack.request.form_hash).
-        scanned = scan_multipart_files
-        if scanned && !scanned.empty?
-          scanned.each do |key, list|
-            files = list.map { |value| build_file_upload(value) }.compact
-            result[key] = files.length == 1 ? files.first : files unless files.empty?
-          end
-          return result
-        end
 
-        form_hash = multipart_form_hash
-        if form_hash
-          form_hash.each do |key, value|
-            if value.is_a?(Array)
-              files = value.map { |v| build_file_upload(v) }.compact
-              result[key] = files.length == 1 ? files.first : files unless files.empty?
-            else
-              file = build_file_upload(value)
-              result[key] = file if file
-            end
+      # LIVE path: the parser keeps a REPEATED file field name as a LIST (Rack's
+      # POST collapsed a repeated non-bracket name to last-wins - the multi-file
+      # data loss). Falls through to an injected rack.request.form_hash when
+      # there is no raw body to parse.
+      injected = @env["rack.request.form_hash"] unless multipart_parsed
+      if multipart_parsed
+        multipart_parsed[:files].each do |key, list|
+          files = list.map { |value| build_file_upload(value) }.compact
+          result[key] = files.length == 1 ? files.first : files unless files.empty?
+        end
+      elsif injected
+        injected.each do |key, value|
+          if value.is_a?(Array)
+            files = value.map { |v| build_file_upload(v) }.compact
+            result[key] = files.length == 1 ? files.first : files unless files.empty?
+          else
+            file = build_file_upload(value)
+            result[key] = file if file
           end
         end
-      rescue Tina4::Request::PayloadTooLarge
-        raise
-      rescue StandardError
-        # Multipart parsing failed
       end
       result
     end
@@ -612,69 +613,6 @@ module Tina4
       file[:size]     = value[:size] || (value[:tempfile].size rescue 0)
       file["content"] = value[:content] if value.key?(:content) && !value[:content].nil?
       file
-    end
-
-    # Extract the boundary token from a multipart Content-Type header.
-    def multipart_boundary(content_type)
-      content_type.to_s.split(";").each do |part|
-        part = part.strip
-        next unless part.start_with?("boundary=")
-
-        return part[9..].to_s.delete_prefix('"').delete_suffix('"')
-      end
-      nil
-    end
-
-    # Hand-roll the FILE parts out of the raw multipart body, keyed by field
-    # name, each name mapping to a LIST of descriptors so a repeated name keeps
-    # every file. Reads through read_stream_capped, so the running per-chunk
-    # upload cap is enforced here too (raising PayloadTooLarge). Returns {} when
-    # there is no raw body (the injected-form_hash path is used instead). Fields
-    # are handled by parse_body (via Rack) - this scans files only.
-    def scan_multipart_files
-      boundary = multipart_boundary(@content_type)
-      return {} unless boundary
-
-      body = Tina4::Request.read_stream_capped(@env["rack.input"])
-      return {} if body.nil? || body.empty?
-
-      body = body.dup.force_encoding("BINARY")
-      files = {}
-      delimiter = "--#{boundary}"
-      body.split(delimiter).each do |segment|
-        next if segment.empty? || segment.start_with?("--")
-
-        segment = segment.sub(/\A\r\n/, "")
-        header_end = segment.index("\r\n\r\n")
-        next unless header_end
-
-        header_section = segment[0...header_end]
-        content = segment[(header_end + 4)..] || ""
-        content = content.sub(/\r\n\z/, "")
-
-        name = nil
-        filename = nil
-        type = "application/octet-stream"
-        header_section.split("\r\n").each do |line|
-          if line =~ /content-disposition/i
-            name = Regexp.last_match(1) if line =~ /name="([^"]*)"/
-            filename = Regexp.last_match(1) if line =~ /filename="([^"]*)"/
-          elsif line =~ /content-type:\s*(.+)/i
-            type = Regexp.last_match(1).strip
-          end
-        end
-        next if name.nil? || filename.nil?
-
-        bytes = content.dup.force_encoding("BINARY")
-        (files[name] ||= []) << {
-          filename: filename,
-          type: type,
-          content: bytes,
-          size: bytes.bytesize,
-          tempfile: StringIO.new(bytes)
-        }
-      end
-      files
     end
   end
 end

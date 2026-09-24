@@ -59,6 +59,24 @@ module Tina4
 
     attr_accessor :status_code, :headers, :body, :cookies
 
+    # ADR-0068: a header name must be an RFC 9110 token, and a header value,
+    # redirect location or cookie attribute may never carry CR, LF or NUL (a
+    # cookie attribute not ';' either). They are REFUSED where the developer
+    # sets them - never stripped - so the stack trace points at the line that
+    # built the value. The messages are identical in all four frameworks.
+    HEADER_TOKEN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/
+    UNSAFE_HEADER_VALUE = /[\r\n\0]/
+    UNSAFE_COOKIE_CONTENT = /[\r\n\0;]/
+
+    def self.check_header!(name, value)
+      unless name.to_s.match?(HEADER_TOKEN)
+        raise ArgumentError, "Header name must be a valid HTTP token [#{JSON.generate(name.to_s)}]"
+      end
+      return value unless value.to_s.match?(UNSAFE_HEADER_VALUE)
+
+      raise ArgumentError, "Invalid character in header content [#{JSON.generate(name.to_s)}]"
+    end
+
     def initialize
       @status_code = 200
       @headers = { "content-type" => HTML_CONTENT_TYPE }
@@ -79,6 +97,7 @@ module Tina4
     # Callable response — auto-detects content type from data.
     # Matches Python __call__ / PHP __invoke / Node response() pattern.
     def call(data = nil, status_code = 200, content_type = nil)
+      Response.check_header!("Content-Type", content_type) if content_type
       @status_code = status_code
       data = jsonable(data)
       if content_type
@@ -142,14 +161,16 @@ module Tina4
     end
 
     def csv(content, filename: "export.csv", status: 200)
+      disposition = Response.check_header!("Content-Disposition", "attachment; filename=\"#{filename}\"")
       @status_code = status
       @headers["content-type"] = "text/csv"
-      @headers["content-disposition"] = "attachment; filename=\"#{filename}\""
+      @headers["content-disposition"] = disposition
       @body = content.to_s
       self
     end
 
     def redirect(url, status_or_opts = nil, status: nil)
+      Response.check_header!("Location", url)
       @status_code = status || (status_or_opts.is_a?(Integer) ? status_or_opts : 302)
       @headers["location"] = url
       @body = ""
@@ -157,6 +178,7 @@ module Tina4
     end
 
     def file(path, content_type: nil, download: false, root: nil)
+      Response.check_header!("Content-Type", content_type) if content_type
       # SECURITY: confine the read. The natural spelling of a download route,
       #
       #     response.file("downloads/" + name)   # name = "../secret.env"
@@ -206,7 +228,8 @@ module Tina4
       ext = ::File.extname(path).downcase
       @headers["content-type"] = content_type || MIME_TYPES[ext] || "application/octet-stream"
       if download
-        @headers["content-disposition"] = "attachment; filename=\"#{::File.basename(path)}\""
+        @headers["content-disposition"] =
+          Response.check_header!("Content-Disposition", "attachment; filename=\"#{::File.basename(path)}\"")
       end
       @body = ::File.binread(path)
       self
@@ -284,7 +307,7 @@ module Tina4
       if value.nil?
         @headers[name]
       else
-        @headers[name] = value
+        @headers[name] = Response.check_header!(name, value)
         self
       end
     end
@@ -294,7 +317,16 @@ module Tina4
       set_cookie(name, value, opts)
     end
 
+    # The value is percent-encoded on the way out, so it can never carry CR,
+    # LF, NUL or ';' to the wire and is not refused (ADR-0068 keeps encoding
+    # where a framework already did). The name and every attribute are refused.
     def set_cookie(name, value, opts = {})
+      label = JSON.generate(name.to_s)
+      raise ArgumentError, "Cookie name must be a valid HTTP token [#{label}]" unless name.to_s.match?(HEADER_TOKEN)
+      if [opts[:path], opts[:same_site], opts[:max_age]].any? { |attribute| attribute.to_s.match?(UNSAFE_COOKIE_CONTENT) }
+        raise ArgumentError, "Invalid character in cookie content [#{label}]"
+      end
+
       cookie_str = "#{name}=#{URI.encode_www_form_component(value)}"
       cookie_str += "; Path=#{opts[:path] || '/'}"
       cookie_str += "; HttpOnly" if opts.fetch(:http_only, true)
@@ -312,7 +344,7 @@ module Tina4
     end
 
     def add_header(key, value)
-      @headers[key] = value
+      @headers[key] = Response.check_header!(key, value)
       self
     end
 
@@ -353,6 +385,7 @@ module Tina4
     # @yield [Enumerator::Yielder] Block receives a yielder to push chunks
     # @return [self]
     def stream(generator = nil, content_type: "text/event-stream", &block)
+      Response.check_header!("Content-Type", content_type)
       @status_code = @status_code || 200
       @headers["content-type"] = content_type
       @headers["cache-control"] = "no-cache"
@@ -366,6 +399,7 @@ module Tina4
 
     # Finalize and return the response — matches Python/Node API.
     def send(data = nil, status_code: nil, content_type: nil)
+      Response.check_header!("Content-Type", content_type) if content_type
       if data
         if data.is_a?(Hash) || data.is_a?(Array)
           return json(data, status_code || 200)

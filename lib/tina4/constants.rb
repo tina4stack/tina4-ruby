@@ -59,25 +59,23 @@ module Tina4
     304 => "Not Modified", 307 => "Temporary Redirect", 308 => "Permanent Redirect",
     400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
     404 => "Not Found", 405 => "Method Not Allowed", 406 => "Not Acceptable",
+    408 => "Request Timeout",
     409 => "Conflict", 410 => "Gone", 413 => "Content Too Large",
     415 => "Unsupported Media Type", 422 => "Unprocessable Content",
-    429 => "Too Many Requests",
+    429 => "Too Many Requests", 431 => "Request Header Fields Too Large",
     500 => "Internal Server Error", 501 => "Not Implemented",
-    502 => "Bad Gateway", 503 => "Service Unavailable", 504 => "Gateway Timeout"
+    502 => "Bad Gateway", 503 => "Service Unavailable", 504 => "Gateway Timeout",
+    505 => "HTTP Version Not Supported"
   }.freeze
 
   # Return the canonical HTTP reason phrase for ``status``.
   #
   # Falls back to a sensible label when an exotic status is used. Never
   # returns an empty string — the HTTP/1.1 status line requires a phrase.
-  # Prefers Rack::Utils::HTTP_STATUS_CODES when Rack is available so the
-  # phrase tracks Rack's mapping, otherwise uses the local table above.
+  # The table is Tina4's own (the phrases match Python's and PHP's); it no
+  # longer defers to Rack::Utils, which is not a dependency.
   def self.http_reason(status)
     code = status.to_i
-    if defined?(Rack::Utils::HTTP_STATUS_CODES)
-      phrase = Rack::Utils::HTTP_STATUS_CODES[code]
-      return phrase if phrase && !phrase.empty?
-    end
     phrase = HTTP_REASON_PHRASES[code]
     return phrase if phrase && !phrase.empty?
     return "OK" if code >= 200 && code < 300

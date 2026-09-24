@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
-# Graceful shutdown on the PRODUCTION path (Puma).
+# Graceful shutdown on the OPT-IN Puma path (ADR-0067).
 #
-# spec/graceful_shutdown_spec.rb covers the development path (WEBrick). In
-# production Ruby never reaches WEBrick: Tina4.run! and the CLI's `serve
-# --production` both hand off to Puma, and puma is a hard dependency in
-# tina4ruby.gemspec, so the LoadError fallback effectively never fires.
+# spec/graceful_shutdown_spec.rb covers Tina4's built-in server, which serves
+# development AND production by default. Puma is not a Tina4 dependency: when
+# an application installs it, Tina4.run! and the CLI's `serve --production`
+# hand off to it. puma is a DEVELOPMENT dependency of tina4ruby only so this
+# spec can boot that path for real (the child runs outside Bundler, so the
+# installed gem is loadable - exactly an app that has installed puma).
 #
 # Feature 9's OUTCOMES are the framework's contract whichever server owns the
 # socket; the MECHANISM differs. Puma already stops accepting and drains, so
@@ -118,7 +120,7 @@ module PumaShutdownProbe
       "TINA4_DATABASE_URL" => "sqlite://#{dir}/app.db",
       "TINA4_SHUTDOWN_TIMEOUT" => shutdown_timeout&.to_s,
       "TINA4_DEFAULT_WEBSERVER" => (pin_builtin ? "TRUE" : nil),
-      # Only the built-in WEBrick server enforces this; harmless for Puma.
+      # Only the built-in server enforces this; harmless for Puma.
       "TINA4_OVERRIDE_CLIENT" => "true"
     )
 
@@ -129,14 +131,14 @@ module PumaShutdownProbe
   end
 end
 
-RSpec.describe "Graceful shutdown (production / Puma)", :slow do
+RSpec.describe "Graceful shutdown (production / opt-in Puma)", :slow do
   before(:all) do
     require "puma"
   rescue LoadError
-    # Loud on purpose: puma is a hard dependency in tina4ruby.gemspec, so its
-    # absence is a broken install, not a reason to quietly pass.
-    skip "the puma gem is NOT installed, so the production shutdown path cannot " \
-         "be exercised at all (tina4ruby.gemspec declares puma ~> 6.0 as a hard dependency)"
+    # FAIL, never skip: puma is a development dependency of tina4ruby, so its
+    # absence means the opt-in path is unverified, not that it passed.
+    raise "the puma gem is NOT installed, so the opt-in Puma path cannot be exercised " \
+          "(tina4ruby.gemspec declares puma ~> 6.0 as a development dependency - run bundle install)"
   end
 
   describe "SIGTERM" do
@@ -260,7 +262,7 @@ RSpec.describe "Graceful shutdown (production / Puma)", :slow do
     begin
       status, = server.get("/ping")
       expect(status).to eq(200), "the pinned built-in server did not serve\n#{server.log}"
-      expect(server.log).to include("Development server: WEBrick")
+      expect(server.log).to include("(tina4-server)")
       expect(server.log).not_to include("Production server: puma")
 
       server.signal("TERM")
@@ -270,7 +272,7 @@ RSpec.describe "Graceful shutdown (production / Puma)", :slow do
     end
   end
 
-  it "leaves the production path unpinned by default" do
+  it "uses Puma in production when the app has it installed and nothing pins the built-in server" do
     server = PumaShutdownProbe.boot(slow_seconds: 0.2)
     begin
       expect(server.log).to include("Production server: puma"),

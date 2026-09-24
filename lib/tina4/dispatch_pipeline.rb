@@ -172,6 +172,10 @@ module Tina4
     # WebSocket upgrade - match against registered ws_routes.
     def websocket_upgrade(ctx)
       return nil unless websocket_upgrade?(ctx.env)
+      # The AI/test port never holds a live-reload socket: fall through to
+      # dev_routes, which answers "Not available on AI port" (Python's built-in
+      # server refuses the same upgrade with 404).
+      return nil if ctx.path == "/__dev_reload" && ctx.env["tina4.ai_port"]
 
       ws_result = Tina4::Router.find_ws_route(ctx.path)
       return nil unless ws_result

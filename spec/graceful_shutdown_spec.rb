@@ -50,7 +50,7 @@ module GracefulShutdownProbe
   end
 
   # The child app. Routes are registered in-process (no src/routes discovery
-  # needed) and the server is the framework's own Tina4::WebServer (WEBrick),
+  # needed) and the server is the framework's own Tina4::WebServer,
   # which is what wires Tina4::Shutdown to the live listening socket.
   def write_app(dir)
     lib = ShutdownProbe.worktree_lib
@@ -112,30 +112,11 @@ module GracefulShutdownProbe
 
       application = Tina4::RackApp.new(root_dir: PROJECT_DIR)
 
-      # A real WebSocket peer, upgraded by the real framework onto the real
-      # process-wide manager RackApp just published (Tina4::WebSocket.current).
-      # WebSocket upgrades need rack.hijack, which WEBrick does not provide, so
-      # the socket is accepted here instead of by the HTTP server - everything
-      # from the handshake onward is the framework's own code path.
-      if ENV["PROBE_WS_PORT"]
-        Thread.new do
-          listener = TCPServer.new("127.0.0.1", Integer(ENV.fetch("PROBE_WS_PORT")))
-          loop do
-            client = listener.accept
-            request = +""
-            request << client.readpartial(1) until request.end_with?("\\r\\n\\r\\n")
-            env = { "REQUEST_PATH" => request.lines.first.to_s.split(" ")[1].to_s }
-            request.lines.drop(1).each do |line|
-              name, value = line.split(":", 2)
-              next if value.nil?
-
-              env["HTTP_" + name.strip.upcase.tr("-", "_")] = value.strip
-            end
-            engine = Tina4::WebSocket.current
-            engine.handle_upgrade(env, client, manager: engine)
-            File.write(File.join(PROJECT_DIR, "ws_open"), engine.connections.size.to_s)
-          end
-        end
+      # A real WebSocket route, upgraded by the built-in server through
+      # rack.hijack onto the process-wide manager RackApp published
+      # (Tina4::WebSocket.current) - the same path an application's socket takes.
+      Tina4::WebSocket.route("/ws") do |connection|
+        File.write(File.join(PROJECT_DIR, "ws_open"), connection.id)
       end
 
       if ENV["PROBE_BACKGROUND"] == "true"
@@ -150,7 +131,7 @@ module GracefulShutdownProbe
     app_path
   end
 
-  def boot(slow_seconds: 2.0, shutdown_timeout: nil, background: false, websocket_port: nil)
+  def boot(slow_seconds: 2.0, shutdown_timeout: nil, background: false)
     dir = SpecTmpdir.create("tina4-graceful-shutdown")
     port = free_port
     app_path = write_app(dir)
@@ -166,7 +147,6 @@ module GracefulShutdownProbe
       "PROBE_PORT" => port.to_s,
       "PROBE_SLOW_SECONDS" => slow_seconds.to_s,
       "PROBE_BACKGROUND" => background.to_s,
-      "PROBE_WS_PORT" => websocket_port&.to_s,
       # The throwaway project has no Gemfile, so a child still honouring the
       # parent's Bundler env fails to boot. nil deletes the key.
       "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "BUNDLER_SETUP" => nil,
@@ -303,8 +283,9 @@ RSpec.describe "Graceful shutdown", :slow do
   # ── WebSocket: RFC 6455 close code 1001 "going away" ───────────────────
   #
   # A REAL peer: real TCP socket, real RFC 6455 handshake through the
-  # framework's own WebSocket#handle_upgrade, registered on the real
-  # process-wide manager, closed by a REAL SIGTERM. The client then parses the
+  # built-in server's rack.hijack and the framework's own
+  # WebSocket#handle_upgrade, registered on the real process-wide manager,
+  # closed by a REAL SIGTERM. The client then parses the
   # real close frame off the wire.
   #
   # Scope of the claim: this proves initiate_shutdown emits a well-formed 1001
@@ -313,13 +294,12 @@ RSpec.describe "Graceful shutdown", :slow do
   # launcher replaces Tina4's signal handlers, so on that path initiate_shutdown
   # does not run at all today.
   it "SIGTERM sends RFC 6455 close code 1001 to live WebSocket connections" do
-    websocket_port = GracefulShutdownProbe.free_port
-    server = GracefulShutdownProbe.boot(slow_seconds: 0.2, websocket_port: websocket_port)
+    server = GracefulShutdownProbe.boot(slow_seconds: 0.2)
     socket = nil
     begin
-      socket = TCPSocket.new("127.0.0.1", websocket_port)
+      socket = TCPSocket.new("127.0.0.1", server.port)
       key = [SecureRandom.bytes(16)].pack("m0")
-      socket.write("GET /ws HTTP/1.1\r\nHost: 127.0.0.1:#{websocket_port}\r\n" \
+      socket.write("GET /ws HTTP/1.1\r\nHost: 127.0.0.1:#{server.port}\r\n" \
                    "Upgrade: websocket\r\nConnection: Upgrade\r\n" \
                    "Sec-WebSocket-Key: #{key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
 

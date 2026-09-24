@@ -18,7 +18,7 @@ RSpec.describe Tina4::WebServer do
     port
   end
 
-  # Boot the real WEBrick server in a background thread and block until it
+  # Boot the real built-in server in a background thread and block until it
   # actually accepts a TCP connection (or time out). start() refuses to boot
   # unless the CLI runs it or TINA4_OVERRIDE_CLIENT=true, so set that for the
   # duration of the boot. Returns the [server, thread] pair.

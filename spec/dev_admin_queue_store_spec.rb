@@ -18,7 +18,7 @@
 # answer to "where do the queue files live" that the backend and every
 # dev-admin queue handler ask.
 #
-# NO MOCKS, NO DOUBLES, NO STAND-INS. A real Puma server is booted from a real
+# NO MOCKS, NO DOUBLES, NO STAND-INS. The real built-in server is booted from a real
 # scaffolded project on a real free port. Every job is a real file on disk -
 # written either by the real file-backed queue or, for the legacy-layout cases,
 # by hand in the exact pre-alignment on-disk format an existing app would have.
@@ -42,8 +42,6 @@ require "fileutils"
 require "tmpdir"
 
 RSpec.describe "dev-admin queue store (live server, real job files)", :slow, order: :defined do
-  require "puma"
-
   # ── helpers ────────────────────────────────────────────────────────────
 
   def free_port
@@ -139,14 +137,15 @@ RSpec.describe "dev-admin queue store (live server, real job files)", :slow, ord
     ENV
 
     lib = File.expand_path("../lib", __dir__)
-    File.write(File.join(@project, "config.ru"), <<~RU)
+    File.write(File.join(@project, "app.rb"), <<~RB)
       $LOAD_PATH.unshift(#{lib.inspect})
       require "tina4"
       Tina4.initialize!(#{@project.inspect})
-      run Tina4::RackApp.new(root_dir: #{@project.inspect})
-    RU
+      Tina4::WebServer.new(Tina4::RackApp.new(root_dir: #{@project.inspect}),
+                           host: "127.0.0.1", port: #{@port}).start
+    RB
 
-    @log_path = File.join(@project, "puma.log")
+    @log_path = File.join(@project, "server.log")
     @pid = spawn(
       {
         "TINA4_DEBUG" => "true",
@@ -156,8 +155,7 @@ RSpec.describe "dev-admin queue store (live server, real job files)", :slow, ord
         "TINA4_NO_AI_PORT" => "true",
         "TINA4_OVERRIDE_CLIENT" => "true"
       },
-      RbConfig.ruby, Gem.bin_path("puma", "puma"),
-      "-b", "tcp://127.0.0.1:#{@port}", File.join(@project, "config.ru"),
+      RbConfig.ruby, File.join(@project, "app.rb"),
       chdir: @project, out: @log_path, err: @log_path
     )
 
@@ -174,7 +172,7 @@ RSpec.describe "dev-admin queue store (live server, real job files)", :slow, ord
     end
     unless ready
       log = File.exist?(@log_path) ? File.read(@log_path) : "(no log)"
-      raise "Puma never came up on #{@port}\n--- puma.log ---\n#{log}"
+      raise "server never came up on #{@port}\n--- server.log ---\n#{log}"
     end
   end
 

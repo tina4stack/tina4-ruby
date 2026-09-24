@@ -11,13 +11,11 @@
 # framework's own recommended dev/prod server. Fixed in PHP by giving
 # Response a rawSocket flag Tina4\Server sets, read by emitSessionCookie().
 #
-# CROSS-CHECKED HERE: Ruby's Tina4::WebServer is WEBrick (Ruby stdlib), not a
-# bespoke raw socket engine the way PHP's Tina4\Server is -- WEBrick IS a real
-# HTTP server with its own native header/cookie mechanism, always. Ruby's
-# dispatch_pipeline.rb writes `headers["set-cookie"] = sess.cookie_header`
-# into a plain headers Hash that WebServer copies onto webrick_res.cookies
-# uniformly for every request -- there is no PHP-style CGI-heritage split
-# between "a real SAPI" and "a raw socket". CODE WINS: this spec is a real,
+# CROSS-CHECKED HERE: Ruby's Tina4::WebServer is now a raw socket engine like
+# PHP's Tina4\Server (lib/tina4/http_server.rb), but there was never a PHP-style
+# native-setcookie branch to fall into: dispatch_pipeline.rb writes
+# `headers["set-cookie"] = sess.cookie_header` into a plain headers Hash, and
+# the server writes every Set-Cookie line from that Hash for every request. CODE WINS: this spec is a real,
 # no-mock proof (not merely read from source) that a REAL spawned
 # `ruby app.rb` process -- Tina4::WebServer, the exact path
 # Tina4.run!/`tina4ruby serve` take -- emits a first-time Set-Cookie and that

@@ -20,7 +20,8 @@
 # Real files on disk, the real try_static, real env vars. No doubles.
 
 require "spec_helper"
-require "rack"  # Rack::MockRequest -- real requests through the whole app, not try_static
+require "uri"
+require "stringio"
 
 RSpec.describe "Swagger bundled-asset gate" do
   FRAMEWORK_PUBLIC = File.expand_path("../lib/tina4/public", __dir__)
@@ -128,10 +129,8 @@ RSpec.describe "Swagger bundled-asset gate" do
 
     it "names a document that resolves, however the UI was reached" do
       with_env("TINA4_SWAGGER_ENABLED" => "true", "TINA4_DEBUG" => "true") do
-        request = Rack::MockRequest.new(app)
-
         UI_PATHS.each do |path|
-          page = request.get(path)
+          page = get_through_app(path)
           expect(page.status).to eq(200), "#{path} returned #{page.status}, expected 200"
 
           document_url = page.body.to_s[/url:\s*['"]([^'"]+)['"]/, 1]
@@ -141,9 +140,9 @@ RSpec.describe "Swagger bundled-asset gate" do
           # naming an unsubstituted {SWAGGER_ROUTE} placeholder fails right here
           # -- and braces are not legal in a URI, so a placeholder makes the
           # request itself raise. Rescued to 0 so the failure reports the URL and
-          # the reason rather than an opaque parse error from inside Rack.
+          # the reason rather than an opaque URI parse error.
           status = begin
-            request.get(document_url).status
+            get_through_app(document_url).status
           rescue StandardError
             0
           end
@@ -154,5 +153,18 @@ RSpec.describe "Swagger bundled-asset gate" do
         end
       end
     end
+  end
+
+  # A real GET through the whole app (every pipeline stage, not try_static).
+  # URI() refuses what a client could not send, e.g. an unsubstituted
+  # {SWAGGER_ROUTE} placeholder.
+  def get_through_app(url)
+    uri = URI(url)
+    status, _headers, body = app.call(
+      "REQUEST_METHOD" => "GET", "PATH_INFO" => uri.path, "QUERY_STRING" => uri.query.to_s,
+      "SERVER_NAME" => "localhost", "SERVER_PORT" => "7147", "HTTP_HOST" => "localhost",
+      "REMOTE_ADDR" => "127.0.0.1", "rack.input" => StringIO.new(""), "rack.url_scheme" => "http"
+    )
+    Struct.new(:status, :body).new(status, body.respond_to?(:each) ? body.to_enum.map(&:to_s).join : body.to_s)
   end
 end
