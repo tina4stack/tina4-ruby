@@ -71,8 +71,8 @@ module PlaceholderSafetySpec
     "PostgreSQL" => {
       skip: lambda {
         uri = URI.parse(PG_URL)
-        if !gem?("pg") then "pg gem not installed - PostgreSQL not reachable"
-        elsif !reachable?(uri.host, uri.port || 5432) then "PostgreSQL not reachable at #{PG_URL}"
+        if !gem?("pg") then "[needs:postgres] pg gem not installed - PostgreSQL not reachable"
+        elsif !reachable?(uri.host, uri.port || 5432) then "[needs:postgres] PostgreSQL not reachable at #{PG_URL}"
         end
       },
       connect: lambda {
@@ -84,8 +84,8 @@ module PlaceholderSafetySpec
     },
     "MySQL" => {
       skip: lambda {
-        if !gem?("mysql2") then "mysql2 gem not installed - MySQL not reachable"
-        elsif !reachable?(MYSQL_HOST, MYSQL_PORT) then "MySQL not reachable at #{MYSQL_HOST}:#{MYSQL_PORT}"
+        if !gem?("mysql2") then "[needs:mysql] mysql2 gem not installed - MySQL not reachable"
+        elsif !reachable?(MYSQL_HOST, MYSQL_PORT) then "[needs:mysql] MySQL not reachable at #{MYSQL_HOST}:#{MYSQL_PORT}"
         end
       },
       connect: lambda {
@@ -98,8 +98,8 @@ module PlaceholderSafetySpec
     },
     "MSSQL" => {
       skip: lambda {
-        if !gem?("tiny_tds") then "tiny_tds gem not installed - MSSQL not reachable"
-        elsif !reachable?(MSSQL_HOST, MSSQL_PORT) then "MSSQL not reachable at #{MSSQL_HOST}:#{MSSQL_PORT}"
+        if !gem?("tiny_tds") then "[needs:mssql] tiny_tds gem not installed - MSSQL not reachable"
+        elsif !reachable?(MSSQL_HOST, MSSQL_PORT) then "[needs:mssql] MSSQL not reachable at #{MSSQL_HOST}:#{MSSQL_PORT}"
         end
       },
       connect: lambda {
@@ -118,11 +118,11 @@ module PlaceholderSafetySpec
     },
     "Firebird" => {
       skip: lambda {
-        if FB_URL.empty? then "TINA4_TEST_FIREBIRD_URL not set - firebird case skipped"
-        elsif !gem?("fb") then "fb gem not installed - firebird case skipped"
+        if FB_URL.empty? then "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set - firebird case skipped"
+        elsif !gem?("fb") then "[needs:firebird] fb gem not installed - firebird case skipped"
         else
           uri = URI.parse(FB_URL)
-          "firebird not reachable at #{FB_URL}" unless reachable?(uri.host, uri.port || 3050)
+          "[needs:firebird] firebird not reachable at #{FB_URL}" unless reachable?(uri.host, uri.port || 3050)
         end
       },
       connect: lambda {
@@ -134,8 +134,8 @@ module PlaceholderSafetySpec
     },
     "ODBC" => {
       skip: lambda {
-        if ODBC_DSN.empty? then "TINA4_TEST_ODBC_DSN not set - odbc case skipped"
-        elsif !gem?("odbc") then "ruby-odbc gem not installed - odbc case skipped"
+        if ODBC_DSN.empty? then "[needs:runtime=odbc] TINA4_TEST_ODBC_DSN not set - odbc case skipped"
+        elsif !gem?("odbc") then "[needs:runtime=odbc] ruby-odbc gem not installed - odbc case skipped"
         end
       },
       connect: -> { Tina4::Database.new("odbc:///#{ODBC_DSN}") },

@@ -55,18 +55,18 @@ RSpec.describe "Firebird: a RETURNING write read through fetch fails loud and le
   end
 
   def fb_returning_skip_reason
-    return "TINA4_TEST_FIREBIRD_URL not set - firebird returning spec skipped" if fb_returning_url.empty?
+    return "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set - firebird returning spec skipped" if fb_returning_url.empty?
 
     begin
       require "fb"
     rescue LoadError
-      return "fb gem not installed - firebird returning spec skipped"
+      return "[needs:firebird] fb gem not installed - firebird returning spec skipped"
     end
     uri = URI.parse(fb_returning_url)
     TCPSocket.new(uri.host, uri.port || 3050).close
     nil
   rescue StandardError
-    "firebird not reachable at #{fb_returning_url} - spec skipped"
+    "[needs:firebird] firebird not reachable at #{fb_returning_url} - spec skipped"
   end
 
   # Rows a SECOND connection can see - i.e. what was committed.

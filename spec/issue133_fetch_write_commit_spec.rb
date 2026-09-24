@@ -60,8 +60,8 @@ module Issue133Spec
     "PostgreSQL" => {
       skip: lambda {
         uri = URI.parse(PG_URL)
-        if !gem?("pg") then "pg gem not installed - PostgreSQL not reachable"
-        elsif !reachable?(uri.host, uri.port || 5432) then "PostgreSQL not reachable at #{PG_URL}"
+        if !gem?("pg") then "[needs:postgres] pg gem not installed - PostgreSQL not reachable"
+        elsif !reachable?(uri.host, uri.port || 5432) then "[needs:postgres] PostgreSQL not reachable at #{PG_URL}"
         end
       },
       connect: -> { Tina4::Database.new(PG_URL, username: PG_USER, password: PG_PASS) },
@@ -82,8 +82,8 @@ module Issue133Spec
     },
     "MSSQL" => {
       skip: lambda {
-        if !gem?("tiny_tds") then "tiny_tds gem not installed - MSSQL not reachable"
-        elsif !reachable?(MSSQL_HOST, MSSQL_PORT) then "MSSQL not reachable at #{MSSQL_HOST}:#{MSSQL_PORT}"
+        if !gem?("tiny_tds") then "[needs:mssql] tiny_tds gem not installed - MSSQL not reachable"
+        elsif !reachable?(MSSQL_HOST, MSSQL_PORT) then "[needs:mssql] MSSQL not reachable at #{MSSQL_HOST}:#{MSSQL_PORT}"
         end
       },
       connect: lambda {

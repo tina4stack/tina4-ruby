@@ -157,8 +157,8 @@ RSpec.describe "Database statement semantics contract (ADR-0065)" do
   it "execute returns rows for output and exec on sql server" do
     host = StatementSemanticsContract::MSSQL_HOST
     port = StatementSemanticsContract::MSSQL_PORT
-    skip "tiny_tds gem not installed - MSSQL not reachable" unless StatementSemanticsContract.gem?("tiny_tds")
-    skip "MSSQL not reachable at #{host}:#{port}" unless StatementSemanticsContract.reachable?(host, port)
+    skip "[needs:mssql] tiny_tds gem not installed - MSSQL not reachable" unless StatementSemanticsContract.gem?("tiny_tds")
+    skip "[needs:mssql] MSSQL not reachable at #{host}:#{port}" unless StatementSemanticsContract.reachable?(host, port)
 
     database = Tina4::Database.new("mssql://#{host}:#{port}/#{ENV.fetch('TINA4_TEST_MSSQL_DB', 'tina4_test')}",
                                    username: ENV.fetch("TINA4_TEST_MSSQL_USERNAME", "sa"),
@@ -189,8 +189,8 @@ RSpec.describe "Database statement semantics contract (ADR-0065)" do
     before(:each) do
       url = StatementSemanticsContract::PG_URL
       uri = URI.parse(url)
-      skip "pg gem not installed - PostgreSQL not reachable" unless StatementSemanticsContract.gem?("pg")
-      skip "PostgreSQL not reachable at #{url}" unless StatementSemanticsContract.reachable?(uri.host, uri.port || 5432)
+      skip "[needs:postgres] pg gem not installed - PostgreSQL not reachable" unless StatementSemanticsContract.gem?("pg")
+      skip "[needs:postgres] PostgreSQL not reachable at #{url}" unless StatementSemanticsContract.reachable?(uri.host, uri.port || 5432)
       @db = Tina4::Database.new(url, username: ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4"),
                                      password: ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4"))
     end

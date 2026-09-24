@@ -53,8 +53,8 @@ module CountProbeSpec
     "PostgreSQL" => {
       skip: lambda {
         uri = URI.parse(PG_URL)
-        if !gem?("pg") then "pg gem not installed - PostgreSQL not reachable"
-        elsif !reachable?(uri.host, uri.port || 5432) then "PostgreSQL not reachable at #{PG_URL}"
+        if !gem?("pg") then "[needs:postgres] pg gem not installed - PostgreSQL not reachable"
+        elsif !reachable?(uri.host, uri.port || 5432) then "[needs:postgres] PostgreSQL not reachable at #{PG_URL}"
         end
       },
       connect: lambda {
@@ -66,8 +66,8 @@ module CountProbeSpec
     },
     "MySQL" => {
       skip: lambda {
-        if !gem?("mysql2") then "mysql2 gem not installed - MySQL not reachable"
-        elsif !reachable?(MYSQL_HOST, MYSQL_PORT) then "MySQL not reachable at #{MYSQL_HOST}:#{MYSQL_PORT}"
+        if !gem?("mysql2") then "[needs:mysql] mysql2 gem not installed - MySQL not reachable"
+        elsif !reachable?(MYSQL_HOST, MYSQL_PORT) then "[needs:mysql] MySQL not reachable at #{MYSQL_HOST}:#{MYSQL_PORT}"
         end
       },
       connect: lambda {
@@ -80,8 +80,8 @@ module CountProbeSpec
     },
     "MSSQL" => {
       skip: lambda {
-        if !gem?("tiny_tds") then "tiny_tds gem not installed - MSSQL not reachable"
-        elsif !reachable?(MSSQL_HOST, MSSQL_PORT) then "MSSQL not reachable at #{MSSQL_HOST}:#{MSSQL_PORT}"
+        if !gem?("tiny_tds") then "[needs:mssql] tiny_tds gem not installed - MSSQL not reachable"
+        elsif !reachable?(MSSQL_HOST, MSSQL_PORT) then "[needs:mssql] MSSQL not reachable at #{MSSQL_HOST}:#{MSSQL_PORT}"
         end
       },
       connect: lambda {

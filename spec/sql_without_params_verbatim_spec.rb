@@ -28,7 +28,7 @@ RSpec.describe "SQL with no parameters is sent exactly as written (Postgres json
       require "pg"
       TCPSocket.new(uri.host, uri.port || 5432).close
     rescue LoadError, StandardError
-      skip "PostgreSQL not reachable at #{verbatim_pg_url}"
+      skip "[needs:postgres] PostgreSQL not reachable at #{verbatim_pg_url}"
     end
     @db = Tina4::Database.new(verbatim_pg_url, username: ENV.fetch("TINA4_TEST_PG_USERNAME", "tina4"),
                                                password: ENV.fetch("TINA4_TEST_PG_PASSWORD", "tina4"))
