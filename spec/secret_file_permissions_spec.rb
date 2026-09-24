@@ -48,7 +48,7 @@ RSpec.describe "credential file permissions" do
   [:auth, :grounding, :connection].each do |writer|
     [:new, :existing, :symlink, :hardlink].each do |kind|
       it "#{writer} safely persists #{kind} credential files" do
-        skip "POSIX file permissions" if Gem.win_platform?
+        skip "[needs:os=posix] POSIX file permissions" if Gem.win_platform?
         path = writer == :auth ? ".env.local" : ".env"
         File.write("unrelated", "KEEP=original\n")
         File.chmod(0o644, "unrelated")
@@ -81,7 +81,7 @@ RSpec.describe "credential file permissions" do
 
   [:new, :existing, :symlink, :hardlink].each do |kind|
     it "RSA private key safely handles #{kind} files" do
-      skip "POSIX file permissions" if Gem.win_platform?
+      skip "[needs:os=posix] POSIX file permissions" if Gem.win_platform?
       Dir.mkdir("keys")
       Tina4::Auth.instance_variable_set(:@keys_dir, File.expand_path("keys"))
       File.write("unrelated", "original")
