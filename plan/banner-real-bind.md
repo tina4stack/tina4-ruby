@@ -17,16 +17,20 @@ correct one from `WebServer#start`.
 - [x] Fix: the banner is printed by the server start (Puma and built-in), never by `initialize!`
 - [x] Mutation-prove the spec (4 mutations, all caught, see below)
 - [x] Full suite on the lab (TINA4_REQUIRE_SERVICES=1, OIDC env): 5835 examples, 0 failures, 0 pending
-- [ ] Check PHP / Python / Node banners on the lab against `ss -ltnp`
-- [ ] PR to v3 (coordinate with PR #50, which rewrites nearby lines of run! and print_banner)
+- [x] Check PHP / Python / Node banners on the lab against `ss -ltnp` (PHP wrong host -> tina4-php fix/banner-real-bind)
+- [x] PR to v3: tina4stack/tina4-ruby#54 (coordinated with #50: merges with one trivial conflict, spec green on #50's path)
 
 ## Parity
-| Framework | Banner names the real bind |
-|-----------|----------------------------|
-| Python    | (check on lab)             |
-| PHP       | (check on lab)             |
-| Ruby      | ✅ fixed                    |
-| Node      | (check on lab)             |
+Lab, 2026-09-24: each booted on a free port, once with explicit args (127.0.0.1), once with
+TINA4_PORT + TINA4_HOST=192.168.88.99 (LAN), banner compared with `ss -ltnp`.
+
+| Framework | explicit args | TINA4_PORT / TINA4_HOST |
+|-----------|---------------|-------------------------|
+| Python    | ✅             | ✅                       |
+| PHP       | ⚠️ port ok, host shown as localhost | ❌ bound 192.168.88.99, banner said localhost |
+| Ruby v3   | ❌ localhost:7147 | ❌ localhost:7147     |
+| Ruby #54  | ✅             | ✅                       |
+| Node      | ✅             | ✅                       |
 
 ## Tests (written first, real, no mocks)
 - [x] banner_names_the_explicit_port_and_host (Puma and built-in)
@@ -47,5 +51,6 @@ Mutations (lab, Ruby 3.2.3, Puma 6.6.1):
 - [x] run!(port:) lost to TINA4_PORT (ADR-0041) and logged a false "PORT is deprecated" warning
 
 ## Commits
+- 9d04ea6  fix(banner): print the host and port the server really binds (tina4-ruby#54)
 
-## Status: In Progress
+## Status: Complete (PR #54 open, CI green; not merged)
