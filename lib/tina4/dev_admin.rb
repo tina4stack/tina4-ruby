@@ -17,6 +17,7 @@ require "rbconfig" # RbConfig.ruby for scaffold_run's Open3.capture3 call to exe
 require "open3"    # scaffold_run shells to exe/tina4ruby generate <kind> <name>
 require_relative "metrics"
 require_relative "parse_json"
+require_relative "secret_file"
 
 module Tina4
   # Thread-safe in-memory message log for dev dashboard
@@ -1156,20 +1157,22 @@ module Tina4
       def grounding_token_save(body)
         token = (body && body["token"]).to_s.strip
         env_path = File.join(Dir.pwd, ".env")
-        lines = File.file?(env_path) ? File.readlines(env_path, chomp: true) : []
-        found = false
-        new_lines = lines.map do |line|
-          stripped = line.strip
-          if !stripped.empty? && !stripped.start_with?("#") && stripped.include?("=") &&
-             stripped.split("=", 2).first.strip == "TINA4_MCP_TOKEN"
-            found = true
-            "TINA4_MCP_TOKEN=#{token}"
-          else
-            line
+        SecretFile.update(env_path) do |content|
+          lines = content.lines(chomp: true)
+          found = false
+          new_lines = lines.map do |line|
+            stripped = line.strip
+            if !stripped.empty? && !stripped.start_with?("#") && stripped.include?("=") &&
+               stripped.split("=", 2).first.strip == "TINA4_MCP_TOKEN"
+              found = true
+              "TINA4_MCP_TOKEN=#{token}"
+            else
+              line
+            end
           end
+          new_lines << "TINA4_MCP_TOKEN=#{token}" unless found
+          new_lines.join("\n") + "\n"
         end
-        new_lines << "TINA4_MCP_TOKEN=#{token}" unless found
-        File.write(env_path, new_lines.join("\n") + "\n")
 
         if token.empty?
           ENV.delete("TINA4_MCP_TOKEN")
@@ -1565,45 +1568,47 @@ module Tina4
         return json_response({ success: false, error: "No connection URL provided" }) if url.empty?
         begin
           env_path = File.join(Dir.pwd, ".env")
-          lines = File.file?(env_path) ? File.readlines(env_path, chomp: true) : []
-          # v3.12+ env vars are TINA4_-prefixed; saving bare DATABASE_URL
-          # would trip the framework's legacy-env boot guard on next start.
-          keys_found = {
-            "TINA4_DATABASE_URL" => false,
-            "TINA4_DATABASE_USERNAME" => false,
-            "TINA4_DATABASE_PASSWORD" => false,
-          }
-          new_lines = []
-          lines.each do |line|
-            stripped = line.strip
-            if stripped.empty? || stripped.start_with?("#") || !stripped.include?("=")
-              new_lines << line
-              next
+          SecretFile.update(env_path) do |content|
+            lines = content.lines(chomp: true)
+            # v3.12+ env vars are TINA4_-prefixed; saving bare DATABASE_URL
+            # would trip the framework's legacy-env boot guard on next start.
+            keys_found = {
+              "TINA4_DATABASE_URL" => false,
+              "TINA4_DATABASE_USERNAME" => false,
+              "TINA4_DATABASE_PASSWORD" => false,
+            }
+            new_lines = []
+            lines.each do |line|
+              stripped = line.strip
+              if stripped.empty? || stripped.start_with?("#") || !stripped.include?("=")
+                new_lines << line
+                next
+              end
+              key = stripped.split("=", 2).first.strip
+              case key
+              when "TINA4_DATABASE_URL"
+                new_lines << "TINA4_DATABASE_URL=#{url}"
+                keys_found["TINA4_DATABASE_URL"] = true
+              when "TINA4_DATABASE_USERNAME"
+                new_lines << "TINA4_DATABASE_USERNAME=#{username}"
+                keys_found["TINA4_DATABASE_USERNAME"] = true
+              when "TINA4_DATABASE_PASSWORD"
+                new_lines << "TINA4_DATABASE_PASSWORD=#{password}"
+                keys_found["TINA4_DATABASE_PASSWORD"] = true
+              else
+                new_lines << line
+              end
             end
-            key = stripped.split("=", 2).first.strip
-            case key
-            when "TINA4_DATABASE_URL"
-              new_lines << "TINA4_DATABASE_URL=#{url}"
-              keys_found["TINA4_DATABASE_URL"] = true
-            when "TINA4_DATABASE_USERNAME"
-              new_lines << "TINA4_DATABASE_USERNAME=#{username}"
-              keys_found["TINA4_DATABASE_USERNAME"] = true
-            when "TINA4_DATABASE_PASSWORD"
-              new_lines << "TINA4_DATABASE_PASSWORD=#{password}"
-              keys_found["TINA4_DATABASE_PASSWORD"] = true
-            else
-              new_lines << line
+            values = {
+              "TINA4_DATABASE_URL" => url,
+              "TINA4_DATABASE_USERNAME" => username,
+              "TINA4_DATABASE_PASSWORD" => password,
+            }
+            keys_found.each do |key, found|
+              new_lines << "#{key}=#{values[key]}" unless found
             end
+            new_lines.join("\n") + "\n"
           end
-          values = {
-            "TINA4_DATABASE_URL" => url,
-            "TINA4_DATABASE_USERNAME" => username,
-            "TINA4_DATABASE_PASSWORD" => password,
-          }
-          keys_found.each do |key, found|
-            new_lines << "#{key}=#{values[key]}" unless found
-          end
-          File.write(env_path, new_lines.join("\n") + "\n")
           json_response({ success: true })
         rescue => e
           json_response({ success: false, error: e.message })
