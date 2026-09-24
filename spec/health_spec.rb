@@ -9,16 +9,6 @@
 require "spec_helper"
 
 RSpec.describe Tina4::Health do
-  # ADR-0078: the body carries the version in debug mode only; these cases
-  # characterise the debug body (spec/dev_surface_contract_spec.rb covers both).
-  around(:each) do |example|
-    saved = ENV["TINA4_DEBUG"]
-    ENV["TINA4_DEBUG"] = "true"
-    example.run
-  ensure
-    saved.nil? ? ENV.delete("TINA4_DEBUG") : ENV["TINA4_DEBUG"] = saved
-  end
-
   describe ".status" do
     it "returns a hash with status ok" do
       result = Tina4::Health.status

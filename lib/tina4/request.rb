@@ -278,7 +278,7 @@ module Tina4
     # @return [Boolean] true when the client's scheme is https.
     def self.secure_scheme?(env)
       forwarded = (env["HTTP_X_FORWARDED_PROTO"] || "").to_s
-      unless forwarded.strip.empty?
+      if Tina4.trusted_proxy?(env["REMOTE_ADDR"].to_s) && !forwarded.strip.empty?
         return forwarded.split(",").first.to_s.strip.casecmp("https").zero?
       end
       scheme = (env["rack.url_scheme"] || "").to_s

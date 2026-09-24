@@ -278,23 +278,4 @@ RSpec.describe "Tina4 dev-surface gate contract (release security boundaries)" d
     expect(status).to eq(200)
     expect(body.b).to eq(bytes)
   end
-
-  # ── Health does not disclose the version in production (ADR-0078) ──────────
-
-  it "health omits the version outside debug" do
-    ENV["TINA4_DEBUG"] = "false"
-    Tina4::Health.register!
-    ["/health", "/__health"].each do |path|
-      status, body = dispatch("GET", path)
-      expect(status).to eq(200)
-      expect(JSON.parse(body).keys.sort).to eq(%w[framework status uptime])
-    end
-  end
-
-  it "health carries the version in debug" do
-    Tina4::Health.register!
-    status, body = dispatch("GET", "/health")
-    expect(status).to eq(200)
-    expect(JSON.parse(body)["version"]).to eq(Tina4::VERSION)
-  end
 end

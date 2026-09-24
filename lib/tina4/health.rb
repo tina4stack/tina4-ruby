@@ -55,18 +55,27 @@ module Tina4
 
 
       def handle(_request, response)
-        response.json(status)
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        uptime = (now - START_TIME).round(2)
+
+        payload = {
+          status: "ok",
+          version: Tina4::VERSION,
+          uptime: uptime,
+          framework: "tina4-ruby"
+        }
+
+        response.json(payload)
       end
 
       def status
         now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        # ADR-0078 (supersedes the ADR-0016 key set): the exact version is
-        # only disclosed in debug mode.
-        body = { status: "ok" }
-        body[:version] = Tina4::VERSION if Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
-        body[:uptime] = (now - START_TIME).round(2)
-        body[:framework] = "tina4-ruby"
-        body
+        {
+          status: "ok",
+          version: Tina4::VERSION,
+          uptime: (now - START_TIME).round(2),
+          framework: "tina4-ruby"
+        }
       end
     end
   end

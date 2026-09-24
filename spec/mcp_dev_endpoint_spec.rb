@@ -39,7 +39,7 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
 
   def delete_path(path)
     Tina4::DevAdmin.handle_request(
-      "PATH_INFO" => path, "REQUEST_METHOD" => "DELETE", "QUERY_STRING" => ""
+      "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => path, "REQUEST_METHOD" => "DELETE", "QUERY_STRING" => ""
     )
   end
 
