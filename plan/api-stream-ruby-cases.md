@@ -49,6 +49,6 @@ Mutations (lab, Ruby 3.2.3):
 - [x] connect default was the client timeout (30s), not 10s like Python/PHP/Node
 
 ## Commits
-- b86662b  test(api-stream): the three ADR-0060 timeout/close cases; fix the total deadline (tina4-ruby#56)
+- d723ccd  test(api-stream): the three ADR-0060 timeout/close cases; fix the total deadline (tina4-ruby#56)
 
 ## Status: Complete (PR #56 open, CI green; not merged)
