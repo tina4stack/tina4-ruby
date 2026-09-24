@@ -645,15 +645,15 @@ code generator — write the Ruby yourself from what it returns. Use it as a lad
 
 ## Batteries included — near-zero dependencies
 
-Tina4 Ruby is **batteries-included**: 140 cataloged features, and the handful of runtime gems it
-*does* pull are Rack-stack + deployment essentials, not framework bloat. Its `tina4ruby.gemspec`
-runtime dependencies are **`rack`, `rackup`, `puma`** (the HTTP server stack), **`jwt`** (auth),
-**`net-smtp` / `net-imap`** (the Messenger), **`json`, `rexml`, `webrick`**, and **`sqlite3`** (so
-`tina4 init && tina4 serve` runs with a working DB out of the box). Everything else — Postgres/MySQL/
-MSSQL drivers, Mongo, Redis/Valkey, Kafka, RabbitMQ — is **optional** and required lazily; the
-backend degrades gracefully when the gem is absent. This is a genuine difference from Python (which
-hand-rolls JWT and ships a truly empty `dependencies = []`) — state it honestly: *near-zero-dep,
-batteries-included*, not *zero-dependency*.
+Tina4 Ruby is **batteries-included**: 140 cataloged features, and the only runtime gems it
+declares are the Rack server stack: **`rack`, `rackup`, `puma`, `webrick`**. Everything else is
+Tina4 code on the standard library: JWT on OpenSSL, `Tina4::Base64`, its own SMTP/IMAP clients for
+the Messenger, its own XML parser for WSDL, and `json` (a default gem). **`sqlite3` is an app
+dependency** (ADR-0067): `tina4 init ruby` writes `gem "sqlite3"` into your Gemfile, and without it
+a SQLite connection raises an actionable LoadError naming the fix. Postgres/MySQL/MSSQL/Firebird
+drivers, Mongo, Redis/Valkey, Kafka, RabbitMQ are **optional** in the same way and required lazily.
+Python ships a truly empty `dependencies = []`; Ruby still needs a web server gem, so say
+*near-zero-dep, batteries-included*, not *zero-dependency*.
 
 Before you add a gem, check whether it's already in the box. **Need → Tina4 built-in (verified
 against `lib/tina4/`) — don't add the dep:**

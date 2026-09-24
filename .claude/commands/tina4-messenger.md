@@ -140,4 +140,4 @@ mail.test_imap_connection   # Test IMAP
 - Use app passwords for Gmail (not your real password)
 - SMTP uses STARTTLS on port 587, SSL on port 465
 - IMAP always uses SSL
-- All email handling uses Ruby stdlib (`net/smtp`, `net/imap`) -- zero dependencies
+- Email goes through Tina4's own SMTP and IMAP clients (`Tina4::Messenger::SmtpClient`, `Tina4::Messenger::ImapClient`) on stdlib `socket` + `openssl` -- no mail gems
