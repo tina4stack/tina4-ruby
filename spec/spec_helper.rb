@@ -51,58 +51,61 @@ RUBY_BIN  = RbConfig.ruby
 
 # ── Real-service test gate (TINA4_REQUIRE_SERVICES) ───────────────────────────
 #
-# Mirror of tests/conftest.py in tina4-python (the master). CI provisions
-# PostgreSQL, MySQL, MSSQL, Redis, Valkey, Memcached, MongoDB, RabbitMQ and
-# Kafka and sets every TINA4_TEST_* URL, so the real-service integration specs
-# MUST run instead of skipping (the gap that let the migration/queue bugs ship
-# green). When TINA4_REQUIRE_SERVICES is truthy, a spec that SKIPPED because one
-# of those PROVISIONED services (or its client gem) is unavailable is turned
-# into a hard FAILURE — the whole run exits non-zero. MySQL and MSSQL joined the
-# provisioned set in #262 (mysql2 + tiny_tds in the OPTIONAL :databases bundle
-# group, CI installs the native client libs), so their reachability / driver
-# skips now fail the gate too. Firebird is NOT provisioned, so its skip reasons
-# never match these keywords and stay green.
+# Mirror of tests/conftest.py in tina4-python (the master); the rule is the same
+# in all four frameworks (ADR-0069 addendum F). When TINA4_REQUIRE_SERVICES is
+# truthy, a skipped or pending example PASSES only if its reason carries a
+# machine-readable `[needs:X]` tag AND X is excusable in this run:
+#
+#   * X is an OPTIONAL engine (TINA4_GATE_OPTIONAL_ENGINES): excused ONLY while
+#     its coordinate env var is unset. A CI job that never promised the engine
+#     stays green; a run that sets the coordinate (the lab sets all of them)
+#     fails when the engine is not really there.
+#   * X is an ALWAYS-provisioned service (TINA4_GATE_ALWAYS_SERVICES): never
+#     excused - an unreachable one fails.
+#   * Any other X (absent-ext=..., no-dac-override, os=..., runtime=...) is a
+#     platform exclusion: always excused.
+#   * An untagged skip FAILS. Every tag in a reason must be excusable.
+#
+# This replaced a keyword + phrase matcher that missed wordings such as "no
+# reachable postgres" and "mongo backend unavailable", so those skipped green
+# under the gate - ghost tests. A positive tag cannot be dodged by a wording.
 #
 # RSpec marks `skip "msg"` as pending with that message in
 # example.execution_result.pending_message. At suite end the gate WALKS EVERY
 # EXAMPLE RSpec knows about (RSpec.world, recursing into nested groups), records
-# any offending message, and exits non-zero. (Raising in after(:each) does NOT
-# fail a pending example — RSpec swallows it and the run stays green — so the
-# failure is forced at suite end, the clean equivalent of pytest's makereport
-# outcome-flip in the Python master.)
+# any reason it may not excuse, and exits non-zero. (Raising in after(:each)
+# does NOT fail a pending example - RSpec swallows it and the run stays green -
+# so the failure is forced at suite end, the clean equivalent of pytest's
+# makereport outcome-flip in the Python master.)
 #
-# The walk — rather than an after(:each) recorder — is what makes the gate
+# The walk - rather than an after(:each) recorder - is what makes the gate
 # WHOLE. RSpec does NOT run after(:each) hooks for an example skipped by a
-# `before(:context)` / `before(:all)` hook: the group's run aborts with
-# Pending::SkipDeclaredInExample and each example is finished via
-# Example#skip_with_exception, which never enters the per-example hook chain. A
-# recorder living in after(:each) therefore never fires for those examples, so a
-# spec gating a provisioned service with `before(:all) { skip "... not
-# reachable" }` used to skip GREEN under TINA4_REQUIRE_SERVICES — exactly the
-# no-green-skips guarantee this gate exists to provide. skip_with_exception DOES
-# still write execution_result.pending_message on every affected example, so the
-# suite-end walk sees before(:context) skips and per-example skips alike. Locked
-# in by spec/require_services_gate_spec.rb, which runs a REAL rspec subprocess
-# over both shapes.
-TINA4_GATE_SERVICE_KEYWORDS = [
-  "postgres", "postgresql", "psycopg2", # psycopg2 kept for cross-framework message parity
-  "pg",                                  # Ruby's PostgreSQL client gem ("pg gem not installed")
-  "mysql",                               # MySQL + its mysql2 client gem (#262)
-  "mssql", "sqlserver",                  # MSSQL + its tiny_tds client gem (#262)
-  "redis", "valkey", "memcached",
-  "mongo",                               # also matches "mongodb"
-  "rabbit", "amqp",
-  "kafka",                               # also matches "rdkafka"
-  "mqtt", "mosquitto",                   # Eclipse Mosquitto for the MQTT specs
-  # GreenMail (real SMTP 3025 / IMAP 3143) for the Messenger IMAP specs. 16 of
-  # those specs sat pending on "GreenMail mail server not reachable" with no
-  # mail keyword here, so they passed green in CI indefinitely.
-  "greenmail", "smtp", "imap"
-].freeze
+# `before(:context)` / `before(:all)` hook: each example is finished via
+# Example#skip_with_exception, which never enters the per-example hook chain,
+# but it DOES write execution_result.pending_message, so the suite-end walk sees
+# before(:context) skips and per-example skips alike. Locked in by
+# spec/require_services_gate_spec.rb, which runs a REAL rspec subprocess.
+TINA4_GATE_NEEDS_TAG = /\[needs:([^\]\s]+)\]/.freeze
 
-TINA4_GATE_UNAVAILABLE_HINTS = [
-  "not reachable", "unreachable", "not running", "not set",
-  "not installed", "could not connect", "not available", "refused"
+# Optional engine tag => the coordinate env vars that promise it in this run.
+TINA4_GATE_OPTIONAL_ENGINES = {
+  "firebird" => %w[TINA4_TEST_FIREBIRD_URL],
+  # Only the canonical spelling: ADR-0038 retired TINA4_TEST_POSTGRES_URL.
+  "postgres" => %w[TINA4_TEST_PG_URL],
+  "postgis" => %w[TINA4_TEST_POSTGIS_URL],
+  "mysql" => %w[TINA4_TEST_MYSQL_URL],
+  "mssql" => %w[TINA4_TEST_MSSQL_URL],
+  "swoole" => %w[TINA4_TEST_SWOOLE],
+  "oidc" => %w[TINA4_TEST_OIDC_ISSUER],
+  "neo4j" => %w[TINA4_TEST_NEO4J_URL],
+  "memgraph" => %w[TINA4_TEST_MEMGRAPH_URL],
+  "arango" => %w[TINA4_TEST_ARANGO_URL],
+  "ultipa" => %w[TINA4_TEST_ULTIPA_URL]
+}.freeze
+
+# Services every gated run provisions: a skip tagged with one is never excused.
+TINA4_GATE_ALWAYS_SERVICES = %w[
+  mongo redis valkey memcached rabbitmq kafka mqtt smtp imap s3
 ].freeze
 
 TINA4_GATE_VIOLATIONS = []
@@ -111,10 +114,23 @@ def tina4_require_services?
   %w[1 true yes on].include?(ENV["TINA4_REQUIRE_SERVICES"].to_s.strip.downcase)
 end
 
-def tina4_provisioned_service_skip?(reason)
-  low = reason.to_s.downcase
-  TINA4_GATE_SERVICE_KEYWORDS.any? { |k| low.include?(k) } &&
-    TINA4_GATE_UNAVAILABLE_HINTS.any? { |h| low.include?(h) }
+# Whether one [needs:X] tag excuses a skip in this run (see the rule above).
+def tina4_gate_tag_excused?(tag, env = ENV)
+  return false if TINA4_GATE_ALWAYS_SERVICES.include?(tag)
+
+  coordinates = TINA4_GATE_OPTIONAL_ENGINES[tag]
+  return true if coordinates.nil? # a platform exclusion
+
+  coordinates.all? { |name| env[name].to_s.strip.empty? }
+end
+
+# True for a skip/pending reason the gate must fail: untagged, or carrying any
+# tag this run cannot excuse. nil (the example was not skipped) never fails.
+def tina4_gate_violation?(reason, env = ENV)
+  return false if reason.nil?
+
+  tags = reason.to_s.scan(TINA4_GATE_NEEDS_TAG).flatten
+  tags.empty? || !tags.all? { |tag| tina4_gate_tag_excused?(tag, env) }
 end
 
 # Yield every example in `groups` and, recursively, in their nested groups.
@@ -160,11 +176,11 @@ TINA4_LOG_STATE_IVARS = %i[@snapshot @pid].freeze
 
 RSpec.configure do |config|
   config.after(:suite) do
-    # Record any provisioned-service skip so the suite fails on it (see above).
+    # Record every skip/pending the gate may not excuse (see above).
     if tina4_require_services?
       tina4_gate_each_example(RSpec.world.example_groups) do |example|
         reason = example.execution_result.pending_message
-        next unless reason && tina4_provisioned_service_skip?(reason)
+        next unless tina4_gate_violation?(reason)
 
         TINA4_GATE_VIOLATIONS << "#{example.full_description} (#{example.location}): #{reason.strip}"
       end
@@ -172,10 +188,11 @@ RSpec.configure do |config|
 
     unless TINA4_GATE_VIOLATIONS.empty?
       warn "\n#{'=' * 78}"
-      warn "TINA4_REQUIRE_SERVICES is set, but #{TINA4_GATE_VIOLATIONS.length} real-service " \
-           "spec(s) SKIPPED because a provisioned service or client gem is missing:"
+      warn "TINA4_REQUIRE_SERVICES is set, but #{TINA4_GATE_VIOLATIONS.length} " \
+           "spec(s) SKIPPED without an excusable [needs:...] tag:"
       TINA4_GATE_VIOLATIONS.each { |v| warn "  - #{v}" }
-      warn "Provision the service / install the client gem, or unset TINA4_REQUIRE_SERVICES."
+      warn "Provision the service / install the client gem, tag a genuine platform exclusion " \
+           "with [needs:<what>], or unset TINA4_REQUIRE_SERVICES (see spec/spec_helper.rb)."
       warn "=" * 78
       exit(1)
     end

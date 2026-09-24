@@ -538,7 +538,7 @@ RSpec.describe "TINA4_DATABASE_CONNECT_TIMEOUT bounds every network connect" do
       begin
         require "fb"
       rescue LoadError
-        skip "fb gem not installed"
+        skip "[needs:firebird] fb gem not installed"
       end
       blackhole_reason = blackhole_unavailable_reason
       skip "[needs:blackhole-route] #{blackhole_reason}" if blackhole_reason

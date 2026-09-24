@@ -707,7 +707,7 @@ RSpec.describe "Database adapter contract (feature 3, ADR-0044)" do
   end
 
   it "configured providers run without skip (firebird)" do
-    skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if ADPC_FIREBIRD_URL.empty?
+    skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if ADPC_FIREBIRD_URL.empty?
     db = Tina4::Database.new(ADPC_FIREBIRD_URL)
     adpc_prove_structural_slice_on(db, "firebird")
   end

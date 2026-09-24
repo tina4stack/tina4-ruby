@@ -293,7 +293,7 @@ RSpec.describe "Security hardening" do
     # A real handler whose backend genuinely cannot be reached.
     def unreachable_handler(kind)
       if self.class.port_open?(CLOSED_PORT)
-        skip "port #{CLOSED_PORT} is unexpectedly OPEN on 127.0.0.1 — " \
+        skip "[needs:closed-port] port #{CLOSED_PORT} is unexpectedly OPEN on 127.0.0.1 — " \
              "cannot prove unreachable-backend behaviour against a live listener"
       end
       HANDLER_CLASSES.fetch(kind).new(host: "127.0.0.1", port: CLOSED_PORT)

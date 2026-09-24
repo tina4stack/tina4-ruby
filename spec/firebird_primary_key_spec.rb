@@ -20,7 +20,7 @@ require "spec_helper"
 RSpec.describe "Firebird primary-key introspection", :firebird do
   before(:all) do
     @url = ENV["TINA4_TEST_FIREBIRD_URL"]
-    skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if @url.nil? || @url.empty?
+    skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if @url.nil? || @url.empty?
   end
 
   let(:db) { Tina4::Database.new(@url, username: "SYSDBA", password: "masterkey") }

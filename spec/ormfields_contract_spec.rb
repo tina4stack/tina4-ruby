@@ -15,7 +15,8 @@ require "json"
 #
 # Case names are shared verbatim across the four frameworks and gated by
 # scripts/audit-contract-fixtures.py. Under TINA4_REQUIRE_SERVICES a
-# PG/MySQL/MSSQL skip is upgraded to a failure by spec_helper; Firebird is gated.
+# PG/MySQL/MSSQL skip is a failure (untagged); a Firebird skip carries
+# [needs:firebird], excused only while TINA4_TEST_FIREBIRD_URL is unset.
 
 # Model classes are TOP LEVEL on purpose (a bare constant inside RSpec.describe
 # lands on Object and clobbers another spec file).
@@ -216,7 +217,7 @@ RSpec.describe "ORM fields and column mapping (feature 18)" do
                           password: ENV.fetch("TINA4_TEST_MSSQL_PASSWORD", "TinaSQL123!Secure"))
     else # firebird — gated; runs when TINA4_TEST_FIREBIRD_URL is set (the lab sets it)
       url = ENV["TINA4_TEST_FIREBIRD_URL"]
-      skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if url.nil? || url.empty?
+      skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if url.nil? || url.empty?
       Tina4::Database.new(url,
                           username: ENV.fetch("TINA4_TEST_FIREBIRD_USERNAME", "SYSDBA"),
                           password: ENV.fetch("TINA4_TEST_FIREBIRD_PASSWORD", "masterkey"))

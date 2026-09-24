@@ -59,7 +59,7 @@ module Tina4
         query_params = request.respond_to?(:query) ? request.query : {}
         page       = [(query_params["page"] || 1).to_i, 1].max
         search     = query_params["search"].to_s.strip
-        sort_col   = query_params["sort"] || pk
+        sort_col   = crud_sort_column(model, sql, query_params["sort"], pk)
         sort_dir   = query_params["sort_dir"] == "desc" ? "desc" : "asc"
         offset     = (page - 1) * limit
 
@@ -213,8 +213,8 @@ module Tina4
         # POST create
         Tina4::Router.add("POST", api_path, proc { |req, res|
           begin
-            data = req.body_parsed
-            result = db.insert(table_name, data)
+            data = table_column_attributes(db, table_name, req.body_parsed)
+            db.insert(table_name, data)
             res.json({ data: data, message: "Created" }, status: 201)
           rescue => e
             res.json({ error: e.message }, status: 500)
@@ -225,7 +225,8 @@ module Tina4
         Tina4::Router.add("PUT", "#{api_path}/{id}", proc { |req, res|
           begin
             id = req.params["id"]
-            data = req.body_parsed
+            # The row is addressed by the URL id only, never by a body pk.
+            data = table_column_attributes(db, table_name, req.body_parsed, strip: pk)
             db.update(table_name, data, { pk => id })
             res.json({ data: data, message: "Updated" })
           rescue => e
@@ -243,6 +244,68 @@ module Tina4
             res.json({ error: e.message }, status: 500)
           end
         })
+      end
+
+      # tina4: ADR-0069 - a SQL-mode write body is allow-listed against the
+      # table's REAL columns (matched case-insensitively, written in the
+      # introspected spelling); unknown keys are dropped, is_deleted is never
+      # client-writable, and +strip+ (the pk on update) is removed. Same write
+      # rule as AutoCrud (CRUD-DEC-02).
+      def table_column_attributes(db, table_name, data, strip: nil)
+        return {} unless data.is_a?(Hash)
+
+        columns = db.columns(table_name).to_h { |column| [column[:name].to_s.downcase, column[:name].to_s] }
+        blocked = ["is_deleted", strip.to_s.downcase]
+        data.each_with_object({}) do |(key, value), allowed|
+          column = columns[key.to_s.downcase]
+          next if column.nil? || blocked.include?(column.downcase)
+
+          allowed[column] = value
+        end
+      end
+
+      # tina4: ADR-0069 - ?sort reaches ORDER BY only as a column the source
+      # itself declares: a model's declared field (resolved to its DB column) or
+      # a column of the SQL query's own result set. Anything else falls back to
+      # the primary key - this is a rendered page, not an API, so no error.
+      def crud_sort_column(model, sql, requested, pk)
+        return pk if requested.nil? || requested.empty?
+        return model.resolve_field_column(requested) || pk if model
+
+        sql_result_columns(sql).include?(requested) ? requested : pk
+      end
+
+      # The query with any ORDER BY / LIMIT clause removed, then stripped.
+      #
+      # Line by line with plain string operations - a case-insensitive search
+      # for the keyword, then a cut to the end of that line - so it is linear on
+      # any input (the regex it replaces was flagged as polynomial by CodeQL).
+      # Same result: a keyword is removed with the rest of its line only when at
+      # least one character follows it, and the line break is kept.
+      def strip_order_and_limit(sql)
+        sql.to_s.each_line.map do |line|
+          cut_from_keyword(cut_from_keyword(line, /ORDER BY /i), /LIMIT /i)
+        end.join.strip
+      end
+
+      # +keyword+ is a fixed literal with no quantifier, so the search is linear.
+      def cut_from_keyword(line, keyword)
+        ending = line.end_with?("\n") ? "\n" : ""
+        content = ending.empty? ? line : line[0...-1]
+        at = content.index(keyword)
+        return line if at.nil? || content.length <= at + keyword.source.length
+
+        content[0...at] + ending
+      end
+
+      # Column names of the SQL query's result set, read from one probe row.
+      def sql_result_columns(sql)
+        db = Tina4.database
+        return [] unless db
+
+        base = strip_order_and_limit(sql)
+        row = db.fetch("SELECT * FROM (#{base}) AS _crud_sub", [], limit: 1).first
+        row ? row.keys.map(&:to_s) : []
       end
 
       # Fetch data using an ORM model class
@@ -280,12 +343,12 @@ module Tina4
         return [[], 0] unless db
 
         # Wrap the original SQL for sorting
-        query = sql.gsub(/ORDER BY .+$/i, "").gsub(/LIMIT .+$/i, "").strip
-        query += " ORDER BY #{sort} #{sort_dir.upcase}"
+        base = strip_order_and_limit(sql)
+        query = "#{base} ORDER BY #{sort} #{sort_dir.upcase}"
 
         if !search.empty?
           # Wrap in a subquery to add search filtering
-          wrapped = "SELECT * FROM (#{sql.gsub(/ORDER BY .+$/i, '').gsub(/LIMIT .+$/i, '').strip}) AS _crud_sub WHERE "
+          wrapped = "SELECT * FROM (#{base}) AS _crud_sub WHERE "
           columns = extract_columns(sql)
           search_parts = columns.map { |col| "CAST(#{col} AS TEXT) LIKE ?" }
           wrapped += search_parts.join(" OR ")
@@ -293,14 +356,14 @@ module Tina4
           params = columns.map { "%#{search}%" }
 
           # Get total count
-          count_sql = "SELECT COUNT(*) as cnt FROM (#{sql.gsub(/ORDER BY .+$/i, '').gsub(/LIMIT .+$/i, '').strip}) AS _crud_cnt WHERE #{search_parts.join(' OR ')}"
+          count_sql = "SELECT COUNT(*) as cnt FROM (#{base}) AS _crud_cnt WHERE #{search_parts.join(' OR ')}"
           count_result = db.fetch_one(count_sql, params)
           total = count_result ? (count_result[:cnt] || count_result["cnt"] || 0).to_i : 0
 
           results = db.fetch(wrapped, params, limit: limit, offset: offset)
         else
           # Get total count
-          count_sql = "SELECT COUNT(*) as cnt FROM (#{sql.gsub(/ORDER BY .+$/i, '').gsub(/LIMIT .+$/i, '').strip}) AS _crud_cnt"
+          count_sql = "SELECT COUNT(*) as cnt FROM (#{base}) AS _crud_cnt"
           count_result = db.fetch_one(count_sql)
           total = count_result ? (count_result[:cnt] || count_result["cnt"] || 0).to_i : 0
 

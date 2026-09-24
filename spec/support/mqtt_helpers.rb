@@ -5,16 +5,13 @@
 # Shared by spec/mqtt_spec.rb, spec/mqtt_session_spec.rb and
 # spec/mqtt_auth_tls_spec.rb, which drive the REAL brokers (no mocks — a
 # hand-rolled binary protocol can only be proven on the wire). The skip reason
-# deliberately carries both "mqtt"/"mosquitto" and "not reachable" so
-# TINA4_REQUIRE_SERVICES turns a missing broker in CI into a hard failure instead
-# of a green skip. Those specs skip per EXAMPLE (in a `before`, not a
-# `before(:all)`), the house pattern across this suite; since the gate now walks
-# RSpec.world at suite end a before(:context) skip would be caught too, but the
-# per-example shape keeps the reason next to the example that needs it.
+# carries no [needs:...] tag, so TINA4_REQUIRE_SERVICES turns a missing broker
+# into a hard failure instead of a green skip. Those specs skip per EXAMPLE (in a
+# `before`, not a `before(:all)`), the house pattern across this suite; the gate
+# walks RSpec.world at suite end, so a before(:context) skip would be caught too,
+# but the per-example shape keeps the reason next to the example that needs it.
 #
-# These live in their own file, required explicitly by the MQTT specs, so the
-# shared spec_helper.rb carries only the one thing it must: "mqtt"/"mosquitto" in
-# TINA4_GATE_SERVICE_KEYWORDS.
+# These live in their own file, required explicitly by the MQTT specs.
 #
 # Start every broker with: sh spec/support/mqtt-infra.sh
 require "socket"

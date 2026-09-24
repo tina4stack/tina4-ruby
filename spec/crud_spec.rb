@@ -202,4 +202,36 @@ RSpec.describe Tina4::Crud do
       expect { Tina4::Crud.to_crud(request, { title: "Broken" }) }.to raise_error(ArgumentError)
     end
   end
+
+  # Pure logic, no dependency: the SQL-mode helper that drops a trailing
+  # ORDER BY / LIMIT clause before the component wraps the query. It works
+  # line by line with plain string operations, so it stays linear on any input.
+  describe ".strip_order_and_limit" do
+    def strip(sql)
+      Tina4::Crud.send(:strip_order_and_limit, sql)
+    end
+
+    it "removes ORDER BY and LIMIT to the end of their line" do
+      expect(strip("SELECT id, name FROM t ORDER BY name LIMIT 5")).to eq("SELECT id, name FROM t")
+      expect(strip("SELECT * FROM t LIMIT 10")).to eq("SELECT * FROM t")
+    end
+
+    it "handles each line of a multi-line query on its own" do
+      sql = "SELECT id,\n  name\nFROM t\nWHERE x = 1\nORDER BY name DESC\nLIMIT 20 OFFSET 5\n"
+      expect(strip(sql)).to eq("SELECT id,\n  name\nFROM t\nWHERE x = 1")
+    end
+
+    it "leaves a query with no clause unchanged apart from surrounding whitespace" do
+      expect(strip("  SELECT id FROM orders WHERE total > 5  ")).to eq("SELECT id FROM orders WHERE total > 5")
+    end
+
+    it "matches the keywords case-insensitively" do
+      expect(strip("select id from t order by id limit 3")).to eq("select id from t")
+      expect(strip("select id from t Order By id")).to eq("select id from t")
+    end
+
+    it "keeps a keyword with nothing after it, as the previous expression did" do
+      expect(strip("SELECT id FROM t ORDER BY ")).to eq("SELECT id FROM t ORDER BY")
+    end
+  end
 end

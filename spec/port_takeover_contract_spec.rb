@@ -32,7 +32,7 @@ RSpec.describe "identity-checked port takeover" do
   before(:each) do
     # POSIX lsof/SIGTERM takeover; the lab + dev are POSIX. A per-example skip
     # (never hit there) counts rather than DROPS the examples on Windows.
-    skip "POSIX-only takeover mechanism" if RUBY_PLATFORM =~ /mswin|mingw|cygwin/
+    skip "[needs:os=posix] POSIX-only takeover mechanism" if RUBY_PLATFORM =~ /mswin|mingw|cygwin/
     @base_dir = Dir.mktmpdir("tina4-takeover")
     @spawned = []
   end

@@ -104,12 +104,12 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
 
   def firebird_or_skip
     url = firebird_url
-    skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if url.empty?
+    skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if url.empty?
     db = Tina4::Database.new(url, username: "SYSDBA", password: "masterkey")
     db.fetch_one("SELECT 1 AS N FROM RDB$DATABASE")
     db
   rescue StandardError => e
-    skip "Firebird cannot connect at #{url} -- #{e.message}"
+    skip "[needs:firebird] Firebird cannot connect at #{url} -- #{e.message}"
   end
 
   around(:each) do |example|
