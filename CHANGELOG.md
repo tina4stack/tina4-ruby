@@ -6,6 +6,23 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## Unreleased
+
+**Behaviour change, Firebird: a write with RETURNING through `execute` now raises.**
+`db.execute("INSERT INTO t (...) VALUES (...) RETURNING id")` on Firebird used to commit the
+row and hand back nothing you could read. The `fb` gem never opens a cursor for a singleton
+RETURNING result, so the value was lost and the automatic transaction stayed open on the
+connection. It now raises `Tina4::Drivers::FirebirdDriver::ReturningNotSupported`, rolls the
+statement back (nothing written, nothing left locked) and names the ways out: run the write
+without RETURNING and read the row back, use `db.insert(...)`, or write it as
+`INSERT ... SELECT ... RETURNING`, which Firebird returns as a real cursor (ADR-0065).
+
+Also in this release, at parity with Python, PHP and Node (tina4-python #133-#139): a write
+through `fetch`/`fetch_one` runs once, unpaginated, uncached and committed; `execute` returns
+the rows of a statement that produces them; a `?` inside a literal, identifier or comment is
+never a placeholder; SQL with no parameters is sent as written; every response and every
+entry point carries the security headers; and a same-origin request is never a CORS event.
+
 ## 3.13.137
 
 Gemini joins the Ai client as a first-class provider. Set TINA4_AI_PROVIDER=gemini with a

@@ -179,9 +179,19 @@ module Tina4
       }
     end
 
+    # The provider's code and state arrive in the QUERY STRING. They used to be
+    # read from request.params, which carries ROUTE path params only
+    # (REQ-PARAM-POLLUTION), so the built-in /auth/callback never saw them and
+    # could not complete a sign-in. Parity with the Python master (sso.py reads
+    # request.query). A bare Session has no query - pass +query+ explicitly.
+    def self.query_of(request_or_session)
+      query = request_or_session.respond_to?(:query) ? request_or_session.query : nil
+      query.is_a?(Hash) ? query : {}
+    end
+
     def callback(request_or_session, query = nil)
       current = session(request_or_session)
-      values = query || request_or_session.params
+      values = query || self.class.query_of(request_or_session)
       pending = current&.get(PENDING_KEY)
       current&.delete(PENDING_KEY)
       unless pending.is_a?(Hash) && !values["code"].to_s.empty? && self.class.secure_equal(values["state"], pending["state"])
@@ -264,7 +274,7 @@ module Tina4
       end
       sso = from_issuer
       Tina4::Router.get("/auth/login") do |request, response|
-        response.redirect(sso.login(request, request.params["return_to"] || "/"))
+        response.redirect(sso.login(request, query_of(request)["return_to"] || "/"))
       end
       Tina4::Router.get("/auth/callback") do |request, response|
         begin
@@ -274,7 +284,7 @@ module Tina4
         end
       end
       Tina4::Router.post("/auth/logout") do |request, response|
-        response.redirect(sso.logout(request, request.params["return_to"] || "/"))
+        response.redirect(sso.logout(request, query_of(request)["return_to"] || "/"))
       end
       @mounted = true
       true

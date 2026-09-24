@@ -71,6 +71,10 @@ module Tina4
         @timeout = timeout
         @socket = nil
         @request_id = 0
+        # One socket carries one request/reply at a time. The client is SHARED
+        # by every session in the process (MongoHandler.shared_transport, issue
+        # #136), so concurrent requests must not interleave their frames.
+        @lock = Mutex.new
       end
 
       # Documents matching +filter+, capped at one.
@@ -142,15 +146,19 @@ module Tina4
       # transport failure, so the socket is dropped and the next command
       # reconnects rather than inheriting the damage.
       def exchange(document)
-        socket = connection
-        @request_id += 1
-        body = "\x00\x00\x00\x00".b + "\x00".b + encode_document(document) # flagBits(4) + section kind 0
-        header = [16 + body.bytesize, @request_id, 0, OP_MSG].pack("V4")
-        socket.write(header + body)
-        read_reply(socket)
-      rescue StandardError => e
-        close
-        raise MongoWireError, "MongoDB transport failed: #{e.message}"
+        @lock.synchronize do
+          socket = connection
+          @request_id += 1
+          body = "\x00\x00\x00\x00".b + "\x00".b + encode_document(document) # flagBits(4) + section kind 0
+          header = [16 + body.bytesize, @request_id, 0, OP_MSG].pack("V4")
+          socket.write(header + body)
+          read_reply(socket)
+        rescue StandardError => e
+          # Still under the lock: no other session can be mid-exchange on the
+          # socket being dropped. The next command reconnects.
+          close
+          raise MongoWireError, "MongoDB transport failed: #{e.message}"
+        end
       end
 
       def connection

@@ -59,11 +59,10 @@ module Tina4
       end
 
       def execute_query(sql, params = [])
-        converted_sql = convert_placeholders(sql)
         result = if params.empty?
-                   @connection.exec(converted_sql)
+                   @connection.exec(sql) # no params: sent exactly as written
                  else
-                   @connection.exec_params(converted_sql, params)
+                   @connection.exec_params(convert_placeholders(sql), params)
                  end
         track_affected(result)
         symbolize_result(result)
@@ -77,11 +76,10 @@ module Tina4
         # Clear the cache so last_insert_id falls back to the lastval() probe,
         # which is the correct source for a sequence-backed bare INSERT.
         @last_returning_id = nil if sql.lstrip[0, 6].upcase == "INSERT"
-        converted_sql = convert_placeholders(sql)
         result = if params.empty?
-                   @connection.exec(converted_sql)
+                   @connection.exec(sql) # no params: sent exactly as written
                  else
-                   @connection.exec_params(converted_sql, params)
+                   @connection.exec_params(convert_placeholders(sql), params)
                  end
         track_affected(result)
         result
@@ -384,9 +382,19 @@ module Tina4
         end
       end
 
+      # ? -> $1, $2 ... for every PLACEHOLDER only: a `?` inside a string
+      # literal (incl. E'...' and $$...$$), a quoted identifier or a comment is
+      # left alone (python #138). This was a plain gsub, so
+      # SELECT 'why?', ? became SELECT 'why$1', $2 and failed.
+      #
+      # Called ONLY when there are parameters to bind. SQL with no parameters is
+      # sent exactly as written (the cross-framework contract), so the jsonb
+      # operators ?, ?| and ?& work in a parameterless query.
+      # tina4: with parameters, use jsonb_exists(), jsonb_exists_any() or
+      # jsonb_exists_all() instead of ?, ?| or ?& - here every bare `?` is a
+      # placeholder.
       def convert_placeholders(sql)
-        counter = 0
-        sql.gsub("?") { counter += 1; "$#{counter}" }
+        Tina4::SQLTranslator.replace_placeholders(sql) { |index| "$#{index + 1}" }
       end
 
       # Hydrate a PG::Result into an array of symbol-keyed row hashes.
