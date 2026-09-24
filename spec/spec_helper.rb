@@ -10,6 +10,9 @@ require "json"
 # ignored. TINA4_LOG_LEVEL=NONE is the current canonical way to keep the
 # console silent for the whole suite (log-level cases override it per spec).
 ENV["TINA4_LOG_LEVEL"] = "NONE"
+# No spec may open a real browser tab. Children spawned by specs inherit this;
+# spec/run_no_browser_spec.rb unsets it on purpose, with a recording launcher.
+ENV["TINA4_NO_BROWSER"] ||= "true"
 ENV["ENVIRONMENT"] = "test"
 
 # Add lib to load path

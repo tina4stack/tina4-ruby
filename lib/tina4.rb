@@ -530,14 +530,39 @@ module Tina4
       start
     end
 
+    # Environment variables that mean "this is a CI run": no one is there to
+    # look at a browser tab.
+    CI_ENV_VARS = %w[CI CONTINUOUS_INTEGRATION GITHUB_ACTIONS GITLAB_CI BUILDKITE JENKINS_URL TEAMCITY_VERSION].freeze
+
+    # Open the app in a browser only when ALL of these hold: TINA4_DEBUG is
+    # truthy (development only, never production or Puma), TINA4_NO_BROWSER is
+    # not truthy, --no-browser was not passed, and no CI variable is set.
+    # open_browser used to check none of it, so every app.rb booted through
+    # run! - and every spec that did so - popped a real tab.
+    def browser_launch_allowed?
+      return false unless Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
+      return false if Tina4::Env.is_truthy(ENV["TINA4_NO_BROWSER"])
+      return false if ARGV.include?("--no-browser")
+
+      CI_ENV_VARS.none? { |name| !ENV[name].to_s.strip.empty? }
+    end
+
+    # TINA4_BROWSER_COMMAND names the launcher to run instead of the OS default
+    # (open / start / xdg-open); it receives the URL as its only argument.
     def open_browser(url)
+      return unless browser_launch_allowed?
+
       require "rbconfig"
+      command = ENV["TINA4_BROWSER_COMMAND"].to_s.strip
       Thread.new do
         sleep 2
-        case RbConfig::CONFIG["host_os"]
-        when /darwin/i then system("open", url)
-        when /mswin|mingw/i then system("start", url)
-        else system("xdg-open", url)
+        if !command.empty? then system(command, url)
+        else
+          case RbConfig::CONFIG["host_os"]
+          when /darwin/i then system("open", url)
+          when /mswin|mingw/i then system("start", url)
+          else system("xdg-open", url)
+          end
         end
       end
     end
@@ -605,7 +630,6 @@ module Tina4
 
       # Try Puma first (production-grade), fall back to WEBrick
       if !is_debug && !builtin_webserver_pinned? && puma_available?
-        open_browser(url)
         start_puma_server(app, host: host, port: port)
         return
       end
