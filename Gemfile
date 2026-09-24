@@ -18,6 +18,15 @@ group :databases, optional: true do
   gem "redis", "~> 5.0"
 end
 
+# The Ultipa graph driver (tina4-ultipa, needs the native grpc gem) for the live
+# graph-database specs. OPTIONAL like :databases: a plain `bundle install` skips
+# it, and the framework loads it lazily only for ultipa:// connections
+# (ADR-0059, ADR-0067). Opt in by appending it to your groups:
+#   bundle config set --local with "databases:graph"
+group :graph, optional: true do
+  gem "tina4-ultipa", "~> 0.2"
+end
+
 # Competitor template engines for the Frond throughput comparison
 # (benchmarks/bench_templates.rb). Erubi is the ERB implementation Rails uses, so
 # it is the engine Frond is actually measured against; plain ERB needs nothing
