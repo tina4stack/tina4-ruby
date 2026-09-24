@@ -83,7 +83,7 @@ module Tina4
       data = jsonable(data)
       if content_type
         @headers["content-type"] = content_type
-        @body = data.to_s
+        @body = data.is_a?(Hash) || data.is_a?(Array) ? JSON.generate(data) : data.to_s
       elsif data.is_a?(Hash) || data.is_a?(Array)
         @headers["content-type"] = JSON_CONTENT_TYPE
         @body = JSON.generate(data)
