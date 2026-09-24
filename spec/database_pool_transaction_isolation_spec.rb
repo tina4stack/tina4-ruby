@@ -7,7 +7,7 @@ require "timeout"
 require_relative "support/live_postgres"
 
 RSpec.describe "Pooled transaction isolation" do
-  it "does not expose or commit another thread's transaction through a pooled connection" do
+  it "pool transaction lease prevents cross context dirty reads and lost writes" do
     skip "[needs:postgres] PostgreSQL not reachable" unless LivePostgres.reachable?
     url = ENV["TINA4_TEST_PG_URL"] || LivePostgres.url
     db = Tina4::Database.new(url, pool: 2)
@@ -32,7 +32,7 @@ RSpec.describe "Pooled transaction isolation" do
     db&.close
     witness&.close
   end
-  it "fails fast when every connection is leased and permits reuse after rollback" do
+  it "pool exhaustion fails without sharing a live transaction" do
     skip "[needs:postgres] PostgreSQL not reachable" unless LivePostgres.reachable?
     db = Tina4::Database.new(ENV["TINA4_TEST_PG_URL"] || LivePostgres.url, pool: 1)
     db.start_transaction
@@ -54,7 +54,7 @@ RSpec.describe "Pooled transaction isolation" do
     db&.close
   end
 
-  it "retains a failed commit lease until rollback and releases failed standalone queries" do
+  it "pool failed commit retains lease until rollback" do
     skip "[needs:postgres] PostgreSQL not reachable" unless LivePostgres.reachable?
     db = Tina4::Database.new(ENV["TINA4_TEST_PG_URL"] || LivePostgres.url, pool: 1)
     table = "pool_commit_#{SecureRandom.hex(6)}"
