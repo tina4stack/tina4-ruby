@@ -12,6 +12,13 @@ require "json"
 ENV["TINA4_LOG_LEVEL"] = "NONE"
 ENV["ENVIRONMENT"] = "test"
 
+# A test run must never open the developer's browser. The server opens a tab
+# after boot unless TINA4_NO_BROWSER is set, and not every spec that spawns a
+# server sets it. Set it ONCE here, before any child exists, so every spawn
+# inherits it. ||= : a spec that checks the browser-opening path still
+# overrides it for its own child. Guarded by spec/no_browser_default_spec.rb.
+ENV["TINA4_NO_BROWSER"] ||= "true"
+
 # Add lib to load path
 $LOAD_PATH.unshift File.join(File.dirname(__FILE__), "..", "lib")
 
