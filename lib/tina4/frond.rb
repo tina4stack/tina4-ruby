@@ -485,6 +485,38 @@ module Tina4
     # The escaping decision has to ask this rather than read the filter name out
     # of the source: a denied `raw` that still marked its value safe made the
     # allow-list entry governing XSS escaping inert.
+    # Words in an expression that are not variable references.
+    SANDBOX_EXPR_KEYWORDS = %w[true false none null nil and or not in is loop
+                               if else empty starts ends with matches].freeze
+    SANDBOX_IDENT_RE  = /(?<![.\w'"])([A-Za-z_][A-Za-z0-9_]*)/
+    SANDBOX_STRING_RE = /'[^']*'|"[^"]*"/
+    # Methods that must never be invoked through {{ obj.method }} — reflection,
+    # metaprogramming and process control (F6/ADR-0077).
+    UNSAFE_METHODS = %w[send __send__ public_send instance_eval instance_exec
+                        eval class methods public_methods private_methods
+                        instance_variables instance_variable_get
+                        instance_variable_set define_singleton_method method
+                        tap then object_id __id__ system exec spawn binding
+                        singleton_class ancestors superclass constants
+                        const_get remove_method].to_set.freeze
+
+    # Sandbox gate for a WHOLE expression (F6/ADR-0077): refuse a dunder walk
+    # or a root variable outside the allow-list, in output, conditions, set
+    # right-hand sides and for iterables alike.
+    def sandbox_expr_ok?(expr)
+      return true unless @sandbox
+      return false if expr.include?("__")
+      return true unless @allowed_vars
+
+      stripped = expr.gsub(SANDBOX_STRING_RE, "")
+      stripped.scan(SANDBOX_IDENT_RE).each do |(ident)|
+        next if SANDBOX_EXPR_KEYWORDS.include?(ident.downcase)
+        next if @filters.key?(ident)
+        return false unless @allowed_vars.include?(ident)
+      end
+      true
+    end
+
     def filter_permitted?(name)
       return true unless @sandbox && @allowed_filters
 
@@ -505,6 +537,83 @@ module Tina4
     # Utility: HTML escape
     def self.escape_html(str)
       str.to_s.gsub(HTML_ESCAPE_RE, HTML_ESCAPE_MAP)
+    end
+
+    # -- Escape strategies (ADR-0077) ------------------------------------
+    # Shared by js_escape and e(strategy); byte-identical to the Python
+    # master. Twig-compatible.
+    JS_SAFE_RE  = /[A-Za-z0-9,._]/
+    CSS_SAFE_RE = /[A-Za-z0-9]/
+    ATTR_SAFE_RE = /[A-Za-z0-9,.\-_]/
+
+    def self.js_escape_str(value)
+      out = +""
+      value.to_s.each_char do |ch|
+        if ch =~ JS_SAFE_RE
+          out << ch
+          next
+        end
+        code = ch.ord
+        if code < 0x80
+          out << format("\\x%02X", code)
+        elsif code <= 0xFFFF
+          out << format("\\u%04X", code)
+        else
+          code -= 0x10000
+          out << format("\\u%04X", 0xD800 + (code >> 10))
+          out << format("\\u%04X", 0xDC00 + (code & 0x3FF))
+        end
+      end
+      out
+    end
+
+    def self.css_escape(value)
+      out = +""
+      value.to_s.each_char do |ch|
+        out << (ch =~ CSS_SAFE_RE ? ch : format("\\%06X ", ch.ord))
+      end
+      out
+    end
+
+    def self.html_attr_escape(value)
+      out = +""
+      value.to_s.each_char do |ch|
+        out << (ch =~ ATTR_SAFE_RE ? ch : format("&#x%02X;", ch.ord))
+      end
+      out
+    end
+
+    # RFC-3986 rawurlencode: unreserved set stays, everything else percent-encoded.
+    def self.url_escape(value)
+      value.to_s.b.gsub(/[^A-Za-z0-9\-_.~]/) { |c| format("%%%02X", c.ord) }
+    end
+
+    # Dispatch e(strategy)/escape(strategy). An unknown strategy raises, so a
+    # typo can never silently pass the value through unescaped.
+    def self.escape_strategy(value, strategy = "html")
+      s = strategy.to_s.strip.gsub(/\A['"]|['"]\z/, "")
+      case s
+      when "", "html"
+        Tina4::SafeString.new(escape_html(value.to_s))
+      when "js"
+        Tina4::SafeString.new(js_escape_str(value))
+      when "url"
+        Tina4::SafeString.new(url_escape(value))
+      when "css"
+        Tina4::SafeString.new(css_escape(value))
+      when "html_attr", "attr"
+        Tina4::SafeString.new(html_attr_escape(value))
+      else
+        raise ArgumentError, "Unknown escape strategy: #{strategy}"
+      end
+    end
+
+    # Confine a client-supplied media type to a strict type/subtype grammar
+    # (F3/ADR-0077); anything malformed falls back to a safe default.
+    MEDIA_TYPE_RE = %r{\A[A-Za-z0-9][A-Za-z0-9!\#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!\#$&^_.+-]*\z}
+    def self.sanitise_media_type(type)
+      t = type.to_s.strip
+      t =~ MEDIA_TYPE_RE ? t : "application/octet-stream"
     end
 
     # Serializes a value to compact JSON text that is always valid JSON.
@@ -1156,6 +1265,10 @@ module Tina4
     end
 
     def eval_var_raw(expr, context)
+      # Sandbox: gate the whole condition/RHS (F6) so a comparison or iterable
+      # cannot leak a blocked variable.
+      return nil if @sandbox && !sandbox_expr_ok?(expr)
+
       var_name, filters = parse_filter_chain(expr)
       value = eval_expr(var_name, context)
       filters.each do |fname, args|
@@ -1233,16 +1346,8 @@ module Tina4
 
       var_name, filters = parse_filter_chain(expr)
 
-      # Sandbox: check variable access
-      if @sandbox && @allowed_vars
-        root_var = @dotted_split_cache[var_name]
-        unless root_var
-          root_var = var_name.split(".")[0].split("[")[0].strip
-          cap_cache(@dotted_split_cache, MEMO_CACHE_MAX)
-          @dotted_split_cache[var_name] = root_var
-        end
-        return "" if !root_var.empty? && !@allowed_vars.include?(root_var) && root_var != "loop"
-      end
+      # Sandbox: gate the whole expression (allow-list + dunder block, F6)
+      return "" if @sandbox && !sandbox_expr_ok?(expr)
 
       value = eval_expr(var_name, context)
 
@@ -1284,7 +1389,7 @@ module Tina4
                   when "title"      then value.to_s.split.map(&:capitalize).join(" ")
                   when "string"     then value.to_s
                   when "int"        then value.to_i
-                  when "escape", "e" then Tina4::SafeString.new(Frond.escape_html(value.to_s))
+                  when "escape", "e" then Frond.escape_strategy(value, "html")
                   else value
                   end
           next
@@ -1297,9 +1402,17 @@ module Tina4
         end
       end
 
-      # Auto-escape HTML unless marked safe or SafeString
-      if @auto_escape && !is_safe && value.is_a?(String) && !value.is_a?(SafeString)
-        value = Frond.escape_html(value)
+      # Auto-escape HTML unless marked safe or SafeString. A plain string is
+      # escaped directly; an Array/Hash/object is escaped on its rendered
+      # string form (F4/ADR-0077) -- before this, only String values were
+      # escaped, so {{ items }} holding markup emitted it raw. nil, booleans
+      # and Numerics carry no HTML-special characters and are left untouched.
+      if @auto_escape && !is_safe && !value.is_a?(SafeString)
+        if value.is_a?(String)
+          value = Frond.escape_html(value)
+        elsif !value.nil? && value != true && value != false && !value.is_a?(Numeric)
+          value = Tina4::SafeString.new(Frond.escape_html(value.to_s))
+        end
       end
 
       value
@@ -2061,8 +2174,10 @@ module Tina4
                 end
           idx = idx.to_i if idx.is_a?(Numeric)
           value = idx.is_a?(Integer) ? value[idx] : nil
-        elsif value.respond_to?(part.to_sym)
-          value = value.send(part.to_sym)
+        elsif !UNSAFE_METHODS.include?(part) && value.respond_to?(part.to_sym)
+          # Only call a method the object publicly exposes, and never a
+          # reflection/metaprogramming method (F6/ADR-0077).
+          value = value.public_send(part.to_sym)
         else
           return nil
         end
@@ -2236,7 +2351,11 @@ module Tina4
         i += 1
       end
 
-      iterable = eval_expr(iterable_expr, context)
+      iterable = if @sandbox && !sandbox_expr_ok?(iterable_expr)
+                   nil
+                 else
+                   eval_expr(iterable_expr, context)
+                 end
 
       if iterable.nil? || (iterable.respond_to?(:empty?) && iterable.empty?)
         if else_tokens.any?
@@ -2853,8 +2972,8 @@ module Tina4
         "striptags"  => ->(v, *_a) { v.to_s.gsub(STRIPTAGS_RE, "") },
 
         # -- Encoding --
-        "escape"        => ->(v, *_a) { Tina4::SafeString.new(Frond.escape_html(v.to_s)) },
-        "e"             => ->(v, *_a) { Tina4::SafeString.new(Frond.escape_html(v.to_s)) },
+        "escape"        => ->(v, *a) { Frond.escape_strategy(v, a[0] || "html") },
+        "e"             => ->(v, *a) { Frond.escape_strategy(v, a[0] || "html") },
         "raw"           => ->(v, *_a) { v },
         "safe"          => ->(v, *_a) { v },
         # Frond.json_safe, never a bare JSON.generate: generate RAISES on an
@@ -2868,10 +2987,10 @@ module Tina4
         "base64decode"  => ->(v, *_a) { Tina4::Base64.decode64(v.to_s) },
         "data_uri" => ->(v, *_a) {
           if v.is_a?(Hash)
-            ct = v[:type] || v["type"] || "application/octet-stream"
+            ct = Frond.sanitise_media_type(v[:type] || v["type"] || "application/octet-stream")
             raw = v[:content] || v["content"] || ""
             raw = raw.respond_to?(:read) ? raw.read : raw
-            "data:#{ct};base64,#{Tina4::Base64.strict_encode64(raw.to_s)}"
+            Tina4::SafeString.new("data:#{ct};base64,#{Tina4::Base64.strict_encode64(raw.to_s)}")
           else
             v.to_s
           end
@@ -2885,12 +3004,7 @@ module Tina4
         # broke byte-parity for the one filter whose whole job is a wire format.
         "to_json" => ->(v, *_a) { Frond.json_safe(v) },
         "tojson"  => ->(v, *_a) { Frond.json_safe(v) },
-        "js_escape" => ->(v, *_a) {
-          Tina4::SafeString.new(
-            v.to_s.gsub("\\", "\\\\").gsub("'", "\\'").gsub('"', '\\"')
-                  .gsub("\n", "\\n").gsub("\r", "\\r").gsub("\t", "\\t")
-          )
-        },
+        "js_escape" => ->(v, *_a) { Tina4::SafeString.new(Frond.js_escape_str(v)) },
 
         # -- Hashing --
         "md5"    => ->(v, *_a) { Digest::MD5.hexdigest(v.to_s) },
