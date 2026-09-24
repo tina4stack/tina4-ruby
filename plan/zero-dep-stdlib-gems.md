@@ -47,6 +47,7 @@ and is not touched here.
 - [x] WSDL: UTF-16 DOCTYPE body rejected; entities/CDATA decoded; malformed rejected
 
 ## Bugs
+- [x] json 3.0 (unpinned now) raises on duplicate keys: request bodies/GraphQL/JWT diverged from Python/PHP/Node last-key-wins -- found by CI run 35978265379, fixed with Tina4.parse_json
 - [x] Net::SMTP auto-STARTTLS upgraded `encryption: "none"` when the server offered it (Python/PHP/Node stay plain)
 - [ ] Found, NOT Ruby (reported to the coordinator, other repos): PHP WSDL parses a UTF-16 DOCTYPE body and expands its entity; Node WSDL passes null to a single-parameter operation, never decodes entities, answers "Missing SOAP Body" for malformed XML
 - [x] `tina4ruby init` wrote gem "tina4-ruby" (not a published gem) into the Gemfile -- fixed with the sqlite3 scaffold change
@@ -61,11 +62,15 @@ and is not touched here.
 - ca960d5  build(deps): sqlite3 is an app dependency -- lazy require with an actionable error
 - 29e1b07  build(deps): own SMTP, IMAP and XML code replaces net-smtp, net-imap and rexml
 - 984f671  docs: runtime gems are the Rack server stack only; sqlite3 is the app's
+- 32c77c7  fix(json): last duplicate key wins on json 3 too (Tina4.parse_json)
 - tina4 CLI 317b7f7 (PR tina4#33)  fix(init/ruby): scaffold Gemfile declares sqlite3; update/upgrade add it
 - tina4-documentation 3f931ad (PR #63)  ADR-0067 + Ruby pages
 - test-env fixture MAIL_TLS in python#142, php#215, nodejs#66 (ADR-0038 byte-identical)
 
 ## Verification
+- CI run 35980078117 at 32c77c7 (Ruby 3.2, json 3.0.2 resolved fresh): test 5827 examples, 0 failures, 71 pending (the same 71 env-gated pendings as green v3 run 35973469374: Firebird-only specs covered by the firebird job, graph DBs, lab-only OIDC, PostGIS, root-only tmpfs); firebird job green.
+- Lab at 32c77c7 (json 2.21.2): 5825 examples, 1 failure, 36 pending; the failure was a Firebird "update conflicts with concurrent update" deadlock on the shared tina4_rb.fdb while 10 other rspec processes ran; migration_contract_spec alone passed at seeds 1, 2, 3.
+- Local at 32c77c7 with json 3.0.2 forced: no failure outside the files that fail on this Mac at v3 (engine connections, memcached TTL clock skew, local Mongo down).
 - Lab (Linux, Ruby 3.2.3, TINA4_REQUIRE_SERVICES=1, OIDC required, mail-infra.sh up): 5819 examples, 0 failures, 36 pending (all 36 are the env-gated graph-database examples, identical to the v3 baseline: 5753 / 0 / 36).
 - Local (macOS, Ruby 4.0.7): 5816 examples, 66 failures, 124 pending; 65 failures are the same engine-connection files as the v3 baseline run on this Mac (local MySQL/MSSQL/PG), the 66th is session_ttl_units (memcached remaining-ttl off by 62s against a docker VM clock; passes on the lab).
 - `gem install ./tina4ruby.gem --explain`: 15 gems before, 5 after (webrick, nio4r, puma, rack, rackup).
