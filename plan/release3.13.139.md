@@ -7,21 +7,46 @@ origin/v3 (base 0e81444), 8 fix branches merged in order, full rspec green on th
 ## Scope
 - [x] Fetch origin, confirm live PR list, confirm all 8 branches present
 - [x] Create feature/release3.13.139 from origin/v3
-- [x] (a) merge fix/supply-chain-ruby-release-env (#69, 97d7fa5)
-- [x] (b) merge fix/ssrf-guard (#72, 34aabf1)
-- [x] (c) merge fix/session-first-use-race (#66, c0c04c6)
-- [x] (d) merge fix/dev-surface-hardening (#65, 778fb8b)
-- [x] (e) merge fix/followups-redact-driver-msgs (#67, f96704b)
-- [ ] (f) merge fix/queue-orm-bugs (#71, 3bb916f)
-- [ ] (g) merge fix/medium-security (#68, fbac1dc)
-- [ ] (h) merge fix/auth-hardening (0f8eb18)
+- [x] (a) merge fix/supply-chain-ruby-release-env (#69, 97d7fa5)  clean
+- [x] (b) merge fix/ssrf-guard (#72, 34aabf1)  clean
+- [x] (c) merge fix/session-first-use-race (#66, c0c04c6)  clean
+- [x] (d) merge fix/dev-surface-hardening (#65, 778fb8b)  conflicts resolved
+- [x] (e) merge fix/followups-redact-driver-msgs (#67, f96704b)  conflicts resolved
+- [x] (f) merge fix/queue-orm-bugs (#71, 3bb916f)  clean
+- [x] (g) merge fix/medium-security (#68, fbac1dc)  conflicts resolved
+- [x] (h) merge fix/auth-hardening (0f8eb18)  conflicts resolved
 - [ ] Full rspec on lab under mutex, zero failures/pending
 - [ ] Push feature/release3.13.139
 
 ## Conflicts / reds fixed
-- (log here)
+Key finding: v3 3.13.138 (PR #70, ADR-0082 + credential-permission work) already
+superseded several of the older fix branches, which were based on merge-base #57.
+
+- (d) dev-surface-hardening (ADR-0078): v3 ships ADR-0082 (stricter superset) for
+  dev_admin.rb / dispatch_pipeline.rb / rack_app.rb (tokens never bypass Host; same-
+  origin still requires the Origin check). Kept v3's ADR-0082. The one gap v3 lacked
+  - /health disclosing the version outside debug - kept from the branch in health.rb,
+  and its two regression tests appended to the (v3-superset) dev_surface_contract_spec.
+- (e) followups (ADR-0071): messenger.rb kept v3's normalize_encryption (identical
+  error to the branch's encryption_value; branch's new spec tests behaviour and passes).
+  database_connected_log_redaction_spec kept v3 (superset). websocket_backplane_redaction
+  _spec kept v3's proven fixture wiring + the branch's one new "subscriber stopped ...
+  WRONGPASS" assertion (backed by the branch's new rescue in websocket_backplane.rb).
+  SPDX headers the branch dropped were retained across all touched files.
+- (g) medium-security: v3 already ships F5 (cross-origin credential strip, proven by
+  its superset api_cross_origin_token_spec matrix over get/post/upload/download/stream
+  x off_origin) and F6 (X-Forwarded-Host trust in request.rb). Kept v3's api.rb + F5/F6
+  superset specs (avoids a duplicated strip + a request.uri nil path); ssrf-guard's
+  api.rb retained; request.rb kept the branch's explanatory comment. The NEW #68 work -
+  GraphQL CSRF + fan-out limits + their specs - merged in full.
+- (h) auth-hardening: auth.rb generate_keys kept v3's SecretFile.update (0600); the
+  branch's new Auth methods auto-merged. env.rb kept v3 (SPDX + require digest). spec_
+  helper.rb kept BOTH suite hooks: the branch's around(:each) TINA4_SPEC_SECRET
+  (ADR-0079) AND ssrf-guard's before(:each) TINA4_ALLOW_PRIVATE_REQUESTS (ADR-0084).
 
 ## Commits
-- (log here)
+- cea5a0d  merge (d) dev-surface-hardening
+- 09d5f6c  merge (e) followups-redact-driver-msgs
+- (f) queue-orm-bugs, (g) medium-security bbdb185, (h) auth-hardening 5bd3f10
 
-## Status: In Progress
+## Status: In Progress (awaiting lab full-suite verification, then push)
