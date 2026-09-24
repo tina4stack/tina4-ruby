@@ -34,8 +34,15 @@ Branch: `fix/followups-redact-driver-msgs` (from origin/v3). Lab only for rspec.
       Rdkafka::AbstractHandle::WaitTimeoutError after 60 s, it never returns success.
       The round-1 "OK" was the lab's TINA4_KAFKA_BROKERS=localhost:9092 overriding the
       probe's TINA4_QUEUE_URL (it published to the live lab Kafka). No fix needed.
-- [ ] (a) lib/tina4.rb:919 -> Tina4::DatabaseUrl.redact(db_url): waits for tina4-ruby#50
-      (tina4.rb is off-limits while #50 is open)
+- [x] (a) lib/tina4.rb "Database connected" line -> Tina4::DatabaseUrl.redact(db_url)
+      (after tina4-ruby#50 merged); red-first on the real lab PostgreSQL + ODBC
+- [x] Round 3 (1): websocket_hardening_spec on real servers + real sockets (no
+      FakeWsConnection, no allow/receive stubs); found and fixed WebSocket#start
+      (empty env, handshake never completed), binary payloads sent as text frames,
+      and a blocking write that let one non-reading client stall every broadcast
+- [x] Round 3 (2): WSDL::Service answers malformed XML / empty body with the Client
+      "Malformed XML" fault (was "Internal server error")
+- [x] Round 3 (4): rebased onto origin/v3 (#50) with DCO sign-off on every commit
 - [ ] (e) OWED: NATS backplane URL redaction + a real test. There is no NATS server and
       no nats-pure gem on the lab, so NATSBackplane (connect errors, URL in messages)
       is unmeasured
@@ -79,5 +86,11 @@ Branch: `fix/followups-redact-driver-msgs` (from origin/v3). Lab only for rspec.
 - 4cd8309  fix(messenger): refuse an unknown mail encryption value (ADR-0071 section 2)
 - 030b458  fix(wsdl): apply the shared SOAP body encoding rule before any parse
 - f2de2ff  test(websocket): run the backplane relay specs on a real Redis, no stand-ins
+- (rebased onto origin/v3 with --signoff; round 3 below)
+- af3fad0  fix(wsdl): WSDL::Service answers malformed XML with the Client fault
+- 593b86e  fix(security): redact the boot "Database connected" line with DatabaseUrl.redact
+- 7cc6061  fix(websocket): real-socket hardening suite; standalone start, binary frames, non-blocking writes
 
-## Status: In Progress - only (a) tina4.rb:919 waits for #50; (e) NATS owed
+## Status: Complete for this round; (e) NATS backplane owed (no NATS on the lab).
+Commit hashes above predate the rebase onto origin/v3 (#50); `git log origin/v3..HEAD`
+on the branch is the current list.
