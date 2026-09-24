@@ -144,6 +144,8 @@ module Tina4
 
   # ── Lazy-loaded: web server ───────────────────────────────────────────
   autoload :WebServer, File.expand_path("tina4/webserver", __dir__)
+  autoload :HttpServer, File.expand_path("tina4/http_server", __dir__)
+  autoload :FormParser, File.expand_path("tina4/form_parser", __dir__)
 
   # ── Lazy-loaded: optional modules ─────────────────────────────────────
   autoload :Swagger,             File.expand_path("tina4/swagger", __dir__)
@@ -404,18 +406,14 @@ module Tina4
       log_level = (ENV["TINA4_LOG_LEVEL"] || "ALL").upcase
       display = (host == "0.0.0.0" || host == "::") ? "localhost" : host
 
-      # Auto-detect server name if not provided
+      # Auto-detect server name if not provided: Puma only when production
+      # would actually pick it (ADR-0067), otherwise Tina4's own server.
       if server_name.nil?
-        if is_debug
-          server_name = "WEBrick"
-        else
-          begin
-            require "puma"
-            server_name = "puma"
-          rescue LoadError
-            server_name = "WEBrick"
-          end
-        end
+        server_name = if !is_debug && !builtin_webserver_pinned? && puma_available?
+                        "puma"
+                      else
+                        Tina4::HttpServer::SOFTWARE
+                      end
       end
 
       puts "#{color}#{BANNER}#{reset}"
@@ -628,21 +626,21 @@ module Tina4
       app = Tina4::RackApp.new(root_dir: root_dir)
       is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
-      # Try Puma first (production-grade), fall back to WEBrick
+      # Puma when the APPLICATION bundles it (ADR-0067), otherwise the
+      # built-in server - in development AND production, as in Python.
       if !is_debug && !builtin_webserver_pinned? && puma_available?
         start_puma_server(app, host: host, port: port)
         return
       end
 
-      Tina4::Log.info("Development server: WEBrick")
       open_browser(url)
       server = Tina4::WebServer.new(app, host: host, port: port)
       server.start
     end
 
-    # TINA4_DEFAULT_WEBSERVER=TRUE pins Tina4's BUILT-IN server (WEBrick) even
-    # in production, where Puma would otherwise be chosen. Unset/FALSE keeps
-    # today's behaviour, so this is non-breaking.
+    # TINA4_DEFAULT_WEBSERVER=TRUE pins Tina4's BUILT-IN server even when the
+    # application bundles Puma, which production would otherwise pick
+    # (ADR-0067). Unset/FALSE: Puma if it is loadable, else the built-in server.
     #
     # This is NOT the remedy for a production shutdown problem - an operator
     # must never have to give up Puma to get their database connections closed.
@@ -652,8 +650,10 @@ module Tina4
       Tina4::Env.is_truthy(ENV["TINA4_DEFAULT_WEBSERVER"])
     end
 
-    # Is Puma loadable? Separate from start_puma_server so the caller can fall
-    # back to WEBrick BEFORE any side effect (opening a browser) happens.
+    # Is Puma loadable? Puma is NOT a Tina4 dependency (ADR-0067): it is used
+    # only when the application installs it (under Bundler, when its Gemfile
+    # lists it). Separate from start_puma_server so the caller can fall back to
+    # the built-in server BEFORE any side effect (opening a browser) happens.
     def puma_available?
       require "puma"
       require "puma/configuration"

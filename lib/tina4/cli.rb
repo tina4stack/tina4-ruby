@@ -677,7 +677,7 @@ module Tina4
         # invokes PHP. That mismatch is why Ruby could not be launched through
         # the shared launcher the other frameworks use.
         opts.on("--managed", "Running under the tina4 CLI supervisor") { options[:managed] = true }
-        opts.on("--production", "Use production server (Puma)") { options[:production] = true }
+        opts.on("--production", "Production mode: Puma if the app bundles it, else the built-in server") { options[:production] = true }
         opts.on("--no-browser", "Do not open browser on start") { options[:no_browser] = true }
         opts.on("--no-reload", "Disable file watcher / live-reload") { options[:no_reload] = true }
         opts.on("--no-kill", "Never take over the port from a stale dev server") { options[:no_kill] = true }
@@ -728,9 +728,9 @@ module Tina4
 
       is_debug = Tina4::Env.is_truthy(ENV["TINA4_DEBUG"])
 
-      # Use Puma only when explicitly requested via --production flag
-      # WEBrick is used for development (supports dev toolbar/reload)
-      # Same production server, same shutdown contract as Tina4.run! - one
+      # Puma only with --production AND only when the app bundles it
+      # (ADR-0067); otherwise Tina4's built-in server, in development and
+      # production alike. Same production server, same shutdown contract as Tina4.run! - one
       # implementation, so the two entry points cannot drift again (the old
       # copy here claimed "we handle DB cleanup" and did no cleanup at all).
       # TINA4_DEFAULT_WEBSERVER=TRUE pins the built-in server even with
@@ -740,7 +740,6 @@ module Tina4
         return
       end
 
-      Tina4::Log.info("Development server: WEBrick")
       server = Tina4::WebServer.new(app, host: options[:host], port: options[:port])
       server.start
     end
