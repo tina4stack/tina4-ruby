@@ -3258,9 +3258,11 @@ module Tina4
       sid = form_token_session_id.to_s
       payload["session_id"] = sid unless sid.empty?
 
+      # get_token's expires_in is MINUTES, like every framework's. This used to
+      # pass minutes * 60, so a form token lived 60 hours, not 60 minutes
+      # (ADR-0079 s5).
       ttl_minutes = (ENV["TINA4_TOKEN_LIMIT"] || "60").to_i
-      expires_in = ttl_minutes * 60
-      Tina4::Auth.create_token(payload, expires_in: expires_in)
+      Tina4::Auth.create_token(payload, expires_in: ttl_minutes)
     end
 
     def self.generate_form_token(descriptor = "")

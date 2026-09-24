@@ -23,7 +23,7 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
   # POST helper — build a Rack env with a JSON body and dispatch it.
   def post_jsonrpc(payload, path: "/__dev/mcp/message")
     env = {
-      "PATH_INFO"      => path,
+      "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO"      => path,
       "REQUEST_METHOD" => "POST",
       "QUERY_STRING"   => "",
       "rack.input"     => StringIO.new(payload.is_a?(String) ? payload : JSON.generate(payload))
@@ -33,7 +33,7 @@ RSpec.describe "Tina4 dev MCP JSON-RPC + SSE endpoint" do
 
   def get_path(path)
     Tina4::DevAdmin.handle_request(
-      "PATH_INFO" => path, "REQUEST_METHOD" => "GET", "QUERY_STRING" => ""
+      "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => path, "REQUEST_METHOD" => "GET", "QUERY_STRING" => ""
     )
   end
 

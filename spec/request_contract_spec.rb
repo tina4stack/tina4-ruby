@@ -29,7 +29,7 @@ require "spec_helper"
 RSpec.describe "Request contract (feature 29, 3.13.99)" do
   before(:each) do
     Tina4::Router.clear!
-    ENV["TINA4_SECRET"] = "request-contract-secret"
+    ENV["TINA4_SECRET"] = "request-contract-secret-01234567"
 
     Tina4::Router.get("/__rq29/{id}") do |request, response|
       response.json({ params: request.params.to_h, query: request.query.to_h })

@@ -43,7 +43,7 @@ RSpec.describe "DevReload WebSocket" do
 
   def reload_env(body)
     {
-      "PATH_INFO" => "/__dev/api/reload",
+      "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/reload",
       "REQUEST_METHOD" => "POST",
       "rack.input" => StringIO.new(JSON.generate(body))
     }

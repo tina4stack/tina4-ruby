@@ -310,7 +310,7 @@ RSpec.describe Tina4::Context do
           # edit, then FIRE the reload trigger with the changed file (real request)
           File.write(File.join(src, "mod.rb"), "def giraffe\n  2\nend\n")
           env = {
-            "PATH_INFO" => "/__dev/api/reload",
+            "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/reload",
             "REQUEST_METHOD" => "POST",
             "rack.input" => StringIO.new(JSON.generate({ "file" => "src/mod.rb", "type" => "reload" }))
           }

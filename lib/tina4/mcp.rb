@@ -159,7 +159,9 @@ module Tina4
   #
   # Python master parity: tina4_python.mcp.is_loopback.
   def self.is_loopback?(ip)
-    return true if ip.nil? || ip.to_s.empty?
+    # An empty or missing peer is UNKNOWN and is not loopback: a runtime path
+    # that lost its socket address must fail closed (ADR-0079 s4).
+    return false if ip.nil? || ip.to_s.empty?
 
     addr = ip.to_s.strip.downcase
     addr = addr[7..] if addr.start_with?("::ffff:")

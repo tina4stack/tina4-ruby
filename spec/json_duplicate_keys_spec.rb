@@ -59,7 +59,7 @@ RSpec.describe "JSON with a duplicate key (last one wins, any json gem)" do
   end
 
   it "a JWT whose payload repeats a claim is read with the last value" do
-    secret = "json-dup-secret"
+    secret = "json-dup-secret-0123456789abcdef"
     encode = ->(bytes) { Tina4::Base64.urlsafe_encode64(bytes, padding: false) }
     header = encode.call('{"alg":"HS256","typ":"JWT"}')
     payload = encode.call(%({"role":"user","role":"admin","exp":#{Time.now.to_i + 600}}))
