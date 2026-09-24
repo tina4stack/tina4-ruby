@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 
 require_relative "base64"
 require_relative "smtp_client"
@@ -113,7 +119,7 @@ module Tina4
       # SMTP encryption: constructor > .env > backward-compat use_tls > default "tls"
       env_encryption = encryption  || ENV["TINA4_MAIL_ENCRYPTION"]
       if env_encryption
-        @encryption = env_encryption.downcase
+        @encryption = normalize_encryption(env_encryption, "mail")
       elsif !use_tls.nil?
         @encryption = use_tls ? "tls" : "none"
       else
@@ -127,7 +133,7 @@ module Tina4
       # IMAP encryption: dedicated env var TINA4_MAIL_IMAP_ENCRYPTION (tls/starttls/none).
       # Defaults to "tls" — IMAPS over implicit TLS on port 993 is the safe industry norm.
       env_imap_enc = imap_encryption || ENV["TINA4_MAIL_IMAP_ENCRYPTION"]
-      @imap_encryption = (env_imap_enc && !env_imap_enc.to_s.empty?) ? env_imap_enc.to_s.downcase : "tls"
+      @imap_encryption = env_imap_enc.nil? ? "tls" : normalize_encryption(env_imap_enc, "IMAP")
       @imap_use_tls    = %w[tls starttls ssl].include?(@imap_encryption)
 
       # IMAP credentials, independent of SMTP. Dedicated
@@ -138,6 +144,15 @@ module Tina4
       @imap_username = imap_username || ENV["TINA4_MAIL_IMAP_USERNAME"] || @username
       @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
     end
+
+    def normalize_encryption(value, label)
+      normalized = value.to_s.strip.downcase
+      unless %w[ssl tls starttls none].include?(normalized)
+        raise ArgumentError, "Unknown #{label} encryption '#{value}'. Valid values: ssl, tls, starttls, none."
+      end
+      normalized
+    end
+    private :normalize_encryption
 
     # The local mailbox, present only once this messenger has captured something
     # (or eagerly, when create_messenger knows it will).

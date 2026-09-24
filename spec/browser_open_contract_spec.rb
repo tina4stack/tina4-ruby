@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 
 # ADR-0070 contract runner: spec/fixtures/browser_open_contract.json (a copy of
 # tina4-documentation/plan/v3/fixtures/browser_open_contract.json).
@@ -20,10 +26,13 @@ RSpec.describe "Browser-open contract (ADR-0070)" do
 
   around do |example|
     saved = ENV.to_h
+    loaded_keys = Tina4::Env.instance_variable_get(:@loaded_keys)&.dup
     managed.each { |key| ENV.delete(key) }
     example.run
   ensure
     ENV.replace(saved)
+    # Dotenv reset must not remove process defaults restored by this fixture.
+    Tina4::Env.instance_variable_set(:@loaded_keys, loaded_keys)
   end
 
   it "ci env vars match the contract fixture" do

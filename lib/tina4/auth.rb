@@ -1,10 +1,17 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 require "openssl"
 require_relative "base64"
 require "json"
 require "fileutils"
 require "securerandom"
 require_relative "parse_json"
+require_relative "secret_file"
 
 module Tina4
   module Auth
@@ -101,12 +108,10 @@ module Tina4
           local_path = File.join(root_dir, ".env.local")
           # If the file exists and does not end in a newline, prepend one so the
           # new key lands on its own line rather than gluing onto the last value.
-          prefix = ""
-          if File.exist?(local_path)
-            content = File.read(local_path)
-            prefix = "\n" if !content.empty? && !content.end_with?("\n")
+          SecretFile.update(local_path) do |content|
+            prefix = !content.empty? && !content.end_with?("\n") ? "\n" : ""
+            content + "#{prefix}TINA4_SECRET=#{new_secret}\n"
           end
-          File.open(local_path, "a") { |f| f.write("#{prefix}TINA4_SECRET=#{new_secret}\n") }
           log_info("Auth: generated a development secret, saved to .env.local (gitignored)")
         rescue StandardError => e
           # Keep the in-memory secret for this run; just warn. Never crash boot.
@@ -565,7 +570,7 @@ module Tina4
       def generate_keys
         Tina4::Log.info("Generating RSA key pair for JWT authentication")
         key = OpenSSL::PKey::RSA.generate(2048)
-        File.write(private_key_path, key.to_pem)
+        SecretFile.update(private_key_path) { key.to_pem }
         File.write(public_key_path, key.public_key.to_pem)
         @private_key = nil
         @public_key = nil

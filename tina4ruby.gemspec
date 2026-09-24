@@ -1,4 +1,10 @@
 # frozen_string_literal: true
+# Copyright (c) 2026 Code Infinity
+# SPDX-License-Identifier: MPL-2.0
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 
 require_relative "lib/tina4/version"
 
@@ -10,10 +16,10 @@ Gem::Specification.new do |spec|
   spec.summary = "Tina4 for Ruby — native Ruby conventions and shared Tina4 contracts"
   spec.description = "TINA4: The Intelligent Native Application 4ramework for Ruby. A zero-dependency backend with its own HTTP server, native Ruby conventions and shared cross-language contracts."
   spec.homepage = "https://tina4.com"
-  spec.license = "MIT"
+  spec.license = "MPL-2.0"
   spec.required_ruby_version = ">= 3.1.0"
   spec.metadata["homepage_uri"] = spec.homepage
-  spec.files = Dir.glob("{lib,exe}/**/*") + %w[README.md LICENSE.txt CHANGELOG.md]
+  spec.files = Dir.glob("{lib,exe}/**/*") + %w[README.md LICENSE LICENSE.txt NOTICE COMMERCIAL-LICENSE.md CHANGELOG.md]
   spec.bindir = "exe"
   spec.executables = ["tina4ruby"]
   spec.require_paths = ["lib"]
@@ -77,7 +83,8 @@ Gem::Specification.new do |spec|
   # puma is a DEVELOPMENT dependency only, so spec/puma_shutdown_spec.rb can
   # boot the opt-in production path for real (ADR-0067). It is never installed
   # for an application unless that application asks for it.
-  spec.add_development_dependency "puma", "~> 6.0"
+  # Puma 7.2.1 fixes the reported request-framing advisories; upstream requires Ruby >=3.0, preserving the framework Ruby >=3.1 floor.
+  spec.add_development_dependency "puma", "~> 7.2", ">= 7.2.1"
   # mongo is OPTIONAL — the MongoDB cache backend (and session handler) require
   # it lazily, exactly like pg. It is a development/optional dependency only so
   # it is never force-installed; the backend degrades gracefully if it is absent.

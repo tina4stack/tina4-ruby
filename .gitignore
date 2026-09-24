@@ -22,7 +22,6 @@ data/
 # Ruby / Bundler
 vendor/
 .bundle/
-Gemfile.lock
 
 # Temp & build
 tmp/
