@@ -39,7 +39,7 @@ superseded several of the older fix branches, which were based on merge-base #57
   superset specs (avoids a duplicated strip + a request.uri nil path); ssrf-guard's
   api.rb retained; request.rb kept the branch's explanatory comment. The NEW #68 work -
   GraphQL CSRF + fan-out limits + their specs - merged in full.
-- (h) auth-hardening: auth.rb generate_keys kept v3's SecretFile.update (0600); the
+- (h) auth-hardening: auth.rb generate_keys kept v3's SecretFile.update (0600). The
   branch's new Auth methods auto-merged. env.rb kept v3 (SPDX + require digest). spec_
   helper.rb kept BOTH suite hooks: the branch's around(:each) TINA4_SPEC_SECRET
   (ADR-0079) AND ssrf-guard's before(:each) TINA4_ALLOW_PRIVATE_REQUESTS (ADR-0084).
@@ -50,3 +50,20 @@ superseded several of the older fix branches, which were based on merge-base #57
 - (f) queue-orm-bugs, (g) medium-security bbdb185, (h) auth-hardening 5bd3f10
 
 ## Status: In Progress (awaiting lab full-suite verification, then push)
+
+
+## Post-run fix (5673b53)
+First lab run (d507b22): 6575 examples, 255 failures, 138 pending. Root cause: the
+whole-file `--ours` used to resolve the auth.rb and env.rb CONFLICTS reverted both
+files entirely to v3, silently dropping the branch's auto-merged non-conflicting
+changes:
+- auth.rb lost keys_root= / identity_payload? / require_boot_secret! /
+  rsa_keys_present? / insecure_secret_message + class InsecureSecretError, but
+  lib/tina4.rb (merged from the branch) calls them in initialize! -> NoMethodError
+  cascaded through every in-process boot (183 NoMethodError, 2 NameError).
+- env.rb lost ADR-0079 s3 (DEFAULT_ENV still forced TINA4_DEBUG=true; create_default_env
+  still minted a guessable MD5 API key).
+Both redone as proper 3-way merges (git merge-file) keeping the branch's additions +
+v3's SecretFile.update + v3's SPDX headers. Local in-process subset after the fix: the
+ADR-0079 debug tests pass; remaining local failures are only mysql/mssql driver-absent
+(environmental, provisioned on the lab). Re-running full suite on the lab at 5673b53.
