@@ -1180,68 +1180,46 @@ module Tina4
     def self.enforce_route_auth(env, route)
       return nil unless route.auth_required
 
-      token = nil
-      token_source = nil  # :header, :body, :session
+      unauthorized = [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
 
-      # Priority 1: Authorization Bearer header
+      # Token slots in priority order: Authorization Bearer header, then the
+      # body formToken (frond.js puts the auth token it received as a
+      # FreshToken there), then the session. The first slot holding a token
+      # decides, EXCEPT that a form token ("type" => "form") proves where a
+      # write came from, not who sent it: it is skipped and the next slot is
+      # tried (ADR-0079 s1). So a logged-in user posting a rendered form (form
+      # token in the body, auth token in the session) is still authenticated.
+      candidates = []
       auth_header = env["HTTP_AUTHORIZATION"] || ""
-      if auth_header =~ /\ABearer\s+(.+)\z/i
-        token = Regexp.last_match(1)
-        token_source = :header
-      end
+      candidates << [Regexp.last_match(1), :header] if auth_header =~ /\ABearer\s+(.+)\z/i
+      form_token = _extract_form_token(_read_rack_body(env), env)
+      candidates << [form_token, :body] if form_token && !form_token.empty?
 
-      # Priority 2: formToken from request body (for frond.js saveForm with {{ form_token() }})
-      if token.nil?
-        body_str = _read_rack_body(env)
-        form_token = _extract_form_token(body_str, env)
-        if form_token && !form_token.empty?
-          token = form_token
-          token_source = :body
-        end
+      verdict = candidates.each do |token, source|
+        outcome = _authenticate_token(env, token, source)
+        break outcome unless outcome == :skip
       end
+      return unauthorized if verdict == :denied
 
-      # Priority 3: Session token (for secured GET routes after login)
-      if token.nil?
+      unless env.key?("tina4.auth_payload")
         # Request path, so the same log-loud-then-degrade policy as
         # Request#session (ADR-0021): an unreachable session store must not turn
         # the auth gate into a 500. It degrades to an empty session, which means
         # no token, which means the ordinary 401 below - a SERVED request.
         session = Tina4::Session.new(env, degrade_on_backend_failure: true)
-        sso = session.get("_tina4_sso")
-        identity = sso.is_a?(Hash) ? sso["identity"] : nil
-        if identity.is_a?(Hash) && identity["issuer"] && identity["subject"]
+        # A provider-verified OIDC identity counts only while it is live
+        # (ADR-0079 s5).
+        identity = Tina4::Sso.live_session_identity(session.get("_tina4_sso"))
+        if identity
           env["tina4.auth_payload"] = identity
-          deny = rbac_forbidden(route, identity)
-          return deny if deny
-
-          return nil
-        end
-        session_token = session.get("token")
-        if session_token && !session_token.empty?
-          token = session_token
-          token_source = :session
+        else
+          session_token = session.get("token")
+          if session_token.is_a?(String) && !session_token.empty?
+            return unauthorized unless _authenticate_token(env, session_token, :session) == :accepted
+          end
         end
       end
-
-      # API_KEY bypass — routed through the timing-safe Tina4::Auth.validate_api_key
-      # (OpenSSL.fixed_length_secure_compare), matching tina4_python's _check_auth.
-      # It used to be a plain `token == api_key`, which returns as soon as two
-      # bytes differ — so response timing leaks the key prefix and the key can be
-      # recovered a character at a time. validate_api_key also covers the unset /
-      # blank / wrong-length cases the old guard spelled out by hand.
-      if Tina4::Auth.validate_api_key(token)
-        env["tina4.auth_payload"] = { "_auth" => "api_key" }
-      elsif token
-        unless Tina4::Auth.valid_token(token)
-          return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
-        end
-        env["tina4.auth_payload"] = Tina4::Auth.get_payload(token)
-
-        # When body formToken validates, store a refreshed token for the FreshToken response header
-        env["tina4.fresh_token"] = Tina4::Auth.refresh_token(token) if token_source == :body
-      else
-        return [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
-      end
+      return unauthorized unless env.key?("tina4.auth_payload")
 
       # ── RBAC guards (Feature 138): authorization AFTER authentication ──
       # Auth has passed (401 ruled out above). If the route carries role/
@@ -1250,6 +1228,30 @@ module Tina4
       return deny if deny
 
       nil
+    end
+
+    # Judge one token from one slot: :accepted (env["tina4.auth_payload"] set),
+    # :skip (a valid form token - not an identity, try the next slot) or
+    # :denied (anything else).
+    #
+    # API_KEY bypass - routed through the timing-safe Tina4::Auth.validate_api_key
+    # (OpenSSL.fixed_length_secure_compare), matching tina4_python's _check_auth.
+    # A plain `token == api_key` returns as soon as two bytes differ, so response
+    # timing would leak the key a character at a time.
+    def self._authenticate_token(env, token, source)
+      if Tina4::Auth.validate_api_key(token)
+        env["tina4.auth_payload"] = { "_auth" => "api_key" }
+        return :accepted
+      end
+      payload = Tina4::Auth.valid_token(token)
+      return :denied unless payload
+      return :skip unless Tina4::Auth.identity_payload?(payload)
+
+      env["tina4.auth_payload"] = payload
+      # When a body token authenticates, store a refreshed token for the
+      # FreshToken response header (identity tokens only).
+      env["tina4.fresh_token"] = Tina4::Auth.refresh_token(token) if source == :body
+      :accepted
     end
 
     # Build a 403 Rack tuple when a route's RBAC guards are not satisfied by the

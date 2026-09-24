@@ -172,7 +172,7 @@ RSpec.describe "Tina4::Router reload-aware discovery" do
 
     # Drive the real dev reload endpoint the Rust CLI POSTs to on a change.
     env = {
-      "PATH_INFO" => "/__dev/api/reload",
+      "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/reload",
       "REQUEST_METHOD" => "POST",
       "rack.input" => StringIO.new({ "file" => "src/routes/endpoint.rb", "type" => "reload" }.to_json)
     }

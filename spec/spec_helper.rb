@@ -181,7 +181,21 @@ end
 # the old per-ivar restoration below.
 TINA4_LOG_STATE_IVARS = %i[@snapshot @pid].freeze
 
+# A usable signing secret for every example (ADR-0079 s2). Auth refuses to sign
+# with a blank or short TINA4_SECRET and boot refuses one outside dev; many
+# specs delete the secret in an after hook, which used to leave the next spec
+# signing with the blank key. An example that needs a blank secret deletes it
+# itself.
+TINA4_SPEC_SECRET = "tina4-ruby-test-suite-secret-0123456789abcdef"
+
 RSpec.configure do |config|
+  # An OUTER around hook, so a group's own around/before hooks that clear or
+  # set the secret still run after it and win.
+  config.around(:each) do |example|
+    ENV["TINA4_SECRET"] = TINA4_SPEC_SECRET if ENV["TINA4_SECRET"].to_s.bytesize < 32
+    example.run
+  end
+
   config.after(:suite) do
     # Record every skip/pending the gate may not excuse (see above).
     if tina4_require_services?

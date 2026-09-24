@@ -233,7 +233,7 @@ RSpec.describe "Tina4 migration contract (feature 15)" do
       "TINA4_DATABASE_URL" => url,
       "TINA4_AUTO_MIGRATE" => "false",
       "TINA4_DEBUG" => nil,
-      "TINA4_SECRET" => "mig-contract-spec-secret"
+      "TINA4_SECRET" => "mig-contract-spec-secret-0123456"
     }
     Open3.capture2e(env, RbConfig.ruby, EXE, *args, chdir: dir)
   end

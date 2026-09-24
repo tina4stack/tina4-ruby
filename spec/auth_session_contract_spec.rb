@@ -21,7 +21,7 @@ require "digest"
 # Tina4::Session against a real filesystem in a real Dir.mktmpdir, and the real
 # Tina4::RackApp.enforce_route_auth gate over a real Tina4::Route.
 RSpec.describe "Auth + session contract" do
-  let(:secret) { "auth-session-contract-secret" }
+  let(:secret) { "auth-session-contract-secret-012" }
   let(:tmp_dir) { Dir.mktmpdir("tina4_auth_session_contract") }
 
   # Pin the process into HMAC mode for every example: a real TINA4_SECRET and a
@@ -449,11 +449,15 @@ RSpec.describe "Auth + session contract" do
     # Read as UTF-8 explicitly: the framework sources carry UTF-8 punctuation and
     # Encoding.default_external is US-ASCII under a locale-less shell, where a
     # plain readlines raises Encoding::CompatibilityError instead of asserting.
-    gate_file, gate_line = Tina4::RackApp.method(:enforce_route_auth).source_location
+    # The gate is enforce_route_auth plus the per-slot helper it delegates each
+    # token to (_authenticate_token, ADR-0079); read both.
     gate_source = +""
-    File.readlines(gate_file, encoding: "UTF-8")[(gate_line - 1)..].each do |source_line|
-      gate_source << source_line
-      break if source_line.rstrip == "    end"
+    %i[enforce_route_auth _authenticate_token].each do |gate_method|
+      gate_file, gate_line = Tina4::RackApp.method(gate_method).source_location
+      File.readlines(gate_file, encoding: "UTF-8")[(gate_line - 1)..].each do |source_line|
+        gate_source << source_line
+        break if source_line.rstrip == "    end"
+      end
     end
 
     # Comment lines are stripped so the assertion is about CODE: the comment

@@ -709,6 +709,11 @@ module Tina4
 
       require_relative "../tina4"
 
+      # --production turns debug off: the explicit flag beats .env and the
+      # environment (ADR-0041, ADR-0079 s3). Set before the env files load,
+      # which are first-wins. It used to only choose Puma.
+      ENV["TINA4_DEBUG"] = "false" if options[:production]
+
       root_dir = Dir.pwd
       Tina4.initialize!(root_dir)
 

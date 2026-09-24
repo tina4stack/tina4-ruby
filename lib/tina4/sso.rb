@@ -16,6 +16,30 @@ module Tina4
   class Sso
     PENDING_KEY = "_tina4_sso_pending"
     SESSION_KEY = "_tina4_sso"
+
+    # The stored SSO identity, only while it is live (ADR-0079 s5). +stored+ is
+    # the reserved _tina4_sso session value. The identity needs an issuer and a
+    # subject, and a numeric expires_at that is 0 (the provider gave no
+    # lifetime) or still in the future.
+    def self.live_session_identity(stored)
+      return nil unless stored.is_a?(Hash)
+
+      identity = stored["identity"]
+      return nil unless identity.is_a?(Hash) && identity["issuer"] && identity["subject"]
+
+      expires_at = stored.fetch("expires_at", 0)
+      return nil unless expires_at.is_a?(Integer) || expires_at.is_a?(Float)
+      return nil if expires_at.positive? && Time.now.to_i >= expires_at
+
+      identity
+    end
+
+    # When the provider's access token lapses; 0 when it gave no lifetime.
+    # Never "now", which is already in the past by the next request.
+    def self.expires_at(tokens)
+      lifetime = tokens.fetch("expires_in", 0).to_i
+      lifetime.positive? ? Time.now.to_i + lifetime : 0
+    end
     attr_reader :issuer, :client_id, :client_secret, :redirect_uri, :scopes,
                 :verify, :post_logout_redirect_uri, :claim_map
     @mounted = false
@@ -215,14 +239,13 @@ module Tina4
       current.set(SESSION_KEY, {
                     "version" => 1, "identity" => identity, "access_token" => tokens["access_token"],
                     "refresh_token" => tokens["refresh_token"], "id_token" => tokens["id_token"],
-                    "expires_at" => Time.now.to_i + tokens.fetch("expires_in", 0).to_i
+                    "expires_at" => self.class.expires_at(tokens)
                   })
       { "identity" => identity, "return_to" => self.class.safe_return(pending["return_to"]) }
     end
 
     def identity(request_or_session)
-      stored = session(request_or_session)&.get(SESSION_KEY)
-      value = stored.is_a?(Hash) ? stored["identity"] : nil
+      value = self.class.live_session_identity(session(request_or_session)&.get(SESSION_KEY))
       request_or_session.user = value if value && !request_or_session.is_a?(Tina4::Session)
       value
     end
@@ -245,7 +268,7 @@ module Tina4
         "identity" => value, "access_token" => tokens["access_token"],
         "refresh_token" => tokens["refresh_token"] || stored["refresh_token"],
         "id_token" => tokens["id_token"] || stored["id_token"],
-        "expires_at" => Time.now.to_i + tokens.fetch("expires_in", 0).to_i
+        "expires_at" => self.class.expires_at(tokens)
       ))
       value
     rescue StandardError

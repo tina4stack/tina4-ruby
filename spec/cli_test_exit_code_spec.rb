@@ -65,7 +65,7 @@ RSpec.describe "tina4ruby test exit code" do
         "TINA4_DEBUG" => nil,
         # A non-blank secret so the fail-safe dev-secret bootstrap never warns
         # about (or writes) a generated secret into the temp project.
-        "TINA4_SECRET" => "exit-code-spec-secret"
+        "TINA4_SECRET" => "exit-code-spec-secret-0123456789"
       }
       output, status = Open3.capture2e(env, RbConfig.ruby, EXE, "test", chdir: dir)
       [output, status.exitstatus]

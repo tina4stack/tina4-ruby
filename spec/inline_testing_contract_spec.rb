@@ -65,7 +65,7 @@ RSpec.describe "inline testing contract (132)" do
         "TINA4_DATABASE_PASSWORD" => nil,
         "TINA4_AUTO_MIGRATE" => "false",
         "TINA4_DEBUG" => nil,
-        "TINA4_SECRET" => "inline-contract-secret"
+        "TINA4_SECRET" => "inline-contract-secret-012345678"
       }
       output, status = Open3.capture2e(env, RbConfig.ruby, EXE, "test", chdir: dir)
       yield(dir, output, status.exitstatus) if block_given?

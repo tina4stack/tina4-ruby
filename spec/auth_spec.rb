@@ -338,14 +338,14 @@ RSpec.describe Tina4::Auth do
 
   describe ".get_token with explicit secret" do
     it "accepts a secret: keyword param" do
-      token = Tina4::Auth.get_token({ "user" => 1 }, secret: "custom-secret")
+      token = Tina4::Auth.get_token({ "user" => 1 }, secret: "custom-secret-0123456789abcdef01")
       expect(token).to be_a(String)
       expect(token.split(".").length).to eq(3)
     end
 
     it "token signed with custom secret differs from env-secret token" do
       env_token = Tina4::Auth.get_token({ "user" => 1 })
-      custom_token = Tina4::Auth.get_token({ "user" => 1 }, secret: "custom-secret")
+      custom_token = Tina4::Auth.get_token({ "user" => 1 }, secret: "custom-secret-0123456789abcdef01")
       expect(env_token).not_to eq(custom_token)
     end
   end
@@ -373,10 +373,10 @@ RSpec.describe Tina4::Auth do
     end
 
     it "returns nil when secret param does not match" do
-      token = Tina4::Auth.get_token({ "user" => 3 }, secret: "custom-secret")
+      token = Tina4::Auth.get_token({ "user" => 3 }, secret: "custom-secret-0123456789abcdef01")
       result = Tina4::Auth.authenticate_request(
         { "HTTP_AUTHORIZATION" => "Bearer #{token}" },
-        secret: "wrong-secret"
+        secret: "wrong-secret-0123456789abcdef012"
       )
       expect(result).to be_nil
     end

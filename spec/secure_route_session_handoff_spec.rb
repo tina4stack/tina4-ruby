@@ -33,7 +33,7 @@ RSpec.describe "Secure route session handoff (#57)" do
 
   before(:each) do
     Tina4::Router.clear!
-    ENV["TINA4_SECRET"] = "secure-handoff-secret"
+    ENV["TINA4_SECRET"] = "secure-handoff-secret-0123456789"
     Tina4::Auth.instance_variable_set(:@private_key, nil)
     Tina4::Auth.instance_variable_set(:@public_key, nil)
     Tina4::Auth.instance_variable_set(:@keys_dir, nil)
