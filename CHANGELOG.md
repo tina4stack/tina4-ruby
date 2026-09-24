@@ -12,6 +12,8 @@ This release is available under MPL-2.0, with separate commercial terms availabl
 
 Security, zero-dependency server and interoperability release, integrating the reviewed changes since 3.13.137.
 
+- Update the development-only Puma dependency to 7.2.1 to fix the reported request-framing advisories. Real HTTP and graceful-shutdown tests cover the opt-in production-server path; the core remains free of runtime dependencies. SMTP and IMAP reject unknown or empty encryption settings before transport construction (ADR-0071).
+
 - Ruby now serves HTTP/1.1 with its built-in stdlib socket server and parses multipart forms itself. Rack, Rackup, WEBrick and Puma are no longer runtime dependencies; applications can opt into Puma. Native SMTP, IMAP, XML and Base64 implementations remove the remaining bundled/default-gem dependencies; SQLite is loaded only when used with an actionable missing-driver error. JSON duplicate keys consistently use the last value, including json 3.
 - HTTP headers reject CR/LF/NUL and duplicate Content-Length values using the shared rejection contract. Security headers cover every response and entry point, same-origin requests do not trigger CORS, explicit Content-Type appears once, hash responses are JSON, binary bodies are preserved, and invalid upload limits fall back safely.
 - Pooled database operations use exclusive connection leases. Other threads cannot read or commit an open transaction; exhausted pools fail immediately, failed commits retain their lease until rollback, and broken connections are discarded. Raw adapter access remains non-owning; direct I/O uses checkout/checkin.
