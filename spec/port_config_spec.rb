@@ -152,4 +152,18 @@ RSpec.describe "Port/Host configuration" do
       expect(resolved).to eq("0.0.0.0")
     end
   end
+
+  # `tina4ruby serve` resolves --host BEFORE it loads lib/tina4, so the default
+  # host branch ran with only lib/tina4/cli loaded and called Tina4.truthy?,
+  # which lib/tina4.rb defines: NoMethodError on every bare `tina4ruby serve`
+  # (the Rust `tina4 serve` always passes --host, which hid it). A fresh process
+  # is the only honest reproduction: inside this suite lib/tina4 is loaded.
+  it "resolves the default host with only tina4/cli loaded (bare tina4ruby serve)" do
+    lib = File.expand_path("../lib", __dir__)
+    env = { "TINA4_HOST" => nil, "HOST" => nil, "TINA4_DEBUG" => "true" }
+    script = 'require "tina4/cli"; print Tina4::CLI.new.send(:resolve_config, :host, nil)'
+    out, status = Open3.capture2e(env, RbConfig.ruby, "-I", lib, "-e", script)
+    expect(status.success?).to be(true), out
+    expect(out).to eq("127.0.0.1")
+  end
 end
