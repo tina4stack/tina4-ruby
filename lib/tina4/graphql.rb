@@ -606,7 +606,7 @@ module Tina4
       @max_depth = max_depth
     end
 
-    def execute(document, variables: {}, context: {}, operation_name: nil)
+    def execute(document, variables: {}, context: {}, operation_name: nil, allow_mutations: true)
       # Collect fragments
       fragments = {}
       operations = []
@@ -633,6 +633,15 @@ module Tina4
 
       # Resolve variables
       resolved_vars = resolve_variables(operation[:variables], variables)
+
+      # F4 (CSRF): a mutation must never run over a GET. A cross-site GET (an
+      # <img>/<script> src, a pre-rendered link) carries the victim's cookies
+      # and would otherwise trigger a state change. The GET handler passes
+      # allow_mutations: false; POST (which a browser cannot cross-site forge
+      # with a JSON content-type without a CORS preflight) still allows them.
+      if operation[:operation] == :mutation && !allow_mutations
+        raise GraphQLError, "Mutations are not allowed over GET"
+      end
 
       # Choose root fields
       root_fields = case operation[:operation]
@@ -1010,10 +1019,11 @@ module Tina4
     end
 
     # Execute a query string directly
-    def execute(query, variables: {}, context: {}, operation_name: nil)
+    def execute(query, variables: {}, context: {}, operation_name: nil, allow_mutations: true)
       parser = GraphQLParser.new(query)
       document = parser.parse
-      @executor.execute(document, variables: variables, context: context, operation_name: operation_name)
+      @executor.execute(document, variables: variables, context: context,
+                        operation_name: operation_name, allow_mutations: allow_mutations)
     rescue GraphQLError => e
       { "data" => nil, "errors" => [{ "message" => e.message }] }
     rescue => e
@@ -1083,6 +1093,16 @@ module Tina4
 
       graphql = self
       Tina4.post path, auth: false do |request, response|
+        # F4 (CSRF): require an application/json content-type. A browser can
+        # only send a cross-site POST with text/plain, form-urlencoded or
+        # multipart bodies without a CORS preflight; demanding JSON forces the
+        # preflight (and its same-origin/allow-list check) for any cross-site
+        # caller, so a forged form cannot drive a mutation. Same-origin XHR/
+        # fetch and server clients set application/json and are unaffected.
+        unless request.content_type.to_s.downcase.include?("application/json")
+          next response.json({ "data" => nil, "errors" => [{ "message" =>
+            "GraphQL requires a Content-Type of application/json" }] }, 415)
+        end
         # handle_request expects the raw JSON text (it JSON.parses internally),
         # so read body_raw — request.body now returns the PARSED payload.
         body = request.body_raw
@@ -1090,13 +1110,15 @@ module Tina4
         response.json(result)
       end
 
-      # Optional: GET for GraphiQL/introspection
+      # Optional: GET for GraphiQL/introspection. Queries only — a mutation over
+      # GET is refused (F4), since a cross-site GET carries the victim's cookies.
       Tina4.get path, auth: false do |request, response|
         query = request.query["query"]
         if query
           variables = request.query["variables"]
           variables = Tina4.parse_json(variables) if variables.is_a?(String) && !variables.empty?
-          result = graphql.execute(query, variables: variables || {}, context: { request: request })
+          result = graphql.execute(query, variables: variables || {},
+                                   context: { request: request }, allow_mutations: false)
           response.json(result)
         else
           response.html(graphiql_html(path))
