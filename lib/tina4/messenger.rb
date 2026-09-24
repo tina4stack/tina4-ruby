@@ -113,7 +113,7 @@ module Tina4
       # SMTP encryption: constructor > .env > backward-compat use_tls > default "tls"
       env_encryption = encryption  || ENV["TINA4_MAIL_ENCRYPTION"]
       if env_encryption
-        @encryption = env_encryption.downcase
+        @encryption = self.class.encryption_value(env_encryption, "mail")
       elsif !use_tls.nil?
         @encryption = use_tls ? "tls" : "none"
       else
@@ -127,7 +127,7 @@ module Tina4
       # IMAP encryption: dedicated env var TINA4_MAIL_IMAP_ENCRYPTION (tls/starttls/none).
       # Defaults to "tls" — IMAPS over implicit TLS on port 993 is the safe industry norm.
       env_imap_enc = imap_encryption || ENV["TINA4_MAIL_IMAP_ENCRYPTION"]
-      @imap_encryption = (env_imap_enc && !env_imap_enc.to_s.empty?) ? env_imap_enc.to_s.downcase : "tls"
+      @imap_encryption = env_imap_enc.nil? ? "tls" : self.class.encryption_value(env_imap_enc, "IMAP")
       @imap_use_tls    = %w[tls starttls ssl].include?(@imap_encryption)
 
       # IMAP credentials, independent of SMTP. Dedicated
@@ -137,6 +137,18 @@ module Tina4
       # account read the wrong mailbox. Explicit constructor args win (ADR-0041).
       @imap_username = imap_username || ENV["TINA4_MAIL_IMAP_USERNAME"] || @username
       @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
+    end
+
+    ENCRYPTION_VALUES = %w[ssl tls starttls none].freeze
+
+    # ADR-0071 section 2: trim + lower-case, then refuse anything unknown (an
+    # empty value included). A typo used to fall through to a plain connection
+    # and send the credentials and the message in clear.
+    def self.encryption_value(given, label)
+      value = given.to_s.strip.downcase
+      return value if ENCRYPTION_VALUES.include?(value)
+
+      raise ArgumentError, "Unknown #{label} encryption '#{given}'. Valid values: ssl, tls, starttls, none."
     end
 
     # The local mailbox, present only once this messenger has captured something
