@@ -424,9 +424,9 @@ RSpec.describe Tina4::Messenger do
   # NO MOCKS. These examples drive a live GreenMail instance: deliver a message
   # over plain SMTP (127.0.0.1:3025, no TLS) and read it back over plain IMAP
   # (127.0.0.1:3143, no TLS). Plain (non-TLS) IMAP is selected by passing
-  # imap_encryption: "none" — Messenger#initialize maps any value outside
-  # %w[tls starttls ssl] to imap_use_tls = false, so Tina4::Messenger::ImapClient opens a
-  # plain connection. Plain SMTP likewise comes from use_tls: false -> "none".
+  # imap_encryption: "none" — Messenger#initialize maps "none" to
+  # imap_use_tls = false (any value outside ssl/tls/starttls/none raises,
+  # ADR-0071), so Tina4::Messenger::ImapClient opens a plain connection. Plain SMTP likewise comes from use_tls: false -> "none".
   #
   # GreenMail has auth disabled (any user/pass is accepted) and creates a
   # mailbox on first access, so each example uses a UNIQUE recipient address to
