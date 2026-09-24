@@ -13,6 +13,7 @@ require "json"
 require "fileutils"
 require "net/http"
 require "uri"
+require_relative "parse_json"
 
 module Tina4
   module Plan
@@ -419,7 +420,7 @@ module Tina4
             ]
           })
           resp = http.request(req)
-          body = JSON.parse(resp.body)
+          body = Tina4.parse_json(resp.body)
           (body["message"].is_a?(Hash) ? body["message"]["content"] : nil) || body["response"] || ""
         rescue StandardError => e
           return { "ok" => false, "error" => "AI backend unreachable: #{e.message}" }
@@ -434,7 +435,7 @@ module Tina4
 
         proposed = []
         begin
-          parsed = JSON.parse(body)
+          parsed = Tina4.parse_json(body)
           proposed = parsed.map { |x| x.to_s.strip }.reject(&:empty?) if parsed.is_a?(Array)
         rescue StandardError
           reply.split("\n").each do |line|

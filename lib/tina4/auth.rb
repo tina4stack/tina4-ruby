@@ -4,6 +4,7 @@ require_relative "base64"
 require "json"
 require "fileutils"
 require "securerandom"
+require_relative "parse_json"
 
 module Tina4
   module Auth
@@ -200,10 +201,10 @@ module Tina4
       def decode_envelope(token, algorithm)
         parts = token.to_s.split(".")
         return nil unless parts.length == 3
-        return nil unless JSON.parse(base64url_decode(parts[0]))["alg"] == algorithm
+        return nil unless Tina4.parse_json(base64url_decode(parts[0]))["alg"] == algorithm
         return nil unless yield("#{parts[0]}.#{parts[1]}", base64url_decode(parts[2]))
 
-        payload = JSON.parse(base64url_decode(parts[1]))
+        payload = Tina4.parse_json(base64url_decode(parts[1]))
         now = Time.now.to_i
 
         # RFC 7519 s4.1.4: "The processing of the 'exp' claim requires that the
@@ -361,7 +362,7 @@ module Tina4
         return nil unless parts.length == 3
 
         payload_json = base64url_decode(parts[1])
-        JSON.parse(payload_json)
+        Tina4.parse_json(payload_json)
       rescue ArgumentError, JSON::ParserError
         nil
       end

@@ -3,6 +3,7 @@
 require "json"
 require "net/http"
 require "uri"
+require_relative "parse_json"
 
 module Tina4
   # ── Customer feedback widget — server-side plumbing ─────────────────
@@ -170,7 +171,7 @@ module Tina4
           req.body = JSON.generate(forward_body)
           resp = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 60) { |h| h.request(req) }
           parsed = begin
-            JSON.parse(resp.body.to_s)
+            Tina4.parse_json(resp.body.to_s)
           rescue JSON::ParserError
             nil
           end
@@ -293,7 +294,7 @@ module Tina4
         input.rewind if input.respond_to?(:rewind)
         raw = input.read
         return nil if raw.nil? || raw.empty?
-        JSON.parse(raw)
+        Tina4.parse_json(raw)
       rescue JSON::ParserError
         nil
       end

@@ -14,6 +14,7 @@
 #   response = client.get("/api/users/1", headers: { "Authorization" => "Bearer token123" })
 #
 require "stringio" # rack.input is a StringIO; require it here so a clean `require "tina4"` boot never NameErrors
+require_relative "parse_json"
 
 module Tina4
   class TestResponse
@@ -64,7 +65,7 @@ module Tina4
     # Parse body as JSON.
     def json
       return nil if @body.nil? || @body.empty?
-      JSON.parse(@body)
+      Tina4.parse_json(@body)
     rescue JSON::ParserError
       nil
     end

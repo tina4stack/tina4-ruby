@@ -14,6 +14,7 @@ require_relative "realtime/storage_backend"
 require_relative "realtime/local_storage"
 require_relative "realtime/s3_storage"
 require_relative "realtime/storage"
+require_relative "parse_json"
 
 module Tina4
   # Real-time collaboration mount for Tina4 (Ruby), parity with the Python
@@ -312,7 +313,7 @@ module Tina4
     def parse_json(data)
       return data if data.is_a?(Hash)
 
-      JSON.parse(data.to_s)
+      Tina4.parse_json(data.to_s)
     rescue JSON::ParserError, TypeError
       nil
     end

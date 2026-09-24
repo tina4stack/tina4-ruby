@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../parse_json"
+
 module Tina4
   module QueueBackends
     class KafkaBackend
@@ -120,7 +122,7 @@ module Tina4
         end
         return nil unless msg
 
-        data = JSON.parse(msg.payload)
+        data = Tina4.parse_json(msg.payload)
         @last_message = msg
 
         # attempts and error MUST be carried back. Rebuilding from
@@ -243,7 +245,7 @@ module Tina4
           loop do
             msg = reader.poll(500)
             if msg
-              data = JSON.parse(msg.payload)
+              data = Tina4.parse_json(msg.payload)
               data["status"] = "dead"
               out << data
               next

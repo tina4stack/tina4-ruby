@@ -166,8 +166,9 @@ RSpec.describe "Tina4::Auth RS256 opt-in (no jwt gem)" do
     #
     # The header BYTES are identical between signing and verifying, so the
     # signature genuinely verifies — but the header carries `alg` TWICE, and
-    # Ruby's JSON.parse (like PHP's json_decode, Python's json.loads and JS's
-    # JSON.parse) takes the LAST duplicate key. The token therefore PARSES as the
+    # Tina4.parse_json (like PHP's json_decode, Python's json.loads and JS's
+    # JSON.parse) takes the LAST duplicate key. Plain JSON.parse only does that
+    # on json < 3.0; json 3 raises instead, which is why Tina4 pins the rule. The token therefore PARSES as the
     # smuggled algorithm while carrying a valid signature, and only a verifier
     # that compares the parsed alg against its OWN configuration rejects it.
     #
@@ -187,7 +188,7 @@ RSpec.describe "Tina4::Auth RS256 opt-in (no jwt gem)" do
 
         # CONTROL: the header really parses as the smuggled alg, so the rejection
         # below is the pin and not a malformed token.
-        expect(JSON.parse(raw_header)["alg"]).to eq(smuggled)
+        expect(Tina4.parse_json(raw_header)["alg"]).to eq(smuggled)
 
         expect(Tina4::Auth.valid_token("#{signing_input}.#{signature}")).to be_nil,
                                                                            "a valid #{honest} token whose header parses as #{smuggled} was ACCEPTED - the algorithm pin is gone"

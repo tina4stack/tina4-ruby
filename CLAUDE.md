@@ -1217,7 +1217,9 @@ mode and protected for remote callers. Environment variables (read by
 - Runtime gems: only the Rack server stack (rack, rackup, puma, webrick) is declared in the
   gemspec. Everything else is Tina4 code on the standard library, guarded by
   `spec/zero_dependency_gemspec_spec.rb` (it fails if any of these comes back):
-  - `json`: a default gem on every supported Ruby, never declared
+  - `json`: a default gem on every supported Ruby, never declared. Because it is not pinned an app may
+    resolve json 3.x, which RAISES on a duplicate key; JSON from outside the process goes through
+    `Tina4.parse_json` (`lib/tina4/parse_json.rb`), which pins last-key-wins like Python/PHP/Node
   - `base64`: `Tina4::Base64` (`lib/tina4/base64.rb`) on core `pack("m")`, same six methods
   - `logger`: never required, `Tina4::Log` writes and rotates its own files
   - `sqlite3`: an APP dependency (ADR-0067), required lazily through `Tina4.require_sqlite3!`

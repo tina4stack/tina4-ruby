@@ -4,6 +4,7 @@ require "json"
 require "net/http"
 require "uri"
 require "openssl"
+require_relative "parse_json"
 
 module Tina4
   class AiError < StandardError; end
@@ -517,7 +518,7 @@ module Tina4
               end
               raise AiHTTPError.new("AI provider returned HTTP #{status}", status)
             end
-            parsed = JSON.parse(response.body)
+            parsed = Tina4.parse_json(response.body)
             raise AiParseError, "AI provider returned a non-object JSON response" unless parsed.is_a?(Hash)
 
             return parsed
@@ -657,7 +658,7 @@ module Tina4
         return if data.empty?
 
         parsed = begin
-          JSON.parse(data)
+          Tina4.parse_json(data)
         rescue JSON::ParserError
           raise AiParseError, "AI provider returned malformed stream data"
         end
@@ -752,7 +753,7 @@ module Tina4
       def parse_tool_args(joined)
         return {} if joined.nil? || joined.empty?
 
-        JSON.parse(joined)
+        Tina4.parse_json(joined)
       rescue JSON::ParserError
         raise AiParseError, "AI provider returned malformed tool_call arguments JSON"
       end

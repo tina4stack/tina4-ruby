@@ -6,6 +6,7 @@ require "uri"
 require "json"
 require_relative "base64"
 require "securerandom"
+require_relative "parse_json"
 
 module Tina4
   # Statuses that warrant an automatic retry when max_retries > 0: rate-limit
@@ -821,7 +822,7 @@ module Tina4
     end
 
     def json
-      @json ||= JSON.parse(@body)
+      @json ||= Tina4.parse_json(@body)
     rescue JSON::ParserError, TypeError
       {}
     end

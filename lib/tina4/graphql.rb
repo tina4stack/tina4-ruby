@@ -1,6 +1,7 @@
 # frozen_string_literal: false
 
 require "json"
+require_relative "parse_json"
 
 module Tina4
   # Lightweight, zero-dependency GraphQL implementation for Tina4 Ruby.
@@ -1057,7 +1058,7 @@ module Tina4
 
     # Handle an HTTP request body (JSON string)
     def handle_request(body, context: {})
-      payload = JSON.parse(body)
+      payload = Tina4.parse_json(body)
       query = payload["query"] || ""
       variables = payload["variables"] || {}
       op_name = payload["operationName"]
@@ -1094,7 +1095,7 @@ module Tina4
         query = request.query["query"]
         if query
           variables = request.query["variables"]
-          variables = JSON.parse(variables) if variables.is_a?(String) && !variables.empty?
+          variables = Tina4.parse_json(variables) if variables.is_a?(String) && !variables.empty?
           result = graphql.execute(query, variables: variables || {}, context: { request: request })
           response.json(result)
         else

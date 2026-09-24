@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 require "json"
+require_relative "parse_json"
 
 module Tina4
   # Convert a snake_case name to camelCase.
@@ -771,7 +772,7 @@ module Tina4
           fdef = field_definitions[attr_name.to_sym]
           if fdef && fdef[:type] == :json && value.is_a?(String)
             begin
-              value = JSON.parse(value)
+              value = Tina4.parse_json(value)
             rescue JSON::ParserError
               # leave the raw string in place
             end
@@ -891,7 +892,7 @@ module Tina4
       @assigned_fields = []
       # Accept a JSON object string (parity with Python/PHP/Node):
       #   Widget.new('{"id":1,"name":"alpha"}')
-      attributes = JSON.parse(attributes) if attributes.is_a?(String)
+      attributes = Tina4.parse_json(attributes) if attributes.is_a?(String)
       # A single model is one record — reject an Array with a clear message.
       if attributes.is_a?(Array)
         raise ArgumentError,
