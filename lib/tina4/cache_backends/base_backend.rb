@@ -72,6 +72,14 @@ module Tina4
       def available?
         true
       end
+
+      # When available? is false because a required gem is not installed, the
+      # sentence that names the gem and the install command; nil otherwise.
+      #
+      # @return [String, nil]
+      def missing_driver_message
+        nil
+      end
     end
   end
 end
