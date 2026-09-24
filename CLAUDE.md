@@ -1249,8 +1249,9 @@ Response headers (ADR-0068): `Response#header`, `#add_header`, `#redirect`, an e
     465 or `encryption: "ssl"`, STARTTLS for `tls`/`starttls` (REQUIRED, a server that does not
     offer it fails the send), plain for `none`; AUTH PLAIN, or LOGIN when that is all the server
     offers. IMAP: `imap_encryption` `tls`/`ssl` implicit TLS, `starttls` a real STARTTLS upgrade,
-    anything else plain. TLS is always verified (trust a private CA with `SSL_CERT_FILE`)
-  - `rexml`: `Tina4::WSDL::XmlParser` (`lib/tina4/xml_parser.rb`) for SOAP bodies, UTF-8 only, no DTDs
+    `none` plain. Both values are trimmed and lower-cased; anything else (empty included) raises
+    ArgumentError at construction (ADR-0071). TLS is always verified (trust a private CA with `SSL_CERT_FILE`)
+  - `rexml`: `Tina4::WSDL::XmlParser` (`lib/tina4/xml_parser.rb`) for SOAP bodies, UTF-8 only (no BOM, no NUL, no other declared encoding: "Malformed XML" before any parse), no DTDs
   - Mail transport specs run against real servers from `spec/support/mail-infra.sh` (GreenMail
     TLS + AUTH, Mailpit STARTTLS, Dovecot STARTTLS); export its `TINA4_TEST_MAIL_*` output
 - File watching handled by the `tina4` Rust CLI (no framework-side watcher)

@@ -273,6 +273,14 @@ module Tina4
     def process_soap(xml_body)
       on_request(@request)
 
+      # The shared body rule, before anything reads the bytes: UTF-8 only, no
+      # byte order mark, no NUL byte, no other declared encoding.
+      begin
+        xml_body = XmlParser.utf8_text(xml_body)
+      rescue XmlParser::ParseError
+        return soap_fault("Client", "Malformed XML")
+      end
+
       # SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message, so
       # reject any DOCTYPE up front with the same Client fault as the other three
       # frameworks. The parser has no DTD support at all (no entity expansion, no
@@ -493,6 +501,14 @@ module Tina4
       end
 
       def handle_soap_request(xml_body)
+        # The shared body rule first (see WSDL#process_soap). Its parse error used
+        # to fall into the catch-all below and answer "Internal server error".
+        begin
+          xml_body = XmlParser.utf8_text(xml_body)
+        rescue XmlParser::ParseError
+          return _soap_fault("Malformed XML")
+        end
+
         # SOAP 1.1 (§3) forbids a DOCTYPE/DTD. Reject before parsing; the parser
         # itself has no DTD support and accepts UTF-8 only. Mirrors the
         # class-based process_soap path.
