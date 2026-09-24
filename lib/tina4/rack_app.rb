@@ -504,6 +504,9 @@ module Tina4
 
       # Skip underscore-prefixed segments — private files even within pages/.
       return nil if clean_path.split("/").any? { |seg| seg.start_with?("_") }
+      # ADR-0078: a "." / ".." segment (or a backslash) could walk out of
+      # pages/ - the only directory that auto-routes. Refuse it outright.
+      return nil if clean_path.include?("\\") || clean_path.split("/", -1).any? { |seg| ["", ".", ".."].include?(seg) }
 
       is_dev = %w[true 1 yes].include?(ENV.fetch("TINA4_DEBUG", "false").downcase)
 

@@ -188,6 +188,12 @@ module Tina4
       # server refuses the same upgrade with 404).
       return nil if ctx.path == "/__dev_reload" && ctx.env["tina4.ai_port"]
 
+      # ADR-0078: the dev reload socket answers only a loopback / TINA4_HOST
+      # Host - the same rule the /__dev HTTP gate applies (DNS rebinding).
+      if ctx.path.start_with?("/__dev") && !Tina4::DevAdmin.dev_host_allowed?(ctx.env)
+        return [403, { "content-type" => "text/plain" }, ["Forbidden: host not allowed"]]
+      end
+
       ws_result = Tina4::Router.find_ws_route(ctx.path)
       return nil unless ws_result
 
