@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "base64"
+require_relative "base64"
 require "digest"
 require "json"
 require "net/http"
@@ -119,7 +119,7 @@ module Tina4
       state = SecureRandom.urlsafe_base64(32)
       nonce = SecureRandom.urlsafe_base64(32)
       verifier = SecureRandom.urlsafe_base64(64)
-      challenge = Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false)
+      challenge = Tina4::Base64.urlsafe_encode64(Digest::SHA256.digest(verifier), padding: false)
       current.set(PENDING_KEY, {
                     "state" => state, "nonce" => nonce, "verifier" => verifier,
                     "return_to" => self.class.safe_return(return_to), "created_at" => Time.now.to_i
@@ -140,7 +140,7 @@ module Tina4
 
     def self.jwt_payload(token)
       part = token.split(".")[1].to_s
-      JSON.parse(Base64.urlsafe_decode64(part.ljust((part.length + 3) / 4 * 4, "=")))
+      JSON.parse(Tina4::Base64.urlsafe_decode64(part.ljust((part.length + 3) / 4 * 4, "=")))
     rescue JSON::ParserError, ArgumentError
       raise SsoError, "provider returned an invalid ID token"
     end

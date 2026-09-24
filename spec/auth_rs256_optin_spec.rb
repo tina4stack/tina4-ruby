@@ -21,7 +21,6 @@
 
 require "spec_helper"
 require "openssl"
-require "base64"
 require "json"
 require "tmpdir"
 require "fileutils"
@@ -69,7 +68,7 @@ RSpec.describe "Tina4::Auth RS256 opt-in (no jwt gem)" do
   end
 
   def base64url(bytes)
-    Base64.urlsafe_encode64(bytes, padding: false)
+    Tina4::Base64.urlsafe_encode64(bytes, padding: false)
   end
 
   def segments(token)

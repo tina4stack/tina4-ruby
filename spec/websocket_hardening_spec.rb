@@ -12,7 +12,6 @@
 
 require "spec_helper"
 require "json"
-require "base64"
 
 # ── Fakes ─────────────────────────────────────────────────────
 
@@ -236,7 +235,7 @@ RSpec.describe "WebSocket backplane relay" do
     mgr.publish_envelope("all", "plain text")
 
     expect(captured[0]).to have_key("b64")
-    expect(Base64.strict_decode64(captured[0]["b64"]).bytes).to eq([0x10, 0x20])
+    expect(Tina4::Base64.strict_decode64(captured[0]["b64"]).bytes).to eq([0x10, 0x20])
     expect(captured[1]["text"]).to eq("plain text")
     expect(captured[0]["src"]).to eq(mgr.instance_id)
   end

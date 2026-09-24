@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 require "openssl"
-require "base64"
+require_relative "base64"
 require "json"
 require "fileutils"
 require "securerandom"
@@ -139,7 +139,7 @@ module Tina4
 
       # Base64url-encode without padding (JWT spec)
       def base64url_encode(data)
-        Base64.urlsafe_encode64(data, padding: false)
+        Tina4::Base64.urlsafe_encode64(data, padding: false)
       end
 
       # Base64url-decode (handles missing padding)
@@ -147,7 +147,7 @@ module Tina4
         # Add back padding
         remainder = str.length % 4
         str += "=" * ((4 - remainder) % 4) if remainder != 0
-        Base64.urlsafe_decode64(str)
+        Tina4::Base64.urlsafe_decode64(str)
       end
 
       # Pick the JWT algorithm: explicit argument, else TINA4_JWT_ALGORITHM, else

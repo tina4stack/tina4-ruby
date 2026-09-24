@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "openssl"
-require "base64"
+require_relative "base64"
 require "json"
 require "net/http"
 require "uri"
@@ -113,13 +113,13 @@ module Tina4
     end
 
     def self.b64(value)
-      Base64.urlsafe_encode64(value, padding: false)
+      Tina4::Base64.urlsafe_encode64(value, padding: false)
     end
 
     def decode(value, name)
       raise PushError, "#{name} must be a non-empty base64url string" unless value.is_a?(String) && value.match?(/\A[A-Za-z0-9_-]+\z/)
 
-      Base64.urlsafe_decode64(value)
+      Tina4::Base64.urlsafe_decode64(value)
     rescue ArgumentError => e
       raise PushError, "#{name} must be base64url encoded: #{e.message}"
     end

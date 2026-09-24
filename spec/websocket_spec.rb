@@ -34,7 +34,7 @@ RSpec.describe Tina4::WebSocket do
       # every real browser validates the accept per spec and refuses the
       # upgrade — which is why this pins the literal RFC vector.
       key = "dGhlIHNhbXBsZSBub25jZQ=="
-      expected = Base64.strict_encode64(
+      expected = Tina4::Base64.strict_encode64(
         Digest::SHA1.digest(key + Tina4::WEBSOCKET_GUID)
       )
 
@@ -194,7 +194,7 @@ RSpec.describe Tina4::WebSocket do
 
     it "computes the correct Sec-WebSocket-Accept value" do
       key = "dGhlIHNhbXBsZSBub25jZQ=="
-      expected_accept = Base64.strict_encode64(
+      expected_accept = Tina4::Base64.strict_encode64(
         Digest::SHA1.digest("#{key}#{Tina4::WebSocket::GUID}")
       )
 
@@ -217,10 +217,10 @@ RSpec.describe Tina4::WebSocket do
     it "produces different accept keys for different inputs" do
       key1 = "dGhlIHNhbXBsZSBub25jZQ=="
       key2 = "x3JJHMbDL1EzLkh9GBhXDw=="
-      accept1 = Base64.strict_encode64(
+      accept1 = Tina4::Base64.strict_encode64(
         Digest::SHA1.digest("#{key1}#{Tina4::WebSocket::GUID}")
       )
-      accept2 = Base64.strict_encode64(
+      accept2 = Tina4::Base64.strict_encode64(
         Digest::SHA1.digest("#{key2}#{Tina4::WebSocket::GUID}")
       )
       expect(accept1).not_to eq(accept2)

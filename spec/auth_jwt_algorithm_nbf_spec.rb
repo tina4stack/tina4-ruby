@@ -13,7 +13,6 @@
 
 require "spec_helper"
 require "openssl"
-require "base64"
 require "json"
 require "tmpdir"
 require "fileutils"
@@ -67,7 +66,7 @@ RSpec.describe "Tina4::Auth JWT algorithm + nbf contract" do
   end
 
   def base64url(bytes)
-    Base64.urlsafe_encode64(bytes, padding: false)
+    Tina4::Base64.urlsafe_encode64(bytes, padding: false)
   end
 
   # ── the header must name the algorithm that actually signed (python#105) ──

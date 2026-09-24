@@ -295,7 +295,7 @@ RSpec.describe Tina4::Messenger do
                            attachments: [], headers: {},
                            message_id: "<test@localhost>")
       expect(raw).to include("Content-Transfer-Encoding: base64")
-      expect(raw).to include(Base64.encode64("Hello").strip)
+      expect(raw).to include(Tina4::Base64.encode64("Hello").strip)
     end
   end
 
@@ -412,7 +412,7 @@ RSpec.describe Tina4::Messenger do
     end
 
     it "handles base64 encoded body" do
-      encoded = Base64.encode64("Decoded content")
+      encoded = Tina4::Base64.encode64("Decoded content")
       raw = "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n#{encoded}"
       text, _html = messenger.__send__(:extract_body_parts, raw)
       expect(text).to eq("Decoded content")

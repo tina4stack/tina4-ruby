@@ -30,28 +30,18 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency "net-smtp", "~> 0.5"
   spec.add_dependency "net-imap", "~> 0.5"
-  spec.add_dependency "json", "~> 2.7"
   spec.add_dependency "rexml", "~> 3.2"
   spec.add_dependency "webrick", "~> 1.8"
-  # logger and base64 were DEFAULT gems until Ruby 3.4/4.0 demoted them to
-  # BUNDLED gems, and a bundled gem that nothing declares is NOT on the load
-  # path under Bundler. The two are NOT the same severity:
-  #
-  # logger is REQUIRED. Nothing in the transitive runtime closure of the
-  # dependencies above provides it, so `require "logger"` (lib/tina4/log.rb)
-  # raised LoadError on Ruby 4 and `tina4 serve` could not boot at all.
-  #
-  # base64 is now LOAD-BEARING. It used to resolve transitively through jwt, so
-  # the declaration was belt-and-braces; dropping jwt removed that transitive
-  # path, and eight files require base64 DIRECTLY (auth, api, websocket,
-  # messenger, mcp, frond, realtime, dev_mailbox). Removing this line now breaks
-  # `require "base64"` on Ruby 3.4+, where base64 is a BUNDLED gem and a bundled
-  # gem nothing declares is not on the load path under Bundler.
-  #
-  # ostruct is deliberately NOT declared: tina4 never requires it. (A scaffold
-  # may still need it if the app pulls in oj, which does declare it.)
-  spec.add_dependency "logger", "~> 1.6"
-  spec.add_dependency "base64", "~> 0.2"
+  # NOT declared, and never to come back (spec/zero_dependency_gemspec_spec.rb):
+  #   json    a DEFAULT gem on every Ruby this gem supports (3.1 to 4.0), so it is
+  #           always loadable, Bundler or not.
+  #   base64  a BUNDLED gem since Ruby 3.4, so it would have to be declared.
+  #           Instead lib/tina4/base64.rb provides the same six methods on core
+  #           Array#pack("m") / String#unpack1("m"), which is all the gem does.
+  #   logger  nothing in lib/ or exe/ requires it: Tina4::Log writes and rotates
+  #           its own files. (It was declared when log.rb used ::Logger.)
+  #   ostruct never required by tina4. (A scaffold may still need it if the app
+  #           pulls in oj, which does declare it.)
   # sqlite3 is a runtime dependency because Tina4 Ruby promises "SQLite
   # works out of the box with zero configuration" (see Chapter 5 of the
   # book). Without this, `tina4 init ruby && tina4 serve` crashes on

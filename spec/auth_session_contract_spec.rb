@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "spec_helper"
-require "base64"
 require "fileutils"
 require "json"
 require "openssl"
@@ -49,10 +48,10 @@ RSpec.describe "Auth + session contract" do
   # The signature is genuine, so every example below isolates the CLAIM check
   # under test rather than accidentally passing because the signature failed.
   def forge(claims, signing_secret)
-    header  = Base64.urlsafe_encode64(JSON.generate({ "alg" => "HS256", "typ" => "JWT" }), padding: false)
-    payload = Base64.urlsafe_encode64(JSON.generate(claims), padding: false)
+    header  = Tina4::Base64.urlsafe_encode64(JSON.generate({ "alg" => "HS256", "typ" => "JWT" }), padding: false)
+    payload = Tina4::Base64.urlsafe_encode64(JSON.generate(claims), padding: false)
     signing_input = "#{header}.#{payload}"
-    signature = Base64.urlsafe_encode64(
+    signature = Tina4::Base64.urlsafe_encode64(
       OpenSSL::HMAC.digest(OpenSSL::Digest::SHA256.new, signing_secret, signing_input),
       padding: false
     )
@@ -390,7 +389,7 @@ RSpec.describe "Auth + session contract" do
   # ── 41: authenticate_request authenticates, or returns nil ──
 
   it "basic authorization header is not an authenticated request" do
-    credentials = Base64.strict_encode64("admin:whatever-i-like")
+    credentials = Tina4::Base64.strict_encode64("admin:whatever-i-like")
     expect(
       Tina4::Auth.authenticate_request({ "HTTP_AUTHORIZATION" => "Basic #{credentials}" })
     ).to be_nil, "an unverified Basic header authenticated the request"

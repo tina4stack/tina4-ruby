@@ -50,7 +50,7 @@ RSpec.describe Tina4::Realtime do
       turn = Tina4::Realtime.ice_servers[1]
       expect(turn["urls"]).to eq(["turn:turn.example.com:3478"])
       expect(turn["username"].to_i).to be > Time.now.to_i
-      expected = Base64.strict_encode64(OpenSSL::HMAC.digest("SHA1", "s3cr3t", turn["username"]))
+      expected = Tina4::Base64.strict_encode64(OpenSSL::HMAC.digest("SHA1", "s3cr3t", turn["username"]))
       expect(turn["credential"]).to eq(expected)
     end
   end

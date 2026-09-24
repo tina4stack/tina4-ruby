@@ -10,7 +10,7 @@ begin
 rescue LoadError
   # net-imap gem needed on Ruby >= 4.0: gem install net-imap
 end
-require "base64"
+require_relative "base64"
 require "securerandom"
 require "time"
 require "socket"
@@ -541,19 +541,19 @@ module Tina4
           parts << "Content-Type: text/plain; charset=UTF-8"
           parts << "Content-Transfer-Encoding: base64"
           parts << ""
-          parts << Base64.encode64(text)
+          parts << Tina4::Base64.encode64(text)
           parts << "--#{alt_boundary}"
           parts << "Content-Type: text/html; charset=UTF-8"
           parts << "Content-Transfer-Encoding: base64"
           parts << ""
-          parts << Base64.encode64(body)
+          parts << Tina4::Base64.encode64(body)
           parts << "--#{alt_boundary}--"
         else
           content_type = html ? "text/html" : "text/plain"
           parts << "Content-Type: #{content_type}; charset=UTF-8"
           parts << "Content-Transfer-Encoding: base64"
           parts << ""
-          parts << Base64.encode64(body)
+          parts << Tina4::Base64.encode64(body)
         end
 
         # Attachment parts
@@ -570,19 +570,19 @@ module Tina4
         parts << "Content-Type: text/plain; charset=UTF-8"
         parts << "Content-Transfer-Encoding: base64"
         parts << ""
-        parts << Base64.encode64(text)
+        parts << Tina4::Base64.encode64(text)
         parts << "--#{alt_boundary}"
         parts << "Content-Type: text/html; charset=UTF-8"
         parts << "Content-Transfer-Encoding: base64"
         parts << ""
-        parts << Base64.encode64(body)
+        parts << Tina4::Base64.encode64(body)
         parts << "--#{alt_boundary}--"
       else
         content_type = html ? "text/html" : "text/plain"
         parts << "Content-Type: #{content_type}; charset=UTF-8"
         parts << "Content-Transfer-Encoding: base64"
         parts << ""
-        parts << Base64.encode64(body)
+        parts << Tina4::Base64.encode64(body)
       end
 
       parts.join("\r\n")
@@ -602,7 +602,7 @@ module Tina4
         return []
       end
 
-      encoded = content.is_a?(String) && !content.ascii_only? ? Base64.encode64(content) : Base64.encode64(content.to_s)
+      encoded = content.is_a?(String) && !content.ascii_only? ? Tina4::Base64.encode64(content) : Tina4::Base64.encode64(content.to_s)
 
       lines << "Content-Type: #{mime}; name=\"#{filename}\""
       lines << "Content-Disposition: attachment; filename=\"#{filename}\""
@@ -616,7 +616,7 @@ module Tina4
       if value.ascii_only?
         value
       else
-        "=?UTF-8?B?#{Base64.strict_encode64(value)}?="
+        "=?UTF-8?B?#{Tina4::Base64.strict_encode64(value)}?="
       end
     end
 
@@ -846,7 +846,7 @@ module Tina4
 
         decoded = case encoding
                   when "B"
-                    Base64.decode64(encoded)
+                    Tina4::Base64.decode64(encoded)
                   when "Q"
                     encoded.gsub("_", " ").gsub(/=([0-9A-Fa-f]{2})/) { [$1].pack("H2") }
                   else
@@ -892,7 +892,7 @@ module Tina4
       headers = header_body[0]
 
       if headers =~ /Content-Transfer-Encoding:\s*base64/i
-        Base64.decode64(body).force_encoding("UTF-8")
+        Tina4::Base64.decode64(body).force_encoding("UTF-8")
       elsif headers =~ /Content-Transfer-Encoding:\s*quoted-printable/i
         body.gsub(/=\r?\n/, "").gsub(/=([0-9A-Fa-f]{2})/) { [$1].pack("H2") }
       else
@@ -921,7 +921,7 @@ module Tina4
       body = header_body[1].sub(/\r?\n\z/, "")
 
       if headers =~ /Content-Transfer-Encoding:\s*base64/i
-        Base64.decode64(body)
+        Tina4::Base64.decode64(body)
       elsif headers =~ /Content-Transfer-Encoding:\s*quoted-printable/i
         body.gsub(/=\r?\n/, "").gsub(/=([0-9A-Fa-f]{2})/) { [$1].pack("H2") }.b
       else

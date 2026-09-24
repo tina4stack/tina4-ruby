@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require "socket"
 require "digest"
-require "base64"
+require_relative "base64"
 require "json"
 require "set"
 require "securerandom"
@@ -22,7 +22,7 @@ module Tina4
 
   # Compute Sec-WebSocket-Accept from Sec-WebSocket-Key per RFC 6455.
   def self.compute_accept_key(key)
-    Base64.strict_encode64(Digest::SHA1.digest("#{key}#{WEBSOCKET_GUID}"))
+    Tina4::Base64.strict_encode64(Digest::SHA1.digest("#{key}#{WEBSOCKET_GUID}"))
   end
 
   # Return true if the request's Origin is permitted to upgrade to a WebSocket.
@@ -499,7 +499,7 @@ module Tina4
       }
       # JSON can't carry raw bytes — encode binary as base64, text as text.
       if binary_payload?(message)
-        envelope["b64"] = Base64.strict_encode64(message.b)
+        envelope["b64"] = Tina4::Base64.strict_encode64(message.b)
       else
         envelope["text"] = message
       end
@@ -514,7 +514,7 @@ module Tina4
     # carry bytes, so text → {"text": ...} and bytes → {"b64": base64(...)}.
     def decode_envelope_message(env)
       return env["text"] if env.key?("text")
-      return Base64.strict_decode64(env["b64"]).b if env.key?("b64")
+      return Tina4::Base64.strict_decode64(env["b64"]).b if env.key?("b64")
 
       nil
     end

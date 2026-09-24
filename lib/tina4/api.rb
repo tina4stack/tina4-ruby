@@ -4,7 +4,7 @@ require "net/http"
 require "openssl"
 require "uri"
 require "json"
-require "base64"
+require_relative "base64"
 require "securerandom"
 
 module Tina4
@@ -277,7 +277,7 @@ module Tina4
     end
 
     def set_basic_auth(username, password)
-      @headers["Authorization"] = "Basic #{Base64.strict_encode64("#{username}:#{password}")}"
+      @headers["Authorization"] = "Basic #{Tina4::Base64.strict_encode64("#{username}:#{password}")}"
       self
     end
 

@@ -4,7 +4,6 @@ require "json"
 require "securerandom"
 require "time"
 require "fileutils"
-require "base64"
 
 module Tina4
   class DevMailbox

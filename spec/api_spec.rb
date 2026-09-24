@@ -36,7 +36,7 @@ RSpec.describe Tina4::API do
 
     it "applies username/password kwargs as a basic-auth header" do
       api = Tina4::API.new("https://api.example.com", username: "u", password: "p")
-      expected = "Basic #{Base64.strict_encode64('u:p')}"
+      expected = "Basic #{Tina4::Base64.strict_encode64('u:p')}"
       expect(api.headers["Authorization"]).to eq(expected)
     end
 
@@ -62,7 +62,7 @@ RSpec.describe Tina4::API do
     it "set_basic_auth sets the header and returns self (fluent)" do
       api = Tina4::API.new("https://api.example.com")
       expect(api.set_basic_auth("u", "p")).to equal(api)
-      expect(api.headers["Authorization"]).to eq("Basic #{Base64.strict_encode64('u:p')}")
+      expect(api.headers["Authorization"]).to eq("Basic #{Tina4::Base64.strict_encode64('u:p')}")
     end
 
     it "add_headers merges in new headers and returns self (fluent)" do

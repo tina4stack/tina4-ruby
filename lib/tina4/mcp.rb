@@ -998,8 +998,8 @@ module Tina4
         target = safe_path.call("src/public/#{filename}")
         FileUtils.mkdir_p(File.dirname(target))
         if encoding == "base64"
-          require "base64"
-          File.binwrite(target, Base64.decode64(content))
+          require_relative "base64"
+          File.binwrite(target, Tina4::Base64.decode64(content))
         else
           File.write(target, content, encoding: "utf-8")
         end
