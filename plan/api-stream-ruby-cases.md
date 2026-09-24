@@ -17,7 +17,7 @@ iterator before EOF closes the transport promptly.
 - [x] Mutation-prove each case (4 mutations, all caught)
 - [x] Full suite on the lab (TINA4_REQUIRE_SERVICES=1, OIDC env): 5833 examples, 0 failures, 0 pending
 - [x] audit-contract-fixtures.py: 3 BROKEN -> 0 BROKEN (318 proven, 28 owed, 0 broken)
-- [ ] PR to v3
+- [x] PR to v3: tina4stack/tina4-ruby#56 (CI green)
 
 ## Parity
 | Case | Python | PHP | Node | Ruby |
@@ -49,5 +49,6 @@ Mutations (lab, Ruby 3.2.3):
 - [x] connect default was the client timeout (30s), not 10s like Python/PHP/Node
 
 ## Commits
+- b86662b  test(api-stream): the three ADR-0060 timeout/close cases; fix the total deadline (tina4-ruby#56)
 
-## Status: In Progress
+## Status: Complete (PR #56 open, CI green; not merged)
