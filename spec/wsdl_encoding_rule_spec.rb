@@ -97,10 +97,39 @@ RSpec.describe "WSDL SOAP body encoding rule" do
       expect(calls).to be_empty
     end
 
-    it "Tina4::WSDL::Service refuses #{label} as 'Malformed XML' and never runs the handler" do
+    it "Tina4::WSDL::Service refuses #{label} with the Client 'Malformed XML' fault and never runs the handler" do
       response = plain_service.handle_soap_request(instance_exec(&body))
+      expect(response).to include("<faultcode>Client</faultcode>")
       expect(response).to include("<faultstring>Malformed XML</faultstring>")
       expect(response).not_to include("EXPANDED")
+      expect(calls).to be_empty
+    end
+  end
+
+  # Ordinary malformed XML (valid UTF-8, broken structure) is the same Client
+  # fault on BOTH entry points, as in Python. WSDL::Service used to let the
+  # parse error fall into its operation catch-all and answer
+  # "Internal server error" (a soap:Server fault) - measured at v3.
+  {
+    "row 05: an unclosed element" => lambda {
+      envelope("<t:Echo><t:text>hello</t:Echo>")
+    },
+    "an empty body" => -> { "" },
+    "a whitespace-only body" => -> { "  \n " },
+    "text that is not XML at all" => -> { "hello, not xml" }
+  }.each do |label, body|
+    it "Tina4::WSDL answers #{label} with the Client 'Malformed XML' fault" do
+      response = service_class.new(real_request(instance_exec(&body))).handle
+      expect(response).to include("<faultcode>Client</faultcode>")
+      expect(response).to include("<faultstring>Malformed XML</faultstring>")
+      expect(calls).to be_empty
+    end
+
+    it "Tina4::WSDL::Service answers #{label} with the Client 'Malformed XML' fault, not a server error" do
+      response = plain_service.handle_soap_request(instance_exec(&body))
+      expect(response).to include("<faultcode>Client</faultcode>")
+      expect(response).to include("<faultstring>Malformed XML</faultstring>")
+      expect(response).not_to include("Internal server error")
       expect(calls).to be_empty
     end
   end
