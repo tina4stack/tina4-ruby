@@ -124,18 +124,30 @@ module Tina4
     # reads route.auth_required to honour a public write route (.no_auth).
     attr_accessor :user, :route
 
-    # Maximum upload size in bytes (default 10 MB). Override via TINA4_MAX_UPLOAD_SIZE env var.
-    TINA4_MAX_UPLOAD_SIZE = Integer(ENV.fetch("TINA4_MAX_UPLOAD_SIZE", 10_485_760))
+    # Default upload cap in bytes (10 MB). The live cap is max_upload_size, which
+    # reads TINA4_MAX_UPLOAD_SIZE when it is used (ADR-0072). This constant used
+    # to read the environment at require time, which raised on a bad value.
+    TINA4_MAX_UPLOAD_SIZE = 10_485_760
 
     class PayloadTooLarge < StandardError; end
 
     # Effective upload cap in bytes. Read at CALL TIME (not frozen into the
     # constant at load) so the limit honours a TINA4_MAX_UPLOAD_SIZE set after
     # this file was required, and so a test can lower it. Falls back to the
-    # constant default when the env var is unset/blank.
+    # constant default when the env var is unset/blank. A value that is not a
+    # positive whole number warns once and uses the default (ADR-0068): to_i
+    # used to turn "abc" into 0, which refused every request with a body.
     def self.max_upload_size
-      value = ENV["TINA4_MAX_UPLOAD_SIZE"]
-      value.nil? || value.empty? ? TINA4_MAX_UPLOAD_SIZE : value.to_i
+      raw = ENV["TINA4_MAX_UPLOAD_SIZE"].to_s.strip
+      return TINA4_MAX_UPLOAD_SIZE if raw.empty?
+      return raw.to_i if raw.match?(/\A\d+\z/) && raw.to_i.positive?
+
+      @warned_upload_limits ||= {}
+      unless @warned_upload_limits[raw]
+        @warned_upload_limits[raw] = true
+        Tina4::Log.warning("TINA4_MAX_UPLOAD_SIZE=#{raw} is not a usable limit - using #{TINA4_MAX_UPLOAD_SIZE}")
+      end
+      TINA4_MAX_UPLOAD_SIZE
     end
 
     # Read an IO in bounded chunks, raising PayloadTooLarge the MOMENT the
