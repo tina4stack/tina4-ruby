@@ -53,5 +53,7 @@ Branch: `fix/followups-redact-driver-msgs` (from origin/v3). Lab only for rspec.
 - 6842f40  fix(security): redact the WebSocket backplane and MQTT URLs in error messages
 - c2ee9b8  fix: name the missing gem and its install command for S3 storage and the Mongo cache
 - 44633b2  fix(websocket): log when the Redis backplane subscriber dies
+- e120fa1  plan: follow-ups (lab full suite at this HEAD: 5759 examples, 0 failures, 0 pending)
+- 0df7b1f  docs(example): drop TINA4_MAIL_TLS_INSECURE from .env.example (ADR-0071)
 
-## Status: In Progress (full lab suite pending)
+## Status: Complete (Ruby side); tina4.rb:919, wsdl.rb and ADR-0071 section 2 reported, off-limits here
