@@ -425,8 +425,8 @@ RSpec.describe Tina4::Messenger do
   # over plain SMTP (127.0.0.1:3025, no TLS) and read it back over plain IMAP
   # (127.0.0.1:3143, no TLS). Plain (non-TLS) IMAP is selected by passing
   # imap_encryption: "none" — Messenger#initialize maps any value outside
-  # %w[tls starttls ssl] to imap_use_tls = false, so Net::IMAP.new is opened
-  # with ssl: false. Plain SMTP likewise comes from use_tls: false -> "none".
+  # %w[tls starttls ssl] to imap_use_tls = false, so Tina4::Messenger::ImapClient opens a
+  # plain connection. Plain SMTP likewise comes from use_tls: false -> "none".
   #
   # GreenMail has auth disabled (any user/pass is accepted) and creates a
   # mailbox on first access, so each example uses a UNIQUE recipient address to
@@ -855,7 +855,7 @@ RSpec.describe Tina4::Messenger do
     end
 
     context "when the IMAP server is unreachable (real refused connection)" do
-      # Point IMAP at a real closed port: Net::IMAP.new gets an actual
+      # Point IMAP at a real closed port: Tina4::Messenger::ImapClient gets an actual
       # ECONNREFUSED. The read methods must FAIL LOUD (log + raise), never
       # swallow it into an empty result. No mock — a genuine refused socket.
       let(:dead_port) { self.class.find_closed_port }

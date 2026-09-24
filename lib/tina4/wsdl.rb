@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "rexml/document"
+require_relative "xml_parser"
 
 module Tina4
   # SOAP 1.1 / WSDL server — zero-dependency, mirrors tina4-python's wsdl module.
@@ -20,7 +20,7 @@ module Tina4
   #
   # Supported:
   #   - WSDL 1.1 generation from Ruby type declarations
-  #   - SOAP 1.1 request/response handling via REXML
+  #   - SOAP 1.1 request/response handling via Tina4::WSDL::XmlParser (UTF-8 only, no DTDs)
   #   - Lifecycle hooks (on_request, on_result)
   #   - Auto type mapping (Integer -> int, String -> string, Float -> double, etc.)
   #   - XML escaping on all response values
@@ -273,17 +273,18 @@ module Tina4
     def process_soap(xml_body)
       on_request(@request)
 
-      # SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message.
-      # Rejecting any DOCTYPE/DTD up front also closes the XML entity-expansion
-      # (billion-laughs) and external-entity (XXE) attack surface — REXML expands
-      # internal entities, so a DTD is a live DoS vector. Reject before parsing.
-      if xml_body =~ /<!DOCTYPE/i
+      # SOAP 1.1 (§3) forbids a Document Type Declaration in a SOAP message, so
+      # reject any DOCTYPE up front with the same Client fault as the other three
+      # frameworks. The parser has no DTD support at all (no entity expansion, no
+      # XXE) and accepts UTF-8 only, so a UTF-16 body that hides its DOCTYPE from
+      # this byte regex is refused by the parser as Malformed XML.
+      if doctype?(xml_body)
         return soap_fault("Client", "DOCTYPE declarations are not allowed in SOAP messages")
       end
 
       begin
-        doc = REXML::Document.new(xml_body)
-      rescue REXML::ParseException
+        doc = XmlParser.parse(xml_body)
+      rescue XmlParser::ParseError
         return soap_fault("Client", "Malformed XML")
       end
 
@@ -328,7 +329,13 @@ module Tina4
       soap_response(op_name, result)
     end
 
-    # ── XML helpers (REXML) ──────────────────────────────────────────────
+    # ── XML helpers ──────────────────────────────────────────────────────
+
+    # Byte-level match, so a body whose bytes are not valid UTF-8 cannot raise
+    # ArgumentError out of the regex before the parser gets to refuse it.
+    def doctype?(xml_body)
+      xml_body.to_s.b.match?(/<!DOCTYPE/in)
+    end
 
     def find_child(parent, local)
       parent.each_element do |el|
@@ -338,7 +345,7 @@ module Tina4
     end
 
     def local_name(element)
-      element.name  # REXML already strips the prefix for .name
+      element.name  # XmlParser::Element#name is the local name (prefix stripped)
     end
 
     # ── Type conversion ──────────────────────────────────────────────────
@@ -486,12 +493,14 @@ module Tina4
       end
 
       def handle_soap_request(xml_body)
-        # SOAP 1.1 (§3) forbids a DOCTYPE/DTD. Reject before parsing — this
-        # closes the REXML internal-entity expansion (billion-laughs) and XXE
-        # surface. Mirrors the class-based process_soap path.
-        return _soap_fault("DOCTYPE declarations are not allowed in SOAP messages") if xml_body =~ /<!DOCTYPE/i
+        # SOAP 1.1 (§3) forbids a DOCTYPE/DTD. Reject before parsing; the parser
+        # itself has no DTD support and accepts UTF-8 only. Mirrors the
+        # class-based process_soap path.
+        if xml_body.to_s.b.match?(/<!DOCTYPE/in)
+          return _soap_fault("DOCTYPE declarations are not allowed in SOAP messages")
+        end
 
-        doc = REXML::Document.new(xml_body)
+        doc = XmlParser.parse(xml_body)
 
         # Find Body element (namespace-agnostic)
         body_el = _find_child(doc.root, "Body")

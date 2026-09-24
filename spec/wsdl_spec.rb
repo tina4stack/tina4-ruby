@@ -479,6 +479,58 @@ RSpec.describe Tina4::WSDL do
       expect(resp).not_to include("<AddResponse>")
     end
 
+    # The DOCTYPE guard is a regex over the raw body. A UTF-16 body reads as
+    # "<\0!\0D\0O..." to that regex, so it slipped through while REXML decoded
+    # the BOM and parsed the DTD, entity included. Python answers such a body
+    # "Malformed XML" (its request body is decoded as strict UTF-8), and the
+    # Ruby parser now accepts UTF-8 only.
+    [["UTF-16LE", "\xFF\xFE".b], ["UTF-16BE", "\xFE\xFF".b]].each do |encoding, bom|
+      it "rejects a #{encoding} body carrying a DOCTYPE and NEVER runs the operation" do
+        ran = false
+        klass = Class.new(Tina4::WSDL) do
+          wsdl_operation output: { Greeting: :string }
+          define_method(:Greet) do |name|
+            ran = true
+            { Greeting: "Hello #{name}" }
+          end
+        end
+        xml = %(<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE s [<!ENTITY who "entity-expanded">]>) +
+              envelope("<Greet><name>&who;</name></Greet>")
+        req = RequestStub.new("POST", bom + xml.encode(encoding).b, {}, "/calc")
+        resp = klass.new(req).handle
+        expect(resp).to include("<faultcode>Client</faultcode>")
+        expect(resp).to include("Malformed XML")
+        expect(resp).not_to include("entity-expanded")
+        expect(ran).to be(false)
+      end
+    end
+
+    it "rejects a body whose bytes are not UTF-8 with a Client fault" do
+      req = RequestStub.new("POST", envelope("<Greet><name>caf\xE9</name></Greet>").b, {}, "/calc")
+      resp = TestCalculator.new(req).handle
+      expect(resp).to include("<faultcode>Client</faultcode>")
+      expect(resp).to include("Malformed XML")
+    end
+
+    it "rejects an entity it does not know instead of expanding or keeping it" do
+      req = RequestStub.new("POST", envelope("<Greet><name>&who;</name></Greet>"), {}, "/calc")
+      resp = TestCalculator.new(req).handle
+      expect(resp).to include("Malformed XML")
+      expect(resp).not_to include("<GreetResponse>")
+    end
+
+    it "POSITIVE: entities, character references and CDATA reach the operation decoded" do
+      xml = envelope("<Greet><name>A &amp; B &#x263A; <![CDATA[<x>]]></name></Greet>")
+      resp = TestCalculator.new(RequestStub.new("POST", xml, {}, "/calc")).handle
+      expect(resp).to include("<Greeting>Hello A &amp; B ☺ &lt;x&gt;</Greeting>")
+    end
+
+    it "POSITIVE: a UTF-8 body with a byte-order mark still works" do
+      xml = "\xEF\xBB\xBF".b + envelope("<Add><a>3</a><b>5</b></Add>").b
+      resp = TestCalculator.new(RequestStub.new("POST", xml, {}, "/calc")).handle
+      expect(resp).to include("<Result>8</Result>")
+    end
+
     it "POSITIVE: a normal DOCTYPE-free request still works" do
       xml = envelope("<Add><a>3</a><b>5</b></Add>")
       req = RequestStub.new("POST", xml, {}, "/calc")
@@ -569,7 +621,7 @@ RSpec.describe Tina4::WSDL::Service do
       # binding's soapAction. This verifies the generator emits one coherent
       # document tied to the Service's own config, not merely that some string
       # came back.
-      doc = REXML::Document.new(wsdl)
+      doc = Tina4::WSDL::XmlParser.parse(wsdl)
       root = doc.root
       expect(root.name).to eq("definitions")
       expect(root.attributes["name"]).to eq("Calculator")

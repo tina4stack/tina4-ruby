@@ -1,16 +1,8 @@
 # frozen_string_literal: true
 
-begin
-  require "net/smtp"
-rescue LoadError
-  # net-smtp gem needed on Ruby >= 4.0: gem install net-smtp
-end
-begin
-  require "net/imap"
-rescue LoadError
-  # net-imap gem needed on Ruby >= 4.0: gem install net-imap
-end
 require_relative "base64"
+require_relative "smtp_client"
+require_relative "imap_client"
 require "securerandom"
 require "time"
 require "socket"
@@ -37,17 +29,14 @@ module Tina4
   # "we talked fine and the mailbox is empty". These must fail loud — LOG and
   # RAISE — never be silently swallowed into an empty result. Mirrors the
   # Python master's _IMAP_CONNECTION_ERRORS tuple.
-  #
-  # Built lazily so a missing net/imap gem (LoadError above) doesn't break
-  # loading this file.
   IMAP_CONNECTION_ERRORS = [
     SocketError,            # DNS / host resolution failures
-    IOError,                # closed/broken stream, EOF mid-conversation
+    IOError,                # closed/broken stream, EOF, MailSocket::TimeoutError
     SystemCallError,        # Errno::ECONNREFUSED / ECONNRESET / ETIMEDOUT etc.
-    Timeout::Error,         # connect/read timeout (Net::OpenTimeout descends from this)
+    Timeout::Error,         # kept for callers that wrap Messenger in Timeout.timeout
+    Messenger::ImapClient::Error, # NO / BAD / BYE from the server (was Net::IMAP::Error)
     MessengerError          # our own protocol-failure signal (re-raised as-is)
   ].tap do |errors|
-    errors << Net::IMAP::Error if defined?(Net::IMAP::Error)
     errors << OpenSSL::SSL::SSLError if defined?(OpenSSL::SSL::SSLError)
   end.freeze
 
@@ -150,11 +139,9 @@ module Tina4
       @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
     end
 
-    # Send email using Ruby's Net::SMTP
-    # Returns { success: true/false, message: "...", id: "..." }
     # The local mailbox, present only once this messenger has captured something
     # (or eagerly, when create_messenger knows it will).
-    attr_accessor :dev_mailbox
+    attr_writer :dev_mailbox
 
     # Should send capture locally instead of talking to SMTP?
     #
@@ -221,11 +208,8 @@ module Tina4
                        normalize_recipients(cc) +
                        normalize_recipients(bcc)
 
-      smtp = Net::SMTP.new(@host, @port)
-      smtp.enable_starttls if @use_tls
-
-      smtp.start(@host, @username, @password, auth_method) do |conn|
-        conn.send_message(raw, @from_address, all_recipients)
+      smtp_session do |smtp|
+        smtp.send_message(raw, @from_address, all_recipients)
       end
 
       Tina4::Log.info("Email sent to #{Array(to).join(', ')}: #{subject}")
@@ -256,11 +240,7 @@ module Tina4
     # Test SMTP connection
     # Returns { success: true/false, message: "..." }
     def test_connection
-      smtp = Net::SMTP.new(@host, @port)
-      smtp.enable_starttls if @use_tls
-      smtp.start(@host, @username, @password, auth_method) do |_conn|
-        # connection succeeded
-      end
+      smtp_session { |_smtp| } # connect, TLS, AUTH, QUIT
       { success: true, message: "SMTP connection successful" }
     rescue => e
       { success: false, message: e.message }
@@ -403,8 +383,7 @@ module Tina4
     def folders
       imap = imap_open("folders")
       begin
-        boxes = imap.list("", "*")
-        (boxes || []).map(&:name)
+        imap.list("", "*")
       rescue *IMAP_CONNECTION_ERRORS => e
         raise imap_fail("folders", e)
       ensure
@@ -476,6 +455,25 @@ module Tina4
     private
 
     # ── SMTP helpers ─────────────────────────────────────────────────────
+
+    # One SMTP session on Tina4::Messenger::SmtpClient:
+    #   implicit TLS  port 465 (as in Python, PHP and Node) or encryption "ssl"
+    #   STARTTLS      encryption "tls" / "starttls"; REQUIRED, so a server that
+    #                 does not offer it fails the send instead of getting the
+    #                 message and the credentials in clear
+    #   plain         "none"
+    # AUTH only when both credentials are set.
+    def smtp_session(&block)
+      authenticate = !auth_method.nil?
+      SmtpClient.start(
+        host: @host, port: @port,
+        tls: @port == SmtpClient::IMPLICIT_TLS_PORT || @encryption == "ssl",
+        starttls: @use_tls,
+        username: authenticate ? @username : nil,
+        password: authenticate ? @password : nil,
+        &block
+      )
+    end
 
     def auth_method
       return :plain if @username && @password
@@ -653,11 +651,29 @@ module Tina4
     # failure this FAILS LOUD — logs and raises MessengerConnectionError —
     # rather than swallowing the error into an empty result.
     def imap_open(method)
-      imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
-      imap.login(@imap_username, @imap_password)
-      imap
+      imap_login
     rescue *IMAP_CONNECTION_ERRORS => e
       raise imap_fail(method, e)
+    end
+
+    # Connect with the configured transport and log in. "tls"/"ssl" is implicit
+    # TLS (IMAPS), "starttls" is a plain connect upgraded with STARTTLS before
+    # the credentials are sent (it used to open implicit TLS instead, so a
+    # STARTTLS-only server on 143 could not be reached), anything else is plain.
+    # LOGIN only when both credentials are set, as in the Python master.
+    def imap_login
+      imap = ImapClient.new(
+        @imap_host, port: @imap_port,
+        tls: %w[tls ssl].include?(@imap_encryption),
+        starttls: @imap_encryption == "starttls"
+      )
+      begin
+        imap.login(@imap_username, @imap_password) if @imap_username && @imap_password
+      rescue StandardError
+        imap_cleanup(imap)
+        raise
+      end
+      imap
     end
 
     # Best-effort teardown of an IMAP connection. Never raises.
@@ -694,12 +710,12 @@ module Tina4
     # test_imap_connection). Read methods use imap_open + ensure directly so
     # they can fail loud.
     def imap_connect(&block)
-      imap = Net::IMAP.new(@imap_host, port: @imap_port, ssl: @imap_use_tls)
-      imap.login(@imap_username, @imap_password)
-      result = block.call(imap)
-      imap.logout
-      imap.disconnect
-      result
+      imap = imap_login
+      begin
+        block.call(imap)
+      ensure
+        imap_cleanup(imap)
+      end
     end
 
     # An inbox() item — EXACTLY these seven keys (decisions doc G4):
@@ -828,7 +844,7 @@ module Tina4
         line = raw_line.chomp
         if current_key && line =~ /\A[ \t]/
           headers[current_key] = "#{headers[current_key]} #{line.strip}"
-        elsif (m = line.match(/\A([\w!\#$%&'*+\-.^_`|~]+):[ \t]?(.*)\z/))
+        elsif (m = line.match(/\A([\w!\#$%&'*+\-.^`|~]+):[ \t]?(.*)\z/))
           current_key = m[1]
           headers[current_key] = m[2]
         end

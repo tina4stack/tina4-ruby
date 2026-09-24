@@ -28,9 +28,6 @@ Gem::Specification.new do |spec|
   # minted by the stdlib path verifies under PHP openssl_verify AND Node
   # crypto.createVerify, with a tampered payload INVALID in both.)
 
-  spec.add_dependency "net-smtp", "~> 0.5"
-  spec.add_dependency "net-imap", "~> 0.5"
-  spec.add_dependency "rexml", "~> 3.2"
   spec.add_dependency "webrick", "~> 1.8"
   # NOT declared, and never to come back (spec/zero_dependency_gemspec_spec.rb):
   #   json    a DEFAULT gem on every Ruby this gem supports (3.1 to 4.0), so it is
@@ -42,6 +39,13 @@ Gem::Specification.new do |spec|
   #           its own files. (It was declared when log.rb used ::Logger.)
   #   ostruct never required by tina4. (A scaffold may still need it if the app
   #           pulls in oj, which does declare it.)
+  #   net-smtp, net-imap  replaced by Tina4's own clients on stdlib socket +
+  #           openssl (lib/tina4/smtp_client.rb, imap_client.rb, mail_socket.rb):
+  #           plain / STARTTLS / implicit TLS, AUTH PLAIN and LOGIN, and exactly
+  #           the IMAP commands Messenger uses. That also drops net-protocol,
+  #           timeout and date, which only ever arrived through those two.
+  #   rexml   replaced by lib/tina4/xml_parser.rb for SOAP bodies: UTF-8 only and
+  #           no DTD support at all, so no entity expansion and no XXE.
   # sqlite3 is an APPLICATION dependency (ADR-0067), exactly like pg and mysql2:
   # tina4ruby requires it lazily through Tina4.require_sqlite3!
   # (lib/tina4/sqlite3_gem.rb), which raises an actionable LoadError naming the
