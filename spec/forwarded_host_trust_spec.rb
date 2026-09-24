@@ -52,7 +52,7 @@ RSpec.describe "X-Forwarded-Host trust (F6)" do
     expect(request_url("app.example.com")).to include("app.example.com")
   end
   [false, true].each do |trusted|
-    it "host and proto share raw-peer trust (trusted=#{trusted})" do
+    it "forwarded host and proto share raw peer trust (trusted=#{trusted})" do
       trusted ? ENV["TINA4_TRUSTED_PROXIES"] = "127.0.0.1/8" : ENV.delete("TINA4_TRUSTED_PROXIES")
       env = rack_env(headers: {"HTTP_HOST" => "native.example", "HTTP_X_FORWARDED_HOST" => "public.example", "HTTP_X_FORWARDED_PROTO" => "https", "HTTP_X_FORWARDED_FOR" => "203.0.113.9"})
       expect(Tina4::Request.new(env).url).to start_with(trusted ? "https://public.example/" : "http://native.example/")

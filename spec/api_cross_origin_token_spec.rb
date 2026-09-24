@@ -98,7 +98,7 @@ RSpec.describe "API cross-origin token leak (F5)" do
   end
   [:get, :post, :upload, :download, :stream].each do |mode|
     [false, true].each do |off_origin|
-      it "#{mode} applies final-target credential policy (off_origin=#{off_origin})" do
+      it "final target credentials on every http path (#{mode}, off_origin=#{off_origin})" do
         base = TokenRecordingServer.new
         other = TokenRecordingServer.new
         begin
