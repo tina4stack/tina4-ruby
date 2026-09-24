@@ -1111,7 +1111,7 @@ Tina4::SQLTranslator.query_key("SELECT 1", [42])              # SHA256 cache key
 
 ### QueryCache — in-memory TTL cache for query results
 
-Defined in `lib/tina4/cache.rb:13` — NOT in `sql_translator.rb`. `SQLTranslator`
+Defined in `lib/tina4/cache.rb:19` — NOT in `sql_translator.rb`. `SQLTranslator`
 only computes the cache KEY (`query_key`, above); the cache itself is a separate
 class in its own file.
 

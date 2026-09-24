@@ -12,7 +12,7 @@
 # is the machine-checkable half of it for the claims that were wrong.
 #
 #   1. CLAUDE.md placed QueryCache in sql_translator.rb. It is
-#      lib/tina4/cache.rb:13. sql_translator.rb does not define it at all.
+#      lib/tina4/cache.rb:19. sql_translator.rb does not define it at all.
 #   2. lib/tina4/router.rb claimed the data/.broken sentinel is surfaced by
 #      "/health and the dev dashboard". lib/tina4/health.rb contains no `broken`
 #      reference, and /__dev/api/broken serves the in-memory ErrorTracker (its
@@ -38,7 +38,7 @@ RSpec.describe "documentation matches code reality (D12)" do
     it "is defined in lib/tina4/cache.rb, per the runtime itself" do
       file, line = Object.const_source_location("Tina4::QueryCache")
       expect(File.expand_path(file)).to eq(File.join(LIB_DIR, "tina4", "cache.rb"))
-      expect(line).to eq(13)
+      expect(read_utf8(file).lines.fetch(line - 1)).to match(/^\s*class QueryCache\b/)
     end
 
     it "is NOT defined in sql_translator.rb (negative)" do
@@ -53,7 +53,8 @@ RSpec.describe "documentation matches code reality (D12)" do
       expect(doc).not_to include("sql_translator.rb   # Cross-engine SQL translator & query cache")
       expect(doc).not_to match(/sql_translator\.rb.*query cache/i)
       # POSITIVE: the correct home is stated.
-      expect(doc).to include("lib/tina4/cache.rb:13")
+      _, line = Object.const_source_location("Tina4::QueryCache")
+      expect(doc).to include("lib/tina4/cache.rb:#{line}")
     end
   end
 
