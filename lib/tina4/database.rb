@@ -27,28 +27,49 @@ module Tina4
       @password = password
       @drivers = Array.new(pool_size)  # nil slots — lazy creation
       @index = 0
+      @owners = {}
       @mutex = Mutex.new
     end
 
-    # Get the next driver via round-robin. Thread-safe.
+    # A lease belongs to one thread until checkin; rotating never exposes a
+    # connection with another caller's uncommitted work. Exhaustion is immediate
+    # so a synchronous caller cannot deadlock waiting on its own transaction.
     def checkout
       @mutex.synchronize do
-        idx = @index
-        @index = (@index + 1) % @pool_size
-
-        if @drivers[idx].nil?
-          driver = @driver_factory.call
-          driver.connect(@connection_string, username: @username, password: @password)
-          @drivers[idx] = driver
+        @pool_size.times do
+          idx = @index
+          @index = (@index + 1) % @pool_size
+          next if @owners.key?(idx)
+          unless @drivers[idx]
+            driver = @driver_factory.call
+            driver.connect(@connection_string, username: @username, password: @password)
+            @drivers[idx] = driver
+          end
+          @owners[idx] = Thread.current
+          return @drivers[idx]
         end
-
-        @drivers[idx]
+        raise "Database connection pool exhausted"
       end
     end
 
-    # Return a driver to the pool. Currently a no-op for round-robin.
-    def checkin(_driver)
-      # no-op
+    # Compatibility getter for adapter metadata. It never exposes a leased
+    # connection; callers performing driver I/O directly must checkout/checkin.
+    def peek
+      driver = checkout
+      checkin(driver)
+      driver
+    end
+
+    def checkin(driver, discard: false)
+      @mutex.synchronize do
+        idx = @drivers.index { |candidate| candidate.equal?(driver) }
+        raise ArgumentError, "Driver is not leased by this thread" unless idx && @owners[idx].equal?(Thread.current)
+        if discard
+          driver.close rescue nil
+          @drivers[idx] = nil
+        end
+        @owners.delete(idx)
+      end
     end
 
     # Close all active connections.
@@ -60,6 +81,7 @@ module Tina4
             @drivers[i] = nil
           end
         end
+        @owners.clear
       end
     end
 
@@ -398,6 +420,7 @@ module Tina4
       # commit/rollback clear it. While pinned, current_driver returns the same
       # driver for every call so the whole transaction runs on one connection.
       @tx_pin_key = :"tina4_pinned_adapter_#{object_id}"
+      @operation_driver_key = :"tina4_operation_adapter_#{object_id}"
       # Per-thread nested-transaction depth counter (DB-contract C, v3.13.37).
       # A second start_transaction on a thread that already holds the pin is a
       # double-begin: most engines silently commit or no-op the inner BEGIN,
@@ -534,13 +557,15 @@ module Tina4
     def current_driver
       pinned = Thread.current[@tx_pin_key]
       return pinned if pinned
+      active = Thread.current[@operation_driver_key]
+      return active if active
 
       # Fail with the REAL reason, at the point of use. Without this the caller
       # gets a nil dereference from deep inside the driver and has to guess.
       raise Tina4::DatabaseConnectionError, connect_error_message if @connect_error
 
       if @pool
-        @pool.checkout
+        @pool.peek
       else
         @driver
       end
@@ -1133,18 +1158,12 @@ module Tina4
     end
 
     def transaction
-      drv = current_driver
-      Thread.current[@tx_pin_key] = drv
-      Thread.current[@tx_depth_key] = 1
-      drv.begin_transaction
+      start_transaction
       yield self
-      drv.commit
+      commit
     rescue => e
-      drv.rollback if drv
+      rollback if Thread.current[@tx_pin_key]
       raise e
-    ensure
-      Thread.current[@tx_pin_key] = nil
-      Thread.current[@tx_depth_key] = nil
     end
 
     # Begin a transaction without a block — matches PHP/Python/Node API.
@@ -1172,10 +1191,15 @@ module Tina4
         Thread.current[@tx_depth_key] = depth + 1
         return
       end
-      drv = current_driver
+      drv = Thread.current[@operation_driver_key] || (@pool ? @pool.checkout : current_driver)
       Thread.current[@tx_pin_key] = drv
       Thread.current[@tx_depth_key] = 1
-      drv.begin_transaction
+      begin
+        drv.begin_transaction
+      rescue
+        release_transaction_driver(discard: true)
+        raise
+      end
     end
 
     # Commit the current transaction and release the driver pin.
@@ -1196,9 +1220,8 @@ module Tina4
       end
       current_driver.commit
       @last_error = nil
-      # Success — release the pin.
-      Thread.current[@tx_pin_key] = nil
-      Thread.current[@tx_depth_key] = nil
+      # Success — release the exclusive transaction lease.
+      release_transaction_driver
     rescue => e
       # Keep the pin so rollback reaches this same connection.
       @last_error = e.message
@@ -1213,14 +1236,15 @@ module Tina4
     # itself raises, @last_error is captured and the error re-raised, but the pin
     # is still released so a poisoned connection doesn't stay pinned forever.
     def rollback
+      failed = false
       current_driver.rollback
       @last_error = nil
     rescue => e
+      failed = true
       @last_error = e.message
       raise
     ensure
-      Thread.current[@tx_pin_key] = nil
-      Thread.current[@tx_depth_key] = nil
+      release_transaction_driver(discard: failed)
     end
 
     def tables
@@ -1286,12 +1310,14 @@ module Tina4
 
     # Check out a driver from the pool (or return the single driver).
     def checkout
-      current_driver
+      @pool ? @pool.checkout : current_driver
     end
 
-    # Return a driver to the pool. No-op for round-robin pool or single connection.
-    def checkin(_driver)
-      # no-op
+    # Explicit borrowers must return their own lease. Transaction leases are
+    # released only by commit/rollback, never by an unrelated checkin.
+    def checkin(driver)
+      raise ArgumentError, "Cannot check in an active transaction" if driver.equal?(Thread.current[@tx_pin_key])
+      @pool&.checkin(driver)
     end
 
     # Close all pooled connections (or the single connection).
@@ -1373,6 +1399,43 @@ module Tina4
       seq_key = generator_name || "#{table}.#{pk_column}"
       sequence_next(seq_key, table: table, pk_column: pk_column)
     end
+
+    # Keep the entire public operation (including nested metadata/query calls)
+    # on one lease. A transaction may adopt it and keep it beyond this scope.
+    def with_operation_driver
+      return yield unless @pool
+      return yield if Thread.current[@tx_pin_key] || Thread.current[@operation_driver_key]
+      driver = @pool.checkout
+      Thread.current[@operation_driver_key] = driver
+      discard = false
+      begin
+        yield
+      rescue
+        # A failed standalone PostgreSQL statement may leave an aborted
+        # transaction. Reset it before another caller can borrow the driver.
+        unless Thread.current[@tx_pin_key].equal?(driver)
+          begin
+            driver.rollback
+          rescue
+            discard = true
+          end
+        end
+        raise
+      ensure
+        Thread.current[@operation_driver_key] = nil
+        @pool.checkin(driver, discard: discard) unless Thread.current[@tx_pin_key].equal?(driver)
+      end
+    end
+
+    def release_transaction_driver(discard: false)
+      driver = Thread.current[@tx_pin_key]
+      Thread.current[@tx_pin_key] = nil
+      Thread.current[@tx_depth_key] = nil
+      if @pool && driver && !Thread.current[@operation_driver_key].equal?(driver)
+        @pool.checkin(driver, discard: discard)
+      end
+    end
+    private :with_operation_driver, :release_transaction_driver
 
     private
 
@@ -1955,4 +2018,14 @@ module Tina4
       raise "Driver #{klass_name} not loaded. Install the required gem."
     end
   end
+  module DatabaseOperationLeases
+    %i[fetch_all fetch fetch_one insert primary_key update delete truncate
+       get_last_id execute tables columns table_exists? get_next_id commit rollback].each do |operation|
+      define_method(operation) do |*args, **kwargs, &block|
+        with_operation_driver { super(*args, **kwargs, &block) }
+      end
+    end
+  end
+  Database.prepend(DatabaseOperationLeases)
+
 end

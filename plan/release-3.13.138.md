@@ -14,7 +14,7 @@ Ship the merged fixes and measured-estimate skills on the coordinated 3.13.138 r
 Version consistency and packaging metadata checks passed locally. Both tina4ruby and transitional tina4 gems built successfully as 3.13.138; local generated Gemfile.lock agrees. Full services and release publication remain with the parent coordinator; no shared lab tests started here.
 
 ## Bugs
-No runtime edits in this release-preparation commit. All included fixes are documented in CHANGELOG.md.
+Pooled PostgreSQL regression reproduced: another thread observed an uncommitted row. Exclusive operation/transaction leases fix the leak, with fail-fast exhaustion and terminal cleanup. Real PostgreSQL regression cases cover isolation, owner checks, failed commit/rollback/begin and lease reuse. All included fixes are documented in CHANGELOG.md.
 
 ## Commits
 Signed release-preparation commit recorded by git history.
