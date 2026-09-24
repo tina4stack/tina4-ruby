@@ -121,7 +121,7 @@ RSpec.describe "Migration dialect translation (ddl_types)" do
     fb_url = ENV["TINA4_TEST_FIREBIRD_URL"].to_s
 
     around(:each) do |example|
-      skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if fb_url.empty?
+      skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)" if fb_url.empty?
       Dir.mktmpdir("tina4_dialect_fb") do |dir|
         @tmp_dir = dir
         Dir.chdir(dir) { example.run }
@@ -174,9 +174,10 @@ RSpec.describe "Migration dialect translation (ddl_types)" do
   def connect_firebird_or_skip(url)
     Tina4::Database.new(url, username: "SYSDBA", password: "masterkey")
   rescue LoadError => e
-    # The `fb` gem's C extension links libfbclient; a host without it cannot run
-    # this. A genuine absent-platform-library exclusion, NOT a mock.
-    skip "fb gem / libfbclient unavailable [needs:absent-lib=libfbclient]: #{e.message}"
+    # The `fb` gem's C extension links libfbclient. Tagged as the Firebird
+    # engine, so the gate excuses it only while TINA4_TEST_FIREBIRD_URL is unset:
+    # a run that promises Firebird must have a loadable driver.
+    skip "[needs:firebird] fb gem / libfbclient unavailable: #{e.message}"
   end
 
   def drop_probe(db)

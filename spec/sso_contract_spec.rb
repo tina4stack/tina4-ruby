@@ -54,7 +54,7 @@ RSpec.describe "Feature 136 provider-neutral OIDC SSO" do
   end
 
   it "completes real PKCE, Session rotation, refresh and local-first logout" do
-    skip "real OIDC gate runs on the lab" unless ENV["TINA4_REQUIRE_OIDC"]
+    skip "[needs:oidc] real OIDC gate runs on the lab" unless ENV["TINA4_REQUIRE_OIDC"]
     value = Tina4::Sso.from_issuer(options)
     Dir.mktmpdir("tina4-sso-") do |directory|
       session = file_session(directory)

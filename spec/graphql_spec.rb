@@ -244,6 +244,22 @@ RSpec.describe Tina4::GraphQL do
   end
 
   describe "#execute" do
+    # GraphQL commas are insignificant (spec section 2.1.7): they may separate
+    # arguments, fields, list items and object fields, or be left out entirely.
+    it "commas_are_insignificant_between_arguments_and_fields" do
+      gql.schema.add_query("pair", { "a" => { type: "Int" }, "b" => { type: "Int" } }, "Int") do |_root, args, _ctx|
+        args["a"].to_i + args["b"].to_i
+      end
+
+      with_commas = gql.execute('{ x: pair(a: 1, b: 2), y: pair(a: 3, b: 4), user(id: "1") { name, email } }')
+      expect(with_commas["errors"]).to be_nil
+      expect(with_commas["data"]).to eq(
+        "x" => 3, "y" => 7, "user" => { "name" => "Alice", "email" => "alice@test.com" }
+      )
+      without_commas = gql.execute('{ x: pair(a: 1 b: 2) y: pair(a: 3 b: 4) user(id: "1") { name email } }')
+      expect(without_commas).to eq(with_commas)
+    end
+
     it "executes a simple query" do
       result = gql.execute('{ user(id: "1") { name email } }')
       expect(result["data"]["user"]["name"]).to eq("Alice")

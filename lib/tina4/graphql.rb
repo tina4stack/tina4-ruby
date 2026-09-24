@@ -141,9 +141,15 @@ module Tina4
       # ── Queries ──
 
       # Single record: user(id: ID!): User
+      # The row an ID argument addresses, or nil. The ID is bound, never
+      # interpolated, and a non-integer ID on an integer key addresses nothing.
+      find_addressed = lambda do |raw_id|
+        pk_value = klass.respond_to?(:coerce_primary_key) ? klass.coerce_primary_key(raw_id) : raw_id
+        pk_value.nil? ? nil : klass.find_by_id(pk_value)
+      end
+
       add_query(table_lower, { pk_field => { type: "ID!" } }, type_name) do |_root, args, _ctx|
-        record = klass.find_by_id(args[pk_field])
-        record&.to_hash
+        find_addressed.call(args[pk_field])&.to_hash
       end
 
       # List: users(limit: Int, offset: Int): [User]
@@ -164,8 +170,10 @@ module Tina4
 
       # Update
       add_mutation("update#{model_name}", { pk_field => { type: "ID!" }, "input" => { type: "#{type_name}Input!" } }, type_name) do |_root, args, _ctx|
-        record = klass.find_by_id(args[pk_field])
-        return nil unless record
+        record = find_addressed.call(args[pk_field])
+        # `next`, not `return`: this block outlives from_orm, so a `return` here
+        # raised LocalJumpError (an internal error) for a non-matching id.
+        next nil unless record
         (args["input"] || {}).each { |k, v| record.send(:"#{k}=", v) if record.respond_to?(:"#{k}=") }
         record.save
         record.to_hash
@@ -173,8 +181,8 @@ module Tina4
 
       # Delete
       add_mutation("delete#{model_name}", { pk_field => { type: "ID!" } }, "Boolean") do |_root, args, _ctx|
-        record = klass.find_by_id(args[pk_field])
-        return false unless record
+        record = find_addressed.call(args[pk_field])
+        next false unless record
         record.delete
         true
       end
@@ -218,8 +226,6 @@ module Tina4
     def parse
       document = { kind: :document, definitions: [] }
       while current
-        skip(:comma)
-        break unless current
         document[:definitions] << parse_definition
       end
       document
@@ -235,8 +241,10 @@ module Tina4
       while i < src.length
         ch = src[i]
 
-        # Skip whitespace
-        if ch =~ /\s/
+        # Skip whitespace. Commas are insignificant in GraphQL (spec 2.1.7) and
+        # are skipped with it; emitting them as punctuation made every
+        # comma-separated argument or field list a parse error.
+        if ch =~ /\s/ || ch == ","
           i += 1
           next
         end
@@ -248,7 +256,7 @@ module Tina4
         end
 
         # Punctuation
-        if "{}()[]!:=@$,".include?(ch)
+        if "{}()[]!:=@$".include?(ch)
           tokens << Token.new(:punct, ch, i)
           i += 1
           next
@@ -356,10 +364,6 @@ module Tina4
       advance
     end
 
-    def skip(type, value = nil)
-      match(type, value) while current && current.type == type && (value.nil? || current.value == value)
-    end
-
     # ── Parse rules ──
 
     def parse_definition
@@ -402,8 +406,6 @@ module Tina4
       expect(:punct, "(")
       vars = []
       until current&.value == ")"
-        skip(:comma)
-        break if current&.value == ")"
         expect(:punct, "$")
         vname = expect(:name).value
         expect(:punct, ":")
@@ -434,8 +436,6 @@ module Tina4
       expect(:punct, "{")
       selections = []
       until current&.value == "}"
-        skip(:comma)
-        break if current&.value == "}"
 
         if current&.type == :spread
           selections << parse_fragment_spread
@@ -497,8 +497,6 @@ module Tina4
       expect(:punct, "(")
       args = {}
       until current&.value == ")"
-        skip(:comma)
-        break if current&.value == ")"
         arg_name = expect(:name).value
         expect(:punct, ":")
         args[arg_name] = parse_value
@@ -548,8 +546,6 @@ module Tina4
       expect(:punct, "[")
       items = []
       until current&.value == "]"
-        skip(:comma)
-        break if current&.value == "]"
         items << parse_value
       end
       expect(:punct, "]")
@@ -560,8 +556,6 @@ module Tina4
       expect(:punct, "{")
       obj = {}
       until current&.value == "}"
-        skip(:comma)
-        break if current&.value == "}"
         key = expect(:name).value
         expect(:punct, ":")
         obj[key] = parse_value

@@ -14,10 +14,10 @@
 # with an @in_transaction boolean.
 #
 # This exercises a REAL Firebird — NO mocks. It is env-gated on
-# TINA4_TEST_FIREBIRD_URL and skips (green) when that is unset or the server is
-# unreachable / the fb gem is missing. The skip reason always contains "firebird"
-# and no other provisioned-service keyword, so the TINA4_REQUIRE_SERVICES gate
-# leaves it green (Firebird is intentionally not in the provisioned set).
+# TINA4_TEST_FIREBIRD_URL and skips when that is unset or the server is
+# unreachable / the fb gem is missing. Every skip reason carries
+# [needs:firebird], so the TINA4_REQUIRE_SERVICES gate excuses it only while
+# TINA4_TEST_FIREBIRD_URL is unset; a run that sets it must really reach Firebird.
 #
 # NEGATIVE (the regression): rollback UNDOES the insert — this FAILS against the
 #   pre-fix driver (rollback raised NoMethodError; the row survived).
@@ -53,11 +53,11 @@ RSpec.describe "Firebird explicit-transaction rollback undoes writes (real FB)" 
   before(:all) do
     @skip_reason =
       if FB_ROLLBACK_URL.empty?
-        "TINA4_TEST_FIREBIRD_URL not set — firebird rollback spec skipped"
+        "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set — firebird rollback spec skipped"
       elsif !fb_rollback_gem_available?
-        "fb gem not installed — firebird rollback spec skipped"
+        "[needs:firebird] fb gem not installed — firebird rollback spec skipped"
       elsif !fb_rollback_reachable?(FB_ROLLBACK_URL)
-        "firebird not reachable at #{FB_ROLLBACK_URL} — spec skipped"
+        "[needs:firebird] firebird not reachable at #{FB_ROLLBACK_URL} — spec skipped"
       end
   end
 

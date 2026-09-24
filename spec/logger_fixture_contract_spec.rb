@@ -801,7 +801,7 @@ RSpec.describe "the structured logger shared-fixture contract" do
   end
 
   it "forked child discards inherited logger state" do
-    skip "fork is POSIX-only" unless Process.respond_to?(:fork)
+    skip "[needs:os=posix] fork is POSIX-only" unless Process.respond_to?(:fork)
 
     Tina4::Log.configure(output: "file", log_dir: tmpdir)
     Tina4::Log.set_request_id("parent")

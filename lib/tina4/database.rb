@@ -674,7 +674,25 @@ module Tina4
       fetch_one_direct(sql, params)
     end
 
+    # tina4: ADR-0069 - a data or filter-map KEY becomes a bare column name in
+    # the SQL these helpers build, so it must be a plain identifier (letters,
+    # digits, underscore, dollar; not starting with a digit). Anything else is
+    # refused before any SQL. Valid names are emitted exactly as before.
+    PLAIN_COLUMN_NAME = /\A[A-Za-z_][A-Za-z0-9_$]*\z/.freeze
+
+    def check_column_names!(keys)
+      keys.each do |key|
+        raise ArgumentError, "Invalid column name '#{key}'" unless key.to_s.match?(PLAIN_COLUMN_NAME)
+      end
+    end
+    private :check_column_names!
+
     def insert(table, data)
+      if data.is_a?(Array)
+        data.each { |row| check_column_names!(row.keys) }
+      else
+        check_column_names!(data.keys)
+      end
       cache_invalidate if @cache_enabled
       drv = current_driver
 
@@ -765,6 +783,7 @@ module Tina4
       if filter.is_a?(Hash)
         return ["", []] if filter.empty?
 
+        check_column_names!(filter.keys)
         drv = current_driver
         [filter.keys.map { |k| "#{k} = #{drv.placeholder}" }.join(" AND "), filter.values]
       else
@@ -779,6 +798,7 @@ module Tina4
     # the WHERE clause. With neither a filter nor a primary key in `data` this
     # raises rather than overwriting every row (audit feature 4, P1).
     def update(table, data, filter = {}, params = nil)
+      check_column_names!(data.keys)
       where_sql, where_params = as_where(filter, params)
       data = data.dup
 
@@ -850,8 +870,9 @@ module Tina4
 
     # Delete rows. A filterless delete raises; use truncate() to empty a table.
     def delete(table, filter = {}, params = nil)
-      # List of hashes — delete each row
+      # List of hashes — delete each row (every key checked before the first delete)
       if filter.is_a?(Array)
+        filter.each { |row| check_column_names!(row.keys) if row.is_a?(Hash) }
         total = 0
         filter.each { |row| total += delete(table, row).affected_rows }
         return Tina4::DatabaseResult.new([], affected_rows: total, last_id: nil)

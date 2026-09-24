@@ -140,7 +140,8 @@ module Tina4
         @soft_delete_field = val
       end
 
-      # Field mapping: { 'db_column' => 'ruby_attribute' }
+      # Field mapping: { 'ruby_attribute' => 'db_column' } (get_db_column,
+      # to_db_hash and from_hash all read it in this direction).
       def field_mapping
         @field_mapping || {}
       end
@@ -830,6 +831,39 @@ module Tina4
         col.to_sym
       end
 
+      # tina4: ADR-0069 - the ONE resolver for caller-supplied field names that
+      # become SQL identifiers (AutoCrud filter/sort/write body, find(hash)). A
+      # key resolves only when it is a DECLARED field's attribute name or that
+      # field's mapped DB column, and the declared attribute is returned.
+      # Anything else returns nil, so the caller rejects or drops it before any
+      # SQL is built.
+      def resolve_field(key) # -> Symbol or nil
+        wanted = key.to_s
+        field_definitions.each_key do |attribute|
+          # the model's own attribute -> column mapping
+          return attribute if wanted == attribute.to_s || wanted == get_db_column(attribute).to_s
+        end
+        nil
+      end
+
+      # A primary-key value that arrived as text (a URL {id}, a GraphQL ID),
+      # ready to bind. An integer key accepts only an integer string and answers
+      # nil otherwise, so "3x" can never address row 3; any other key type (a
+      # string natural key) is returned unchanged rather than coerced.
+      def coerce_primary_key(raw) # -> value or nil
+        pk = primary_key_field || :id
+        return raw unless field_definitions.dig(pk.to_sym, :type) == :integer
+        return raw if raw.is_a?(Integer)
+
+        raw.to_s.match?(/\A-?\d+\z/) ? raw.to_s.to_i : nil
+      end
+
+      # The DB column of the declared field +key+ resolves to (see resolve_field).
+      def resolve_field_column(key) # -> String or nil
+        attribute = resolve_field(key)
+        attribute && get_db_column(attribute).to_s
+      end
+
       private
 
       def auto_discover_db
@@ -839,7 +873,13 @@ module Tina4
       end
 
       def find_by_filter(filter, limit: 100, offset: nil, order_by: nil)
-        where_parts = filter.keys.map { |k| "#{k} = ?" }
+        # ADR-0069: every key must resolve to a declared field's column.
+        where_parts = filter.keys.map do |key|
+          column = resolve_field_column(key)
+          raise ArgumentError, "Unknown filter field '#{key}' for model #{name.to_s.split('::').last}" unless column
+
+          "#{column} = ?"
+        end
         sql = "SELECT * FROM #{table_name} WHERE #{where_parts.join(' AND ')}"
         if soft_delete
           sql += " AND (#{soft_delete_field} IS NULL OR #{soft_delete_field} = 0)"

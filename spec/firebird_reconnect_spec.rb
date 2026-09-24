@@ -78,7 +78,7 @@ RSpec.describe Tina4::Drivers::FirebirdDriver do
 
     around(:each) do |example|
       if @url.nil? || @url.empty?
-        skip "TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)"
+        skip "[needs:firebird] TINA4_TEST_FIREBIRD_URL not set (needs a live Firebird)"
       else
         example.run
       end

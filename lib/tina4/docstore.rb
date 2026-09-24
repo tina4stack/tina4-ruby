@@ -191,12 +191,24 @@ module Tina4
 
     COMPARATORS = { "$gt" => ">", "$gte" => ">=", "$lt" => "<", "$lte" => "<=" }.freeze
 
+    FIELD_SEGMENT_RE = /\A[A-Za-z0-9_-]+\z/.freeze
+
     # Field name -> a JSON path. Dotted names address nested keys.
+    #
+    # tina4: ADR-0069 - this is the single chokepoint every field path passes
+    # through on its way into SQL (extract / json_type / json_each, so filters
+    # at any depth, operator fields and sort keys). Every dot-separated segment
+    # must match [A-Za-z0-9_-]+ or the path is rejected before any SQL is built.
     def json_path(field)
-      segments = field.to_s.split(".").map do |s|
-        s.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/) ? s : "\"#{s}\""
+      path = field.to_s
+      segments = path.split(".", -1)
+      if segments.empty? || !segments.all? { |segment| segment.match?(FIELD_SEGMENT_RE) }
+        raise ArgumentError,
+              "DocStore: invalid field path '#{path}' - each dot-separated segment must match [A-Za-z0-9_-]+"
       end
-      "$." + segments.join(".")
+
+      quoted = segments.map { |segment| segment.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/) ? segment : "\"#{segment}\"" }
+      "$." + quoted.join(".")
     end
 
     def extract(field) = "json_extract(doc, '#{json_path(field)}')"
