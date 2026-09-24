@@ -789,9 +789,24 @@ module Tina4
         true
       end
 
+      # The canonical security header set (SECHDR-DEC-01) without HSTS, as
+      # [name, value] pairs, with the env overrides applied. The built-in
+      # server puts exactly this on its own transport rejections (ADR-0068),
+      # which are written before the request's scheme is known.
+      def canonical_headers
+        [
+          ["X-Frame-Options", ENV["TINA4_FRAME_OPTIONS"] || "SAMEORIGIN"],
+          ["X-Content-Type-Options", "nosniff"],
+          ["Content-Security-Policy", ENV["TINA4_CSP"] || "default-src 'self'"],
+          ["Referrer-Policy", ENV["TINA4_REFERRER_POLICY"] || "strict-origin-when-cross-origin"],
+          ["X-XSS-Protection", "0"],
+          ["Permissions-Policy", ENV["TINA4_PERMISSIONS_POLICY"] || "camera=(), microphone=(), geolocation=()"]
+        ]
+      end
+
       def before_security(request, response)
-        response.headers["X-Frame-Options"] = ENV["TINA4_FRAME_OPTIONS"] || "SAMEORIGIN"
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        warn_csp_default_once if ENV["TINA4_CSP"].nil?
+        canonical_headers.each { |name, value| response.headers[name] = value }
 
         # HSTS is HTTPS-only (SECHDR-DEC-02): a downgrade-protection header on a
         # plain-HTTP response is inert at best and ships a bad max-age on an
@@ -805,12 +820,6 @@ module Tina4
         if !hsts.empty? && Tina4::Request.secure_scheme?(env)
           response.headers["Strict-Transport-Security"] = "max-age=#{hsts}; includeSubDomains"
         end
-
-        warn_csp_default_once if ENV["TINA4_CSP"].nil?
-        response.headers["Content-Security-Policy"] = ENV["TINA4_CSP"] || "default-src 'self'"
-        response.headers["Referrer-Policy"] = ENV["TINA4_REFERRER_POLICY"] || "strict-origin-when-cross-origin"
-        response.headers["X-XSS-Protection"] = "0"
-        response.headers["Permissions-Policy"] = ENV["TINA4_PERMISSIONS_POLICY"] || "camera=(), microphone=(), geolocation=()"
 
         [request, response]
       end

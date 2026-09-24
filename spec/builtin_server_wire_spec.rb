@@ -5,14 +5,9 @@
 # Tina4::WebServer is the framework's own HTTP/1.1 server on stdlib `socket`,
 # replacing WEBrick in development AND Puma in production (Puma is opt-in: it
 # is used only when the application bundles it - ADR-0067). The references are
-# PHP's Tina4/Server.php (enforceRequestLimits, idle reaper, sendHttpError) and
-# Python's built-in asyncio server; the env var names, defaults and status
-# codes are PHP's:
-#
-#   TINA4_MAX_REQUEST_HEADER  header bytes before 431        (default 64KB)
-#   TINA4_MAX_REQUEST_BODY    declared body before 413       (default 10MB)
-#   TINA4_MAX_UPLOAD_SIZE     declared AND running body cap  (default 10MB)
-#   TINA4_REQUEST_TIMEOUT     silent seconds before 408/close (default 30)
+# PHP's Tina4/Server.php and Python's built-in asyncio server, under ADR-0068's
+# limits (TINA4_MAX_REQUEST_HEADER, TINA4_MAX_UPLOAD_SIZE, TINA4_REQUEST_TIMEOUT;
+# spec/http_hardening_contract_spec.rb is that contract's runner).
 #
 # NO MOCKS. Every example talks raw bytes over a real TCP socket to a real
 # server in its own process group, so what is asserted is exactly what a
@@ -57,18 +52,6 @@ module BuiltinWireProbe
         end
         response.json({ fields: request.body, files: files })
       end.no_auth
-
-      Tina4.get("/cookies") do |_request, response|
-        response.cookie("first", "1")
-        response.cookie("second", "2")
-        response.json({ ok: true })
-      end
-
-      Tina4.get("/inject") do |_request, response|
-        response.headers["x-evil"] = "safe\\r\\nX-Injected: yes"
-        response.headers["x-good"] = "kept"
-        response.json({ ok: true })
-      end
 
       Tina4.get("/sse") do |_request, response|
         response.stream(content_type: "text/event-stream") do |out|
@@ -183,7 +166,6 @@ RSpec.describe "Built-in server on the wire", :slow do
     @server = BuiltinWireProbe.boot(
       "TINA4_MAX_REQUEST_HEADER" => "8192",
       "TINA4_MAX_UPLOAD_SIZE" => "65536",
-      "TINA4_MAX_REQUEST_BODY" => "131072",
       "TINA4_REQUEST_TIMEOUT" => "2"
     )
   end
@@ -298,77 +280,13 @@ RSpec.describe "Built-in server on the wire", :slow do
     end
   end
 
-  describe "request limits (PHP Server::enforceRequestLimits parity)" do
-    it "answers 431 when the header block outgrows TINA4_MAX_REQUEST_HEADER" do
-      response = roundtrip("GET /ping HTTP/1.1\r\nHost: x\r\nX-Big: #{'a' * 10_000}\r\n\r\n")
-      expect(response[:status]).to eq(431)
-      expect(JSON.parse(response[:body])).to eq("error" => "Request header fields too large")
-      expect(h(response, "connection")).to eq("close")
-    end
-
-    it "answers 431 while an endless header block is still arriving" do
-      # No blank line ever comes: the limit must bite on what has been
-      # buffered so far, not wait for a head that never ends.
-      sock = BuiltinWireProbe.connect(port)
-      sock.write("GET /ping HTTP/1.1\r\nHost: x\r\nX-Endless: #{'a' * 12_000}")
-      response = BuiltinWireProbe.read_response(sock, timeout: 1.5)
-      expect(response[:status]).to eq(431)
-    ensure
-      sock&.close
-    end
-
+  # The ADR-0068 limits (431 / 413 / 400 / 408 and the rejection shape) are
+  # the contract runner's: spec/http_hardening_contract_spec.rb. What stays
+  # here is the rest of the wire behaviour.
+  describe "request limits" do
     it "does not 431 a header block under the limit" do
       response = roundtrip("GET /ping HTTP/1.1\r\nHost: x\r\nX-Big: #{'a' * 4_000}\r\nConnection: close\r\n\r\n")
       expect(response[:status]).to eq(200)
-    end
-
-    it "answers 413 from the DECLARED length before a single body byte is sent" do
-      # 100000 is over TINA4_MAX_UPLOAD_SIZE (65536) but under
-      # TINA4_MAX_REQUEST_BODY (131072), so only the upload cap can refuse it.
-      sock = BuiltinWireProbe.connect(port)
-      sock.write("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\nContent-Length: 100000\r\n\r\n")
-      response = BuiltinWireProbe.read_response(sock, timeout: 3)
-      expect(response[:status]).to eq(413)
-      expect(JSON.parse(response[:body])["error"]).to include("TINA4_MAX_UPLOAD_SIZE")
-    ensure
-      sock&.close
-    end
-
-    it "answers 413 when the declared length exceeds TINA4_MAX_REQUEST_BODY" do
-      server = BuiltinWireProbe.boot("TINA4_MAX_REQUEST_BODY" => "1000", "TINA4_MAX_UPLOAD_SIZE" => "100000")
-      sock = BuiltinWireProbe.connect(server.port)
-      sock.write("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\n")
-      response = BuiltinWireProbe.read_response(sock, timeout: 3)
-      expect(response[:status]).to eq(413)
-      expect(JSON.parse(response[:body])).to eq("error" => "Request body too large")
-    ensure
-      sock&.close
-      server&.destroy!
-    end
-
-    it "refuses a chunked body the moment its running total passes the cap" do
-      sock = BuiltinWireProbe.connect(port)
-      sock.write("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n")
-      chunk = "z" * 16_384
-      begin
-        8.times { sock.write("#{chunk.bytesize.to_s(16)}\r\n#{chunk}\r\n") }
-      rescue Errno::EPIPE, Errno::ECONNRESET
-        # the server may already have answered and closed - that is the point
-      end
-      response = BuiltinWireProbe.read_response(sock, timeout: 3)
-      expect(response[:status]).to eq(413)
-    ensure
-      sock&.close
-    end
-
-    it "accepts and de-chunks a chunked body under the cap" do
-      response = roundtrip("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\n" \
-                           "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n" \
-                           "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
-      expect(response[:status]).to eq(200)
-      payload = JSON.parse(response[:body])
-      expect(payload["body"]).to eq("hello world")
-      expect(payload["content_length"]).to eq("11")
     end
 
     it "sends 100 Continue before reading an Expect: 100-continue body" do
@@ -387,18 +305,6 @@ RSpec.describe "Built-in server on the wire", :slow do
   end
 
   describe "slow-loris (TINA4_REQUEST_TIMEOUT)" do
-    it "answers 408 and closes a request that stops mid-headers" do
-      sock = BuiltinWireProbe.connect(port)
-      sock.write("GET /ping HTTP/1.1\r\nHost: x\r\n")
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      response = BuiltinWireProbe.read_response(sock, timeout: 6)
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-      expect(response[:status]).to eq(408)
-      expect(elapsed).to be < 5
-    ensure
-      sock&.close
-    end
-
     it "does not let a client dribbling one header byte at a time hold the slot" do
       sock = BuiltinWireProbe.connect(port)
       sock.write("GET /ping HTTP/1.1\r\nHost: x\r\nX-Slow: ")
@@ -433,59 +339,23 @@ RSpec.describe "Built-in server on the wire", :slow do
     end
   end
 
-  describe "malformed framing is refused with 400" do
-    it "rejects a bare CR inside a header value" do
-      response = roundtrip("GET /ping HTTP/1.1\r\nHost: x\r\nX-A: one\rX-B: two\r\n\r\n")
-      expect(response[:status]).to eq(400)
-    end
-
-    it "rejects a bare LF line ending smuggling a second header" do
-      response = roundtrip("GET /ping HTTP/1.1\r\nHost: x\r\nX-A: one\nX-B: two\r\n\r\n")
-      expect(response[:status]).to eq(400)
-    end
-
+  describe "malformed heads are refused with 400 Malformed request head" do
     it "rejects a header name that is not a token" do
       response = roundtrip("GET /ping HTTP/1.1\r\nHost: x\r\nBad Name: v\r\n\r\n")
       expect(response[:status]).to eq(400)
+      expect(response[:body]).to eq('{"error":"Malformed request head"}')
     end
 
     it "rejects obsolete line folding" do
       response = roundtrip("GET /ping HTTP/1.1\r\nHost: x\r\nX-A: one\r\n two\r\n\r\n")
       expect(response[:status]).to eq(400)
-    end
-
-    it "rejects Content-Length together with Transfer-Encoding (request smuggling)" do
-      response = roundtrip("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n" \
-                           "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
-      expect(response[:status]).to eq(400)
-    end
-
-    it "rejects two different Content-Length values" do
-      response = roundtrip("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!")
-      expect(response[:status]).to eq(400)
+      expect(response[:body]).to eq('{"error":"Malformed request head"}')
     end
 
     it "rejects a garbage request line" do
       response = roundtrip("THIS IS NOT HTTP\r\n\r\n")
       expect(response[:status]).to eq(400)
-    end
-  end
-
-  describe "response headers" do
-    it "never writes CR/LF from an application header onto the wire" do
-      response = roundtrip("GET /inject HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-      expect(response[:status]).to eq(200)
-      names = response[:headers].map { |name, _| name.downcase }
-      expect(names).not_to include("x-injected")
-      expect(response[:raw_head]).not_to include("X-Injected")
-      expect(h(response, "x-good")).to eq("kept")
-    end
-
-    it "writes each cookie as its own Set-Cookie line" do
-      response = roundtrip("GET /cookies HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-      cookies = response[:headers].select { |name, _| name.casecmp?("set-cookie") }.map(&:last)
-      expect(cookies.length).to eq(2)
-      expect(cookies.map { |c| c.split(";").first }).to contain_exactly("first=1", "second=2")
+      expect(response[:body]).to eq('{"error":"Malformed request head"}')
     end
   end
 

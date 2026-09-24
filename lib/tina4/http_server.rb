@@ -15,17 +15,17 @@ module Tina4
   # [status, headers, body], so Tina4::RackApp runs here unchanged and any Rack
   # server can still run Tina4.
   #
-  # The wire rules are PHP Server's, under the same env var names and defaults:
+  # The wire rules are ADR-0068's, the same in every built-in Tina4 server:
   #
-  #   TINA4_MAX_REQUEST_HEADER  header bytes before 431        (65536)
-  #   TINA4_MAX_REQUEST_BODY    declared body before 413       (10485760)
+  #   TINA4_MAX_REQUEST_HEADER  head bytes before 431          (65536)
   #   TINA4_MAX_UPLOAD_SIZE     declared AND running body cap  (10485760)
-  #   TINA4_REQUEST_TIMEOUT     seconds before 408 / close     (30, 0 disables)
+  #   TINA4_REQUEST_TIMEOUT     silent seconds before 408      (30, 0 disables)
   #
-  # A declared Content-Length over a cap is refused BEFORE any body byte is
-  # read (Python's asyncio server buffers the body first; that is not copied),
-  # and the running counter refuses a chunked or under-declared body the moment
-  # it passes the cap.
+  # A declared Content-Length over the cap is refused BEFORE any body byte is
+  # read, the body is read in bounded chunks under a running count (chunked
+  # included), malformed framing is 400, and every rejection has one shape:
+  # a JSON {"error": ...} body with the canonical security headers and
+  # Connection: close.
   #
   # tina4: one thread per connection, capped at MAX_CONNECTIONS (the accept
   # loop waits for a free slot). Swap for a reactor + worker pool if idle
@@ -33,19 +33,24 @@ module Tina4
   class HttpServer
     DEFAULT_REQUEST_TIMEOUT = 30
     DEFAULT_MAX_REQUEST_HEADER = 65_536
-    DEFAULT_MAX_REQUEST_BODY = 10_485_760
     MAX_CONNECTIONS = 1024
     READ_SIZE = 16_384
     SOFTWARE = "tina4-server"
 
     # RFC 9110 token: what a header field name (and a method) may contain.
     TOKEN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/
-    # A request header value may carry HTAB and visible bytes, never another
-    # control character - a bare CR or LF here is a smuggling attempt.
-    ILLEGAL_REQUEST_VALUE = /[\x00-\x08\x0A-\x1F\x7F]/
+    # A bare CR, LF or NUL anywhere in a request head is a smuggling attempt.
+    ILLEGAL_HEAD_BYTE = /[\r\n\0]/
     # CR, LF or NUL in a RESPONSE header would split it into attacker-chosen
     # headers or a second response (ADR-0068). Such a header is never written.
     ILLEGAL_RESPONSE_VALUE = /[\r\n\0]/
+    MALFORMED_HEAD = "Malformed request head"
+    INVALID_LENGTH = "Invalid Content-Length"
+    INVALID_ENCODING = "Invalid Transfer-Encoding"
+    TIMED_OUT = "Request timed out before it was complete"
+    # After a rejection, what the client is still sending is read and thrown
+    # away for this long, so it sees the answer instead of a reset.
+    LINGER_SECONDS = 2
     STATUSES_WITHOUT_BODY = [204, 304].freeze
 
     Listener = Struct.new(:socket, :app, :port)
@@ -63,7 +68,10 @@ module Tina4
     # The peer went away; nothing to answer.
     class ClientGone < StandardError; end
 
-    attr_reader :request_timeout, :max_request_header, :max_request_body, :max_upload_size
+    # The app handed the writer a header it must not write (ADR-0068 s2).
+    class UnsafeHeader < StandardError; end
+
+    attr_reader :request_timeout, :max_request_header, :max_upload_size
 
     def initialize(server_name:)
       @server_name = server_name
@@ -74,7 +82,6 @@ module Tina4
       @running = false
       @request_timeout = self.class.resolve_limit("TINA4_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT, zero_allowed: true)
       @max_request_header = self.class.resolve_limit("TINA4_MAX_REQUEST_HEADER", DEFAULT_MAX_REQUEST_HEADER)
-      @max_request_body = self.class.resolve_limit("TINA4_MAX_REQUEST_BODY", DEFAULT_MAX_REQUEST_BODY)
       @max_upload_size = Tina4::Request.max_upload_size
     end
 
@@ -253,6 +260,12 @@ module Tina4
     rescue RequestRefused => e
       send_error(socket, e.status, e.message)
       :close
+    rescue UnsafeHeader => e
+      # Nothing of that response has been written; it is replaced whole.
+      Tina4::Log.error("Refused to write response header #{e.message}: " \
+                       "a header name must be a token and a value may not contain CR, LF or NUL")
+      send_error(socket, 500, "Invalid response header")
+      :close
     end
 
     # A Rack app that raises gets a 500 rather than a dropped connection.
@@ -285,12 +298,12 @@ module Tina4
       deadline = @request_timeout.positive? ? monotonic + @request_timeout : nil
       until (head_end = buffer.index("\r\n\r\n"))
         if buffer.bytesize > @max_request_header
-          raise RequestRefused.new(431, "Request header fields too large")
+          raise RequestRefused.new(431, header_cap_message)
         end
-        raise RequestRefused.new(408, "Request timed out before it was complete") unless
+        raise RequestRefused.new(408, TIMED_OUT) unless
           wait_for_bytes(socket, buffer, deadline: deadline)
       end
-      raise RequestRefused.new(431, "Request header fields too large") if head_end > @max_request_header
+      raise RequestRefused.new(431, header_cap_message) if head_end > @max_request_header
 
       buffer.slice!(0, head_end + 4).byteslice(0, head_end)
     end
@@ -315,30 +328,28 @@ module Tina4
       false
     end
 
+    def header_cap_message
+      "Request header fields exceed TINA4_MAX_REQUEST_HEADER (#{@max_request_header} bytes)"
+    end
+
+    # The head is split on CRLF, so any CR, LF or NUL left inside a line is a
+    # bare one. A name must be a token, which also refuses obs-fold (a
+    # continuation line starting with SP/HTAB, RFC 9112 s5.2).
     def parse_head(head)
       lines = head.split("\r\n", -1)
-      request_line = lines.shift.to_s
-      parts = request_line.split(" ", -1)
-      unless parts.length == 3 && parts[0].match?(TOKEN) && !parts[1].empty? &&
-             !parts[1].match?(/[\x00-\x20\x7F]/)
-        raise RequestRefused.new(400, "Malformed request line")
+      raise RequestRefused.new(400, MALFORMED_HEAD) if lines.any? { |line| line.match?(ILLEGAL_HEAD_BYTE) }
+
+      method, target, version, extra = lines.shift.to_s.split(" ", -1)
+      unless extra.nil? && method.to_s.match?(TOKEN) && target && !target.empty? &&
+             !target.match?(/[\x00-\x20\x7F]/) && %w[HTTP/1.1 HTTP/1.0].include?(version)
+        raise RequestRefused.new(400, MALFORMED_HEAD)
       end
 
-      method, target, version = parts
-      raise RequestRefused.new(400, "Malformed request line") unless version.match?(%r{\AHTTP/\d\.\d\z})
-      raise RequestRefused.new(505, "HTTP version not supported") unless %w[HTTP/1.1 HTTP/1.0].include?(version)
-
-      headers = []
-      lines.each do |line|
-        # A name must be a token, so obs-fold (a continuation line starting
-        # with SP/HTAB, RFC 9112 s5.2) is refused here too.
+      headers = lines.map do |line|
         name, value = line.split(":", 2)
-        raise RequestRefused.new(400, "Malformed header") if value.nil? || !name.match?(TOKEN)
+        raise RequestRefused.new(400, MALFORMED_HEAD) if value.nil? || !name.match?(TOKEN)
 
-        value = value.strip
-        raise RequestRefused.new(400, "Malformed header") if value.match?(ILLEGAL_REQUEST_VALUE)
-
-        headers << [name.downcase, value]
+        [name.downcase, value.strip]
       end
       [method, target, version, headers]
     end
@@ -352,9 +363,9 @@ module Tina4
       encodings = header_values(headers, "transfer-encoding")
 
       unless encodings.empty?
-        raise RequestRefused.new(400, "Content-Length with Transfer-Encoding") unless lengths.empty?
-        unless encodings.join(",").split(",").map { |coding| coding.strip.downcase } == ["chunked"]
-          raise RequestRefused.new(501, "Transfer-Encoding not supported")
+        # Exactly "chunked", and never alongside Content-Length (smuggling).
+        unless lengths.empty? && encodings.length == 1 && encodings.first.casecmp?("chunked")
+          raise RequestRefused.new(400, INVALID_ENCODING)
         end
 
         send_continue(socket, headers, version)
@@ -362,14 +373,10 @@ module Tina4
       end
       return +"".b if lengths.empty?
 
-      values = lengths.join(",").split(",").map(&:strip).uniq
-      unless values.length == 1 && values.first.match?(/\A\d+\z/)
-        raise RequestRefused.new(400, "Invalid Content-Length")
-      end
+      raise RequestRefused.new(400, INVALID_LENGTH) unless lengths.uniq.length == 1 && lengths.first.match?(/\A\d+\z/)
 
-      declared = values.first.to_i
+      declared = lengths.first.to_i
       # Refused on the DECLARED length, before one body byte is read.
-      raise RequestRefused.new(413, "Request body too large") if declared > @max_request_body
       raise RequestRefused.new(413, upload_cap_message(declared)) if declared > @max_upload_size
 
       send_continue(socket, headers, version)
@@ -398,7 +405,7 @@ module Tina4
 
     def read_line(socket, buffer, limit)
       until (line_end = buffer.index("\r\n"))
-        raise RequestRefused.new(400, "Malformed chunked body") if buffer.bytesize > limit
+        raise RequestRefused.new(400, INVALID_ENCODING) if buffer.bytesize > limit
 
         fill(socket, buffer)
       end
@@ -409,7 +416,7 @@ module Tina4
       deadline = @request_timeout.positive? ? monotonic + @request_timeout : nil
       return if wait_for_bytes(socket, buffer, deadline: deadline)
 
-      raise RequestRefused.new(408, "Request timed out before it was complete")
+      raise RequestRefused.new(408, TIMED_OUT)
     end
 
     def read_chunked(socket, buffer)
@@ -417,7 +424,7 @@ module Tina4
       loop do
         size_line = read_line(socket, buffer, 1024)
         size_text = size_line.split(";", 2).first.to_s.strip
-        raise RequestRefused.new(400, "Malformed chunked body") unless size_text.match?(/\A\h{1,16}\z/)
+        raise RequestRefused.new(400, INVALID_ENCODING) unless size_text.match?(/\A\h{1,16}\z/)
 
         size = size_text.to_i(16)
         break if size.zero?
@@ -428,7 +435,7 @@ module Tina4
         end
 
         body << read_exactly(socket, buffer, size)
-        raise RequestRefused.new(400, "Malformed chunked body") unless read_exactly(socket, buffer, 2) == "\r\n"
+        raise RequestRefused.new(400, INVALID_ENCODING) unless read_exactly(socket, buffer, 2) == "\r\n"
       end
       # Trailer section: header lines up to an empty line, bounded like headers.
       trailer_bytes = 0
@@ -437,7 +444,7 @@ module Tina4
         break if line.empty?
 
         trailer_bytes += line.bytesize
-        raise RequestRefused.new(431, "Request header fields too large") if trailer_bytes > @max_request_header
+        raise RequestRefused.new(431, header_cap_message) if trailer_bytes > @max_request_header
       end
       body
     end
@@ -512,14 +519,14 @@ module Tina4
     # before routing: collapse "//", resolve "." and ".." segments, and refuse a
     # path that climbs above the root or carries a NUL.
     def normalize_path(path)
-      raise RequestRefused.new(400, "Malformed request path") if path.include?("\0")
+      raise RequestRefused.new(400, MALFORMED_HEAD) if path.include?("\0")
       return path if path == "*"
-      raise RequestRefused.new(400, "Malformed request path") unless path.start_with?("/")
+      raise RequestRefused.new(400, MALFORMED_HEAD) unless path.start_with?("/")
 
       normalized = path.gsub(%r{/+}, "/")
       nil while normalized.sub!(%r{/\.(?:/|\z)}, "/")
       nil while normalized.sub!(%r{/(?!\.\./)[^/]+/\.\.(?:/|\z)}, "/")
-      raise RequestRefused.new(400, "Malformed request path") if normalized.match?(%r{/\.\.(?:/|\z)})
+      raise RequestRefused.new(400, MALFORMED_HEAD) if normalized.match?(%r{/\.\.(?:/|\z)})
 
       normalized
     end
@@ -534,7 +541,7 @@ module Tina4
       lines = ["HTTP/1.1 #{status} #{Tina4.http_reason(status)}"]
       declared_length = nil
 
-      each_header_line(headers) do |name, value|
+      header_lines(headers).each do |name, value|
         lowered = name.downcase
         case lowered
         when "connection"
@@ -591,15 +598,17 @@ module Tina4
       body.close if body.respond_to?(:close)
     end
 
-    # Yield [name, value] for every header line to write. An Array value (Rack
-    # 3) or a "\n"-joined Set-Cookie (Rack 2, and Tina4::Response#to_rack) is
-    # one line per element. A name that is not a token, or a value carrying CR,
-    # LF or NUL, is never written (ADR-0068): it would let the value choose its
-    # own headers - or a whole second response.
-    def each_header_line(headers)
-      headers.each do |name, value|
+    # Every [name, value] line to write, checked BEFORE any byte goes out. An
+    # Array value (Rack 3) or a "\n"-joined Set-Cookie (Rack 2, and
+    # Tina4::Response#to_rack) is one line per element. A name that is not a
+    # token, or a value carrying CR, LF or NUL, raises UnsafeHeader (ADR-0068):
+    # it would let the value choose its own headers - or a second response.
+    # Response#header refuses these at the call site already; this catches a
+    # header appended to the hash directly.
+    def header_lines(headers)
+      headers.flat_map do |name, value|
         name = name.to_s
-        next if name.start_with?("rack.")
+        next [] if name.start_with?("rack.")
 
         values = if value.is_a?(Array)
                    value.map(&:to_s)
@@ -608,13 +617,10 @@ module Tina4
                  else
                    [value.to_s]
                  end
-        values.each do |single|
-          if !name.match?(TOKEN) || single.match?(ILLEGAL_RESPONSE_VALUE)
-            Tina4::Log.error("Refused to write response header #{name.inspect}: " \
-                             "a header name or value may not contain CR, LF or NUL")
-            next
-          end
-          yield name, single
+        values.map do |single|
+          raise UnsafeHeader, JSON.generate(name) if !name.match?(TOKEN) || single.match?(ILLEGAL_RESPONSE_VALUE)
+
+          [name, single]
         end
       end
     end
@@ -636,20 +642,26 @@ module Tina4
       raise ClientGone
     end
 
-    # PHP Server::sendHttpError: a small JSON answer, then close. The close is
-    # a lingering one - stop writing, drain what the client is still sending
-    # for a moment - so a client mid-upload reads the 413 instead of a reset.
+    # A transport rejection, in ADR-0068's one shape: the JSON {"error": ...}
+    # body, the canonical security headers (no HSTS - the scheme is not known
+    # yet) and Connection: close. The close is a lingering one - stop writing,
+    # throw away what the client is still sending for up to LINGER_SECONDS -
+    # so a client mid-upload reads the answer instead of a reset.
     def send_error(socket, status, message)
       body = JSON.generate({ "error" => message })
-      write_fully(socket, "HTTP/1.1 #{status} #{Tina4.http_reason(status)}\r\n" \
-                          "content-type: application/json\r\n" \
-                          "content-length: #{body.bytesize}\r\n" \
-                          "connection: close\r\n\r\n#{body}")
+      lines = ["HTTP/1.1 #{status} #{Tina4.http_reason(status)}",
+               "Content-Type: application/json",
+               "Content-Length: #{body.bytesize}",
+               "Connection: close"]
+      Tina4::SecurityHeadersMiddleware.canonical_headers.each do |name, value|
+        lines << "#{name}: #{value}" unless value.to_s.match?(ILLEGAL_RESPONSE_VALUE)
+      end
+      write_fully(socket, "#{lines.join("\r\n")}\r\n\r\n#{body}")
       socket.close_write
-      deadline = monotonic + 1
-      drained = 0
-      while drained < 1_048_576 && socket.wait_readable([deadline - monotonic, 0].max)
-        drained += socket.read_nonblock(READ_SIZE).bytesize
+      deadline = monotonic + LINGER_SECONDS
+      discard = +"".b # one reused buffer: draining must not allocate per read
+      while (remaining = deadline - monotonic).positive? && socket.wait_readable(remaining)
+        socket.read_nonblock(READ_SIZE, discard)
       end
     rescue ClientGone, IOError, SystemCallError, IO::WaitReadable
       # the peer is gone - nothing more to say
