@@ -109,6 +109,12 @@ module Tina4
             block.call(msg) if @running
           end
         end
+      rescue StandardError => e
+        # A refused login or a dropped connection ends this listener for good.
+        # Say so in the framework log: before, the thread died with only a raw
+        # stack trace on stderr while "backplane active" stood as the last word.
+        # The redis client's messages carry the URL without its userinfo.
+        Tina4::Log.error("WebSocket backplane subscriber stopped on '#{channel}': #{e.message}") if @running && defined?(Tina4::Log)
       end
     end
 
