@@ -86,9 +86,11 @@ module Tina4
 
       # Configured backend unusable — degrade to the file backend.
       begin
+        install_hint = be.missing_driver_message
         Tina4::Log.warning(
           "Cache backend '#{backend}' is unavailable " \
-          "(driver missing or service unreachable) — falling back to 'file'."
+          "(driver missing or service unreachable) — falling back to 'file'." \
+          "#{install_hint ? " #{install_hint}" : ""}"
         )
       rescue StandardError
         # Logging must never break cache construction.
