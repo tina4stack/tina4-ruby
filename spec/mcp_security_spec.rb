@@ -21,9 +21,17 @@ RSpec.describe "Tina4 MCP security guard" do
   end
 
   describe "Tina4.is_loopback?" do
-    it "is true for loopback addresses (and empty / in-process)" do
-      ["127.0.0.1", "127.0.0.5", "::1", "::ffff:127.0.0.1", "localhost", "", nil].each do |ip|
+    it "is true for loopback addresses" do
+      ["127.0.0.1", "127.0.0.5", "::1", "::ffff:127.0.0.1", "localhost"].each do |ip|
         expect(Tina4.is_loopback?(ip)).to be(true), ip.inspect
+      end
+    end
+
+    it "is false for an unknown (empty) peer" do
+      # A runtime path that lost the socket address must fail closed, never
+      # read as local (ADR-0079 s4).
+      ["", nil].each do |ip|
+        expect(Tina4.is_loopback?(ip)).to be(false), ip.inspect
       end
     end
 
@@ -40,10 +48,10 @@ RSpec.describe "Tina4 MCP security guard" do
       expect(Tina4.request_allowed?("127.0.0.1")).to be false
     end
 
-    it "allows loopback (and in-process) when enabled" do
+    it "allows loopback, and refuses an unknown peer, when enabled" do
       ENV["TINA4_DEBUG"] = "true"
       expect(Tina4.request_allowed?("127.0.0.1")).to be true
-      expect(Tina4.request_allowed?("")).to be true
+      expect(Tina4.request_allowed?("")).to be false
     end
 
     it "denies a remote caller without the remote opt-in" do

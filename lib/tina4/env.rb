@@ -1,5 +1,4 @@
 # frozen_string_literal: true
-require "digest"
 
 module Tina4
   # Legacy env var names that v3.12 has retired. If any of these are set in
@@ -84,11 +83,15 @@ module Tina4
     # signal for Auth.ensure_dev_secret to mint a per-machine random dev secret
     # (saved to gitignored .env.local) in dev, or to emit the actionable
     # "set TINA4_SECRET" warning in CI/prod. Parity with the Python master.
+    #
+    # TINA4_DEBUG is deliberately absent too: unset debug means OFF, and a boot
+    # side effect must never switch it on (ADR-0079 s3). `tina4ruby init`, an
+    # explicit developer action, writes TINA4_DEBUG=true into the project it
+    # scaffolds.
     DEFAULT_ENV = {
       "PROJECT_NAME" => "Tina4 Ruby Project",
       "TINA4_SWAGGER_VERSION" => "1.0.0",
       "TINA4_LOCALE" => "en",
-      "TINA4_DEBUG" => "true",
       "TINA4_LOG_LEVEL" => "ALL"
     }.freeze
 
@@ -260,11 +263,11 @@ module Tina4
         File.join(root_dir, ".env")
       end
 
+      # A missing .env gets the neutral defaults only. It no longer mints a
+      # TINA4_API_KEY: an MD5 of the clock is guessable, and that key opened
+      # the route auth gate and the dev-admin write gate (ADR-0079 s3).
       def create_default_env(path)
-        api_key = Digest::MD5.hexdigest(Time.now.to_s)
-        content = DEFAULT_ENV.map { |k, v| "#{k}=\"#{v}\"" }.join("\n")
-        content += "\nTINA4_API_KEY=\"#{api_key}\"\n"
-        File.write(path, content)
+        File.write(path, DEFAULT_ENV.map { |k, v| "#{k}=\"#{v}\"" }.join("\n") + "\n")
       end
 
       # Parse a dotenv file into ENV.

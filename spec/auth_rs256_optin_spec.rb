@@ -26,7 +26,7 @@ require "tmpdir"
 require "fileutils"
 
 RSpec.describe "Tina4::Auth RS256 opt-in (no jwt gem)" do
-  let(:secret) { "rs256-optin-regression-secret" }
+  let(:secret) { "rs256-optin-regression-secret-01" }
   # A keys dir WITH real RSA pems (RS256 path) and one WITHOUT (HMAC path). The
   # branch is chosen by use_hmac?: a secret and no pems -> HMAC, else RS256.
   let(:rsa_keys_root) { Dir.mktmpdir("tina4_rs256_with_keys") }

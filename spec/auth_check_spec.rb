@@ -17,7 +17,7 @@ RSpec.describe "RackApp auth check (header / body / session)" do
 
   before(:each) do
     Tina4::Router.clear!
-    ENV["TINA4_SECRET"] = "auth-check-test-secret"
+    ENV["TINA4_SECRET"] = "auth-check-test-secret-012345678"
     # Force HMAC mode — clear any RSA key state
     Tina4::Auth.instance_variable_set(:@private_key, nil)
     Tina4::Auth.instance_variable_set(:@public_key, nil)
@@ -89,8 +89,22 @@ RSpec.describe "RackApp auth check (header / body / session)" do
 
   # ── 3. Valid formToken in body passes ──────────────────────────
 
-  it "allows request with valid formToken in JSON body" do
+  # frond.js puts the auth token it received as a FreshToken into the formToken
+  # field; that identity token passes. A Frond form token ("type" => "form")
+  # proves where a write came from, not who sent it, and is refused (ADR-0079).
+  it "refuses a Frond form token in the body" do
     token = Tina4::Auth.get_token({ "type" => "form", "context" => "checkout" })
+    env = mock_env("POST", "/secure/action",
+                   body: JSON.generate({ "formToken" => token }),
+                   content_type: "application/json")
+
+    status, headers, _body = app.call(env)
+    expect(status).to eq(401)
+    expect(headers).not_to have_key("FreshToken")
+  end
+
+  it "allows request with valid formToken in JSON body" do
+    token = Tina4::Auth.get_token({ "user_id" => 1, "context" => "checkout" })
     json_body = JSON.generate({ "formToken" => token, "name" => "Test" })
     env = mock_env("POST", "/secure/action",
                    body: json_body,
@@ -101,11 +115,11 @@ RSpec.describe "RackApp auth check (header / body / session)" do
 
     parsed = JSON.parse(body.join)
     expect(parsed["ok"]).to eq(true)
-    expect(parsed["user"]["type"]).to eq("form")
+    expect(parsed["user"]["user_id"]).to eq(1)
   end
 
   it "allows request with valid formToken in URL-encoded body" do
-    token = Tina4::Auth.get_token({ "type" => "form" })
+    token = Tina4::Auth.get_token({ "user_id" => 1 })
     form_body = "name=Test&formToken=#{URI.encode_www_form_component(token)}"
     env = mock_env("POST", "/secure/action",
                    body: form_body,
@@ -121,7 +135,7 @@ RSpec.describe "RackApp auth check (header / body / session)" do
   # ── 4. FreshToken header is returned when body token validates ─
 
   it "returns FreshToken header when formToken in body validates" do
-    token = Tina4::Auth.get_token({ "type" => "form", "context" => "checkout" })
+    token = Tina4::Auth.get_token({ "user_id" => 1, "context" => "checkout" })
     json_body = JSON.generate({ "formToken" => token })
     env = mock_env("POST", "/secure/action",
                    body: json_body,

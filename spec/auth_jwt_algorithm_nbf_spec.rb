@@ -27,7 +27,7 @@ JWT_CONTRACT_ALGORITHMS = {
 }.freeze
 
 RSpec.describe "Tina4::Auth JWT algorithm + nbf contract" do
-  let(:secret) { "jwt-cluster-regression-secret" }
+  let(:secret) { "jwt-cluster-regression-secret-01" }
   let(:keys_dir) { Dir.mktmpdir("tina4_jwt_contract_no_rsa") }
 
   before(:each) do
@@ -240,7 +240,7 @@ RSpec.describe "Tina4::Auth JWT algorithm + nbf contract" do
     it "POSITIVE: the same holds for an explicit secret and every supported alg" do
       JWT_CONTRACT_ALGORITHMS.each_key do |algorithm|
         _header, claims, = token_parts(
-          Tina4::Auth.get_token({ "user_id" => 1 }, secret: "an-explicit-secret", algorithm: algorithm)
+          Tina4::Auth.get_token({ "user_id" => 1 }, secret: "an-explicit-secret-0123456789abc", algorithm: algorithm)
         )
         expect(claims).not_to have_key("nbf"), "#{algorithm} auto-stamped nbf"
       end

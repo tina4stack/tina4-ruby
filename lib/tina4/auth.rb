@@ -61,11 +61,70 @@ module Tina4
     # rejected for no real reason; RFC 7519 explicitly allows "a small leeway".
     JWT_LEEWAY_SECONDS = 60
 
+    # Token purposes that are never an identity (ADR-0079 s1). Frond's
+    # form_token signs a JWT with the same TINA4_SECRET as an auth token, marked
+    # "type" => "form". A form token proves where a write came from, never who
+    # the caller is, so every identity gate refuses these purposes. valid_token
+    # itself stays purpose-neutral: CsrfMiddleware needs it for form tokens.
+    NON_IDENTITY_TOKEN_TYPES = %w[form].freeze
+
+    # Minimum HMAC key length in bytes (ADR-0079 s2): the HS256 output size,
+    # RFC 7518 s3.2. A blank key is the shortest case - anyone can reproduce an
+    # HMAC made with it.
+    MIN_SECRET_BYTES = 32
+
+    # The HMAC signing key is blank or shorter than MIN_SECRET_BYTES. An
+    # ArgumentError, Ruby's equivalent of Python's ValueError.
+    class InsecureSecretError < ArgumentError; end
+
     class << self
+      # Explicitly provision an RS256 key pair in <root_dir>/.keys (opt-in). The
+      # framework never calls this on its own: a blank TINA4_SECRET used to mint
+      # a key pair implicitly at boot (ADR-0079 s2).
       def setup(root_dir = Dir.pwd)
         @keys_dir = File.join(root_dir, KEYS_DIR)
         FileUtils.mkdir_p(@keys_dir)
         ensure_keys
+      end
+
+      # Point RS256 at <root_dir>/.keys WITHOUT creating anything. Boot uses
+      # this, so an operator-provisioned key pair there keeps working.
+      def keys_root=(root_dir)
+        @keys_dir = File.join(root_dir, KEYS_DIR)
+        @private_key = nil
+        @public_key = nil
+      end
+
+      # True when a VERIFIED payload may stand for a caller's identity. A payload
+      # whose "type" is a reserved non-identity purpose (a Frond form token) is
+      # refused; application payloads are otherwise untouched.
+      def identity_payload?(payload)
+        payload.is_a?(Hash) && !NON_IDENTITY_TOKEN_TYPES.include?(payload["type"])
+      end
+
+      # The actionable error for a weak HMAC key, or nil when the key is usable.
+      def insecure_secret_message(secret)
+        length = secret.to_s.bytesize
+        return nil if length >= MIN_SECRET_BYTES
+
+        what = length.zero? ? "is not set" : "is #{length} bytes"
+        "Auth: TINA4_SECRET #{what}; an HMAC JWT secret must be at least " \
+          "#{MIN_SECRET_BYTES} bytes. Generate one with `openssl rand -hex 32` and set " \
+          "TINA4_SECRET in your environment or .env."
+      end
+
+      # Refuse to boot with a secret that makes tokens forgeable (ADR-0079 s2).
+      # Outside dev a blank TINA4_SECRET is refused; in any mode a set-but-short
+      # one is refused. An operator-provisioned RS256 key pair in .keys/ stands
+      # in for the secret. Raises InsecureSecretError with the actionable message.
+      def require_boot_secret!
+        return if rsa_keys_present?
+
+        secret = ENV["TINA4_SECRET"].to_s
+        return if secret.empty? && dev?
+
+        message = insecure_secret_message(secret)
+        raise InsecureSecretError, message if message
       end
 
       # Boot-time bootstrap (run once after env load, before auth is used).
@@ -118,15 +177,17 @@ module Tina4
 
       # ── HS256 helpers (stdlib only, no gem) ──────────────────────
 
-      # Returns true when SECRET env var is set and no RSA keys exist in .keys/
+      # HMAC with TINA4_SECRET unless an RS256 key pair has been provisioned in
+      # .keys/ (kept for existing deployments). A blank secret no longer falls
+      # back to an implicitly generated key pair: it is refused (ADR-0079 s2).
       def use_hmac?
-        secret = ENV["TINA4_SECRET"]
-        return false if secret.nil? || secret.empty?
+        !rsa_keys_present?
+      end
 
-        # If RSA keys already exist on disk, prefer RS256 for backward compat
+      def rsa_keys_present?
         @keys_dir ||= File.join(Dir.pwd, KEYS_DIR)
-        !(File.exist?(File.join(@keys_dir, "private.pem")) &&
-          File.exist?(File.join(@keys_dir, "public.pem")))
+        File.exist?(File.join(@keys_dir, "private.pem")) &&
+          File.exist?(File.join(@keys_dir, "public.pem"))
       end
 
       # Lazy per-call secret resolver. When the secret is blank, emit the
@@ -175,6 +236,9 @@ module Tina4
       # HMAC the signing input with the digest the algorithm actually names, so the
       # header's "alg" can never disagree with the bytes we produced.
       def hmac_signature(algorithm, secret, signing_input)
+        weak = insecure_secret_message(secret)
+        raise InsecureSecretError, weak if weak
+
         OpenSSL::HMAC.digest(HMAC_ALGORITHMS.fetch(algorithm).new, secret.to_s, signing_input)
       end
 
@@ -248,6 +312,15 @@ module Tina4
         # configuration error that must surface, not become a nil "invalid token".
         alg = resolve_algorithm(algorithm)
 
+        # A blank or short key verifies tokens anyone can mint, so the token is
+        # REJECTED (fail closed with a 401, never a 500) and the operator is
+        # told why. ADR-0079 s2.
+        weak = insecure_secret_message(secret)
+        if weak
+          log_warning(weak)
+          return nil
+        end
+
         decode_envelope(token, alg) do |input, signature|
           expected = hmac_signature(alg, secret, input)
           # Constant-time comparison to prevent timing attacks. Lengths must match
@@ -305,7 +378,6 @@ module Tina4
         elsif use_hmac?
           hmac_encode(claims, hmac_secret, algorithm: algorithm)
         else
-          ensure_keys
           rs256_encode(claims)
         end
       end
@@ -322,7 +394,6 @@ module Tina4
         if use_hmac?
           hmac_decode(token, hmac_secret) # returns Hash payload or nil
         else
-          ensure_keys
           rs256_decode(token)
         end
       end
@@ -402,10 +473,11 @@ module Tina4
         # than this process's env-resolved defaults.
         payload = if secret || algorithm
                     hmac_decode(token, secret || hmac_secret, algorithm: algorithm)
-                  elsif valid_token(token)
-                    get_payload(token)
+                  else
+                    valid_token(token)
                   end
-        return payload if payload
+        # A form token is not an identity (ADR-0079 s1).
+        return identity_payload?(payload) ? payload : nil if payload
 
         # API_KEY bypass — timing-safe comparison via validate_api_key
         # (OpenSSL.fixed_length_secure_compare). Parity with Python's
@@ -446,9 +518,13 @@ module Tina4
           token = Regexp.last_match(1)
 
           # JWT first, then the API key — same order and same payload shape as
-          # authenticate_request above (and as Python/PHP/Node).
-          if valid_token(token)
-            env["tina4.auth"] = get_payload(token)
+          # authenticate_request above (and as Python/PHP/Node). A form token is
+          # not an identity (ADR-0079 s1).
+          payload = valid_token(token)
+          if payload
+            return false unless identity_payload?(payload)
+
+            env["tina4.auth"] = payload
             return true
           end
 
@@ -565,7 +641,9 @@ module Tina4
       def generate_keys
         Tina4::Log.info("Generating RSA key pair for JWT authentication")
         key = OpenSSL::PKey::RSA.generate(2048)
-        File.write(private_key_path, key.to_pem)
+        # The private key is readable by its owner only.
+        File.open(private_key_path, File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |f| f.write(key.to_pem) }
+        File.chmod(0o600, private_key_path)
         File.write(public_key_path, key.public_key.to_pem)
         @private_key = nil
         @public_key = nil

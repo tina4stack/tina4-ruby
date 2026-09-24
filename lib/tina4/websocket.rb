@@ -107,7 +107,10 @@ module Tina4
     return [nil, false] unless token
 
     payload = Tina4::Auth.valid_token(token)
-    [payload, !payload.nil?]
+    # A form token is not an identity (ADR-0079 s1).
+    return [nil, false] unless Tina4::Auth.identity_payload?(payload)
+
+    [payload, true]
   end
 
   # Whether the client offered the "bearer" subprotocol — in which case the
