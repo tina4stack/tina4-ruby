@@ -262,4 +262,13 @@ RSpec.describe "Tina4 dev-surface gate contract (release security boundaries)" d
     end
   end
 
+  it "public in project symlink remains readable" do
+    File.symlink(File.join(@app_dir, "readme.txt"), File.join(@app_dir, "public-alias.txt"))
+    ["/__dev/api/file", "/__dev/api/file/raw"].each do |endpoint|
+      status, body = dispatch("GET", endpoint + "?path=public-alias.txt")
+      expect(status).to eq(200)
+      expect(body).to include("public-readme")
+    end
+  end
+
 end

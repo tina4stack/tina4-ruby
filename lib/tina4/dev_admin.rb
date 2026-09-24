@@ -1880,6 +1880,18 @@ module Tina4
         ext_map.fetch(File.extname(base).downcase, "text")
       end
 
+      # Validate and read one descriptor; never reopen a checked pathname.
+      def read_project_bytes(target)
+        flags = File::RDONLY
+        flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        File.open(target, flags) do |file|
+          info = file.stat
+          raise ArgumentError, "Not a regular file" unless info.file?
+          file.read || "".b
+        end
+      end
+
       def file_read_payload(rel)
         return { error: "path required" } if rel.nil? || rel.empty?
         # DEVADMIN-DEC-03: never serve secret material (.env, keys, secrets/).
@@ -1890,10 +1902,9 @@ module Tina4
         end
         begin
           target = safe_project_path(rel)
-          return { error: "Not found" } unless File.exist?(target)
-          return { error: "Not a file" } unless File.file?(target)
-          content = File.read(target, encoding: "utf-8", invalid: :replace, undef: :replace)
-          { path: rel, content: content, bytes: File.size(target), language: dev_admin_language(rel) }
+          data = read_project_bytes(target)
+          content = data.dup.force_encoding(Encoding::UTF_8).scrub
+          { path: rel, content: content, bytes: data.bytesize, language: dev_admin_language(rel) }
         rescue => e
           { error: e.message }
         end
@@ -1905,8 +1916,7 @@ module Tina4
         return json_response({ error: "Refused: secret file" }, 403) if secret_path?(rel) || resolved_secret?(rel)
         begin
           target = safe_project_path(rel)
-          return json_response({ error: "Not found" }) unless File.file?(target)
-          content = File.binread(target)
+          content = read_project_bytes(target)
           ct = case File.extname(target).downcase
                when ".css" then "text/css"
                when ".js"  then "application/javascript"
