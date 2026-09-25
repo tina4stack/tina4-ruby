@@ -822,10 +822,17 @@ module Tina4
         resolved = begin
           safe_project_path(file_path, extra_roots: [scan_root])
         rescue ArgumentError
-          begin
-            scan_root ? safe_project_path(File.join(scan_root, file_path), extra_roots: [scan_root]) : nil
-          rescue ArgumentError
-            nil
+          # A RELATIVE path may be retried against the last scan root; an
+          # absolute path that resolved outside the project is simply outside -
+          # never re-based under the scan root (File.join would fold it into a
+          # bogus in-root path that 404s instead of refusing 403). Parity with
+          # Python/Node: outside -> 403.
+          if scan_root && !file_path.empty? && !File.absolute_path?(file_path)
+            begin
+              safe_project_path(File.join(scan_root, file_path), extra_roots: [scan_root])
+            rescue ArgumentError
+              nil
+            end
           end
         end
         return json_response({ "error" => "Path outside project" }, 403) if !file_path.empty? && resolved.nil?
