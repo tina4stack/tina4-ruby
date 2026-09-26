@@ -1090,14 +1090,6 @@ Tina4::Testing.reset!    # clear all suites and results
 Defined in `lib/tina4/sql_translator.rb`.
 
 ```ruby
-# LIMIT/OFFSET -> Firebird ROWS...TO
-Tina4::SQLTranslator.limit_to_rows("SELECT * FROM t LIMIT 10 OFFSET 5")
-# => "SELECT * FROM t ROWS 6 TO 15"
-
-# LIMIT -> MSSQL TOP
-Tina4::SQLTranslator.limit_to_top("SELECT * FROM t LIMIT 10")
-# => "SELECT TOP 10 * FROM t"
-
 # || concatenation -> CONCAT()
 Tina4::SQLTranslator.concat_pipes_to_func("a || b || c")
 # => "CONCAT(a, b, c)"
@@ -1105,15 +1097,22 @@ Tina4::SQLTranslator.concat_pipes_to_func("a || b || c")
 Tina4::SQLTranslator.boolean_to_int("WHERE active = TRUE")    # TRUE->1, FALSE->0
 Tina4::SQLTranslator.ilike_to_like("name ILIKE ?")            # -> LOWER() LIKE LOWER()
 Tina4::SQLTranslator.auto_increment_syntax(ddl, "postgresql") # AUTOINCREMENT -> SERIAL
-Tina4::SQLTranslator.placeholder_style("? AND ?", ":")        # -> :1 AND :2
-Tina4::SQLTranslator.query_key("SELECT 1", [42])              # SHA256 cache key
+Tina4::SQLTranslator.ddl_types(ddl, "postgresql")             # portable column types per engine
+Tina4::SQLTranslator.replace_placeholders("? AND ?")          # -> engine placeholder style
 ```
+
+`limit_to_rows`, `limit_to_top` and `placeholder_style` were removed
+(SQLTRANS-DEC-02): each Ruby driver owns pagination and placeholders itself and
+does it correctly per engine (Firebird `SELECT FIRST/SKIP`, MSSQL
+`OFFSET … FETCH`, Postgres `$1`), so those translator helpers were dead code that
+disagreed with the live driver. `concat`/`boolean`/`ilike` stay because the
+drivers do not translate them.
 
 ### QueryCache — in-memory TTL cache for query results
 
-Defined in `lib/tina4/cache.rb:19` — NOT in `sql_translator.rb`. `SQLTranslator`
-only computes the cache KEY (`query_key`, above); the cache itself is a separate
-class in its own file.
+Defined in `lib/tina4/cache.rb:19` — NOT in `sql_translator.rb`. The cache is a
+separate class in its own file, and it also owns the cache KEY: the SHA256 key is
+`Tina4::QueryCache.query_key(sql, params)` (`lib/tina4/cache.rb:156`).
 
 ```ruby
 cache = Tina4::QueryCache.new(default_ttl: 300, max_size: 1000)
