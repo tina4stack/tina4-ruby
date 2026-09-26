@@ -7,6 +7,8 @@
 
 
 require "spec_helper"
+require "base64"
+require "openssl"
 require "json"
 require "stringio"
 
@@ -38,8 +40,8 @@ RSpec.describe Tina4::CsrfMiddleware do
     # A real signing secret so the SEC-01 blank-secret HARD-FAIL does not fire for
     # the behavioural cases (they exercise token validation, not the fail-closed
     # gate). The two SEC-01 cases delete it deliberately. Mirrors Python's autouse
-    # fixture (TINA4_SECRET = "test-csrf-secret").
-    ENV["TINA4_SECRET"] = "test-csrf-secret"
+    # fixture (TINA4_SECRET = "test-csrf-secret-0123456789abcde").
+    ENV["TINA4_SECRET"] = "test-csrf-secret-0123456789abcde"
     # Real sessions in this spec write to a throwaway dir under tmp_dir.
     ENV["TINA4_SESSION_PATH"] = File.join(tmp_dir, "sessions")
     # No ambient session binding on Frond-generated tokens unless a test asks.
@@ -515,9 +517,21 @@ RSpec.describe Tina4::CsrfMiddleware do
   # csrf-no-default-secret (SEC-01). Assert the fail-closed MESSAGE, not merely
   # 403 -- a mismatched-signature token would 403 anyway, so the message is what
   # makes these a genuine gate for the blank-secret HARD-FAIL.
+  # Sign an HS256 JWT with a raw HMAC, as a forger would. Auth refuses to SIGN
+  # with a blank or short key (ADR-0079 s2), so a token made with the retired
+  # public "tina4-default-secret" or the blank key is built by hand here: the
+  # point is that the middleware REJECTS it.
+  def forge_hs256(claims, key)
+    now = Time.now.to_i
+    b64 = ->(data) { Base64.urlsafe_encode64(data, padding: false) }
+    head = b64.call(JSON.generate({ "alg" => "HS256", "typ" => "JWT" }))
+    body = b64.call(JSON.generate(claims.merge("iat" => now, "exp" => now + 3600)))
+    "#{head}.#{body}.#{b64.call(OpenSSL::HMAC.digest('SHA256', key, "#{head}.#{body}"))}"
+  end
+
   it "forged default secret token is rejected" do
     ENV.delete("TINA4_SECRET")
-    forged = Tina4::Auth.get_token({ "type" => "form" }, secret: "tina4-default-secret")
+    forged = forge_hs256({ "type" => "form" }, "tina4-default-secret")
     request = build_request(method: "POST", body: { "formToken" => forged })
     response = new_response
 
@@ -528,7 +542,7 @@ RSpec.describe Tina4::CsrfMiddleware do
 
   it "forged blank secret token is rejected" do
     ENV.delete("TINA4_SECRET")
-    forged = Tina4::Auth.get_token({ "type" => "form" }, secret: "")
+    forged = forge_hs256({ "type" => "form" }, "")
     request = build_request(method: "POST", body: { "formToken" => forged })
     response = new_response
 

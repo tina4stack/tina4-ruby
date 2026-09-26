@@ -397,7 +397,7 @@ RSpec.describe Tina4::DevAdmin do
 
     it "returns nil when not enabled" do
       set_real_env("TINA4_DEBUG" => nil)
-      env = { "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
       expect(Tina4::DevAdmin.handle_request(env)).to be_nil
     end
 
@@ -407,7 +407,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "serves the dashboard on GET /__dev" do
-      env = { "PATH_INFO" => "/__dev", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev", "REQUEST_METHOD" => "GET" }
       status, headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       expect(headers["content-type"]).to include("text/html")
@@ -415,7 +415,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "returns JSON for GET /__dev/api/status" do
-      env = { "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
       status, headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       expect(headers["content-type"]).to include("application/json")
@@ -425,7 +425,7 @@ RSpec.describe Tina4::DevAdmin do
 
     it "returns JSON for GET /__dev/api/messages" do
       Tina4::DevAdmin.message_log.log("test", "info", "hello")
-      env = { "PATH_INFO" => "/__dev/api/messages", "REQUEST_METHOD" => "GET", "QUERY_STRING" => "" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/messages", "REQUEST_METHOD" => "GET", "QUERY_STRING" => "" }
       status, _headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       data = JSON.parse(body.first)
@@ -436,7 +436,7 @@ RSpec.describe Tina4::DevAdmin do
     it "clears messages on POST /__dev/api/messages/clear" do
       Tina4::DevAdmin.message_log.log("test", "info", "to-clear")
       env = {
-        "PATH_INFO" => "/__dev/api/messages/clear",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/messages/clear",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new("{}")
       }
@@ -447,7 +447,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "returns request inspector data on GET /__dev/api/requests" do
-      env = { "PATH_INFO" => "/__dev/api/requests", "REQUEST_METHOD" => "GET", "QUERY_STRING" => "" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/requests", "REQUEST_METHOD" => "GET", "QUERY_STRING" => "" }
       status, _headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       data = JSON.parse(body.first)
@@ -457,7 +457,7 @@ RSpec.describe Tina4::DevAdmin do
 
     it "clears requests on POST /__dev/api/requests/clear" do
       env = {
-        "PATH_INFO" => "/__dev/api/requests/clear",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/requests/clear",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new("{}")
       }
@@ -476,7 +476,7 @@ RSpec.describe Tina4::DevAdmin do
         saved_queue_path = ENV["TINA4_QUEUE_PATH"]
         ENV["TINA4_QUEUE_PATH"] = store
         begin
-          env = { "PATH_INFO" => "/__dev/api/queue", "REQUEST_METHOD" => "GET" }
+          env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/queue", "REQUEST_METHOD" => "GET" }
           _status, _headers, body = Tina4::DevAdmin.handle_request(env)
           data = JSON.parse(body.first)
           expect(data["jobs"]).to eq([])
@@ -488,7 +488,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "returns broken errors stub on GET /__dev/api/broken" do
-      env = { "PATH_INFO" => "/__dev/api/broken", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/broken", "REQUEST_METHOD" => "GET" }
       status, _headers, body = Tina4::DevAdmin.handle_request(env)
       data = JSON.parse(body.first)
       expect(data["health"]["healthy"]).to be true
@@ -501,7 +501,7 @@ RSpec.describe Tina4::DevAdmin do
       # "not my route" signal — so the front controller falls through to a 404
       # (proven end-to-end through a real RackApp in dev_admin_conformance_spec.rb).
       env = {
-        "PATH_INFO" => "/__dev/api/chat",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/chat",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new('{"message":"hello"}')
       }
@@ -512,7 +512,7 @@ RSpec.describe Tina4::DevAdmin do
       Tina4::DevAdmin.message_log.log("http", "info", "Found user")
       Tina4::DevAdmin.message_log.log("http", "info", "Not relevant")
       env = {
-        "PATH_INFO" => "/__dev/api/messages/search",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/messages/search",
         "REQUEST_METHOD" => "GET",
         "QUERY_STRING" => "q=found"
       }
@@ -535,7 +535,7 @@ RSpec.describe Tina4::DevAdmin do
 
     def files_get(path)
       env = {
-        "PATH_INFO" => "/__dev/api/files",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/files",
         "REQUEST_METHOD" => "GET",
         "QUERY_STRING" => "path=#{path}"
       }
@@ -621,14 +621,14 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     def mtime_get
-      env = { "PATH_INFO" => "/__dev/api/mtime", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/mtime", "REQUEST_METHOD" => "GET" }
       _, _, body = Tina4::DevAdmin.handle_request(env)
       JSON.parse(body.first)
     end
 
     def reload_post(body_hash = {})
       env = {
-        "PATH_INFO" => "/__dev/api/reload",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/reload",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new(body_hash.to_json)
       }
@@ -681,7 +681,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "includes db_tables as an integer" do
-      env = { "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/status", "REQUEST_METHOD" => "GET" }
       status, _headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       data = JSON.parse(body.first)
@@ -707,7 +707,7 @@ RSpec.describe Tina4::DevAdmin do
 
     it "executes a CREATE + INSERT batch via the query API" do
       env = {
-        "PATH_INFO" => "/__dev/api/query",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/query",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new(JSON.generate({
           query: "CREATE TABLE test_multi (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO test_multi (id, name) VALUES (1, 'Alice'); INSERT INTO test_multi (id, name) VALUES (2, 'Bob')"
@@ -720,7 +720,7 @@ RSpec.describe Tina4::DevAdmin do
 
       # Verify data was inserted via a SELECT query
       select_env = {
-        "PATH_INFO" => "/__dev/api/query",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/query",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new(JSON.generate({ query: "SELECT * FROM test_multi" }))
       }
@@ -732,7 +732,7 @@ RSpec.describe Tina4::DevAdmin do
     it "returns error when a batch contains a bad statement (rollback)" do
       # Create table first
       setup_env = {
-        "PATH_INFO" => "/__dev/api/query",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/query",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new(JSON.generate({
           query: "CREATE TABLE test_rb (id INTEGER PRIMARY KEY, name TEXT)"
@@ -742,7 +742,7 @@ RSpec.describe Tina4::DevAdmin do
 
       # Try batch with a bad statement — should rollback
       bad_env = {
-        "PATH_INFO" => "/__dev/api/query",
+        "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/api/query",
         "REQUEST_METHOD" => "POST",
         "rack.input" => StringIO.new(JSON.generate({
           query: "INSERT INTO test_rb (id, name) VALUES (1, 'Alice'); INSERT INTO nonexistent (x) VALUES (1)"
@@ -761,7 +761,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     let(:html) do
-      env = { "PATH_INFO" => "/__dev", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev", "REQUEST_METHOD" => "GET" }
       _status, _headers, body = Tina4::DevAdmin.handle_request(env)
       body.first
     end
@@ -772,7 +772,7 @@ RSpec.describe Tina4::DevAdmin do
     end
 
     it "serves the REAL dev admin JS bundle (not a stub/truncated asset)" do
-      env = { "PATH_INFO" => "/__dev/js/tina4-dev-admin.min.js", "REQUEST_METHOD" => "GET" }
+      env = { "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO" => "/__dev/js/tina4-dev-admin.min.js", "REQUEST_METHOD" => "GET" }
       status, headers, body = Tina4::DevAdmin.handle_request(env)
       expect(status).to eq(200)
       expect(headers["content-type"]).to include("javascript")

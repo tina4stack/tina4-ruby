@@ -292,6 +292,11 @@ module Tina4
     # still see the URL the client used. Matches Python/PHP/Node parity.
     def url
       scheme = self.class.secure_scheme?(env) ? "https" : "http"
+      # X-Forwarded-Host is honoured ONLY when the raw socket peer is a trusted
+      # proxy (TINA4_TRUSTED_PROXIES) — the same gate already applied to
+      # X-Forwarded-For. An untrusted client can otherwise forge the host and
+      # control the absolute request.url (password-reset links, cache keys,
+      # open-redirect base). Parity with Python/PHP/Node.
       forwarded_host = Tina4.trusted_proxy?(@remote_ip) ? env["HTTP_X_FORWARDED_HOST"] : nil
       host = forwarded_host || env["HTTP_HOST"] || env["SERVER_NAME"] || "localhost"
       port = env["SERVER_PORT"]

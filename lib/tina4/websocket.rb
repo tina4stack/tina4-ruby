@@ -113,7 +113,10 @@ module Tina4
     return [nil, false] unless token
 
     payload = Tina4::Auth.valid_token(token)
-    [payload, !payload.nil?]
+    # A form token is not an identity (ADR-0079 s1).
+    return [nil, false] unless Tina4::Auth.identity_payload?(payload)
+
+    [payload, true]
   end
 
   # Whether the client offered the "bearer" subprotocol — in which case the
@@ -199,6 +202,17 @@ module Tina4
       @connections
     end
 
+    # Seconds a client may take to send its upgrade request (Python uses 10).
+    HANDSHAKE_TIMEOUT = 10
+    # Upper bound on the request head; a longer one is not a WebSocket upgrade.
+    MAX_REQUEST_HEAD = 16_384
+
+    # Run a standalone WebSocket server. port: 0 picks a free port (see #port).
+    #
+    # Each accepted socket gets its own thread that reads the HTTP request head,
+    # builds the Rack-style env handle_upgrade expects, and upgrades. This loop
+    # used to hand handle_upgrade an EMPTY env, so no Sec-WebSocket-Key was ever
+    # seen and no handshake could complete (the socket was left open, too).
     def start(host: "0.0.0.0", port: 7147)
       require "socket"
       @server_socket = TCPServer.new(host, port)
@@ -207,14 +221,60 @@ module Tina4
         while @running
           begin
             client = @server_socket.accept
-            env = {}
-            handle_upgrade(env, client)
-          rescue => e
+            Thread.new(client) { |socket| serve_standalone(socket) }
+          rescue StandardError
             break unless @running
           end
         end
       end
       self
+    end
+
+    # The port the standalone server is listening on (useful with port: 0).
+    def port
+      @server_socket&.local_address&.ip_port
+    end
+
+    # Read one upgrade request from +socket+ and hand it to handle_upgrade; a
+    # request that is not a WebSocket upgrade gets a 400 and is closed.
+    def serve_standalone(socket)
+      env = read_upgrade_request(socket)
+      unless env && env["HTTP_SEC_WEBSOCKET_KEY"] && upgrade?(env)
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n") rescue nil
+        socket.close rescue nil
+        return
+      end
+      handle_upgrade(env, socket)
+    rescue StandardError => e
+      Tina4::Log.warning("WebSocket standalone upgrade failed: #{e.message}") if defined?(Tina4::Log)
+      socket.close rescue nil
+    end
+
+    # The request head as a Rack-style env (REQUEST_PATH, QUERY_STRING and
+    # HTTP_* headers), or nil when it does not arrive in time or is too long.
+    # Read a byte at a time so nothing after the head is consumed.
+    def read_upgrade_request(socket)
+      head = +""
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + HANDSHAKE_TIMEOUT
+      until head.end_with?("\r\n\r\n")
+        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        return nil if remaining <= 0 || head.bytesize > MAX_REQUEST_HEAD || !socket.wait_readable(remaining)
+
+        head << socket.readpartial(1)
+      end
+      request_line, *header_lines = head.split("\r\n")
+      method, target, = request_line.to_s.split(" ")
+      path, _, query = target.to_s.partition("?")
+      env = { "REQUEST_METHOD" => method.to_s, "REQUEST_PATH" => path, "PATH_INFO" => path, "QUERY_STRING" => query }
+      header_lines.each do |line|
+        name, value = line.split(":", 2)
+        next if value.nil?
+
+        env["HTTP_#{name.strip.upcase.tr("-", "_")}"] = value.strip
+      end
+      env
+    rescue IOError, SystemCallError
+      nil
     end
 
     def stop
@@ -739,13 +799,14 @@ module Tina4
 
     def send(message)
       data = message.is_a?(String) ? message : message.to_s
-      # Text frames must be valid UTF-8; binary payloads are sent verbatim.
-      data = data.encode("UTF-8") if data.encoding != Encoding::ASCII_8BIT
-      frame = build_frame(0x1, data)
-      @socket.write(frame)
-    rescue IOError
-      # Connection closed — mark dead so the broadcast path prunes it.
-      @closed = true
+      # A binary (ASCII-8BIT) payload goes out as a BINARY frame, verbatim. It
+      # used to go out as a TEXT frame, which is invalid UTF-8 on the wire and
+      # makes a browser fail the connection. Text frames must be valid UTF-8.
+      if data.encoding == Encoding::ASCII_8BIT
+        write_frame(build_frame(0x2, data))
+      else
+        write_frame(build_frame(0x1, data.encode("UTF-8")))
+      end
     end
 
     alias_method :send_text, :send
@@ -757,16 +818,48 @@ module Tina4
     end
 
     def send_pong(data)
-      frame = build_frame(0xA, data || "")
-      @socket.write(frame)
-    rescue IOError
-      @closed = true
+      write_frame(build_frame(0xA, data || ""))
     end
 
     def close(code: 1000, reason: "")
       payload = [code].pack("n") + reason
       frame = build_frame(0x8, payload)
-      @socket.write(frame) rescue nil
+      # Best effort and never blocking: a peer that stopped reading must not
+      # hold up the reaper or a shutdown. The close frame only goes out when no
+      # earlier frame is still queued, so it can never land mid-frame.
+      write_lock.synchronize do
+        @socket.write_nonblock(frame, exception: false) if pending.empty?
+      end
+    rescue IOError, SystemCallError
+      nil
+    ensure
+      @closed = true
+      @socket.close rescue nil
+    end
+
+    # Hand a frame to the socket WITHOUT blocking the caller. What the kernel
+    # cannot take yet waits in a per-connection queue that a flusher thread
+    # drains as the peer reads. A peer whose queue passes TINA4_WS_MAX_BACKLOG
+    # bytes (default 1 MiB, 0 = unbounded; the same setting as tina4-nodejs) is
+    # hopelessly behind or never reads, so it is closed. A blocking write here
+    # used to stall every broadcast forever on one client that stopped reading.
+    def write_frame(frame)
+      return if @closed
+
+      write_lock.synchronize do
+        pending << frame.b
+        flush_pending
+        limit = max_backlog
+        if limit.positive? && pending.bytesize > limit
+          backlog = pending.bytesize
+          drop_slow_client("backlog #{backlog} bytes exceeds TINA4_WS_MAX_BACKLOG (#{limit})")
+        elsif !pending.empty?
+          start_flusher
+        end
+      end
+    rescue IOError, SystemCallError
+      # Broken pipe / reset / closed socket: mark dead so the broadcast path prunes it.
+      @closed = true
       @socket.close rescue nil
     end
 
@@ -801,6 +894,57 @@ module Tina4
 
     def build_frame(opcode, data)
       Tina4.build_frame(opcode, data)
+    end
+
+    private
+
+    def write_lock
+      @write_lock ||= Mutex.new
+    end
+
+    def pending
+      @pending ||= +"".b
+    end
+
+    def max_backlog
+      Integer(ENV["TINA4_WS_MAX_BACKLOG"] || "1048576")
+    rescue ArgumentError, TypeError
+      1_048_576
+    end
+
+    # Write as much of the queue as the kernel takes right now. Caller holds the lock.
+    def flush_pending
+      until pending.empty?
+        written = @socket.write_nonblock(pending, exception: false)
+        break if written == :wait_writable
+
+        @pending = pending.byteslice(written..)
+      end
+    end
+
+    # One background drainer per connection while bytes are queued.
+    def start_flusher
+      return if @flusher&.alive?
+
+      @flusher = Thread.new do
+        until @closed
+          done = write_lock.synchronize { pending.empty? }
+          break if done
+
+          @socket.wait_writable(1)
+          write_lock.synchronize { flush_pending }
+        end
+      rescue IOError, SystemCallError
+        @closed = true
+        @socket.close rescue nil
+      end
+    end
+
+    def drop_slow_client(reason)
+      Tina4::Log.warning("WebSocket client #{@id} dropped as too slow: #{reason}") if defined?(Tina4::Log)
+      @pending = +"".b
+      @closed = true
+      @socket.close rescue nil
     end
   end
 

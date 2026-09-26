@@ -278,5 +278,4 @@ RSpec.describe "Tina4 dev-surface gate contract (release security boundaries)" d
     expect(status).to eq(200)
     expect(body.b).to eq(bytes)
   end
-
 end

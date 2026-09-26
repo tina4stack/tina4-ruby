@@ -223,6 +223,13 @@ jobs:
       TINA4_TEST_MQTT_PASSWORD: testpass
       TINA4_MONGO_URI: mongodb://localhost:27017
       TINA4_TEST_MONGO_URI: mongodb://localhost:27017
+      # Redis / Valkey / password-Redis backplane. The services above run
+      # on 6379/6380/6381 but their URLs were never exported, so the new
+      # WebSocket-backplane specs (spec/websocket_hardening_spec.rb) skipped
+      # and the TINA4_REQUIRE_SERVICES no-silent-skip gate failed the job.
+      TINA4_TEST_REDIS_URL: redis://localhost:6379
+      TINA4_TEST_REDIS_AUTH_URL: redis://:s3cret@localhost:6381/3
+      TINA4_TEST_VALKEY_URL: redis://localhost:6380
       # Compile + load the optional MySQL/MSSQL driver gems (mysql2 + tiny_tds)
       # for the live #262 specs, PLUS the optional ruby-odbc gem (feature 13) for
       # the live ODBC specs. Both groups are OPTIONAL, so each is only installed

@@ -134,6 +134,9 @@ RSpec.describe "WebSocket backplane log redaction (real password Redis)" do
       expect(everything_written).to include("WebSocket backplane active")
       expect(everything_written).to include("WebSocket backplane publish failed")
       expect(everything_written).to include("WebSocket backplane wiring failed")
+      # The wrong-password listener's death is reported through the framework
+      # log (ADR-0071), not only as a raw thread trace on stderr.
+      expect(everything_written).to include("WebSocket backplane subscriber stopped on 'tina4:ws': WRONGPASS")
       expect(report["wired_malformed"]).to be(false)
 
       # The malformed URL is still diagnosable: the redacted form names the host.

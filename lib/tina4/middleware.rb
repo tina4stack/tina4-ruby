@@ -677,7 +677,9 @@ module Tina4
         auth_header = (headers["authorization"] || headers["Authorization"] || "").to_s
         if auth_header.start_with?("Bearer ")
           bearer_token = auth_header[7..].to_s.strip
-          return [request, response] if !bearer_token.empty? && Tina4::Auth.valid_token(bearer_token)
+          # Only an IDENTITY token marks an API client; a form token in the
+          # Bearer slot is not one and does not skip the check (ADR-0079 s1).
+          return [request, response] if !bearer_token.empty? && Tina4::Auth.identity_payload?(Tina4::Auth.valid_token(bearer_token))
         end
 
         # 7. A token in the query string leaks through logs/referers/history --

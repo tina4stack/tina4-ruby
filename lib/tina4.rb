@@ -159,6 +159,8 @@ module Tina4
   autoload :CRUD,                File.expand_path("tina4/crud", __dir__)
   autoload :API,                 File.expand_path("tina4/api", __dir__)
   autoload :APIResponse,         File.expand_path("tina4/api", __dir__)
+  autoload :Ssrf,                File.expand_path("tina4/ssrf", __dir__)
+  autoload :SsrfError,           File.expand_path("tina4/ssrf", __dir__)
   autoload :GraphQLType,         File.expand_path("tina4/graphql", __dir__)
   autoload :GraphQLSchema,       File.expand_path("tina4/graphql", __dir__)
   autoload :GraphQLParser,       File.expand_path("tina4/graphql", __dir__)
@@ -479,8 +481,15 @@ module Tina4
       # boot after env load, before any auth use. Never crashes boot.
       Tina4::Auth.ensure_dev_secret(root_dir)
 
-      # Setup auth keys
-      Tina4::Auth.setup(root_dir)
+      # Point RS256 at <root>/.keys without creating anything: an
+      # operator-provisioned key pair keeps working, and a blank secret no
+      # longer mints one implicitly (ADR-0079 s2).
+      Tina4::Auth.keys_root = root_dir
+
+      # Refuse to serve with a secret anyone can reproduce: blank outside dev,
+      # or set but shorter than 32 bytes in any mode (ADR-0079 s2). Raises
+      # Tina4::Auth::InsecureSecretError naming TINA4_SECRET.
+      Tina4::Auth.require_boot_secret!
 
       # Auto-attach CSRF protection when TINA4_CSRF is enabled (OFF by default).
       # Mirrors the Python master's attach_csrf_from_env -- the env flag is the

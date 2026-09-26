@@ -177,6 +177,14 @@ module Tina4
         end
       end
 
+      # Reject a job permanently — dead-letter it NOW, no retry (ADR-0023).
+      def reject(job, reason = "")
+        job.attempts = [job.attempts + 1, @max_retries].max
+        job.error = reason
+        dead_letter(job)
+        complete(job)
+      end
+
       def failed(_topic, max_retries: 3)
         raise NotImplementedError,
               "The rabbitmq queue backend cannot answer failed(): a job that " \

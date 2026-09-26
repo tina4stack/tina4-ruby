@@ -531,10 +531,13 @@ RSpec.describe Tina4::WSDL do
       expect(resp).to include("<Greeting>Hello A &amp; B ☺ &lt;x&gt;</Greeting>")
     end
 
-    it "POSITIVE: a UTF-8 body with a byte-order mark still works" do
+    # The shared body rule refuses every byte order mark, the UTF-8 one included
+    # (spec/wsdl_encoding_rule_spec.rb has the full set).
+    it "NEGATIVE: a UTF-8 body with a byte-order mark is Malformed XML" do
       xml = "\xEF\xBB\xBF".b + envelope("<Add><a>3</a><b>5</b></Add>").b
       resp = TestCalculator.new(RequestStub.new("POST", xml, {}, "/calc")).handle
-      expect(resp).to include("<Result>8</Result>")
+      expect(resp).to include("<faultstring>Malformed XML</faultstring>")
+      expect(resp).not_to include("<Result>8</Result>")
     end
 
     it "POSITIVE: a normal DOCTYPE-free request still works" do

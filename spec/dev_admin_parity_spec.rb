@@ -17,7 +17,7 @@ RSpec.describe "Tina4::DevAdmin parity routes" do
     input = body ? StringIO.new(body.is_a?(String) ? body : JSON.generate(body)) : StringIO.new("")
     {
       "REQUEST_METHOD" => method,
-      "PATH_INFO"      => path,
+      "REMOTE_ADDR" => "127.0.0.1", "PATH_INFO"      => path,
       "QUERY_STRING"   => query,
       "rack.input"     => input
     }

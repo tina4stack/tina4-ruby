@@ -100,7 +100,7 @@ RSpec.describe "Issue #134: every server entry point sends security headers and 
       "TINA4_SSO_CLIENT_SECRET" => @issue134_idp.client_secret,
       "TINA4_SSO_REDIRECT_URI" => "http://127.0.0.1:#{port}/auth/callback",
       "TINA4_PORT" => port.to_s, "TINA4_HOST" => "127.0.0.1", "PORT" => nil, "HOST" => nil,
-      "TINA4_CSRF" => "true", "TINA4_SECRET" => "issue134-secret-#{port}",
+      "TINA4_CSRF" => "true", "TINA4_SECRET" => "issue134-entrypoints-secret-0123456789abcdef-#{port}",
       "TINA4_DEBUG" => "false", "TINA4_LOG_LEVEL" => "NONE", "TINA4_SUPPRESS" => "true",
       "TINA4_OVERRIDE_CLIENT" => "true", "TINA4_NO_AI_PORT" => "true", "TINA4_NO_BROWSER" => "true",
       "TINA4_AUTO_MIGRATE" => "false", "TINA4_DATABASE_URL" => nil, "TINA4_CSP" => "default-src 'self'"

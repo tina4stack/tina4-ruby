@@ -39,6 +39,10 @@ module ShutdownProbe
   def base_env(overrides = {})
     {
       "TINA4_DEBUG" => "false",
+      # A valid HMAC secret so a production-mode (DEBUG=false) boot passes
+      # Auth.require_boot_secret! (ADR-0079). Specs that need their own secret
+      # override it; specs testing a missing/short secret set it themselves.
+      "TINA4_SECRET" => "tina4-shutdown-probe-suite-secret-0123456789",
       "TINA4_NO_AI_PORT" => "true",
       "TINA4_LOG_LEVEL" => "INFO",
       "TINA4_DEBUG_LEVEL" => nil,

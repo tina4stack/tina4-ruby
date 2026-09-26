@@ -15,7 +15,15 @@ module Tina4
     class S3Storage < StorageBackend
       def initialize(endpoint: nil, key: nil, secret: nil, bucket: nil, region: nil)
         super()
-        require "aws-sdk-s3" # optional dependency, loaded lazily
+        begin
+          require "aws-sdk-s3" # optional dependency, loaded lazily
+        rescue LoadError
+          # Storage.select rescues this and falls back to local; its warning
+          # carries this message, so the remedy reaches the operator.
+          raise LoadError,
+                "The 'aws-sdk-s3' gem is required for S3Storage. Install it with: " \
+                "bundle add aws-sdk-s3 (or add gem \"aws-sdk-s3\" to your Gemfile)"
+        end
 
         @bucket = bucket || ENV["TINA4_STORAGE_BUCKET"]
         raise ArgumentError, "S3Storage requires TINA4_STORAGE_BUCKET" if @bucket.nil? || @bucket.empty?
