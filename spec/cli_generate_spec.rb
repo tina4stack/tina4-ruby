@@ -867,4 +867,45 @@ RSpec.describe "CLI scaffolding-first generators" do
     end
     [status, out]
   end
+
+  # ── generate crud: the ONE pluralisation rule (lock-in) ─────────
+  #
+  # Ruby already derives the route from the CLASS NAME via to_route_name
+  # (pluralize_table(to_snake_case(name))), so it never double-pluralised the
+  # way python/php did (Order -> orderss). This spec LOCKS that: the route path,
+  # route file and list/page template are the SINGLE plural of the singular base,
+  # never the plural of an already-pluralised reserved-word table. Proven a real
+  # gate by mutation (break to_route_name -> these go red).
+  describe "generate crud pluralisation contract" do
+    it "does not double-pluralise a reserved-word class (Order)" do
+      cli.run(["generate", "crud", "Order", "--fields", "total:float"])
+
+      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "orders.rb"))).to be true
+      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "orderss.rb"))).to be false
+      route = File.read(File.join(@tmp_dir, "src", "routes", "orders.rb"))
+      expect(route).to include("/api/orders")
+      expect(route).not_to include("orderss")
+
+      expect(File.exist?(File.join(@tmp_dir, "src", "templates", "pages", "orders.twig"))).to be true
+      expect(File.exist?(File.join(@tmp_dir, "src", "templates", "pages", "orderss.twig"))).to be false
+
+      expect(File.exist?(File.join(@tmp_dir, "src", "orm", "order.rb"))).to be true
+      expect(Dir.glob(File.join(@tmp_dir, "migrations", "*create_orders.sql"))).not_to be_empty
+      expect(Dir.glob(File.join(@tmp_dir, "migrations", "*create_orderss.sql"))).to be_empty
+    end
+
+    it "pluralises a plain class exactly once (Product)" do
+      cli.run(["generate", "crud", "Product", "--fields", "name:string"])
+
+      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "products.rb"))).to be true
+      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "productss.rb"))).to be false
+      route = File.read(File.join(@tmp_dir, "src", "routes", "products.rb"))
+      expect(route).to include("/api/products")
+      expect(route).not_to include("productss")
+
+      expect(File.exist?(File.join(@tmp_dir, "src", "orm", "product.rb"))).to be true
+      # non-reserved -> table stays SINGULAR, so the migration is create_product.
+      expect(Dir.glob(File.join(@tmp_dir, "migrations", "*create_product.sql"))).not_to be_empty
+    end
+  end
 end
