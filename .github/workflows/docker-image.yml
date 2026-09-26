@@ -138,7 +138,7 @@ jobs:
         run: |
           # ADR-0078 hides `version` from a production /health, so read it from the
           # image's own version resolver instead (still catches the 0.0.0 fallback).
-          version=$(docker exec gate ruby -e 'require "tina4/version"; puts Tina4::VERSION')
+          version=$(docker exec gate ruby -e 'require "tina4"; puts Tina4::VERSION')
           echo "reported version: '$version'"
 
           if [ -z "$version" ]; then
