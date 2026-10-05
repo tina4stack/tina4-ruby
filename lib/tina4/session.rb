@@ -217,7 +217,7 @@ module Tina4
     # false) therefore still no-ops, exactly as before; a modified session of
     # any kind still writes.
     def save
-      return true unless @id && (@modified || @stored)
+      return true if @id.nil? || fresh?
 
       record = @data
       if @stored
@@ -245,6 +245,17 @@ module Tina4
       else
         false # dirty flag retained for retry
       end
+    end
+
+    # Whether this session is only an id: nothing has stored it and it holds no
+    # data. Such a session has no record and needs no cookie, so #save writes
+    # nothing for it and the dispatcher sends no cookie for it. It stops being
+    # fresh when something is stored in it. Calls that mark a session changed
+    # without leaving anything in it (deleting a key it never had, #clear,
+    # #regenerate on an empty session) leave it fresh: a record with no data is
+    # not a session.
+    def fresh?
+      !@stored && @data.empty?
     end
 
     # Destroy the current session. ENDS the session: the stored record is

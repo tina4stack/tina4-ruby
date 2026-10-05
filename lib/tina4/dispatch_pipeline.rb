@@ -649,12 +649,11 @@ module Tina4
       # renamed through TINA4_SESSION_NAME, so the auto-Set-Cookie would be
       # needlessly re-emitted on every request that already carries the renamed
       # cookie. Parity with Python's core/server._init_session cookie_prefix.
-      sid = sess.id
       cookie_prefix = "#{Tina4::Session.cookie_name}="
       cookie_val = (ctx.env["HTTP_COOKIE"] || "").split(";").map(&:strip)
                                                  .find { |part| part.start_with?(cookie_prefix) }
                                                  &.slice(cookie_prefix.length..)
-      if sid && sid != cookie_val
+      if session_needs_cookie?(sess, cookie_val)
         # Route through Session#cookie_header rather than hand-writing the
         # header, so TINA4_SESSION_SECURE / _SAMESITE / _HTTPONLY / _NAME / _TTL
         # are all honoured and Secure reflects the request scheme. The old
@@ -664,6 +663,19 @@ module Tina4
         headers["set-cookie"] = sess.cookie_header
       end
       [status, headers, body_parts]
+    end
+
+    # Whether the response must carry a session cookie: the session has an id the
+    # request did not already send, and it is not a fresh one. A fresh session
+    # (minted for this request and never written: a route that only read it, or
+    # the replacement for a cookie the store does not know) was not stored, so a
+    # cookie for it would name nothing - the next request could not resume it and
+    # would be handed another one.
+    def session_needs_cookie?(sess, cookie_val)
+      sid = sess.id
+      return false unless sid && sid != cookie_val
+
+      !(sess.respond_to?(:fresh?) && sess.fresh?)
     end
 
     # Milliseconds since the request entered the pipeline.
