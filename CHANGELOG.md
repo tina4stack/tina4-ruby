@@ -6,6 +6,14 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.148 — 2026-10-05
+
+### Session
+- An anonymous request stores no session — a request that never reads or writes session state no longer emits a `Set-Cookie` or persists an empty session record (cross-framework fix, at parity across Python, PHP, Ruby, Node.js).
+
+### AI skills
+- `tina4-developer-ruby` skill `updated_for_version` bumped to this release.
+
 ## 3.13.147 — 2026-10-05
 
 ### Dev MCP tools (fixes #271)
