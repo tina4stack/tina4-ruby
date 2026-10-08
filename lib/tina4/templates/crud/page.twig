@@ -30,8 +30,9 @@
 <style nonce="{{ csp_nonce() }}">
 .crud-container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
 .crud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-.crud-search { max-width: 300px; }
+.crud-search { flex: 0 1 300px; max-width: 300px; }
 .crud-actions { display: flex; gap: 0.5rem; align-items: center; }
+.crud-actions .btn { white-space: nowrap; flex-shrink: 0; }
 .crud-info { color: var(--text-muted, #6c757d); font-size: 0.875rem; margin-bottom: 0.5rem; }
 .crud-empty { text-align: center; padding: 2rem; }
 .crud-pagination { display: flex; justify-content: center; gap: 0.25rem; margin-top: 1rem; }
