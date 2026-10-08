@@ -35,6 +35,9 @@
 .crud-actions .btn { white-space: nowrap; flex-shrink: 0; }
 .crud-info { color: var(--text-muted, #6c757d); font-size: 0.875rem; margin-bottom: 0.5rem; }
 .crud-empty { text-align: center; padding: 2rem; }
+.crud-errors { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 0.25rem;
+  background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+.crud-errors[hidden] { display: none; }
 .crud-pagination { display: flex; justify-content: center; gap: 0.25rem; margin-top: 1rem; }
 .sort-link { text-decoration: none; color: inherit; cursor: pointer; }
 .sort-link:hover { text-decoration: underline; }
@@ -267,8 +270,7 @@
     } else if (action === 'confirm-delete') {
       crudConfirmDelete();
     } else if (action === 'save') {
-      if (button.dataset.crudMode === 'edit') { crudSaveEdit(); }
-      else { crudSaveCreate(); }
+      saveRecord(button.dataset.crudMode === 'edit' ? 'edit' : 'create');
     }
   });
 
@@ -284,10 +286,12 @@
   function crudShowCreate() {
     var form = document.getElementById('form-create');
     if (form) form.reset();
+    clearErrors('create');
     document.getElementById('modal-create').classList.add('active');
   }
 
   function crudShowEdit(id) {
+    clearErrors('edit');
     fetch(CRUD.api + '/' + id)
       .then(function (r) { return r.json(); })
       .then(function (result) {
@@ -320,37 +324,49 @@
     return data;
   }
 
-  function crudSaveCreate() {
-    fetch(CRUD.api, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(collectForm('create'))
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (result) {
-        if (result.error) { crudShowAlert(result.error, 'danger'); return; }
-        crudCloseModal('create');
-        crudShowAlert('Record created successfully', 'success');
-        load();
-      })
-      .catch(function (e) { crudShowAlert('Failed to create: ' + e, 'danger'); });
+  // Show / clear the in-modal validation error list (data-crud-errors).
+  function showErrors(mode, list) {
+    var box = document.querySelector('#modal-' + mode + ' [data-crud-errors]');
+    if (!box) return;
+    box.textContent = '';
+    (list || []).forEach(function (msg) {
+      var line = document.createElement('div');
+      line.textContent = msg;
+      box.appendChild(line);
+    });
+    box.hidden = !(list && list.length);
   }
 
-  function crudSaveEdit() {
-    var id = document.getElementById('edit-pk-value').value;
-    fetch(CRUD.api + '/' + id, {
-      method: 'PUT',
+  function clearErrors(mode) {
+    var box = document.querySelector('#modal-' + mode + ' [data-crud-errors]');
+    if (box) { box.textContent = ''; box.hidden = true; }
+  }
+
+  // Create (POST) or edit (PUT) through AutoCrud. On a failed save AutoCrud
+  // answers non-2xx with {errors:[...]} (or {error:...}); keep the modal OPEN
+  // and show the messages inline instead of reporting a false success.
+  function saveRecord(mode) {
+    clearErrors(mode);
+    var id = (mode === 'edit') ? document.getElementById('edit-pk-value').value : null;
+    var url = (mode === 'edit') ? CRUD.api + '/' + encodeURIComponent(id) : CRUD.api;
+    var method = (mode === 'edit') ? 'PUT' : 'POST';
+    fetch(url, {
+      method: method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(collectForm('edit'))
+      body: JSON.stringify(collectForm(mode))
     })
-      .then(function (r) { return r.json(); })
-      .then(function (result) {
-        if (result.error) { crudShowAlert(result.error, 'danger'); return; }
-        crudCloseModal('edit');
-        crudShowAlert('Record updated successfully', 'success');
+      .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+      .then(function (res) {
+        var errors = res.body && (res.body.errors || (res.body.error ? [res.body.error] : null));
+        if (!res.ok || errors) {
+          showErrors(mode, errors || ['Save failed. Please check the fields and try again.']);
+          return;
+        }
+        crudCloseModal(mode);
+        crudShowAlert('Record ' + (mode === 'edit' ? 'updated' : 'created') + ' successfully', 'success');
         load();
       })
-      .catch(function (e) { crudShowAlert('Failed to update: ' + e, 'danger'); });
+      .catch(function (e) { showErrors(mode, ['Request failed: ' + e]); });
   }
 
   function crudConfirmDelete() {

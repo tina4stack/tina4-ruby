@@ -209,7 +209,7 @@ RSpec.describe "CLI generators co-emit a real green spec" do
       expect(route).to include("Tina4::AutoCrud.register(Todo, public: false)")
       expect(route).to include("Tina4::AutoCrud.generate_routes")
       expect(route).to include("Tina4::Crud.to_crud(request, model: Todo")
-      expect(route).to include('Tina4.get "/admin/todo"')
+      expect(route).to include('Tina4.secure_get "/admin/todo"')
     end
   end
 

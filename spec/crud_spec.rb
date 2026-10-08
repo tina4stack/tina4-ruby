@@ -116,9 +116,13 @@ RSpec.describe Tina4::Crud do
       request = mock_request
       html = Tina4::Crud.to_crud(request, { model: CrudTestModel })
       expect(html).to include("crudShowCreate")
-      expect(html).to include("crudSaveCreate")
-      expect(html).to include("crudSaveEdit")
+      expect(html).to include("saveRecord")
       expect(html).to include("crudConfirmDelete")
+      # A failed save surfaces the AutoCrud 422 {errors:[...]} inline and keeps
+      # the modal open (it checks r.ok, not a false success).
+      expect(html).to include("data-crud-errors")
+      expect(html).to include("showErrors")
+      expect(html).to include("res.ok")
     end
 
     it "registers the full AutoCrud REST backend (GET list + GET/{id} + writes)" do

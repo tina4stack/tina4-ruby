@@ -641,7 +641,7 @@ RSpec.describe "CLI scaffolding-first generators" do
       src = slurp(File.join(@tmp_dir, "src", "routes", "doohickey.rb"))
       expect(src).to include("Tina4::AutoCrud.register(Doohickey, public: false)")
       expect(src).to include("Tina4::Crud.to_crud(request, model: Doohickey")
-      expect(src).to include('Tina4.get "/admin/doohickey"')
+      expect(src).to include('Tina4.secure_get "/admin/doohickey"')
       expect(src).not_to include(".no_auth")
     end
 
@@ -901,7 +901,7 @@ RSpec.describe "CLI scaffolding-first generators" do
       expect(File.exist?(File.join(@tmp_dir, "src", "routes", "orders.rb"))).to be true
       expect(File.exist?(File.join(@tmp_dir, "src", "routes", "orderss.rb"))).to be false
       route = File.read(File.join(@tmp_dir, "src", "routes", "orders.rb"))
-      expect(route).to include('Tina4.get "/admin/orders"')
+      expect(route).to include('Tina4.secure_get "/admin/orders"')
       expect(route).not_to include("orderss")
 
       expect(File.exist?(File.join(@tmp_dir, "src", "orm", "order.rb"))).to be true
@@ -914,7 +914,7 @@ RSpec.describe "CLI scaffolding-first generators" do
 
       expect(File.exist?(File.join(@tmp_dir, "src", "routes", "product.rb"))).to be true
       route = File.read(File.join(@tmp_dir, "src", "routes", "product.rb"))
-      expect(route).to include('Tina4.get "/admin/product"')
+      expect(route).to include('Tina4.secure_get "/admin/product"')
       expect(route).to include("Tina4::AutoCrud.register(Product")
 
       expect(File.exist?(File.join(@tmp_dir, "src", "orm", "product.rb"))).to be true

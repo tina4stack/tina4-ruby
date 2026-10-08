@@ -2202,20 +2202,22 @@ module Tina4
         return
       end
 
-      write_doc = is_public ? "--public: writes are OPEN (no token)." : "Secure by default: writes require a Bearer token."
+      page_verb = is_public ? "get" : "secure_get"
+      write_doc = is_public ? "--public: the admin page and the writes are OPEN (no token)." : "Secure by default: the admin page AND the writes require a valid Bearer token (pass --public to open them)."
+      page_doc = is_public ? "" : "\n        # NOTE: the admin page is secured (secure_get). A browser needs a valid\n        # token/session to open it; wire your login (Tina4::Auth / Session) or run\n        # `generate crud #{model} --public` for an open page. The AutoCrud READ\n        # API (GET #{table}, GET #{table}/{id}) stays public by AutoCrud's default."
       content = <<~RUBY
         require_relative "../orm/#{model_snake}"
 
         # #{model} admin — one server-rendered CRUD page (searchable, sortable,
         # paginated table + create/edit/delete modals). The REST backend (GET
         # list, GET/{id}, POST, PUT, DELETE) is AutoCrud; this file owns only the
-        # GET admin page. #{write_doc}
+        # GET admin page. #{write_doc}#{page_doc}
         #
         # Restyle the UI by editing templates/crud/*.twig (copied into this app).
         Tina4::AutoCrud.register(#{model}, public: #{is_public})
         Tina4::AutoCrud.generate_routes
 
-        Tina4.get "/admin/#{table}" do |request, response|
+        Tina4.#{page_verb} "/admin/#{table}" do |request, response|
           response.html(Tina4::Crud.to_crud(request, model: #{model}, title: "#{model} Admin"))
         end
       RUBY

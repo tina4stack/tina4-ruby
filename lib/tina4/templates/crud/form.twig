@@ -16,6 +16,7 @@
 {% if wrap %}<form{{ form_id_attr|raw }} action="{{ action }}" method="{{ form_method }}" class="needs-validation" data-crud-form="1">{% endif %}
 {% if method_override %}<input type="hidden" name="_method" value="{{ method_override }}">{% endif %}
 {% if edit %}<input type="hidden" id="{{ mode }}-pk-value" name="{{ pk }}">{% endif %}
+{% if modal_footer %}<div class="crud-errors" data-crud-errors hidden></div>{% endif %}
 {% for field in fields %}<div class="mb-3">
 <label for="{{ field.id }}" class="form-label">{{ field.label }}</label>
 {% if field.textarea %}<textarea class="form-control" id="{{ field.id }}" name="{{ field.name }}"{{ field.required_attr|raw }}>{{ field.value }}</textarea>{% endif %}{% if field.checkbox %}<div class="form-check"><input class="form-check-input" type="checkbox" id="{{ field.id }}" name="{{ field.name }}"{{ field.checked_attr|raw }}></div>{% endif %}{% if field.select %}<select class="form-select" id="{{ field.id }}" name="{{ field.name }}"{{ field.required_attr|raw }}>{{ field.options_html|raw }}</select>{% endif %}{% if field.input %}<input type="{{ field.type }}" class="form-control" id="{{ field.id }}" name="{{ field.name }}" value="{{ field.value }}" placeholder="{{ field.placeholder }}"{{ field.required_attr|raw }}>{% endif %}
