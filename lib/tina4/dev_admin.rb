@@ -8,6 +8,7 @@
 
 require "json"
 require "digest"
+require "ipaddr"
 require "tmpdir"
 require "net/http"
 require "uri"
@@ -2134,6 +2135,11 @@ module Tina4
       # (with_mcp_gate -> 404), so the REST loopback arm skips these prefixes and
       # lets the MCP gate govern (keeps a disallowed mcp/call a 404, not a 403).
       DEV_MCP_PREFIXES = ["/__dev/api/mcp", "/__dev/mcp"].freeze
+
+      # Static dev-toolbar assets that carry no secrets and expose no actions, so
+      # the peer gate does not cover them: wherever the toolbar is injected its
+      # stylesheet and script must load (issue #279). Host + same-origin still apply.
+      DEV_PUBLIC_ASSETS = ["/__dev/toolbar.css", "/__dev/toolbar.js"].freeze
       # Private-key / credential basenames the file endpoints must never serve.
       DEV_SECRET_BASENAMES = %w[.env .envrc id_rsa id_dsa id_ecdsa id_ed25519].freeze
       DEV_SECRET_SUFFIXES = %w[.pem .key .pfx .p12 .keystore .jks].freeze
@@ -2186,9 +2192,14 @@ module Tina4
         return dev_refused("dev-admin: refused (host not allowed)") unless dev_host_allowed?(env)
         return dev_refused("dev-admin: refused (cross-origin request)") unless dev_same_origin_ok?(env)
 
+        # The static toolbar assets are exempt from the peer gate (#279): they
+        # carry no secrets and the toolbar needs them wherever it is injected.
+        # Host + same-origin above still apply.
+        return nil if DEV_PUBLIC_ASSETS.include?(path)
+
         unless path.start_with?(*DEV_MCP_PREFIXES)
           remote_ip = (env["REMOTE_ADDR"] || "").to_s
-          unless Tina4.is_loopback?(remote_ip) || mcp_token_ok?(env, dedicated: true)
+          unless dev_peer_allowed?(remote_ip) || mcp_token_ok?(env, dedicated: true)
             return dev_refused("dev-admin: refused (non-loopback peer)")
           end
         end
@@ -2215,6 +2226,47 @@ module Tina4
         allowed.include?(name)
       end
       public :dev_host_allowed?
+
+      # True when raw peer +ip+ falls inside +entry+ (a bare IP or a CIDR). IPv4
+      # and IPv6; an IPv4-mapped IPv6 peer (::ffff:a.b.c.d) is matched as IPv4.
+      def ip_in_cidr?(ip, entry)
+        ip = ip.to_s.strip
+        ip = ip[7..] if ip.downcase.start_with?("::ffff:") # mapped -> compare as IPv4
+        net = IPAddr.new(entry.to_s.strip)
+        addr = IPAddr.new(ip)
+        return false unless net.family == addr.family # v4 peer never matches a v6 CIDR
+        net.include?(addr)
+      rescue IPAddr::Error, ArgumentError
+        false
+      end
+      public :ip_in_cidr?
+
+      # True when the RAW socket peer may reach /__dev: loopback always, plus any
+      # IP/CIDR in TINA4_DEV_ALLOWED_PEERS (comma-separated, opt-in, default none).
+      # Reads the real socket peer ONLY, never a forwarded header, so it cannot be
+      # spoofed by X-Forwarded-For. The documented way to reach the dev dashboard
+      # from a Docker dev box, where requests arrive from the container-network
+      # gateway rather than loopback (issue #279).
+      def dev_peer_allowed?(remote_ip)
+        return true if Tina4.is_loopback?(remote_ip)
+
+        configured = ENV["TINA4_DEV_ALLOWED_PEERS"].to_s.strip
+        return false if configured.empty?
+
+        configured.split(",").any? { |entry| !entry.strip.empty? && ip_in_cidr?(remote_ip, entry) }
+      end
+      public :dev_peer_allowed?
+
+      # True when the toolbar may be injected for this viewer - the Host allow-list
+      # and the raw-peer gate both pass. A viewer the /__dev gate would refuse gets
+      # NO toolbar markup, so its stylesheet and script are never requested only to
+      # 403 (issue #279).
+      def dev_toolbar_allowed?(env)
+        return false unless dev_host_allowed?(env)
+
+        dev_peer_allowed?((env["REMOTE_ADDR"] || "").to_s)
+      end
+      public :dev_toolbar_allowed?
 
       def dev_refused(message)
         [403, { "content-type" => "application/json; charset=utf-8" },
