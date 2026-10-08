@@ -149,8 +149,39 @@ module Tina4
             end
             next res.error("UNKNOWN_FIELD", "Unknown filter field '#{unknown_filter_field}'", 400) if unknown_filter_field
 
+            # ADR-0094: ?search=term full-text filters the list — a
+            # case-insensitive LIKE %term% OR'd across the model's declared
+            # string/text columns, added to the WHERE before limit/offset so the
+            # envelope's total reflects the filtered set. A model with no
+            # string/text column simply matches nothing; it never errors. This is
+            # what the CRUD admin grid (and any client) uses to search.
+            search_term = req.query["search"].to_s.strip
+            unless search_term.empty?
+              search_columns = model_class.field_definitions
+                                          .select { |_name, opts| %i[string text].include?(opts[:type]) }
+                                          .keys
+                                          .map { |attr| model_class.resolve_field_column(attr) || attr.to_s }
+              unless search_columns.empty?
+                filter_conditions << "(#{search_columns.map { |col| "#{col} LIKE ?" }.join(' OR ')})"
+                search_columns.each { filter_values << "%#{search_term}%" }
+              end
+            end
+
             order_by, unknown_sort_field = parse_sort(model_class, req.query["sort"])
             next res.error("UNKNOWN_FIELD", "Unknown sort field '#{unknown_sort_field}'", 400) if unknown_sort_field
+
+            # ADR-0094: honour an explicit ?sort_dir=asc|desc for a single bare
+            # ?sort=column (the CRUD grid's spelling). The Mongo-style
+            # "-field,field" sort keeps its own inline direction and ignores
+            # sort_dir. An unknown sort column is still a 400 above (ADR-0069);
+            # the CRUD grid only ever emits real model columns, so it never trips
+            # that — this just adds the direction toggle its headers need.
+            sort_param = req.query["sort"].to_s.strip
+            if order_by && !req.query["sort_dir"].nil? && !sort_param.empty? &&
+               !sort_param.include?(",") && !sort_param.start_with?("-")
+              direction = req.query["sort_dir"].to_s.downcase == "desc" ? "DESC" : "ASC"
+              order_by = order_by.sub(/\s+(?:ASC|DESC)\s*\z/i, " #{direction}")
+            end
 
             if filter_conditions.empty?
               records = model_class.all(limit: limit, offset: offset, order_by: order_by)

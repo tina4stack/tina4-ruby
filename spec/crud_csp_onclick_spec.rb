@@ -34,6 +34,8 @@ RSpec.describe "Tina4::Crud CSP (no inline on*= handlers)" do
   # Matches an inline HTML event-handler attribute (onclick=, onsubmit=, …) but
   # NOT a JS property assignment (el.onclick = fn), which is CSP-allowed.
   INLINE_HANDLER_ATTR = /\son[a-z]+\s*=\s*["']/.freeze
+  # Matches an inline style= attribute — dead under default-src 'self' (ADR-0088).
+  INLINE_STYLE_ATTR = /\sstyle\s*=\s*["']/.freeze
 
   before(:each) do
     Tina4.bind_database(db)
@@ -73,6 +75,30 @@ RSpec.describe "Tina4::Crud CSP (no inline on*= handlers)" do
       expect(offenders).to eq([]), "inline on*= attribute(s) emitted: #{offenders.inspect}"
     end
 
+    it "has ZERO inline style= attributes" do
+      offenders = html.scan(INLINE_STYLE_ATTR)
+      expect(offenders).to eq([]), "inline style= attribute(s) emitted: #{offenders.inspect}"
+    end
+
+    it "the on*= / style= gates are real — they catch an injected attribute (mutation proof)" do
+      # Prove the regexes are genuine gates: a page carrying the forbidden
+      # attributes MUST be flagged. A gate never seen to fail is not known to
+      # work.
+      mutated = html.sub("<h2>", '<h2 onclick="x()" style="color:red">')
+      expect(mutated.scan(INLINE_HANDLER_ATTR)).not_to eq([])
+      expect(mutated.scan(INLINE_STYLE_ATTR)).not_to eq([])
+    end
+
+    it "registers the full AutoCrud REST backend, including GET list + GET/{id}" do
+      html # trigger the render (registers routes as a side effect)
+      routes = Tina4::Router.routes.map { |r| "#{r.method} #{r.path}" }
+      expect(routes).to include("GET /api/crudcspmodels")
+      expect(routes).to include("GET /api/crudcspmodels/{id}")
+      expect(routes).to include("POST /api/crudcspmodels")
+      expect(routes).to include("PUT /api/crudcspmodels/{id}")
+      expect(routes).to include("DELETE /api/crudcspmodels/{id}")
+    end
+
     it "wires the create/edit/delete buttons with data-crud-action" do
       expect(html).to include('data-crud-action="create"')
       expect(html).to include('data-crud-action="edit"')
@@ -108,6 +134,11 @@ RSpec.describe "Tina4::Crud CSP (no inline on*= handlers)" do
       expect(offenders).to eq([]), "inline on*= attribute(s) emitted: #{offenders.inspect}"
     end
 
+    it "has ZERO inline style= attributes" do
+      offenders = html.scan(INLINE_STYLE_ATTR)
+      expect(offenders).to eq([]), "inline style= attribute(s) emitted: #{offenders.inspect}"
+    end
+
     it "wires Save/Delete with data-crud-inline + a delegated listener" do
       expect(html).to include('data-crud-inline="save"')
       expect(html).to include('data-crud-inline="delete"')
@@ -115,6 +146,33 @@ RSpec.describe "Tina4::Crud CSP (no inline on*= handlers)" do
       expect(html).to include("<script nonce=")
       expect(html).to include("addEventListener('click'")
       expect(html).to include("button.dataset.crudInline")
+    end
+  end
+
+  # ADR-0094: every crud/ template is app-overridable via the existing
+  # app-first-then-gem resolution (Tina4::Template). Dropping
+  # templates/crud/table.twig in the app's working directory MUST win over the
+  # gem's shipped template.
+  describe "app template override" do
+    it "uses an app templates/crud/table.twig instead of the gem's" do
+      project = Dir.mktmpdir("tina4_crud_override")
+      FileUtils.mkdir_p(File.join(project, "templates", "crud"))
+      File.write(
+        File.join(project, "templates", "crud", "table.twig"),
+        "<div class=\"app-override-marker\">OVERRIDDEN TABLE</div>"
+      )
+
+      html = Dir.chdir(project) do
+        Tina4::Crud.to_crud(request, { model: CrudCspModel, title: "Override" })
+      end
+
+      expect(html).to include("app-override-marker")
+      expect(html).to include("OVERRIDDEN TABLE")
+      # The page shell (not overridden) still rendered around it.
+      expect(html).to include("Override")
+      expect(html).to include("modal-create")
+    ensure
+      FileUtils.rm_rf(project) if project
     end
   end
 end

@@ -630,23 +630,42 @@ RSpec.describe "CLI scaffolding-first generators" do
     end
   end
 
-  # ── CRUD: secure posture + the emitted spec runs green ──────────────
-  describe "generate crud — secure-by-default" do
-    it "default routes are secure (no opt-out)" do
+  # ── CRUD: AutoCrud-backed admin page, secure posture, emitted spec green ──
+  # ADR-0094: `generate crud` scaffolds an admin PAGE rendered by
+  # Tina4::Crud.to_crud. The route file is named by the model's TABLE, registers
+  # the AutoCrud REST backend (secure-by-default; --public opens writes), and
+  # renders to_crud — no hand-written list/detail/write routes.
+  describe "generate crud — AutoCrud-backed admin page" do
+    it "default admin route registers AutoCrud secure (public: false) + renders to_crud" do
       gen("crud", "Doohickey", "--fields", "name:string")
-      src = slurp(File.join(@tmp_dir, "src", "routes", "doohickeys.rb"))
+      src = slurp(File.join(@tmp_dir, "src", "routes", "doohickey.rb"))
+      expect(src).to include("Tina4::AutoCrud.register(Doohickey, public: false)")
+      expect(src).to include("Tina4::Crud.to_crud(request, model: Doohickey")
+      expect(src).to include('Tina4.get "/admin/doohickey"')
       expect(src).not_to include(".no_auth")
     end
 
-    it "--public opens exactly the 3 writes" do
+    it "--public opens the writes via AutoCrud (public: true)" do
       gen("crud", "Contraption", "--fields", "name:string", "--public")
-      src = slurp(File.join(@tmp_dir, "src", "routes", "contraptions.rb"))
-      expect(src.scan("end.no_auth").length).to eq(3)
+      src = slurp(File.join(@tmp_dir, "src", "routes", "contraption.rb"))
+      expect(src).to include("Tina4::AutoCrud.register(Contraption, public: true)")
     end
 
-    it "the emitted CRUD spec runs green in a real rspec subprocess" do
+    it "copies the overridable crud/*.twig templates into the app" do
+      gen("crud", "Gizmo", "--fields", "name:string")
+      %w[page table form modals].each do |t|
+        expect(File.exist?(File.join(@tmp_dir, "src", "templates", "crud", "#{t}.twig"))).to be true
+      end
+    end
+
+    it "--no-templates skips the template copy" do
+      gen("crud", "Sprocket", "--fields", "name:string", "--no-templates")
+      expect(File.exist?(File.join(@tmp_dir, "src", "templates", "crud", "page.twig"))).to be false
+    end
+
+    it "the emitted CRUD gate spec runs green in a real rspec subprocess" do
       gen("crud", "Trinket", "--fields", "name:string,qty:int")
-      spec_file = File.join(@tmp_dir, "spec", "trinkets_spec.rb")
+      spec_file = File.join(@tmp_dir, "spec", "trinket_spec.rb")
       expect(File.exist?(spec_file)).to be true
       expect(compiles?(spec_file)).to be true
 
@@ -868,40 +887,35 @@ RSpec.describe "CLI scaffolding-first generators" do
     [status, out]
   end
 
-  # ── generate crud: the ONE pluralisation rule (lock-in) ─────────
+  # ── generate crud: file + path names follow the model's TABLE (ADR-0094) ──
   #
-  # Ruby already derives the route from the CLASS NAME via to_route_name
-  # (pluralize_table(to_snake_case(name))), so it never double-pluralised the
-  # way python/php did (Order -> orderss). This spec LOCKS that: the route path,
-  # route file and list/page template are the SINGLE plural of the singular base,
-  # never the plural of an already-pluralised reserved-word table. Proven a real
-  # gate by mutation (break to_route_name -> these go red).
-  describe "generate crud pluralisation contract" do
-    it "does not double-pluralise a reserved-word class (Order)" do
+  # The admin route file, the /admin path, the AutoCrud REST path and the
+  # migration all key off the model's table_name: SINGULAR for a plain class,
+  # the reserved-word plural for a reserved class (resolve_table). No separate
+  # route pluralisation, so "orderss"/"productss" can never appear. Proven a
+  # gate by mutation (break resolve_table -> these go red).
+  describe "generate crud table-name contract" do
+    it "a reserved-word class uses the reserved-word plural table (Order)" do
       cli.run(["generate", "crud", "Order", "--fields", "total:float"])
 
       expect(File.exist?(File.join(@tmp_dir, "src", "routes", "orders.rb"))).to be true
       expect(File.exist?(File.join(@tmp_dir, "src", "routes", "orderss.rb"))).to be false
       route = File.read(File.join(@tmp_dir, "src", "routes", "orders.rb"))
-      expect(route).to include("/api/orders")
+      expect(route).to include('Tina4.get "/admin/orders"')
       expect(route).not_to include("orderss")
-
-      expect(File.exist?(File.join(@tmp_dir, "src", "templates", "pages", "orders.twig"))).to be true
-      expect(File.exist?(File.join(@tmp_dir, "src", "templates", "pages", "orderss.twig"))).to be false
 
       expect(File.exist?(File.join(@tmp_dir, "src", "orm", "order.rb"))).to be true
       expect(Dir.glob(File.join(@tmp_dir, "migrations", "*create_orders.sql"))).not_to be_empty
       expect(Dir.glob(File.join(@tmp_dir, "migrations", "*create_orderss.sql"))).to be_empty
     end
 
-    it "pluralises a plain class exactly once (Product)" do
+    it "a plain class keeps a singular table (Product)" do
       cli.run(["generate", "crud", "Product", "--fields", "name:string"])
 
-      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "products.rb"))).to be true
-      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "productss.rb"))).to be false
-      route = File.read(File.join(@tmp_dir, "src", "routes", "products.rb"))
-      expect(route).to include("/api/products")
-      expect(route).not_to include("productss")
+      expect(File.exist?(File.join(@tmp_dir, "src", "routes", "product.rb"))).to be true
+      route = File.read(File.join(@tmp_dir, "src", "routes", "product.rb"))
+      expect(route).to include('Tina4.get "/admin/product"')
+      expect(route).to include("Tina4::AutoCrud.register(Product")
 
       expect(File.exist?(File.join(@tmp_dir, "src", "orm", "product.rb"))).to be true
       # non-reserved -> table stays SINGULAR, so the migration is create_product.

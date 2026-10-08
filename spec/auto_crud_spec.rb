@@ -118,6 +118,51 @@ RSpec.describe Tina4::AutoCrud do
       expect(body["total_pages"]).to eq(1)
     end
 
+    # ADR-0094: the list endpoint honours ?search= and ?sort=/?sort_dir= so the
+    # CRUD admin grid can filter and order through AutoCrud alone (to_crud owns
+    # no routes). Real SQLite, real request, real handler — no mocks.
+    def list(query)
+      route, params = Tina4::Router.match("GET", "/api/cruditems")
+      env = {
+        "REQUEST_METHOD" => "GET", "PATH_INFO" => "/api/cruditems",
+        "QUERY_STRING" => query, "CONTENT_TYPE" => "",
+        "REMOTE_ADDR" => "127.0.0.1", "rack.input" => StringIO.new("")
+      }
+      result = route.handler.call(Tina4::Request.new(env, params), Tina4::Response.new)
+      JSON.parse(result.body)
+    end
+
+    it "list endpoint filters by ?search= across string/text columns" do
+      body = list("search=Widget")
+      names = body["records"].map { |r| r["name"] }
+      expect(names).to eq(["Widget"])
+      # The envelope total reflects the FILTERED count, not the table size.
+      expect(body["total"]).to eq(1)
+    end
+
+    it "list endpoint ?search= returns nothing for a non-matching term" do
+      body = list("search=zzzznope")
+      expect(body["records"]).to eq([])
+      expect(body["total"]).to eq(0)
+    end
+
+    it "list endpoint honours ?sort=name&sort_dir=desc" do
+      names = list("sort=name&sort_dir=desc")["records"].map { |r| r["name"] }
+      expect(names).to eq(%w[Widget Gadget Doohickey])
+    end
+
+    it "list endpoint honours ?sort=name&sort_dir=asc" do
+      names = list("sort=name&sort_dir=asc")["records"].map { |r| r["name"] }
+      expect(names).to eq(%w[Doohickey Gadget Widget])
+    end
+
+    it "list endpoint combines ?search= with ?sort=" do
+      body = list("search=get&sort=price&sort_dir=desc")
+      # Widget (100) and Gadget (200) both contain 'get'; Doohickey does not.
+      expect(body["records"].map { |r| r["name"] }).to eq(%w[Gadget Widget])
+      expect(body["total"]).to eq(2)
+    end
+
     it "single endpoint returns one record" do
       item = CrudItem.all.first
       route, params = Tina4::Router.match("GET", "/api/cruditems/#{item.id}")

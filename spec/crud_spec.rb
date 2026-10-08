@@ -70,11 +70,32 @@ RSpec.describe Tina4::Crud do
       expect(html).to include("Confirm Delete")
     end
 
-    it "includes search form" do
+    it "includes the live (as-you-type) search input, not a submit form" do
       request = mock_request
       html = Tina4::Crud.to_crud(request, { model: CrudTestModel })
-      expect(html).to include('name="search"')
+      # ADR-0094 search is live/AJAX: a data-crud-search input, no Search button.
+      expect(html).to include("data-crud-search")
       expect(html).to include('placeholder="Search..."')
+      expect(html).not_to include(">Search</button>")
+    end
+
+    it "the sort headers and pager drive the AutoCrud list endpoint over AJAX" do
+      request = mock_request
+      html = Tina4::Crud.to_crud(request, { model: CrudTestModel, limit: 2 })
+      expect(html).to include("AbortController")
+      expect(html).to include("data-crud-body")
+      expect(html).to include("data-crud-sort=")
+      expect(html).to include("data-crud-page=")
+    end
+
+    it "aligns numeric columns right and text columns left (tina4-css classes)" do
+      request = mock_request
+      html = Tina4::Crud.to_crud(request, { model: CrudTestModel })
+      # age + id are integer fields -> text-end; name/email are text -> text-start.
+      expect(html).to include('class="text-end"')
+      expect(html).to include('class="text-start"')
+      # no inline style= used for alignment
+      expect(html.scan(/\sstyle\s*=\s*["']/)).to eq([])
     end
 
     it "includes pagination info" do
@@ -100,27 +121,63 @@ RSpec.describe Tina4::Crud do
       expect(html).to include("crudConfirmDelete")
     end
 
-    it "registers API routes" do
+    it "registers the full AutoCrud REST backend (GET list + GET/{id} + writes)" do
       request = mock_request
       Tina4::Crud.to_crud(request, { model: CrudTestModel })
       routes = Tina4::Router.routes.map { |r| "#{r.method} #{r.path}" }
+      # ADR-0094: to_crud delegates the ENTIRE backend to AutoCrud, which
+      # registers all five REST routes — the GET list and GET/{id} the old
+      # bespoke sql-mode never provided (the edit-modal 404 this ADR fixed).
+      expect(routes).to include("GET /api/crudtestmodels")
+      expect(routes).to include("GET /api/crudtestmodels/{id}")
       expect(routes).to include("POST /api/crudtestmodels")
       expect(routes).to include("PUT /api/crudtestmodels/{id}")
       expect(routes).to include("DELETE /api/crudtestmodels/{id}")
     end
+
+    it "does not register any bespoke CRUD write route of its own" do
+      request = mock_request
+      Tina4::Crud.to_crud(request, { model: CrudTestModel })
+      # Exactly the five AutoCrud routes for the table — no extra sql-mode
+      # POST/PUT/DELETE handlers duplicating the backend (ADR-0094).
+      table_routes = Tina4::Router.routes
+                                  .map { |r| "#{r.method} #{r.path}" }
+                                  .select { |r| r.include?("/api/crudtestmodels") }
+      expect(table_routes.sort).to eq([
+        "DELETE /api/crudtestmodels/{id}",
+        "GET /api/crudtestmodels",
+        "GET /api/crudtestmodels/{id}",
+        "POST /api/crudtestmodels",
+        "PUT /api/crudtestmodels/{id}"
+      ])
+    end
+
+    it "is idempotent — a second call does not double-register routes" do
+      request = mock_request
+      Tina4::Crud.to_crud(request, { model: CrudTestModel })
+      Tina4::Crud.to_crud(request, { model: CrudTestModel })
+      count = Tina4::Router.routes
+                           .map { |r| "#{r.method} #{r.path}" }
+                           .count { |r| r.include?("/api/crudtestmodels") }
+      expect(count).to eq(5)
+    end
   end
 
-  describe ".to_crud with :sql" do
-    it "generates HTML from a SQL query" do
+  describe ".to_crud with a custom :sql listing" do
+    it "shapes the displayed grid from the SQL while the model drives the backend" do
       request = mock_request
       html = Tina4::Crud.to_crud(request, {
+        model: CrudTestModel,
         sql: "SELECT id, name, email FROM crudtestmodels",
-        title: "SQL CRUD",
-        primary_key: "id"
+        title: "SQL CRUD"
       })
       expect(html).to include("SQL CRUD")
       expect(html).to include("Alice")
       expect(html).to include("Bob")
+      # The backend still comes from the model via AutoCrud.
+      routes = Tina4::Router.routes.map { |r| "#{r.method} #{r.path}" }
+      expect(routes).to include("GET /api/crudtestmodels")
+      expect(routes).to include("POST /api/crudtestmodels")
     end
   end
 
@@ -202,10 +259,24 @@ RSpec.describe Tina4::Crud do
     end
   end
 
-  describe "raises on missing options" do
-    it "raises ArgumentError when neither :sql nor :model given" do
+  describe "model is required (ADR-0094)" do
+    it "raises ArgumentError when no :model is given" do
       request = mock_request
       expect { Tina4::Crud.to_crud(request, { title: "Broken" }) }.to raise_error(ArgumentError)
+    end
+
+    it "raises ArgumentError for sql-only (no model) — a model drives every write" do
+      request = mock_request
+      expect {
+        Tina4::Crud.to_crud(request, { sql: "SELECT id, name FROM crudtestmodels" })
+      }.to raise_error(ArgumentError)
+    end
+
+    it "accepts the ADR-0094 keyword signature too" do
+      request = mock_request
+      html = Tina4::Crud.to_crud(request, model: CrudTestModel, title: "Kw Form")
+      expect(html).to include("Kw Form")
+      expect(html).to include("Alice")
     end
   end
 
