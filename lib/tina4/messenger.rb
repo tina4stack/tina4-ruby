@@ -90,14 +90,15 @@ module Tina4
 
     attr_reader :host, :port, :username, :from_address, :from_name,
                 :imap_host, :imap_port, :use_tls, :encryption,
-                :imap_encryption, :imap_use_tls, :imap_username, :imap_password
+                :imap_encryption, :imap_use_tls, :imap_username, :imap_password,
+                :timeout
 
     # Initialize with SMTP config.
     # Priority: constructor params > ENV (TINA4_MAIL_*) > sensible defaults
     def initialize(host: nil, port: nil, username: nil, password: nil,
                    from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
                    imap_host: nil, imap_port: nil, imap_encryption: nil,
-                   imap_username: nil, imap_password: nil)
+                   imap_username: nil, imap_password: nil, timeout: nil)
       # Whether a host was actually CONFIGURED, which is not the same as @host being
       # set: it falls back to "localhost", so it is never nil and cannot answer
       # "can this messenger send?". The capture gate needs that answer, so record it
@@ -143,7 +144,23 @@ module Tina4
       # account read the wrong mailbox. Explicit constructor args win (ADR-0041).
       @imap_username = imap_username || ENV["TINA4_MAIL_IMAP_USERNAME"] || @username
       @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
+
+      # SMTP send timeout (seconds): constructor > TINA4_MAIL_TIMEOUT > SMTP_TIMEOUT
+      # > 30. A non-numeric env value falls back to 30 rather than coercing to 0
+      # (Integer("abc") raises; ENV["x"].to_i on "abc" is a silent 0, which would
+      # make every send time out instantly). Parity with the Python/PHP master.
+      @timeout = resolve_timeout(timeout)
     end
+
+    # Resolve the SMTP send timeout from the constructor arg, then the env
+    # (TINA4_MAIL_TIMEOUT, SMTP_TIMEOUT), defaulting to 30 on absence or garbage.
+    def resolve_timeout(timeout)
+      raw = timeout || ENV["TINA4_MAIL_TIMEOUT"] || ENV["SMTP_TIMEOUT"] || 30
+      Integer(raw)
+    rescue ArgumentError, TypeError
+      30
+    end
+    private :resolve_timeout
 
     def normalize_encryption(value, label)
       normalized = value.to_s.strip.downcase
@@ -486,6 +503,7 @@ module Tina4
         starttls: @use_tls,
         username: authenticate ? @username : nil,
         password: authenticate ? @password : nil,
+        timeout: @timeout,
         &block
       )
     end
