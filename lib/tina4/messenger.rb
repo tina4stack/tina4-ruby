@@ -90,14 +90,15 @@ module Tina4
 
     attr_reader :host, :port, :username, :from_address, :from_name,
                 :imap_host, :imap_port, :use_tls, :encryption,
-                :imap_encryption, :imap_use_tls, :imap_username, :imap_password
+                :imap_encryption, :imap_use_tls, :imap_username, :imap_password,
+                :timeout
 
     # Initialize with SMTP config.
     # Priority: constructor params > ENV (TINA4_MAIL_*) > sensible defaults
     def initialize(host: nil, port: nil, username: nil, password: nil,
                    from_address: nil, from_name: nil, encryption: nil, use_tls: nil,
                    imap_host: nil, imap_port: nil, imap_encryption: nil,
-                   imap_username: nil, imap_password: nil)
+                   imap_username: nil, imap_password: nil, timeout: nil)
       # Whether a host was actually CONFIGURED, which is not the same as @host being
       # set: it falls back to "localhost", so it is never nil and cannot answer
       # "can this messenger send?". The capture gate needs that answer, so record it
@@ -143,7 +144,55 @@ module Tina4
       # account read the wrong mailbox. Explicit constructor args win (ADR-0041).
       @imap_username = imap_username || ENV["TINA4_MAIL_IMAP_USERNAME"] || @username
       @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
+
+      # SMTP send timeout (seconds): constructor > TINA4_MAIL_TIMEOUT > 30.
+      # Whole seconds, at least 1. See resolve_timeout. Parity with the PHP
+      # master (Messenger::resolveTimeout, tina4-php#286).
+      @timeout = resolve_timeout(timeout, ENV["TINA4_MAIL_TIMEOUT"])
     end
+
+    #: Default socket timeout, in seconds - the value this class has always used.
+    TIMEOUT_DEFAULT = 30
+    #: Raw TINA4_MAIL_TIMEOUT values already warned about, so a bad one is said once.
+    @timeout_warned = {}
+    class << self
+      attr_reader :timeout_warned
+    end
+
+    # Resolve the SMTP send timeout to whole seconds (issue #278).
+    #
+    # An explicit constructor value is the caller's own instruction, so one below
+    # a second is a programming error and raises. A bad env value is a
+    # misconfiguration: warn once and use the default rather than guess. Zero and
+    # negative are garbage, not an opt-out - to the socket 0 means "do not wait at
+    # all", so no send could succeed.
+    def resolve_timeout(explicit, raw)
+      unless explicit.nil?
+        seconds = Integer(explicit)
+        raise ArgumentError, "Messenger timeout must be at least 1 second, got #{seconds}." if seconds < 1
+
+        return seconds
+      end
+      return TIMEOUT_DEFAULT if raw.nil? || raw.to_s.strip.empty?
+
+      seconds = begin
+        Integer(raw.to_s.strip)
+      rescue ArgumentError
+        nil
+      end
+      if seconds.nil? || seconds < 1
+        unless self.class.timeout_warned.key?(raw)
+          self.class.timeout_warned[raw] = true
+          Tina4::Log.warning(
+            "TINA4_MAIL_TIMEOUT must be a whole number of seconds and at least 1, got " \
+            "#{raw.inspect} - using the default of #{TIMEOUT_DEFAULT} seconds"
+          )
+        end
+        return TIMEOUT_DEFAULT
+      end
+      seconds
+    end
+    private :resolve_timeout
 
     def normalize_encryption(value, label)
       normalized = value.to_s.strip.downcase
@@ -486,6 +535,7 @@ module Tina4
         starttls: @use_tls,
         username: authenticate ? @username : nil,
         password: authenticate ? @password : nil,
+        timeout: @timeout,
         &block
       )
     end
