@@ -827,9 +827,13 @@ folder (or `src/migrations/`) exists with at least one `.sql` file, boot
 `tina4ruby migrate` step. It is **non-breaking**: a failure (a raise from the
 runner, or a recorded `failed` migration) is logged (`Tina4::Log.error`) and the
 service still starts (a bad migration must never take the backend down — the
-hook never re-raises). Set `TINA4_AUTO_MIGRATE=false` (also `0`/`no`/`off`) to
-disable — e.g. multi-instance production that migrates as a separate deploy step
-(concurrent first-apply can race). The explicit `tina4ruby migrate` CLI is
+hook never re-raises). Concurrent startup migrations are serialized by a run-wide
+lock in the migration runner (PostgreSQL/MySQL/MSSQL advisory lock; an OS file
+lock for SQLite/Firebird), so several workers/instances booting at once each
+apply every migration exactly once (#277) — the lock serializes per-DB (advisory)
+or per-host (file lock). Set `TINA4_AUTO_MIGRATE=false` (also `0`/`no`/`off`) to
+disable; a cross-HOST fleet that boots simultaneously should set it off and run
+one `tina4ruby migrate` per deploy. The explicit `tina4ruby migrate` CLI is
 unaffected and stays **fail-fast** (a failed migration → non-zero exit) so CI
 keeps the exit code.
 

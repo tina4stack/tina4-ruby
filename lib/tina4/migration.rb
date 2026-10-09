@@ -6,42 +6,50 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 require "fileutils"
+require "digest"
 
 module Tina4
   class Migration
     TRACKING_TABLE = "tina4_migration"
+    # Lock name shared by GET_LOCK (MySQL) and sp_getapplock (MSSQL).
+    LOCK_NAME = "tina4_migration_lock"
 
     attr_reader :db, :migrations_dir
 
     def initialize(db, migrations_dir: nil)
       @db = db
       @migrations_dir = migrations_dir || resolve_migrations_dir
-      ensure_tracking_table
+      # Ruby boots once per process (no per-request re-entry like PHP's php -S),
+      # so there is no concurrent CONSTRUCT race here — the table is ensured
+      # eagerly as before. migrate also re-ensures it UNDER the run-wide lock
+      # (idempotent), which is where the #277 apply race is actually serialized.
+      ensure_tracking_table if @db
     end
 
-    # Run all pending migrations
+    # Run all pending migrations under a cross-process lock.
+    #
+    # The lock serializes concurrent startup migrations (#277): the hook runs per
+    # request under php -S-style servers and once per process on a long-lived
+    # server, so several workers could reach a fresh database at once and apply
+    # the same migration more than once (a data migration then inserted its rows
+    # twice). Now the winner migrates while the rest block, then re-read the
+    # applied set and find nothing pending. Every backend auto-releases the lock
+    # when the holder's session/process dies, so a crash never deadlocks boot.
     def migrate
-      pending = pending_migrations
-      if pending.empty?
-        Tina4::Log.info("No pending migrations")
-        return []
+      lock = acquire_migration_lock
+      begin
+        ensure_tracking_table
+        run_pending
+      ensure
+        release_migration_lock(lock)
       end
-
-      batch = next_batch_number
-      results = []
-      pending.each do |file|
-        result = run_migration(file, batch)
-        results << result
-        # Stop on failure
-        break if result[:status] == "failed"
-      end
-      results
     end
 
     alias run migrate
 
     # Rollback last batch (or N steps)
     def rollback(steps = 1)
+      ensure_tracking_table
       completed = completed_migrations_with_batch
       return [] if completed.empty?
 
@@ -60,6 +68,7 @@ module Tina4
     end
 
     def status
+      ensure_tracking_table
       {
         completed: completed_migrations,
         pending: pending_migrations.map { |f| File.basename(f) }
@@ -177,6 +186,97 @@ module Tina4
     end
 
     private
+
+    # Apply every pending migration, in order. Caller holds the run-wide lock.
+    def run_pending
+      pending = pending_migrations
+      if pending.empty?
+        Tina4::Log.info("No pending migrations")
+        return []
+      end
+
+      batch = next_batch_number
+      results = []
+      pending.each do |file|
+        result = run_migration(file, batch)
+        results << result
+        # Stop on failure
+        break if result[:status] == "failed"
+      end
+      results
+    end
+
+    # A stable signed-64-bit key for PostgreSQL's pg_advisory_lock, derived from
+    # the lock name so it cannot collide with an application's own advisory-lock
+    # keys. It is a constant (not user input), so inlining it in the SQL is
+    # injection-safe.
+    def pg_advisory_key
+      Digest::SHA256.digest(LOCK_NAME)[0, 8].unpack1("q")
+    end
+
+    # Take the run-wide migration lock, blocking until it is held.
+    #
+    # PostgreSQL/MySQL/MSSQL use a native session-scoped advisory lock; SQLite,
+    # Firebird and anything else fall back to an OS advisory file lock on a
+    # sidecar in the migrations folder. A backend that cannot lock degrades to the
+    # file lock, and finally to running unlocked (the pre-#277 behaviour) rather
+    # than blocking boot. Returns [kind, resource] for release_migration_lock.
+    def acquire_migration_lock
+      engine = (@db.respond_to?(:get_database_type) ? @db.get_database_type : "").to_s.downcase
+
+      begin
+        if engine.start_with?("postgres")
+          @db.fetch("SELECT pg_advisory_lock(#{pg_advisory_key}) AS locked")
+          return [:postgres, nil]
+        elsif engine.start_with?("mysql")
+          # -1 = wait indefinitely; GET_LOCK is connection-scoped.
+          @db.fetch("SELECT GET_LOCK('#{LOCK_NAME}', -1) AS locked")
+          return [:mysql, nil]
+        elsif engine == "mssql" || engine == "sqlserver"
+          @db.execute(
+            "DECLARE @res INT; EXEC @res = sp_getapplock @Resource = '#{LOCK_NAME}', " \
+            "@LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = -1"
+          )
+          return [:mssql, nil]
+        end
+      rescue => e
+        Tina4::Log.debug("DB migration lock unavailable (#{engine}): #{e.message}; using a file lock")
+      end
+
+      acquire_file_lock
+    end
+
+    # OS advisory file lock on a sidecar — the portable fallback (crash-safe: the
+    # kernel drops it when the process exits).
+    def acquire_file_lock
+      FileUtils.mkdir_p(@migrations_dir) unless Dir.exist?(@migrations_dir)
+      path = File.join(@migrations_dir, ".tina4_migration.lock")
+      handle = File.open(path, File::RDWR | File::CREAT, 0o644)
+      handle.flock(File::LOCK_EX)
+      [:file, handle]
+    rescue => e
+      Tina4::Log.debug("file migration lock unavailable: #{e.message}; running unlocked")
+      [:none, nil]
+    end
+
+    def release_migration_lock(handle)
+      kind, resource = handle
+      case kind
+      when :postgres
+        @db.fetch("SELECT pg_advisory_unlock(#{pg_advisory_key}) AS released")
+      when :mysql
+        @db.fetch("SELECT RELEASE_LOCK('#{LOCK_NAME}') AS released")
+      when :mssql
+        @db.execute("EXEC sp_releaseapplock @Resource = '#{LOCK_NAME}', @LockOwner = 'Session'")
+      when :file
+        if resource
+          resource.flock(File::LOCK_UN)
+          resource.close
+        end
+      end
+    rescue => e
+      Tina4::Log.debug("migration lock release failed (#{handle&.first}): #{e.message}")
+    end
 
     # Resolve migrations directory: prefer src/migrations, fall back to migrations/
     def resolve_migrations_dir
