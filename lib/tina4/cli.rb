@@ -39,7 +39,7 @@ module Tina4
     GENERATORS = {
       "model"      => { handler: :generate_model,      usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
       "route"      => { handler: :generate_route,      usage: "<name> [--model Name] [--public]",             summary: "CRUD route file, secure by default (--public opens writes)" },
-      "crud"       => { handler: :generate_crud,       usage: '<Name> [--fields "..."] [--public]',           summary: "Model + migration + routes + form + view + test" },
+      "crud"       => { handler: :generate_crud,       usage: '<Name> [--fields "..."] [--public] [--no-templates]', summary: "Model + migration + AutoCrud-backed admin page (to_crud) + editable crud/ templates + gate test" },
       "migration"  => { handler: :generate_migration,  usage: "<description>",                                 summary: "Timestamped migration file (UP/DOWN)" },
       "middleware" => { handler: :generate_middleware, usage: "<Name>",                                        summary: "Middleware with before/after hooks" },
       "test"       => { handler: :generate_test,       usage: "<name> [--model Name]",                         summary: "RSpec test file" },
@@ -2152,38 +2152,97 @@ module Tina4
     # ── Generator: crud ──────────────────────────────────────────────────
 
     def generate_crud(name, flags)
-      # Quiet here — the generate_model sub-call below announces once (#123).
+      # ADR-0094: `generate crud` scaffolds an admin PAGE rendered by
+      # Tina4::Crud.to_crud, whose REST backend is delegated entirely to
+      # AutoCrud (no hand-written list/detail/write routes). The generated page
+      # route registers AutoCrud for the model (secure-by-default; --public opens
+      # writes) and renders to_crud; the overridable crud/*.twig templates are
+      # copied into the app so the developer can edit them immediately.
+      #
+      # The table name (singular, e.g. "widget") is the canonical path: the model
+      # declares table_name "<table>", AutoCrud serves /api/<table>, and the gate
+      # test + page route all key off it.
       table = resolve_table(name, flags)
-      # Always derive the plural route from the CLASS NAME, not by appending
-      # "s" to the table — otherwise a reserved-word table (already plural,
-      # Order -> orders) becomes orderss, and a `y`-ending class (Category)
-      # becomes categorys instead of categories.
-      route_name = to_route_name(name)
       is_public = flags["public"] ? true : false
 
       puts "\n  Generating CRUD for #{name}...\n"
 
       # 1. Model + migration (emit_test: false — crud emits its own broader gate
-      #    spec at step 5, so the sub-generators stay quiet to avoid double-emit).
+      #    spec at step 4, so the sub-generators stay quiet to avoid double-emit).
       generate_model(name, flags, emit_test: false)
 
-      # 2. Routes with model — secure-by-default; thread --public through so
-      #    `generate crud X --public` opens the writes (mirrors AutoCrud public:).
-      #    emit_test: false — the crud gate spec at step 5 targets the same file.
-      generate_route(route_name, { "model" => name, "public" => is_public }, emit_test: false)
+      # 2. Admin page route: registers AutoCrud (secure-by-default; --public
+      #    opens writes) and renders the to_crud admin UI at /admin/<table>.
+      generate_crud_admin_route(name, table, is_public)
 
-      # 3. Form
-      generate_form(name, flags)
+      # 3. Copy the overridable crud/*.twig templates into the app (unless
+      #    --no-templates) so the developer owns an editable copy straight away.
+      copy_crud_templates unless flags["no-templates"]
 
-      # 4. View (list + detail)
-      generate_view(name, flags)
-
-      # 5. Test — secure-by-default gate test (behavioural, real TestClient).
-      generate_test(route_name, { "model" => name, "secure_writes" => true, "public" => is_public })
+      # 4. Test — secure-by-default gate test (behavioural, real TestClient).
+      #    Keyed off the table, matching the AutoCrud routes + the route file.
+      generate_test(table, { "model" => name, "secure_writes" => true, "public" => is_public })
 
       puts "\n  CRUD generation complete for #{name}."
       puts "  Run: tina4ruby migrate"
-      puts "  Visit: /swagger to see the API docs"
+      puts "  Visit: /admin/#{table} for the admin UI, or /swagger for the API docs"
+    end
+
+    # Write the admin page route (src/routes/<table>.rb). It wires the AutoCrud
+    # REST backend for the model and renders the to_crud admin page — ADR-0094:
+    # to_crud owns no routes of its own, so the backend is AutoCrud and only the
+    # GET page lives here. Secure-by-default; `is_public` opens the writes.
+    def generate_crud_admin_route(model, table, is_public)
+      model_snake = to_snake_case(model)
+      dir = "src/routes"
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "#{table}.rb")
+      if File.exist?(path)
+        puts "  File already exists: #{path}"
+        return
+      end
+
+      page_verb = is_public ? "get" : "secure_get"
+      write_doc = is_public ? "--public: the admin page and the writes are OPEN (no token)." : "Secure by default: the admin page AND the writes require a valid Bearer token (pass --public to open them)."
+      page_doc = is_public ? "" : "\n        # NOTE: the admin page is secured (secure_get). A browser needs a valid\n        # token/session to open it; wire your login (Tina4::Auth / Session) or run\n        # `generate crud #{model} --public` for an open page. The AutoCrud READ\n        # API (GET #{table}, GET #{table}/{id}) stays public by AutoCrud's default."
+      content = <<~RUBY
+        require_relative "../orm/#{model_snake}"
+
+        # #{model} admin — one server-rendered CRUD page (searchable, sortable,
+        # paginated table + create/edit/delete modals). The REST backend (GET
+        # list, GET/{id}, POST, PUT, DELETE) is AutoCrud; this file owns only the
+        # GET admin page. #{write_doc}#{page_doc}
+        #
+        # Restyle the UI by editing templates/crud/*.twig (copied into this app).
+        Tina4::AutoCrud.register(#{model}, public: #{is_public})
+        Tina4::AutoCrud.generate_routes
+
+        Tina4.#{page_verb} "/admin/#{table}" do |request, response|
+          response.html(Tina4::Crud.to_crud(request, model: #{model}, title: "#{model} Admin"))
+        end
+      RUBY
+
+      File.write(path, content)
+      puts "  Created #{path}"
+    end
+
+    # Copy the framework's overridable crud/*.twig templates into the app's
+    # src/templates/crud/ so the developer can edit them in place (an app copy
+    # wins over the gem's via Tina4::Template's app-first resolution). Existing
+    # files are left untouched.
+    def copy_crud_templates
+      source_dir = File.join(__dir__, "templates", "crud")
+      target_dir = File.join("src", "templates", "crud")
+      FileUtils.mkdir_p(target_dir)
+      Dir.glob(File.join(source_dir, "*.twig")).sort.each do |src|
+        dest = File.join(target_dir, File.basename(src))
+        if File.exist?(dest)
+          puts "  File already exists: #{dest}"
+        else
+          FileUtils.cp(src, dest)
+          puts "  Created #{dest}"
+        end
+      end
     end
 
     # ── Generator: migration ─────────────────────────────────────────────

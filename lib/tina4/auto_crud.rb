@@ -149,8 +149,20 @@ module Tina4
             end
             next res.error("UNKNOWN_FIELD", "Unknown filter field '#{unknown_filter_field}'", 400) if unknown_filter_field
 
+            # ADR-0094: ?search=term full-text filters the list — a
+            # case-insensitive LIKE %term% OR'd across the model's declared
+            # string/text columns, added to the WHERE before limit/offset so the
+            # envelope's total reflects the filtered set. A model with no
+            # string/text column simply matches nothing; it never errors. This is
+            # what the CRUD admin grid (and any client) uses to search.
+            apply_search_clause(model_class, req.query["search"], filter_conditions, filter_values)
+
             order_by, unknown_sort_field = parse_sort(model_class, req.query["sort"])
             next res.error("UNKNOWN_FIELD", "Unknown sort field '#{unknown_sort_field}'", 400) if unknown_sort_field
+
+            # ADR-0094: honour an explicit ?sort_dir=asc|desc for a single bare
+            # ?sort=column (the CRUD grid's spelling). See #apply_sort_direction.
+            order_by = apply_sort_direction(order_by, req.query["sort"], req.query["sort_dir"])
 
             if filter_conditions.empty?
               records = model_class.all(limit: limit, offset: offset, order_by: order_by)
@@ -368,6 +380,43 @@ module Tina4
       def find_addressed_record(model_class, raw_id)
         id = model_class.coerce_primary_key(raw_id)
         id.nil? ? nil : model_class.find_by_id(id)
+      end
+
+      # ADR-0094: append the ?search=term clause — a case-insensitive LIKE
+      # %term% OR'd across the model's declared string/text columns — onto the
+      # WHERE being built (conditions + bound values), before limit/offset so
+      # the envelope's total reflects the filtered set. A blank term, or a
+      # model with no string/text column, adds nothing (matches nothing, never
+      # errors). Mutates the two arrays in place and returns nil.
+      def apply_search_clause(model_class, raw_term, conditions, values)
+        term = raw_term.to_s.strip
+        return if term.empty?
+
+        columns = model_class.field_definitions
+                             .select { |_name, opts| %i[string text].include?(opts[:type]) }
+                             .keys
+                             .map { |attr| model_class.resolve_field_column(attr) || attr.to_s }
+        return if columns.empty?
+
+        conditions << "(#{columns.map { |col| "#{col} LIKE ?" }.join(' OR ')})"
+        columns.each { values << "%#{term}%" }
+        nil
+      end
+
+      # ADR-0094: honour an explicit ?sort_dir=asc|desc for a single bare
+      # ?sort=column (the CRUD grid's spelling). The Mongo-style "-field,field"
+      # sort keeps its own inline direction and ignores sort_dir. An unknown
+      # sort column is already a 400 (ADR-0069); the CRUD grid only ever emits
+      # real model columns, so it never trips that — this just adds the
+      # direction toggle its headers need. Returns order_by with its trailing
+      # direction replaced, or unchanged when sort_dir does not apply.
+      def apply_sort_direction(order_by, sort_param, sort_dir)
+        param = sort_param.to_s.strip
+        return order_by if order_by.nil? || sort_dir.nil? || param.empty? ||
+                           param.include?(",") || param.start_with?("-")
+
+        direction = sort_dir.to_s.downcase == "desc" ? "DESC" : "ASC"
+        order_by.sub(/\s+(?:ASC|DESC)\s*\z/i, " #{direction}")
       end
 
       # Parse the sort parameter: "-name,created_at" => "name DESC, created_at ASC".

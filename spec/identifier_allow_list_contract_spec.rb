@@ -740,8 +740,11 @@ RSpec.describe "ADR-0069 identifier allow-list contract" do
     end
 
     it "crud_to_crud_sort_accepts_only_known_columns" do
+      # ADR-0094: a model is always required; a custom :sql only shapes the
+      # displayed listing. Both the model-mode and the model+custom-sql listing
+      # apply the same ADR-0069 safe-sort (unknown/non-identifier -> pk).
       model = { model: IdentifierCrudSortItem }
-      sql = { sql: "SELECT id, name, owner_col FROM ident_crud_sort", primary_key: "id" }
+      sql = { model: IdentifierCrudSortItem, sql: "SELECT id, name, owner_col FROM ident_crud_sort" }
       by_pk = %w[alpha bravo charlie]
 
       # Negative: an undeclared-but-real column and non-identifier values fall
@@ -761,47 +764,12 @@ RSpec.describe "ADR-0069 identifier allow-list contract" do
       expect(row_order(crud_page("sort=name&sort_dir=desc&search=a", sql))).to eq(%w[charlie bravo alpha])
     end
 
-    it "crud_sql_mode_writes_accept_only_table_columns" do
-      db.execute("CREATE TABLE ident_crud_write (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, " \
-                 "note TEXT, is_deleted INTEGER DEFAULT 0)")
-      db.execute("INSERT INTO ident_crud_write (id, name, note) VALUES (?, ?, ?)", [1, "first", "n1"])
-      prior_secret = ENV.delete("TINA4_SECRET")
-      prior_api_key = ENV.delete("TINA4_API_KEY")
-      Tina4::Auth.instance_variable_set(:@private_key, nil)
-      Tina4::Auth.instance_variable_set(:@public_key, nil)
-      Tina4::Auth.instance_variable_set(:@keys_dir, nil)
-      Tina4::Auth.setup(tmp_dir)
-      begin
-        crud_page("", { sql: "SELECT id, name, note FROM ident_crud_write", primary_key: "id" })
-        auth = { "Authorization" => "Bearer #{Tina4::Auth.get_token({ 'sub' => 'crud-writer' })}" }
-        row = ->(id) { db.fetch_one("SELECT * FROM ident_crud_write WHERE id = ?", [id]) }
-
-        # POST: unknown keys are dropped, is_deleted is never writable, a real
-        # column matches case-insensitively and is written in its real spelling.
-        created = client.post("/api/ident_crud_write", headers: auth, json: {
-          "NAME" => "second", "note" => "n2", "is_deleted" => 1,
-          "not_a_column" => "x", "na me" => "x", "note'" => "x"
-        })
-        expect(created.status).to eq(201), created.body
-        expect(created.json["data"]).to eq("name" => "second", "note" => "n2")
-        stored = db.fetch_one("SELECT * FROM ident_crud_write WHERE name = ?", ["second"])
-        expect(stored[:note]).to eq("n2")
-        expect(stored[:is_deleted].to_i).to eq(0)
-
-        # PUT: the row is addressed by the URL id only (body pk stripped),
-        # unknown keys dropped, is_deleted never writable.
-        updated = client.put("/api/ident_crud_write/1", headers: auth, json: {
-          "id" => 999, "name" => "renamed", "is_deleted" => 1, "not_a_column" => "x", "na me" => "x"
-        })
-        expect(updated.status).to eq(200), updated.body
-        expect(updated.json["data"]).to eq("name" => "renamed")
-        expect(row.call(1)[:name]).to eq("renamed")
-        expect(row.call(1)[:is_deleted].to_i).to eq(0)
-        expect(row.call(999)).to be_nil
-      ensure
-        ENV["TINA4_SECRET"] = prior_secret if prior_secret
-        ENV["TINA4_API_KEY"] = prior_api_key if prior_api_key
-      end
-    end
+    # NOTE (ADR-0094): Tina4::Crud no longer registers its own sql-mode
+    # POST/PUT/DELETE routes — the entire write backend is delegated to
+    # AutoCrud, whose mass-assignment allow-list (unknown keys dropped,
+    # is_deleted never writable, the PK stripped/URL-addressed) is proven by the
+    # AutoCrud contract tests above and in spec/auto_crud_spec.rb. The former
+    # "crud_sql_mode_writes_accept_only_table_columns" example tested the removed
+    # bespoke path and has been retired.
   end
 end

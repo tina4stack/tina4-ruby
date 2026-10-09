@@ -6,295 +6,420 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 require "json"
+require "uri"
 
 module Tina4
-  # Crud — Auto-generate a complete HTML CRUD interface from a SQL query or ORM model.
+  # Crud (ADR-0094) — a FRONTEND over AutoCrud.
+  #
+  # `to_crud` renders a complete server-rendered admin UI (searchable, sortable,
+  # paginated table + create/edit/delete modals) for an ORM model. It owns NO
+  # backend routes: the entire REST backend (GET list, GET /{id}, POST, PUT,
+  # DELETE, secure-by-default) is delegated to `Tina4::AutoCrud`, and the UI's
+  # JavaScript talks to those routes over fetch(). The HTML comes from four
+  # app-overridable Frond templates under `crud/` (page, table, form, modals),
+  # rendered through `Tina4::Template.render` — the same app-first-then-gem
+  # resolution the error pages use — so an app restyles the admin by dropping its
+  # own `templates/crud/<name>.twig`, no framework fork.
   #
   # Usage:
   #   Tina4.get "/admin/users" do |request, response|
-  #     response.html(Tina4::Crud.to_crud(request, {
-  #       sql: "SELECT id, name, email FROM users",
-  #       title: "User Management",
-  #       primary_key: "id"
-  #     }))
+  #     response.html(Tina4::Crud.to_crud(request, model: User, title: "Users"))
   #   end
   #
-  # Or with an ORM model class:
-  #   Tina4.get "/admin/users" do |request, response|
-  #     response.html(Tina4::Crud.to_crud(request, {
-  #       model: User,
-  #       title: "User Management"
-  #     }))
-  #   end
+  # A custom `sql:` only shapes the LISTING grid (a filter/join/projection); the
+  # model still drives columns, the primary key, and every write path, so a
+  # custom listing can never create an unauthenticated or divergent write route.
   module Crud
     class << self
-      # Generate a complete CRUD HTML interface: searchable/paginated table
-      # with create, edit, and delete modals. Also registers the supporting
-      # REST API routes on first call per table.
+      # Render the CRUD admin page for +model+ and register its AutoCrud routes.
       #
       # @param request [Tina4::Request] the current request
-      # @param options [Hash] configuration options
-      # @option options [String]  :sql         SQL query for listing records
-      # @option options [Class]   :model       ORM model class (alternative to :sql)
-      # @option options [String]  :title       page title (default: table name)
-      # @option options [String]  :primary_key primary key column (default: "id")
-      # @option options [String]  :prefix      API route prefix (default: "/api")
-      # @option options [Integer] :limit       records per page (default: 10)
-      # @return [String] complete HTML page
-      def to_crud(request, options = {})
-        sql        = options[:sql]
-        model      = options[:model]
-        title      = options[:title] || "CRUD"
-        pk         = options[:primary_key] || "id"
-        prefix     = options[:prefix] || "/api"
-        limit      = (options[:limit] || 10).to_i
+      # @param options [Hash, nil] options as a Hash (also accepted as keywords)
+      # @option options [Class]   :model  REQUIRED — the ORM model class
+      # @option options [String]  :sql    optional listing query (inferred from
+      #   the model when omitted); shapes only the displayed grid
+      # @option options [String]  :title  page title (default "CRUD")
+      # @option options [String]  :prefix AutoCrud route prefix (default "/api")
+      # @option options [Integer] :limit  records per page (default 10)
+      # @return [String] the rendered crud/page template
+      def to_crud(request, options = nil, **kwargs)
+        opts = {}
+        opts.merge!(options) if options.is_a?(Hash)
+        opts.merge!(kwargs)
 
-        # Determine table name and columns from SQL or model
-        if model
-          table_name = model.table_name.to_s
-          pk = (model.primary_key_field || :id).to_s
-          columns = model.field_definitions.keys.map(&:to_s)
-        elsif sql
-          table_name = extract_table_name(sql)
-          columns = extract_columns(sql)
-        else
-          raise ArgumentError, "Crud.to_crud requires either :sql or :model option"
-        end
+        model = opts[:model]
+        raise ArgumentError, "Crud.to_crud requires a :model (an ORM class)" unless model
 
-        # Parse request params for pagination, search, and sorting
-        query_params = request.respond_to?(:query) ? request.query : {}
-        page       = [(query_params["page"] || 1).to_i, 1].max
-        search     = query_params["search"].to_s.strip
-        sort_col   = crud_sort_column(model, sql, query_params["sort"], pk)
-        sort_dir   = query_params["sort_dir"] == "desc" ? "desc" : "asc"
-        offset     = (page - 1) * limit
+        sql    = opts[:sql]
+        title  = (opts[:title] || "CRUD").to_s
+        prefix = (opts[:prefix] || "/api").to_s
+        limit  = (opts[:limit] || 10).to_i
+        limit  = 10 if limit <= 0
 
-        # Build the data query
-        if model
-          records, total = fetch_model_data(model, search: search, sort: sort_col,
-                                            sort_dir: sort_dir, limit: limit, offset: offset)
-        else
+        table_name = model.table_name.to_s
+        pk         = (model.primary_key_field || :id).to_s
+        columns    = model.field_definitions.keys.map(&:to_s)
+
+        # Backend: delegate 100% to AutoCrud (idempotent — register once).
+        register_backend(model, prefix)
+
+        # Pagination / search / safe-sort from the query string.
+        query_params = request.respond_to?(:query) ? (request.query || {}) : {}
+        page     = [(query_params["page"] || 1).to_i, 1].max
+        search   = query_params["search"].to_s.strip
+        sort_col = crud_sort_column(model, sql, query_params["sort"], pk)
+        sort_dir = query_params["sort_dir"] == "desc" ? "desc" : "asc"
+        offset   = (page - 1) * limit
+
+        if sql
           records, total = fetch_sql_data(sql, search: search, sort: sort_col,
                                           sort_dir: sort_dir, limit: limit, offset: offset)
+        else
+          records, total = fetch_model_data(model, search: search, sort: sort_col,
+                                            sort_dir: sort_dir, limit: limit, offset: offset)
         end
 
-        total_pages = total > 0 ? (total.to_f / limit).ceil : 1
-        api_path = "#{prefix}/#{table_name}"
+        total_pages  = total > 0 ? (total.to_f / limit).ceil : 1
+        api_path     = "#{prefix}/#{table_name}"
+        request_path = request.respond_to?(:path) ? request.path.to_s : "/"
 
-        # Register supporting CRUD API routes (idempotent)
-        register_crud_routes(model, table_name, pk, prefix) unless crud_routes_registered?(table_name, prefix)
-
-        # Build the HTML
-        build_crud_html(
-          title: title, table_name: table_name, pk: pk,
-          columns: columns, records: records,
-          page: page, total_pages: total_pages, total: total,
-          limit: limit, search: search, sort_col: sort_col,
-          sort_dir: sort_dir, api_path: api_path,
-          request_path: request.path
+        render_page(
+          title: title, table_name: table_name, pk: pk, columns: columns,
+          records: records, page: page, total_pages: total_pages, total: total,
+          limit: limit, search: search, sort_col: sort_col, sort_dir: sort_dir,
+          api_path: api_path, request_path: request_path, model: model
         )
       end
 
-      # Generate an HTML table from an array of record hashes.
+      # Render an HTML table fragment from an array of record hashes via
+      # crud/table.twig. Inline-editable (contenteditable cells + Save/Delete
+      # buttons wired through the template's delegated listener).
       def generate_table(records, table_name: "data", primary_key: "id", editable: true)
-        return "<p>No records found.</p>" if records.nil? || records.empty?
+        records = records || []
+        columns = records.empty? ? [] : records.first.keys.map(&:to_s)
 
-        columns = records.first.keys
-
-        html = <<~HTML
-          <div class="table-responsive">
-          <table class="table table-striped table-hover" id="crud-#{table_name}">
-          <thead class="table-dark"><tr>
-        HTML
-
-        columns.each do |col|
-          html += "<th>#{col}</th>"
-        end
-        html += "<th>Actions</th>" if editable
-        html += "</tr></thead><tbody>"
-
-        records.each do |row|
-          pk_value = row[primary_key.to_sym] || row[primary_key.to_s]
-          html += "<tr data-id=\"#{pk_value}\">"
-          columns.each do |col|
-            value = row[col]
-            if editable
-              html += "<td contenteditable=\"true\" data-field=\"#{col}\">#{value}</td>"
-            else
-              html += "<td>#{value}</td>"
-            end
-          end
-          if editable
-            html += "<td>"
-            html += "<button class=\"btn btn-sm btn-primary me-1\" data-crud-inline=\"save\" data-table=\"#{h(table_name)}\" data-id=\"#{h(pk_value)}\">Save</button>"
-            html += "<button class=\"btn btn-sm btn-danger\" data-crud-inline=\"delete\" data-table=\"#{h(table_name)}\" data-id=\"#{h(pk_value)}\">Delete</button>"
-            html += "</td>"
-          end
-          html += "</tr>"
-        end
-
-        html += "</tbody></table></div>"
-
-        if editable
-          html += inline_crud_javascript(table_name)
-        end
-
-        html
+        Tina4::Template.render("crud/table.twig",
+          table_data(columns: columns, records: records, pk: primary_key.to_s,
+                     table_name: table_name.to_s, editable: editable, sortable: false,
+                     inline_script: editable, request_path: nil, search: "",
+                     sort_col: nil, sort_dir: "asc", page: 1, limit: 10,
+                     table_id: "crud-#{table_name}"))
       end
 
-      # Generate an HTML form from a field definition array.
+      # Render an HTML form from a field-definition array via crud/form.twig.
+      # +fields+ is an array of { name:, type:, label:, value:, required:, options: }.
       def generate_form(fields, action: "/", method: "POST", table_name: "data")
-        html = "<form action=\"#{action}\" method=\"#{method}\" class=\"needs-validation\" novalidate>"
-        html += "<input type=\"hidden\" name=\"_method\" value=\"#{method}\">" if %w[PUT PATCH DELETE].include?(method.upcase)
-
-        fields.each do |field|
-          name = field[:name]
-          type = field[:type] || :string
-          label = field[:label] || name.to_s.capitalize
-          value = field[:value] || ""
-          required = field[:required] || false
-
-          html += "<div class=\"mb-3\">"
-          html += "<label for=\"#{name}\" class=\"form-label\">#{label}</label>"
-
-          case type.to_sym
-          when :text
-            html += "<textarea class=\"form-control\" id=\"#{name}\" name=\"#{name}\" #{'required' if required}>#{value}</textarea>"
-          when :boolean
-            checked = value ? "checked" : ""
-            html += "<div class=\"form-check\">"
-            html += "<input class=\"form-check-input\" type=\"checkbox\" id=\"#{name}\" name=\"#{name}\" #{checked}>"
-            html += "</div>"
-          when :select
-            html += "<select class=\"form-select\" id=\"#{name}\" name=\"#{name}\" #{'required' if required}>"
-            (field[:options] || []).each do |opt|
-              selected = opt[:value].to_s == value.to_s ? "selected" : ""
-              html += "<option value=\"#{opt[:value]}\" #{selected}>#{opt[:label]}</option>"
-            end
-            html += "</select>"
-          when :date
-            html += "<input type=\"date\" class=\"form-control\" id=\"#{name}\" name=\"#{name}\" value=\"#{value}\" #{'required' if required}>"
-          when :integer, :number
-            html += "<input type=\"number\" class=\"form-control\" id=\"#{name}\" name=\"#{name}\" value=\"#{value}\" #{'required' if required}>"
-          else
-            html += "<input type=\"text\" class=\"form-control\" id=\"#{name}\" name=\"#{name}\" value=\"#{value}\" #{'required' if required}>"
-          end
-          html += "</div>"
-        end
-
-        html += "<button type=\"submit\" class=\"btn btn-primary\">Submit</button>"
-        html += "</form>"
-        html
+        verb = method.to_s.upcase
+        Tina4::Template.render("crud/form.twig", {
+          "wrap" => true,
+          "form_id_attr" => "",
+          "action" => h(action),
+          "form_method" => h(verb),
+          "method_override" => (%w[PUT PATCH DELETE].include?(verb) ? verb : nil),
+          "edit" => false,
+          "modal_footer" => false,
+          "submit_button" => true,
+          "fields" => (fields || []).map { |f| build_custom_field(f) }
+        })
       end
 
       private
 
-      # Track which tables have had CRUD routes registered
+      # Track which (prefix, model) pairs have had their AutoCrud routes built.
       def registered_tables
         @registered_tables ||= {}
       end
 
-      def crud_routes_registered?(table_name, prefix)
-        registered_tables["#{prefix}/#{table_name}"]
+      # Delegate the ENTIRE backend to AutoCrud. Idempotent: register + generate
+      # once per (prefix, model); Router.add replaces a re-registered route in
+      # place, so a second call is harmless either way.
+      def register_backend(model, prefix)
+        key = "#{prefix}::#{model.name || model.object_id}"
+        return if registered_tables[key]
+
+        # Register only if the app has not already done so (e.g. a scaffolded
+        # admin route that registered it `public: true`) — re-registering would
+        # reset that public flag back to secure. generate_routes is idempotent
+        # (Router.add replaces a route in place).
+        Tina4::AutoCrud.register(model) unless Tina4::AutoCrud.models.include?(model)
+        Tina4::AutoCrud.generate_routes(prefix: prefix)
+        registered_tables[key] = true
       end
 
-      # Register REST API routes for the CRUD interface when using :sql mode.
-      # When using :model mode, the caller should use AutoCrud.register instead
-      # for full ORM-backed routes. These routes provide basic SQL-backed CRUD.
-      def register_crud_routes(model, table_name, pk, prefix)
-        api_path = "#{prefix}/#{table_name}"
-        registered_tables[api_path] = true
+      # Build the page template data and render page + table + modals (each via
+      # Tina4::Template.render, so every sub-template is independently
+      # app-overridable).
+      def render_page(title:, table_name:, pk:, columns:, records:, page:,
+                      total_pages:, total:, limit:, search:, sort_col:, sort_dir:,
+                      api_path:, request_path:, model:)
+        editable_columns = columns.reject { |c| c.to_s == pk.to_s }
 
-        # If we have a model, use AutoCrud for full ORM-backed routes
-        if model
-          Tina4::AutoCrud.register(model)
-          Tina4::AutoCrud.generate_routes(prefix: prefix)
-          return
-        end
+        table_html = Tina4::Template.render("crud/table.twig",
+          table_data(columns: columns, records: records, pk: pk,
+                     table_name: table_name, editable: false, sortable: true,
+                     inline_script: false, request_path: request_path,
+                     search: search, sort_col: sort_col, sort_dir: sort_dir,
+                     page: page, limit: limit, table_id: nil, model: model))
 
-        db = Tina4.database
-        return unless db
+        modals_html = render_modals(editable_columns, pk)
 
-        # GET list (already handled by the page itself)
-        # POST create
-        Tina4::Router.add("POST", api_path, proc { |req, res|
-          begin
-            data = table_column_attributes(db, table_name, req.body_parsed)
-            db.insert(table_name, data)
-            res.json({ data: data, message: "Created" }, status: 201)
-          rescue => e
-            res.json({ error: e.message }, status: 500)
-          end
-        })
-
-        # PUT update
-        Tina4::Router.add("PUT", "#{api_path}/{id}", proc { |req, res|
-          begin
-            id = req.params["id"]
-            # The row is addressed by the URL id only, never by a body pk.
-            data = table_column_attributes(db, table_name, req.body_parsed, strip: pk)
-            db.update(table_name, data, { pk => id })
-            res.json({ data: data, message: "Updated" })
-          rescue => e
-            res.json({ error: e.message }, status: 500)
-          end
-        })
-
-        # DELETE
-        Tina4::Router.add("DELETE", "#{api_path}/{id}", proc { |req, res|
-          begin
-            id = req.params["id"]
-            db.delete(table_name, { pk => id })
-            res.json({ message: "Deleted" })
-          rescue => e
-            res.json({ error: e.message }, status: 500)
-          end
+        Tina4::Template.render("crud/page.twig", {
+          "title" => h(title),
+          "search" => h(search),
+          "request_path" => h(request_path),
+          "info_count" => records.length,
+          "info_total" => total,
+          "info_page" => page,
+          "info_total_pages" => total_pages,
+          "table_html" => table_html,
+          "modals_html" => modals_html,
+          "show_pagination" => total_pages > 1,
+          "controls" => page_controls(page, total_pages, request_path, search, sort_col, sort_dir, limit),
+          "config_json" => js_config(
+            api_path: api_path, pk: pk, columns: columns, editable: editable_columns,
+            model: model, limit: limit, search: search, sort_col: sort_col,
+            sort_dir: sort_dir, page: page
+          )
         })
       end
 
-      # tina4: ADR-0069 - a SQL-mode write body is allow-listed against the
-      # table's REAL columns (matched case-insensitively, written in the
-      # introspected spelling); unknown keys are dropped, is_deleted is never
-      # client-writable, and +strip+ (the pk on update) is removed. Same write
-      # rule as AutoCrud (CRUD-DEC-02).
-      def table_column_attributes(db, table_name, data, strip: nil)
-        return {} unless data.is_a?(Hash)
+      # Render the create/edit/delete modal shell (crud/modals.twig), with the
+      # create and edit forms rendered through crud/form.twig.
+      def render_modals(editable_columns, pk)
+        Tina4::Template.render("crud/modals.twig", {
+          "create_form" => render_modal_form("create", editable_columns, pk, edit: false),
+          "edit_form" => render_modal_form("edit", editable_columns, pk, edit: true)
+        })
+      end
 
-        columns = db.columns(table_name).to_h { |column| [column[:name].to_s.downcase, column[:name].to_s] }
-        blocked = ["is_deleted", strip.to_s.downcase]
-        data.each_with_object({}) do |(key, value), allowed|
-          column = columns[key.to_s.downcase]
-          next if column.nil? || blocked.include?(column.downcase)
-
-          allowed[column] = value
+      # A modal's create/edit form — fields + the Cancel/Save footer — via
+      # crud/form.twig.
+      def render_modal_form(mode, columns, pk, edit:)
+        fields = columns.map do |col|
+          label = pretty_label(col)
+          {
+            "id" => "#{mode}-#{col}",
+            "name" => h(col),
+            "label" => h(label),
+            "value" => "",
+            "placeholder" => h("Enter #{label.downcase}"),
+            "type" => "text",
+            "required_attr" => "",
+            "input" => true
+          }
         end
+
+        Tina4::Template.render("crud/form.twig", {
+          "wrap" => true,
+          "form_id_attr" => " id=\"form-#{mode}\"",
+          "action" => "",
+          "form_method" => "POST",
+          "method_override" => nil,
+          "edit" => edit,
+          "mode" => mode,
+          "pk" => h(pk),
+          "modal_footer" => true,
+          "submit_button" => false,
+          "fields" => fields
+        })
+      end
+
+      # Build the data hash crud/table.twig consumes: escaped headers (with sort
+      # links + indicator + per-column alignment when sortable), rows carrying
+      # pre-joined escaped+aligned <td> cell HTML, and the mutually-exclusive
+      # editable/readonly flags. Numeric columns align right (text-end), text
+      # columns align left (text-start); the Actions column is always text-end.
+      def table_data(columns:, records:, pk:, table_name:, editable:, sortable:,
+                     inline_script:, request_path:, search:, sort_col:, sort_dir:,
+                     page:, limit:, table_id:, model: nil)
+        aligns = columns.map { |col| column_alignment(model, col) }
+
+        headers = columns.each_with_index.map do |col, index|
+          header = { "label" => h(pretty_label(col)), "align" => aligns[index] }
+          if sortable
+            next_dir = (sort_col.to_s == col.to_s && sort_dir == "asc") ? "desc" : "asc"
+            header["sortable"] = true
+            header["col"] = h(col)
+            header["next_dir"] = next_dir
+            header["url"] = sort_url(request_path, col, next_dir, page, search, limit)
+            header["indicator"] = sort_indicator(sort_col, col, sort_dir)
+          else
+            header["plain"] = true
+          end
+          header
+        end
+
+        rows = records.map do |record|
+          { "id" => h(record_pk(record, pk)),
+            "cells" => build_cells(columns, record, editable, aligns) }
+        end
+
+        {
+          "headers" => headers,
+          "rows" => rows,
+          "empty" => records.empty?,
+          "colspan" => columns.length + 1,
+          "editable" => editable,
+          "readonly" => !editable,
+          "inline_script" => inline_script,
+          "table_name" => h(table_name),
+          "table_id_attr" => (table_id ? " id=\"#{h(table_id)}\"" : "")
+        }
+      end
+
+      # The pre-joined <td> cells for one row, every value HTML-escaped and
+      # carrying its column alignment class. The <td> tag is the smallest
+      # fragment the limited template engine cannot iterate itself (it has no
+      # nested-loop support), so it is assembled here; the table structure,
+      # headers and action buttons all live in crud/table.twig.
+      def build_cells(columns, record, editable, aligns)
+        columns.each_with_index.map do |col, index|
+          value = h(cell_value(record, col))
+          css = aligns[index]
+          if editable
+            "<td class=\"#{css}\" contenteditable=\"true\" data-field=\"#{h(col)}\">#{value}</td>"
+          else
+            "<td class=\"#{css}\">#{value}</td>"
+          end
+        end.join
+      end
+
+      # Column alignment from the model's declared field type: numeric columns
+      # (integer/numeric/float/decimal) align right, everything else left. With
+      # no model (the generate_table fragment), every column aligns left.
+      def column_alignment(model, col)
+        return "text-start" unless model&.respond_to?(:field_definitions)
+
+        type = model.field_definitions.dig(col.to_sym, :type)
+        %i[integer numeric float decimal].include?(type) ? "text-end" : "text-start"
+      end
+
+      def cell_value(record, col)
+        return record[col.to_sym] if record.respond_to?(:key?) && record.key?(col.to_sym)
+        return record[col.to_s] if record.respond_to?(:key?) && record.key?(col.to_s)
+        record[col.to_sym] || record[col.to_s] || (record[col] rescue nil)
+      end
+
+      def record_pk(record, pk)
+        cell_value(record, pk)
+      end
+
+      # A field hash for crud/form.twig built from a generate_form field def.
+      def build_custom_field(field)
+        name     = field[:name].to_s
+        label    = field[:label] || name.capitalize
+        value    = field[:value]
+        required = field[:required] ? " required" : ""
+
+        base = {
+          "id" => h(name),
+          "name" => h(name),
+          "label" => h(label.to_s),
+          "value" => h(value.to_s),
+          "placeholder" => "",
+          "required_attr" => required
+        }
+
+        case (field[:type] || :string).to_sym
+        when :text
+          base.merge("textarea" => true)
+        when :boolean
+          base.merge("checkbox" => true, "checked_attr" => (value ? " checked" : ""))
+        when :select
+          base.merge("select" => true, "options_html" => build_options(field[:options], value))
+        when :date
+          base.merge("input" => true, "type" => "date")
+        when :integer, :number, :float, :decimal
+          base.merge("input" => true, "type" => "number")
+        else
+          base.merge("input" => true, "type" => "text")
+        end
+      end
+
+      def build_options(options, selected_value)
+        (options || []).map do |opt|
+          selected = opt[:value].to_s == selected_value.to_s ? " selected" : ""
+          "<option value=\"#{h(opt[:value])}\"#{selected}>#{h(opt[:label])}</option>"
+        end.join
       end
 
       # tina4: ADR-0069 - ?sort reaches ORDER BY only as a column the source
       # itself declares: a model's declared field (resolved to its DB column) or
       # a column of the SQL query's own result set. Anything else falls back to
-      # the primary key - this is a rendered page, not an API, so no error.
+      # the primary key - this is a rendered page, not an API, so a bad sort is
+      # ignored, never an error.
       def crud_sort_column(model, sql, requested, pk)
         return pk if requested.nil? || requested.empty?
-        return model.resolve_field_column(requested) || pk if model
+        return model.resolve_field_column(requested) || pk if model && sql.nil?
+        return model.resolve_field_column(requested) || pk if model && !sql_result_columns(sql).include?(requested)
 
-        sql_result_columns(sql).include?(requested) ? requested : pk
+        sql ? (sql_result_columns(sql).include?(requested) ? requested : pk) : pk
       end
 
-      # The query with any ORDER BY / LIMIT clause removed, then stripped.
-      #
-      # Line by line with plain string operations - a case-insensitive search
-      # for the keyword, then a cut to the end of that line - so it is linear on
-      # any input (the regex it replaces was flagged as polynomial by CodeQL).
-      # Same result: a keyword is removed with the rest of its line only when at
-      # least one character follows it, and the line break is kept.
+      # Fetch a page of records from the model (ADR-0069 safe search across the
+      # model's string/text columns).
+      def fetch_model_data(model, search: "", sort: "id", sort_dir: "asc", limit: 10, offset: 0)
+        order_by = "#{sort} #{sort_dir.upcase}"
+
+        if search.empty?
+          records = model.all(limit: limit, offset: offset, order_by: order_by)
+          total = model.count
+        else
+          searchable = model.field_definitions.select { |_, opts|
+            %i[string text].include?(opts[:type])
+          }.keys
+          if searchable.empty?
+            records = model.all(limit: limit, offset: offset, order_by: order_by)
+            total = model.count
+          else
+            where_clause = searchable.map { |col| "#{col} LIKE ?" }.join(" OR ")
+            params = searchable.map { "%#{search}%" }
+            all_matches = model.where(where_clause, params, order_by: order_by)
+            total = all_matches.length
+            records = all_matches.slice(offset, limit) || []
+          end
+        end
+
+        [records.map(&:to_h), total]
+      end
+
+      # Fetch a page of rows for a custom listing SQL. The SQL shapes the DISPLAY
+      # only; writes/GET always go through AutoCrud.
+      def fetch_sql_data(sql, search: "", sort: "id", sort_dir: "asc", limit: 10, offset: 0)
+        db = Tina4.database
+        return [[], 0] unless db
+
+        base = strip_order_and_limit(sql)
+
+        if search.empty?
+          query = "#{base} ORDER BY #{sort} #{sort_dir.upcase}"
+          count_sql = "SELECT COUNT(*) as cnt FROM (#{base}) AS _crud_cnt"
+          count_result = db.fetch_one(count_sql)
+          total = count_result ? (count_result[:cnt] || count_result["cnt"] || 0).to_i : 0
+          results = db.fetch(query, [], limit: limit, offset: offset)
+        else
+          columns = extract_columns(sql)
+          search_parts = columns.map { |col| "CAST(#{col} AS TEXT) LIKE ?" }
+          wrapped = "SELECT * FROM (#{base}) AS _crud_sub WHERE #{search_parts.join(' OR ')} ORDER BY #{sort} #{sort_dir.upcase}"
+          params = columns.map { "%#{search}%" }
+          count_sql = "SELECT COUNT(*) as cnt FROM (#{base}) AS _crud_cnt WHERE #{search_parts.join(' OR ')}"
+          count_result = db.fetch_one(count_sql, params)
+          total = count_result ? (count_result[:cnt] || count_result["cnt"] || 0).to_i : 0
+          results = db.fetch(wrapped, params, limit: limit, offset: offset)
+        end
+
+        records = results.respond_to?(:records) ? results.records : results.to_a
+        [records, total]
+      end
+
+      # The query with any ORDER BY / LIMIT clause removed, line by line with
+      # plain string operations so it stays linear on any input.
       def strip_order_and_limit(sql)
         sql.to_s.each_line.map do |line|
           cut_from_keyword(cut_from_keyword(line, /ORDER BY /i), /LIMIT /i)
         end.join.strip
       end
 
-      # +keyword+ is a fixed literal with no quantifier, so the search is linear.
       def cut_from_keyword(line, keyword)
         ending = line.end_with?("\n") ? "\n" : ""
         content = ending.empty? ? line : line[0...-1]
@@ -304,7 +429,6 @@ module Tina4
         content[0...at] + ending
       end
 
-      # Column names of the SQL query's result set, read from one probe row.
       def sql_result_columns(sql)
         db = Tina4.database
         return [] unless db
@@ -314,79 +438,6 @@ module Tina4
         row ? row.keys.map(&:to_s) : []
       end
 
-      # Fetch data using an ORM model class
-      def fetch_model_data(model, search: "", sort: "id", sort_dir: "asc", limit: 10, offset: 0)
-        order_by = "#{sort} #{sort_dir.upcase}"
-
-        if search.empty?
-          records = model.all(limit: limit, offset: offset, order_by: order_by)
-          total = model.count
-        else
-          # Build search across all string/text fields
-          searchable = model.field_definitions.select { |_, opts|
-            [:string, :text].include?(opts[:type])
-          }.keys
-          if searchable.empty?
-            records = model.all(limit: limit, offset: offset, order_by: order_by)
-            total = model.count
-          else
-            where_parts = searchable.map { |col| "#{col} LIKE ?" }
-            where_clause = where_parts.join(" OR ")
-            params = searchable.map { "%#{search}%" }
-            records = model.where(where_clause, params)
-            total = records.length
-            records = records.slice(offset, limit) || []
-          end
-        end
-
-        record_hashes = records.map { |r| r.to_h }
-        [record_hashes, total]
-      end
-
-      # Fetch data using a raw SQL query
-      def fetch_sql_data(sql, search: "", sort: "id", sort_dir: "asc", limit: 10, offset: 0)
-        db = Tina4.database
-        return [[], 0] unless db
-
-        # Wrap the original SQL for sorting
-        base = strip_order_and_limit(sql)
-        query = "#{base} ORDER BY #{sort} #{sort_dir.upcase}"
-
-        if !search.empty?
-          # Wrap in a subquery to add search filtering
-          wrapped = "SELECT * FROM (#{base}) AS _crud_sub WHERE "
-          columns = extract_columns(sql)
-          search_parts = columns.map { |col| "CAST(#{col} AS TEXT) LIKE ?" }
-          wrapped += search_parts.join(" OR ")
-          wrapped += " ORDER BY #{sort} #{sort_dir.upcase}"
-          params = columns.map { "%#{search}%" }
-
-          # Get total count
-          count_sql = "SELECT COUNT(*) as cnt FROM (#{base}) AS _crud_cnt WHERE #{search_parts.join(' OR ')}"
-          count_result = db.fetch_one(count_sql, params)
-          total = count_result ? (count_result[:cnt] || count_result["cnt"] || 0).to_i : 0
-
-          results = db.fetch(wrapped, params, limit: limit, offset: offset)
-        else
-          # Get total count
-          count_sql = "SELECT COUNT(*) as cnt FROM (#{base}) AS _crud_cnt"
-          count_result = db.fetch_one(count_sql)
-          total = count_result ? (count_result[:cnt] || count_result["cnt"] || 0).to_i : 0
-
-          results = db.fetch(query, [], limit: limit, offset: offset)
-        end
-
-        records = results.respond_to?(:records) ? results.records : results.to_a
-        [records, total]
-      end
-
-      # Extract table name from a SQL SELECT statement
-      def extract_table_name(sql)
-        match = sql.match(/FROM\s+(\w+)/i)
-        match ? match[1] : "data"
-      end
-
-      # Extract column names from a SQL SELECT statement
       def extract_columns(sql)
         match = sql.match(/SELECT\s+(.+?)\s+FROM/im)
         return ["*"] unless match
@@ -394,405 +445,106 @@ module Tina4
         cols_str = match[1].strip
         return ["*"] if cols_str == "*"
 
-        cols_str.split(",").map { |c|
+        cols_str.split(",").map do |c|
           c = c.strip
-          # Handle "table.column AS alias" or "column AS alias"
           if c =~ /\bAS\s+(\w+)/i
-            $1
+            Regexp.last_match(1)
           elsif c.include?(".")
             c.split(".").last.strip
           else
-            c.strip
+            c
           end
+        end
+      end
+
+      # One flat list of pagination controls (Prev, numbered pages, Next) for
+      # crud/page.twig. Each carries exactly one of active/inactive, so the
+      # template renders them with a single loop and no nested if/else (the
+      # limited engine does not support a nested conditional).
+      def page_controls(page, total_pages, request_path, search, sort_col, sort_dir, limit)
+        return [] if total_pages <= 1
+
+        controls = []
+        if page > 1
+          controls << { "label" => "Prev", "page" => page - 1, "active" => false, "inactive" => true,
+                        "url" => page_url(request_path, page - 1, search, sort_col, sort_dir, limit) }
+        end
+
+        start_page = [page - 3, 1].max
+        end_page   = [start_page + 6, total_pages].min
+        start_page = [end_page - 6, 1].max
+        (start_page..end_page).each do |p|
+          controls << { "label" => p, "page" => p, "active" => (p == page), "inactive" => (p != page),
+                        "url" => page_url(request_path, p, search, sort_col, sort_dir, limit) }
+        end
+
+        if page < total_pages
+          controls << { "label" => "Next", "page" => page + 1, "active" => false, "inactive" => true,
+                        "url" => page_url(request_path, page + 1, search, sort_col, sort_dir, limit) }
+        end
+        controls
+      end
+
+      def page_url(request_path, p, search, sort_col, sort_dir, limit)
+        query = "page=#{p}&search=#{URI.encode_www_form_component(search.to_s)}" \
+                "&sort=#{URI.encode_www_form_component(sort_col.to_s)}" \
+                "&sort_dir=#{sort_dir}&limit=#{limit}"
+        h("#{request_path}?#{query}")
+      end
+
+      def sort_url(request_path, col, next_dir, page, search, limit)
+        query = "sort=#{URI.encode_www_form_component(col.to_s)}&sort_dir=#{next_dir}" \
+                "&page=#{page}&search=#{URI.encode_www_form_component(search.to_s)}&limit=#{limit}"
+        h("#{request_path}?#{query}")
+      end
+
+      def sort_indicator(sort_col, col, sort_dir)
+        return "" unless sort_col.to_s == col.to_s
+
+        arrow = sort_dir == "asc" ? "&#9650;" : "&#9660;"
+        " <span class=\"sort-indicator\">#{arrow}</span>"
+      end
+
+      # JSON config injected into the page's nonce'd <script>. The grid's whole
+      # state (search/sort/sort_dir/page), the display columns, their alignment
+      # and labels, and the editable columns all travel here so the client can
+      # drive the AutoCrud list endpoint and re-render the table over fetch().
+      # The < > & characters are unicode-escaped so the literal is safe inside
+      # the <script> element.
+      def js_config(api_path:, pk:, columns:, editable:, model:, limit:, search:,
+                    sort_col:, sort_dir:, page:)
+        aligns = {}
+        labels = {}
+        columns.each do |col|
+          aligns[col.to_s] = column_alignment(model, col)
+          labels[col.to_s] = pretty_label(col)
+        end
+
+        config = {
+          "api" => api_path,
+          "pk" => pk,
+          "columns" => columns.map(&:to_s),
+          "editable" => editable.map(&:to_s),
+          "aligns" => aligns,
+          "labels" => labels,
+          "limit" => limit,
+          "search" => search.to_s,
+          "sort" => sort_col.to_s,
+          "sort_dir" => sort_dir,
+          "page" => page
         }
+        JSON.generate(config).gsub("<", "\\u003c").gsub(">", "\\u003e").gsub("&", "\\u0026")
       end
 
       # Escape HTML special characters. Delegates to the framework's one
-      # canonical escaper (Frond.escape_html, single-pass, byte-identical
-      # & < > " ' -> &amp; &lt; &gt; &quot; &#39;) so CRUD and the error
-      # overlay never carry their own private copy of the HTML escape table.
+      # canonical escaper so CRUD never carries its own copy of the escape table.
       def h(text)
-        Tina4::Frond.escape_html(text)
+        Tina4::Frond.escape_html(text.to_s)
       end
 
-      # Pretty label from a column name: "user_name" => "User Name"
+      # Pretty label from a column name: "user_name" => "User Name".
       def pretty_label(col)
         col.to_s.split("_").map(&:capitalize).join(" ")
-      end
-
-      # Determine input type from column name or ORM field type
-      def input_type_for(col, model = nil)
-        if model && model.respond_to?(:field_definitions)
-          opts = model.field_definitions[col.to_sym]
-          if opts
-            case opts[:type]
-            when :integer             then return "number"
-            when :float, :decimal     then return "number"
-            when :boolean             then return "checkbox"
-            when :date                then return "date"
-            when :datetime, :timestamp then return "datetime-local"
-            when :text                then return "textarea"
-            end
-          end
-        end
-        # Guess from column name
-        return "email" if col.to_s.include?("email")
-        return "date"  if col.to_s.end_with?("_at", "_date")
-        return "number" if col.to_s.end_with?("_id") && col.to_s != "id"
-        "text"
-      end
-
-      # Build the complete CRUD HTML page
-      def build_crud_html(title:, table_name:, pk:, columns:, records:,
-                          page:, total_pages:, total:, limit:, search:,
-                          sort_col:, sort_dir:, api_path:, request_path:)
-        # Filter out auto-increment PK from editable columns
-        editable_columns = columns.reject { |c| c.to_s == pk.to_s }
-
-        html = <<~HTML
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>#{h(title)}</title>
-          <link rel="stylesheet" href="/css/tina4.min.css">
-          <style nonce="#{Tina4::Csp.current_nonce}">
-          .crud-container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
-          .crud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-          .crud-search { max-width: 300px; }
-          .crud-actions { display: flex; gap: 0.5rem; align-items: center; }
-          .crud-info { color: var(--text-muted, #6c757d); font-size: 0.875rem; margin-bottom: 0.5rem; }
-          .crud-pagination { display: flex; justify-content: center; gap: 0.25rem; margin-top: 1rem; }
-          .sort-link { text-decoration: none; color: inherit; cursor: pointer; }
-          .sort-link:hover { text-decoration: underline; }
-          .sort-indicator { font-size: 0.75rem; }
-          .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
-          .modal-overlay.active { display: flex; }
-          .modal-box { background: var(--bg, #fff); border-radius: 0.5rem; padding: 1.5rem;
-            width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-          .modal-box h3 { margin-top: 0; }
-          .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
-          .alert { padding: 0.75rem 1rem; border-radius: 0.25rem; margin-bottom: 1rem; display: none; }
-          .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-          .alert-danger { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-          </style>
-          </head>
-          <body>
-          <div class="crud-container">
-            <div id="crud-alert" class="alert"></div>
-            <div class="crud-header">
-              <h2>#{h(title)}</h2>
-              <div class="crud-actions">
-                <form method="GET" action="#{h(request_path)}" style="display:flex;gap:0.5rem;">
-                  <input type="text" name="search" value="#{h(search)}" placeholder="Search..."
-                    class="form-control crud-search">
-                  <button type="submit" class="btn btn-secondary">Search</button>
-                </form>
-                <button class="btn btn-primary" data-crud-action="create">+ New</button>
-              </div>
-            </div>
-            <div class="crud-info">
-              Showing #{records.length} of #{total} records (page #{page} of #{total_pages})
-            </div>
-            <div class="table-responsive">
-            <table class="table table-striped table-hover">
-            <thead class="table-dark"><tr>
-        HTML
-
-        # Table headers with sort links
-        columns.each do |col|
-          next_dir = (sort_col == col.to_s && sort_dir == "asc") ? "desc" : "asc"
-          indicator = ""
-          if sort_col == col.to_s
-            indicator = sort_dir == "asc" ? " <span class=\"sort-indicator\">&#9650;</span>" : " <span class=\"sort-indicator\">&#9660;</span>"
-          end
-          sort_params = "sort=#{h(col)}&sort_dir=#{next_dir}&page=#{page}&search=#{URI.encode_www_form_component(search)}&limit=#{limit}"
-          html += "<th><a class=\"sort-link\" href=\"#{h(request_path)}?#{sort_params}\">#{pretty_label(col)}#{indicator}</a></th>"
-        end
-        html += "<th>Actions</th></tr></thead><tbody>"
-
-        # Table body
-        if records.empty?
-          html += "<tr><td colspan=\"#{columns.length + 1}\" style=\"text-align:center;padding:2rem;\">No records found.</td></tr>"
-        else
-          records.each do |row|
-            pk_value = row[pk.to_sym] || row[pk.to_s] || row[pk]
-            html += "<tr>"
-            columns.each do |col|
-              value = row[col.to_sym] || row[col.to_s] || row[col]
-              html += "<td>#{h(value)}</td>"
-            end
-            html += "<td>"
-            html += "<button class=\"btn btn-sm btn-primary me-1\" data-crud-action=\"edit\" data-id=\"#{h(pk_value)}\">Edit</button>"
-            html += "<button class=\"btn btn-sm btn-danger\" data-crud-action=\"delete\" data-id=\"#{h(pk_value)}\">Delete</button>"
-            html += "</td></tr>"
-          end
-        end
-        html += "</tbody></table></div>"
-
-        # Pagination
-        if total_pages > 1
-          html += "<div class=\"crud-pagination\">"
-          if page > 1
-            html += "<a class=\"btn btn-sm btn-secondary\" href=\"#{h(request_path)}?page=#{page - 1}&search=#{URI.encode_www_form_component(search)}&sort=#{h(sort_col)}&sort_dir=#{h(sort_dir)}&limit=#{limit}\">Prev</a>"
-          end
-          # Show page numbers (max 7)
-          start_page = [page - 3, 1].max
-          end_page = [start_page + 6, total_pages].min
-          start_page = [end_page - 6, 1].max
-          (start_page..end_page).each do |p|
-            active = p == page ? " btn-primary" : " btn-secondary"
-            html += "<a class=\"btn btn-sm#{active}\" href=\"#{h(request_path)}?page=#{p}&search=#{URI.encode_www_form_component(search)}&sort=#{h(sort_col)}&sort_dir=#{h(sort_dir)}&limit=#{limit}\">#{p}</a>"
-          end
-          if page < total_pages
-            html += "<a class=\"btn btn-sm btn-secondary\" href=\"#{h(request_path)}?page=#{page + 1}&search=#{URI.encode_www_form_component(search)}&sort=#{h(sort_col)}&sort_dir=#{h(sort_dir)}&limit=#{limit}\">Next</a>"
-          end
-          html += "</div>"
-        end
-
-        # Create modal
-        html += build_modal("create", "Create New Record", editable_columns, pk, api_path, request_path)
-
-        # Edit modal
-        html += build_modal("edit", "Edit Record", editable_columns, pk, api_path, request_path, edit: true)
-
-        # Delete confirmation modal
-        html += <<~HTML
-          <div class="modal-overlay" id="modal-delete">
-            <div class="modal-box">
-              <h3>Confirm Delete</h3>
-              <p>Are you sure you want to delete this record? This action cannot be undone.</p>
-              <input type="hidden" id="delete-pk-value">
-              <div class="modal-footer">
-                <button class="btn btn-secondary" data-crud-action="close" data-crud-modal="delete">Cancel</button>
-                <button class="btn btn-danger" data-crud-action="confirm-delete">Delete</button>
-              </div>
-            </div>
-          </div>
-        HTML
-
-        # JavaScript
-        html += build_crud_javascript(api_path, pk, editable_columns, request_path)
-
-        html += "</div></body></html>"
-        html
-      end
-
-      # Build a create or edit modal
-      def build_modal(id, title, columns, pk, api_path, request_path, edit: false)
-        html = "<div class=\"modal-overlay\" id=\"modal-#{id}\">"
-        html += "<div class=\"modal-box\">"
-        html += "<h3>#{h(title)}</h3>"
-        html += "<form id=\"form-#{id}\" data-crud-form=\"1\">"
-        html += "<input type=\"hidden\" id=\"#{id}-pk-value\" name=\"#{pk}\">" if edit
-
-        columns.each do |col|
-          label = pretty_label(col)
-          field_id = "#{id}-#{col}"
-          html += "<div class=\"mb-3\">"
-          html += "<label for=\"#{field_id}\" class=\"form-label\">#{label}</label>"
-          html += "<input type=\"text\" class=\"form-control\" id=\"#{field_id}\" name=\"#{col}\" placeholder=\"Enter #{label.downcase}\">"
-          html += "</div>"
-        end
-
-        html += "<div class=\"modal-footer\">"
-        html += "<button type=\"button\" class=\"btn btn-secondary\" data-crud-action=\"close\" data-crud-modal=\"#{h(id)}\">Cancel</button>"
-        html += "<button type=\"button\" class=\"btn btn-primary\" data-crud-action=\"save\" data-crud-mode=\"#{edit ? 'edit' : 'create'}\">Save</button>"
-        html += "</div></form></div></div>"
-        html
-      end
-
-      # Build the JavaScript for the CRUD interface
-      def build_crud_javascript(api_path, pk, columns, request_path)
-        columns_json = JSON.generate(columns.map(&:to_s))
-        <<~HTML
-          <script nonce="#{Tina4::Csp.current_nonce}">
-          var CRUD_API = '#{api_path}';
-          var CRUD_PK = '#{pk}';
-          var CRUD_COLUMNS = #{columns_json};
-
-          function crudShowAlert(message, type) {
-            var el = document.getElementById('crud-alert');
-            el.className = 'alert alert-' + type;
-            el.textContent = message;
-            el.style.display = 'block';
-            setTimeout(function() { el.style.display = 'none'; }, 3000);
-          }
-
-          function crudShowCreate() {
-            var form = document.getElementById('form-create');
-            form.reset();
-            document.getElementById('modal-create').classList.add('active');
-          }
-
-          function crudShowEdit(id) {
-            fetch(CRUD_API + '/' + id)
-              .then(function(r) { return r.json(); })
-              .then(function(result) {
-                var data = result.data || result;
-                document.getElementById('edit-pk-value').value = id;
-                CRUD_COLUMNS.forEach(function(col) {
-                  var input = document.getElementById('edit-' + col);
-                  if (input) input.value = data[col] != null ? data[col] : '';
-                });
-                document.getElementById('modal-edit').classList.add('active');
-              })
-              .catch(function(e) { crudShowAlert('Failed to load record: ' + e, 'danger'); });
-          }
-
-          function crudShowDelete(id) {
-            document.getElementById('delete-pk-value').value = id;
-            document.getElementById('modal-delete').classList.add('active');
-          }
-
-          function crudCloseModal(name) {
-            document.getElementById('modal-' + name).classList.remove('active');
-          }
-
-          function crudSaveCreate() {
-            var data = {};
-            CRUD_COLUMNS.forEach(function(col) {
-              var input = document.getElementById('create-' + col);
-              if (input) data[col] = input.value;
-            });
-            fetch(CRUD_API, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(data)
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(result) {
-              if (result.error) { crudShowAlert(result.error, 'danger'); return; }
-              crudCloseModal('create');
-              crudShowAlert('Record created successfully', 'success');
-              setTimeout(function() { window.location.reload(); }, 500);
-            })
-            .catch(function(e) { crudShowAlert('Failed to create: ' + e, 'danger'); });
-          }
-
-          function crudSaveEdit() {
-            var id = document.getElementById('edit-pk-value').value;
-            var data = {};
-            CRUD_COLUMNS.forEach(function(col) {
-              var input = document.getElementById('edit-' + col);
-              if (input) data[col] = input.value;
-            });
-            fetch(CRUD_API + '/' + id, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(data)
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(result) {
-              if (result.error) { crudShowAlert(result.error, 'danger'); return; }
-              crudCloseModal('edit');
-              crudShowAlert('Record updated successfully', 'success');
-              setTimeout(function() { window.location.reload(); }, 500);
-            })
-            .catch(function(e) { crudShowAlert('Failed to update: ' + e, 'danger'); });
-          }
-
-          function crudConfirmDelete() {
-            var id = document.getElementById('delete-pk-value').value;
-            fetch(CRUD_API + '/' + id, { method: 'DELETE' })
-            .then(function(r) { return r.json(); })
-            .then(function(result) {
-              if (result.error) { crudShowAlert(result.error, 'danger'); return; }
-              crudCloseModal('delete');
-              crudShowAlert('Record deleted successfully', 'success');
-              setTimeout(function() { window.location.reload(); }, 500);
-            })
-            .catch(function(e) { crudShowAlert('Failed to delete: ' + e, 'danger'); });
-          }
-
-          // Replaces the modal forms' inline submit handler (a CSP-blocked on*=
-          // attribute): they post over fetch(), so stop the native submit here.
-          document.addEventListener('submit', function (event) {
-            if (event.target.closest('form[data-crud-form]')) {
-              event.preventDefault();
-            }
-          });
-
-          // CSP-clean action wiring: a nonce authorises this <script> element
-          // but never an inline on*= attribute, so every button carries
-          // data-crud-action and binds through one delegated listener.
-          document.addEventListener('click', function (event) {
-            var button = event.target.closest('[data-crud-action]');
-            if (!button) return;
-            var action = button.dataset.crudAction;
-            if (action === 'create') {
-              crudShowCreate();
-            } else if (action === 'edit') {
-              crudShowEdit(button.dataset.id);
-            } else if (action === 'delete') {
-              crudShowDelete(button.dataset.id);
-            } else if (action === 'close') {
-              crudCloseModal(button.dataset.crudModal);
-            } else if (action === 'confirm-delete') {
-              crudConfirmDelete();
-            } else if (action === 'save') {
-              if (button.dataset.crudMode === 'edit') { crudSaveEdit(); }
-              else { crudSaveCreate(); }
-            }
-          });
-
-          // Close modal on overlay click
-          document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
-            overlay.addEventListener('click', function(e) {
-              if (e.target === overlay) overlay.classList.remove('active');
-            });
-          });
-
-          // Close modal on Escape key
-          document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-              document.querySelectorAll('.modal-overlay.active').forEach(function(m) {
-                m.classList.remove('active');
-              });
-            }
-          });
-          </script>
-        HTML
-      end
-
-      def inline_crud_javascript(table_name)
-        <<~JS
-          <script nonce="#{Tina4::Csp.current_nonce}">
-          function crudSave(table, id) {
-            const row = document.querySelector(`tr[data-id="${id}"]`);
-            const cells = row.querySelectorAll('td[data-field]');
-            const data = {};
-            cells.forEach(cell => { data[cell.dataset.field] = cell.textContent; });
-            fetch(`/api/${table}/${id}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(data)
-            }).then(r => r.json()).then(d => { alert('Saved!'); }).catch(e => alert('Error: ' + e));
-          }
-          function crudDelete(table, id) {
-            if (!confirm('Delete this record?')) return;
-            fetch(`/api/${table}/${id}`, { method: 'DELETE' })
-              .then(r => r.json())
-              .then(d => { document.querySelector(`tr[data-id="${id}"]`).remove(); })
-              .catch(e => alert('Error: ' + e));
-          }
-          // CSP-clean wiring: a nonce authorises this <script> element but never
-          // an inline on*= attribute, so the Save/Delete buttons carry
-          // data-crud-inline + data-* and bind through one delegated listener.
-          document.addEventListener('click', function (event) {
-            var button = event.target.closest('[data-crud-inline]');
-            if (!button) return;
-            if (button.dataset.crudInline === 'save') {
-              crudSave(button.dataset.table, button.dataset.id);
-            } else if (button.dataset.crudInline === 'delete') {
-              crudDelete(button.dataset.table, button.dataset.id);
-            }
-          });
-          </script>
-        JS
       end
     end
   end

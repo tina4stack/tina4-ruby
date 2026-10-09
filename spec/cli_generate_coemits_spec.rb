@@ -128,7 +128,7 @@ RSpec.describe "CLI generators co-emit a real green spec" do
      "spec/widget_migration_spec.rb"],
     ["crud", [],
      ["generate", "crud", "Trinket", "--fields", "name:string,qty:int"],
-     "spec/trinkets_spec.rb"],
+     "spec/trinket_spec.rb"],
   ].freeze
 
   CASES.each do |id, pre_commands, generate_command, spec_rel|
@@ -199,14 +199,17 @@ RSpec.describe "CLI generators co-emit a real green spec" do
       end
     end
 
-    it "the generated create/update routes check the write result before to_h" do
+    it "the generated crud admin route wires AutoCrud + renders to_crud (ADR-0094)" do
       run_cli("generate", "crud", "Todo")
-      route = File.read(File.join(@project, "src", "routes", "todos.rb"))
-      # create/save return false rather than raising; unchecked, a failed write
-      # surfaces as an unrelated NoMethodError on false and hides the cause.
-      expect(route).to include("if item == false")
-      expect(route).to include("if item.save == false")
-      expect(route.index("if item == false")).to be < route.index("item.to_h, 201")
+      # ADR-0094: the write backend is delegated to AutoCrud (whose own handlers
+      # check save's result and 422 on failure), so the route file no longer
+      # hand-writes create/update. It registers AutoCrud + renders the to_crud
+      # admin page, named by the model's table (todo, singular).
+      route = File.read(File.join(@project, "src", "routes", "todo.rb"))
+      expect(route).to include("Tina4::AutoCrud.register(Todo, public: false)")
+      expect(route).to include("Tina4::AutoCrud.generate_routes")
+      expect(route).to include("Tina4::Crud.to_crud(request, model: Todo")
+      expect(route).to include('Tina4.secure_get "/admin/todo"')
     end
   end
 
