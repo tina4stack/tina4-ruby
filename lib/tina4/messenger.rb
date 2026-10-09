@@ -145,20 +145,52 @@ module Tina4
       @imap_username = imap_username || ENV["TINA4_MAIL_IMAP_USERNAME"] || @username
       @imap_password = imap_password || ENV["TINA4_MAIL_IMAP_PASSWORD"] || @password
 
-      # SMTP send timeout (seconds): constructor > TINA4_MAIL_TIMEOUT > SMTP_TIMEOUT
-      # > 30. A non-numeric env value falls back to 30 rather than coercing to 0
-      # (Integer("abc") raises; ENV["x"].to_i on "abc" is a silent 0, which would
-      # make every send time out instantly). Parity with the Python/PHP master.
-      @timeout = resolve_timeout(timeout)
+      # SMTP send timeout (seconds): constructor > TINA4_MAIL_TIMEOUT > 30.
+      # Whole seconds, at least 1. See resolve_timeout. Parity with the PHP
+      # master (Messenger::resolveTimeout, tina4-php#286).
+      @timeout = resolve_timeout(timeout, ENV["TINA4_MAIL_TIMEOUT"])
     end
 
-    # Resolve the SMTP send timeout from the constructor arg, then the env
-    # (TINA4_MAIL_TIMEOUT, SMTP_TIMEOUT), defaulting to 30 on absence or garbage.
-    def resolve_timeout(timeout)
-      raw = timeout || ENV["TINA4_MAIL_TIMEOUT"] || ENV["SMTP_TIMEOUT"] || 30
-      Integer(raw)
-    rescue ArgumentError, TypeError
-      30
+    #: Default socket timeout, in seconds - the value this class has always used.
+    TIMEOUT_DEFAULT = 30
+    #: Raw TINA4_MAIL_TIMEOUT values already warned about, so a bad one is said once.
+    @timeout_warned = {}
+    class << self
+      attr_reader :timeout_warned
+    end
+
+    # Resolve the SMTP send timeout to whole seconds (issue #278).
+    #
+    # An explicit constructor value is the caller's own instruction, so one below
+    # a second is a programming error and raises. A bad env value is a
+    # misconfiguration: warn once and use the default rather than guess. Zero and
+    # negative are garbage, not an opt-out - to the socket 0 means "do not wait at
+    # all", so no send could succeed.
+    def resolve_timeout(explicit, raw)
+      unless explicit.nil?
+        seconds = Integer(explicit)
+        raise ArgumentError, "Messenger timeout must be at least 1 second, got #{seconds}." if seconds < 1
+
+        return seconds
+      end
+      return TIMEOUT_DEFAULT if raw.nil? || raw.to_s.strip.empty?
+
+      seconds = begin
+        Integer(raw.to_s.strip)
+      rescue ArgumentError
+        nil
+      end
+      if seconds.nil? || seconds < 1
+        unless self.class.timeout_warned.key?(raw)
+          self.class.timeout_warned[raw] = true
+          Tina4::Log.warning(
+            "TINA4_MAIL_TIMEOUT must be a whole number of seconds and at least 1, got " \
+            "#{raw.inspect} - using the default of #{TIMEOUT_DEFAULT} seconds"
+          )
+        end
+        return TIMEOUT_DEFAULT
+      end
+      seconds
     end
     private :resolve_timeout
 

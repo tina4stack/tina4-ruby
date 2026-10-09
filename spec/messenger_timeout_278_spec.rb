@@ -55,15 +55,17 @@ RSpec.describe "Messenger SMTP timeout (#278)" do
     result = messenger.send(to: "someone@localhost", subject: "test", body: "hello")
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
     # The host never speaks SMTP, so the send always fails — what matters is HOW
-    # LONG it waited.
+    # LONG it waited, and that the failure is reported AS a timeout.
     expect(result[:success]).to be false
-    elapsed
+    [elapsed, result]
   end
 
-  it "bounds the send by a constructor timeout" do
+  it "bounds the send by a constructor timeout and reports a timeout" do
     with_silent_smtp do |port|
-      elapsed = time_send(port: port, timeout: 1)
+      elapsed, result = time_send(port: port, timeout: 1)
       expect(elapsed).to be < 8, "a 1 s timeout should fail fast, not hold ~30 s (took #{elapsed.round(1)} s)"
+      expect(result[:message].to_s).to match(/respond within|time/i),
+        "a silent server must be reported as a timeout, got #{result[:message].inspect}"
     end
   end
 
@@ -71,7 +73,7 @@ RSpec.describe "Messenger SMTP timeout (#278)" do
     with_silent_smtp do |port|
       ENV["TINA4_MAIL_TIMEOUT"] = "1"
       begin
-        elapsed = time_send(port: port)
+        elapsed, = time_send(port: port)
         expect(elapsed).to be < 8, "TINA4_MAIL_TIMEOUT=1 should fail fast (took #{elapsed.round(1)} s)"
       ensure
         ENV.delete("TINA4_MAIL_TIMEOUT")
@@ -83,12 +85,36 @@ RSpec.describe "Messenger SMTP timeout (#278)" do
     expect(Tina4::Messenger.new(host: "127.0.0.1", encryption: "none").timeout).to eq(30)
   end
 
-  it "falls back to 30 on a non-numeric TINA4_MAIL_TIMEOUT" do
+  it "warns once and falls back to 30 on a non-numeric TINA4_MAIL_TIMEOUT" do
     ENV["TINA4_MAIL_TIMEOUT"] = "not-a-number"
     begin
       expect(Tina4::Messenger.new(host: "127.0.0.1", encryption: "none").timeout).to eq(30)
     ensure
       ENV.delete("TINA4_MAIL_TIMEOUT")
+    end
+  end
+
+  it "falls back to 30 on TINA4_MAIL_TIMEOUT=0 (garbage, not an opt-out)" do
+    ENV["TINA4_MAIL_TIMEOUT"] = "0"
+    begin
+      expect(Tina4::Messenger.new(host: "127.0.0.1", encryption: "none").timeout).to eq(30)
+    ensure
+      ENV.delete("TINA4_MAIL_TIMEOUT")
+    end
+  end
+
+  it "refuses an explicit sub-second timeout" do
+    expect { Tina4::Messenger.new(host: "127.0.0.1", encryption: "none", timeout: 0) }
+      .to raise_error(ArgumentError)
+  end
+
+  it "no longer honours SMTP_TIMEOUT (dropped for parity with the PHP master)" do
+    ENV.delete("TINA4_MAIL_TIMEOUT")
+    ENV["SMTP_TIMEOUT"] = "1"
+    begin
+      expect(Tina4::Messenger.new(host: "127.0.0.1", encryption: "none").timeout).to eq(30)
+    ensure
+      ENV.delete("SMTP_TIMEOUT")
     end
   end
 end
