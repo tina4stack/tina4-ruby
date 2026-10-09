@@ -587,6 +587,9 @@ module Tina4
       status, headers, body_parts = response
       content_type = headers["content-type"] || ""
       return nil unless content_type.include?("text/html")
+      # Do not inject the toolbar for a viewer the /__dev gate would refuse (#279):
+      # otherwise the page carries toolbar markup whose stylesheet and script 403.
+      return nil unless Tina4::DevAdmin.dev_toolbar_allowed?(ctx.env)
 
       request_info = {
         method: ctx.method,

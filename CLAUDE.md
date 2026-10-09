@@ -1213,6 +1213,7 @@ mode and protected for remote callers. Environment variables (read by
 | --- | --- | --- |
 | `TINA4_MCP` / `TINA4_DEBUG` | (unset) | Capability gate - whether MCP is enabled at all. `TINA4_MCP` set explicitly wins (sysadmin override, any host); else a truthy `TINA4_DEBUG` enables it. |
 | `TINA4_MCP_REMOTE` | `false` | Set `true` to allow non-loopback MCP callers at all (still requires a valid token). Loopback callers never need a token. |
+| `TINA4_DEV_ALLOWED_PEERS` | (unset) | Opt-in comma-separated IP/CIDR allow-list of RAW socket peers admitted to `/__dev` (v4/v6; never a forwarded header). The documented way to reach the dev dashboard from a Docker dev box, e.g. `172.16.0.0/12` (#279). `/__dev/toolbar.css` and `/__dev/toolbar.js` are static and always load; a viewer the gate would refuse gets no toolbar injected. |
 | `TINA4_MCP_TOKEN` | (unset) | Bearer token authorising a REMOTE MCP or dev-admin request; `TINA4_API_KEY` never does (ADR-0078). Accepted as `Authorization: Bearer` or `X-MCP-Token`, compared timing-safe. With NO token configured a remote caller is always denied. |
 
 ## Built-in server
