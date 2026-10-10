@@ -7,6 +7,7 @@
 
 require "fileutils"
 require "digest"
+require "tmpdir"
 
 module Tina4
   class Migration
@@ -249,14 +250,29 @@ module Tina4
     # OS advisory file lock on a sidecar — the portable fallback (crash-safe: the
     # kernel drops it when the process exits).
     def acquire_file_lock
-      FileUtils.mkdir_p(@migrations_dir) unless Dir.exist?(@migrations_dir)
-      path = File.join(@migrations_dir, ".tina4_migration.lock")
-      handle = File.open(path, File::RDWR | File::CREAT, 0o644)
+      handle = File.open(file_lock_path, File::RDWR | File::CREAT, 0o644)
       handle.flock(File::LOCK_EX)
       [:file, handle]
     rescue => e
       Tina4::Log.debug("file migration lock unavailable: #{e.message}; running unlocked")
       [:none, nil]
+    end
+
+    # Where the advisory lock file lives: the system temp directory, NOT the
+    # migrations folder. The lock is a runtime artifact, not a migration — a
+    # dotfile left in the tracked migrations/ directory gets committed by accident
+    # and blocks a plain rmdir of the folder. The name is derived from the ABSOLUTE
+    # migrations directory, so every worker of the SAME app lands on the SAME file
+    # and flock() serializes them, while two different apps get two different locks.
+    # This keeps the lock scope identical to before; only the file's location
+    # changed. Mirrors the PHP reference's fileLockPath() (issue #277).
+    def file_lock_path
+      key = begin
+        File.realpath(@migrations_dir)
+      rescue StandardError
+        @migrations_dir
+      end
+      File.join(Dir.tmpdir, "tina4-migration-#{Digest::SHA256.hexdigest(key)}.lock")
     end
 
     def release_migration_lock(handle)

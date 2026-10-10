@@ -26,6 +26,7 @@
 require "spec_helper"
 require "tmpdir"
 require "fileutils"
+require "digest"
 require "sqlite3"
 
 RSpec.describe "Migration concurrency (#277)" do
@@ -94,6 +95,48 @@ RSpec.describe "Migration concurrency (#277)" do
         "the data migration must apply exactly once under #{WORKERS_277} concurrent starts, got #{first_rows}"
       expect(tracker_rows).to eq(1),
         "the tracker must hold exactly one row for the migration, got #{tracker_rows}"
+    ensure
+      # The lock sidecar lives in the system temp dir (outside the mktmpdir that
+      # mktmpdir removes), so reap it ourselves rather than leaving an orphan.
+      FileUtils.rm_f(
+        File.join(Dir.tmpdir, "tina4-migration-#{Digest::SHA256.hexdigest(File.realpath(migrations))}.lock")
+      )
+    end
+  end
+
+  # The SQLite/Firebird file-lock sidecar is a runtime artifact, so it must live
+  # in the SYSTEM TEMP dir and NOT inside the tracked migrations/ folder (a lock
+  # file there gets committed by accident and blocks a plain rmdir). Parity with
+  # the amended PHP fileLockPath() and ADR-0095. Mutation: revert the location to
+  # a migrations-dir sidecar and both assertions below fail.
+  it "puts the file-lock sidecar in the system temp dir, never in the migrations folder" do
+    Dir.mktmpdir("tina4-277-loc-") do |dir|
+      migrations = File.join(dir, "migrations")
+      FileUtils.mkdir_p(migrations)
+      File.write(File.join(migrations, "000001_create_widgets.sql"),
+                 "CREATE TABLE widgets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);\n")
+
+      db = Tina4::Database.new("sqlite:///#{File.join(dir, 'app.db')}")
+      begin
+        Tina4::Migration.new(db, migrations_dir: migrations).migrate
+      ensure
+        db.close
+      end
+
+      leftover = Dir.glob(File.join(migrations, "{*,.*}.lock"))
+      expect(leftover).to be_empty,
+        "no lock file may be left inside the migrations folder, found: #{leftover.inspect}"
+
+      expected = File.join(
+        Dir.tmpdir,
+        "tina4-migration-#{Digest::SHA256.hexdigest(File.realpath(migrations))}.lock"
+      )
+      expect(File.exist?(expected)).to be(true),
+        "the file lock must live in the system temp dir at #{expected}"
+    ensure
+      FileUtils.rm_f(
+        File.join(Dir.tmpdir, "tina4-migration-#{Digest::SHA256.hexdigest(File.realpath(migrations))}.lock")
+      )
     end
   end
 end
