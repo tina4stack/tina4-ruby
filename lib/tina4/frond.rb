@@ -3096,7 +3096,9 @@ module Tina4
             v.to_s
           end
         },
-        "striptags"  => ->(v, *_a) { v.to_s.gsub(STRIPTAGS_RE, "") },
+        # Fixed-point strip (see template.rb): loop the gsub until no tag remains,
+        # so nested `<scr<script>ipt>` cannot leave a `<script>` behind.
+        "striptags"  => ->(v, *_a) { s = v.to_s; loop { t = s.gsub(STRIPTAGS_RE, ""); break if t == s; s = t }; s },
 
         # -- Encoding --
         "escape"        => ->(v, *a) { Frond.escape_strategy(v, a[0] || "html") },
