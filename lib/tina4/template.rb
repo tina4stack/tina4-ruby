@@ -232,7 +232,10 @@ module Tina4
         "nl2br" => ->(v) { v.to_s.gsub("\n", "<br>") },
         "number_format" => ->(v, d) { format("%.#{d || 0}f", v.to_f) },
         "raw" => ->(v) { v },
-        "striptags" => ->(v) { v.to_s.gsub(/<[^>]+>/, "") },
+        # Fixed-point strip: a single gsub leaves a tag that only surfaces once the
+        # surrounding one is removed (`<scr<script>ipt>` -> `<script>`). Repeat
+        # until nothing more matches (incomplete multi-character sanitization).
+        "striptags" => ->(v) { s = v.to_s; loop { t = s.gsub(/<[^>]+>/, ""); break if t == s; s = t }; s },
         "sort" => ->(v) { v.respond_to?(:sort) ? v.sort : v },
         "keys" => ->(v) { v.respond_to?(:keys) ? v.keys : [] },
         "values" => ->(v) { v.respond_to?(:values) ? v.values : [v] },
