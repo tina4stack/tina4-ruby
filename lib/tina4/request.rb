@@ -585,7 +585,7 @@ module Tina4
           body_raw
         end
       elsif @content_type.include?("application/x-www-form-urlencoded")
-        parse_query_to_hash(body_raw)
+        parse_form_body(body_raw)
       elsif @content_type.include?("multipart/form-data")
         # Form fields from the parsed multipart body (Tina4::FormParser).
         # Files are handled separately by extract_files.
@@ -614,6 +614,19 @@ module Tina4
         result[URI.decode_www_form_component(key.to_s)] = URI.decode_www_form_component(value.to_s)
       end
       result
+    end
+
+    # An urlencoded body, nested the way a multipart form is
+    # (`tags[]=a&tags[]=b` -> {"tags" => ["a", "b"]}), so a form arrives in one
+    # shape however it was encoded. A field whose name conflicts with an earlier
+    # one (`a=1&a[b]=2`) keeps its flat key. The query string stays flat:
+    # AutoCrud reads `filter[...]` keys from it.
+    def parse_form_body(body)
+      pairs = body.split("&").map do |pair|
+        key, value = pair.split("=", 2)
+        [URI.decode_www_form_component(key.to_s), URI.decode_www_form_component(value.to_s)]
+      end
+      Tina4::FormParser.nest(pairs, lenient: true)
     end
 
     def extract_files

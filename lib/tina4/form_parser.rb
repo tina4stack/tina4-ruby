@@ -29,6 +29,15 @@ module Tina4
     # Rack's QueryParser param_depth_limit, kept for the same reason.
     PARAM_DEPTH_LIMIT = 32
 
+    # A lenient form with more fields than this is not nested at all, so a
+    # crafted body cannot turn each small field into a deep structure.
+    # Rack's QueryParser params_limit.
+    PARAMS_LIMIT = 4096
+
+    # A lenient field name longer than this (in bytes) keeps its flat key, so
+    # nesting never copies a huge name once per level.
+    NAME_LIMIT = 1024
+
     # A field name that is both a value and a container (`a=1` then `a[b]=2`)
     # or nests past PARAM_DEPTH_LIMIT. Rack raised here too.
     class ParameterError < StandardError; end
@@ -64,7 +73,6 @@ module Tina4
     #   as :error rather than raised, so one bad field name cannot lose the files.
     def parse_multipart(body, content_type)
       token = boundary(content_type)
-      fields = NestedParams.new
       files = {}
       return { fields: {}, files: files, error: nil } if token.nil? || body.nil? || body.empty?
 
@@ -89,12 +97,38 @@ module Tina4
       # the files were collected independently and survive it.
       error = nil
       begin
-        pairs.each { |name, value| normalize_params(fields, name, value, 0) }
+        fields = nest(pairs)
       rescue ParameterError => e
         error = e
-        fields = NestedParams.new
+        fields = {}
       end
-      { fields: to_plain_hash(fields), files: files, error: error }
+      { fields: fields, files: files, error: error }
+    end
+
+    # Nest [name, value] pairs the way Rack nests a form: `tags[]` collects an
+    # array, `user[name]` builds a hash, a repeated plain name keeps its last
+    # value. Shared by multipart and urlencoded bodies, so one form arrives in
+    # the same shape whichever way it was sent. Strict (multipart) raises
+    # ParameterError on a name conflict or over-deep nesting. Lenient
+    # (urlencoded) keeps such a field - or one longer than NAME_LIMIT, or not
+    # valid UTF-8 - under its flat key and nests the rest, and nests nothing
+    # past PARAMS_LIMIT fields.
+    def nest(pairs, lenient: false)
+      return pairs.to_h if lenient && pairs.size > PARAMS_LIMIT
+
+      params = NestedParams.new
+      pairs.each do |name, value|
+        next params[name] = value if lenient && (name.bytesize > NAME_LIMIT || name.b.count("[") >= PARAM_DEPTH_LIMIT)
+
+        begin
+          normalize_params(params, name, value, 0)
+        rescue ParameterError, ArgumentError # ArgumentError: a name that is not valid UTF-8
+          raise unless lenient
+
+          params[name] = value
+        end
+      end
+      to_plain_hash(params)
     end
 
     # Yield [headers, content] for every part. headers keys are lowercased.
