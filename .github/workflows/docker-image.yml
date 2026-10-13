@@ -60,6 +60,9 @@ env:
   IMAGE: docker.io/tina4stack/tina4-ruby
   APP_PORT: 7147
 
+permissions:
+  contents: read
+
 jobs:
   boot-gate:
     name: Image boots, binds 0.0.0.0, and reports its real version
