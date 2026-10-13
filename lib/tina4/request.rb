@@ -224,11 +224,14 @@ module Tina4
     def self.write_upload(dest, content)
       File.unlink(dest) if File.symlink?(dest)
       flags = File::WRONLY | File::CREAT | File::BINARY | (defined?(File::NOFOLLOW) ? File::NOFOLLOW : 0)
-      io = File.open(dest, flags, 0o666)
+      # 0o600: a newly created upload is owner-only, never group/other readable
+      # or writable (CWE-732). The mode applies only when CREAT makes the file;
+      # a plain file rewritten in place keeps its own mode, per the note above.
+      io = File.open(dest, flags, 0o600)
       if io.stat.nlink > 1
         io.close
         File.unlink(dest)
-        io = File.open(dest, flags | File::EXCL, 0o666)
+        io = File.open(dest, flags | File::EXCL, 0o600)
       end
       begin
         io.truncate(0)

@@ -172,6 +172,16 @@ RSpec.describe "File upload contract" do
       expect(File.stat(File.join(target, "run.sh")).mode & 0o777).to eq(0o755)
     end
 
+    it "safe save creates an owner-only file" do
+      # A freshly created upload must be owner-only (0o600): no group or other
+      # read/write bit (CWE-732). Mutating the create mode back to 0o666 leaves
+      # the group/other read bit set and turns this RED.
+      skip "POSIX permission bits" if Gem.win_platform?
+      target = File.join(@root, "uploads")
+      dest = Tina4::Request.save_upload({ "filename" => "pic.txt", "content" => "UPLOADED" }, target)
+      expect(File.stat(dest).mode & 0o077).to eq(0), "upload is group/other accessible"
+    end
+
     it "safe save refuses a file it may not write" do
       skip "POSIX permission bits, not root" if Gem.win_platform? || Process.euid.zero?
       target = File.join(@root, "uploads")
