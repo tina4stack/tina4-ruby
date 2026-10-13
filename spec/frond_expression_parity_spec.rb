@@ -78,7 +78,7 @@ RSpec.describe "Frond expression parity" do
   # Guard the guard: a corpus entry with no expected value would otherwise pass
   # by never being asserted.
   it "has a corpus and an answer key that line up" do
-    expect(CORPUS.length).to eq(89)
+    expect(CORPUS.length).to eq(108)
     expect(CORPUS.map(&:first).sort).to eq(EXPECTED.keys.sort)
   end
 
@@ -248,6 +248,54 @@ RSpec.describe "Frond expression parity" do
       # write "a\\/b", and Python alone used to write "caf\\u00e9".
       expect(out).to include('"u":"a/b"')
       expect(out).to include("caf\u00e9")
+    end
+  end
+
+  # -- Approved-spec gaps found porting a Twig app (ranges, arithmetic, maps) --
+  describe "approved-spec gaps" do
+    let(:engine) { Tina4::Frond.new }
+
+    it "includes both ends in a..b and range(), counting down when start > end" do
+      ctx = { "n" => 3, "word" => "x" }
+      expect(engine.render_string("{% for i in 1..n %}{{ i }}{% endfor %}", ctx)).to eq("123")
+      expect(engine.render_string("{% for i in n..1 %}{{ i }}{% endfor %}", ctx)).to eq("321")
+      expect(engine.render_string("{% for i in range(0, 6, 3) %}{{ i }},{% endfor %}", ctx)).to eq("0,3,6,")
+      # Negative: a bound that is not a number, or a zero step, is an empty loop.
+      expect(engine.render_string("{% for i in 1..word %}{{ i }}{% else %}none{% endfor %}", ctx)).to eq("none")
+      expect(engine.render_string("{% for i in range(1, 3, 0) %}{{ i }}{% else %}none{% endfor %}", ctx)).to eq("none")
+      # Negative: a dot inside a string or a decimal is not a range.
+      expect(engine.render_string('{{ "a..b" }}|{{ 1.5 }}', ctx)).to eq("a..b|1.5")
+    end
+
+    it "chains arithmetic left to right and needs no spaces" do
+      ctx = { "n" => 5, "list" => %w[a b c] }
+      expect(engine.render_string("{{ 10 - 2 - 3 }}|{{ 100 / 10 / 2 }}|{{ 2 ** 3 ** 2 }}", ctx)).to eq("5|5|512")
+      expect(engine.render_string("{{ n-4 }}|{{ list[n-4] }}|{{ n * -1 }}", ctx)).to eq("1|b|-5")
+      expect(engine.render_string('{{ list[n-4] is defined ? list[n-4] : "-" }}', ctx)).to eq("b")
+      # Negative: an index past the end is not defined.
+      expect(engine.render_string('{{ list[n+5] is defined ? "y" : "-" }}', ctx)).to eq("-")
+      # Negative: a leading minus is a sign, not a subtraction.
+      expect(engine.render_string("{{ -7 + 1 }}", ctx)).to eq("-6")
+    end
+
+    it "treats a bare map key as a string and evaluates a parenthesised key" do
+      ctx = { "name" => "Andre", "k" => "dyn", "a" => "WRONG" }
+      expect(engine.render_string('{% set m = {a: "x" ~ name} %}{{ m.a }}', ctx)).to eq("xAndre")
+      # Negative: a bare key never reads the variable of the same name.
+      expect(engine.render_string("{% set m = {a: 1} %}{{ m.WRONG }}", ctx)).to eq("")
+      expect(engine.render_string("{% set m = {(k): 1} %}{{ m.dyn }}", ctx)).to eq("1")
+    end
+
+    it "passes the whole include-with map when a value is concatenated" do
+      dir = Dir.mktmpdir("frond_include_with")
+      File.write(File.join(dir, "cta.twig"), "[{{ button_url }}|{{ button_label }}]")
+      included = Tina4::Frond.new(template_dir: dir)
+      source = "{% include 'cta.twig' with {button_url: 'https://x/' ~ code, button_label: 'Go'} %}"
+      expect(included.render_string(source, { "code" => "ABC" })).to eq("[https://x/ABC|Go]")
+      # Negative: without the map the partial sees nothing.
+      expect(included.render_string("{% include 'cta.twig' %}", {})).to eq("[|]")
+    ensure
+      FileUtils.rm_rf(dir) if dir
     end
   end
 end

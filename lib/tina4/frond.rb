@@ -101,9 +101,10 @@ module Tina4
     FLOAT_RE        = /\A-?\d+\.\d+\z/
     ARRAY_LIT_RE    = /\A\[(.+)\]\z/m
     HASH_LIT_RE     = /\A\{(.+)\}\z/m
-    HASH_PAIR_RE    = /\A\s*(?:["']([^"']+)["']|(\w+))\s*:\s*(.+)\z/
-    RANGE_LIT_RE    = /\A(\d+)\.\.(\d+)\z/
-    ARITHMETIC_OPS  = [" + ", " - ", " * ", " // ", " / ", " % ", " ** "].freeze
+    HASH_PAIR_RE    = /\A\s*(?:["']([^"']+)["']|(\w+)|\((.+?)\))\s*:\s*(.+)\z/m
+    # Arithmetic precedence levels, loosest first. `**` is right-associative;
+    # every other level is left-associative.
+    ARITHMETIC_LEVELS = [%w[+ -], %w[* // / %], %w[**]].freeze
     # Operators Twig binds LOOSER than the filter pipe `|`. When one of these
     # sits at the top level alongside a pipe (e.g. `amount|number_format(2) ~
     # ' EUR'`), the whole expression must go through eval_expr (which resolves
@@ -1714,7 +1715,8 @@ module Tina4
       ternary: [:eval_ternary, :not_ternary, true],
       inline_if: [:eval_inline_if, :not_inline_if, true],
       coalesce: [:eval_null_coalesce, :not_coalesce, true],
-      collection: [:eval_collection_literal, :not_collection, true]
+      collection: [:eval_collection_literal, :not_collection, true],
+      range: [:eval_range, :not_range, true]
     }.freeze
 
     # ── Expression evaluation: a cascade, with the branch memoised ──
@@ -1771,6 +1773,9 @@ module Tina4
         remember_form(expr, :comparison, nil)
         return eval_comparison(expr, context)
       end
+
+      result = eval_range(expr, context)
+      return remember_form(expr, :range, result) unless result == :not_range
 
       result = eval_arithmetic(expr, context)
       return remember_form(expr, :arithmetic, result) unless result == :not_arithmetic
@@ -1879,15 +1884,14 @@ module Tina4
         inner = Regexp.last_match(1)
         hash = {}
         split_args_toplevel(inner).each do |pair|
-          if pair =~ HASH_PAIR_RE
-            key = Regexp.last_match(1) || Regexp.last_match(2)
-            hash[key] = eval_expr(Regexp.last_match(3).strip, context)
-          end
+          next unless pair =~ HASH_PAIR_RE
+
+          quoted, bare, evaluated, value = Regexp.last_match.captures
+          # A bare key is a string; a parenthesised key is evaluated: {(name): 1}.
+          key = quoted || bare || eval_expr(evaluated, context).to_s
+          hash[key] = eval_expr(value.strip, context)
         end
         return hash
-      end
-      if expr =~ RANGE_LIT_RE
-        return (Regexp.last_match(1).to_i..Regexp.last_match(2).to_i).to_a
       end
       :not_collection
     end
@@ -1959,14 +1963,112 @@ module Tina4
     # ── Arithmetic: +, -, *, //, /, %, ** ──
 
     def eval_arithmetic(expr, context)
-      ARITHMETIC_OPS.each do |op|
-        pos = find_outside_quotes(expr, op)
-        next unless pos && pos >= 0
-        l_val = eval_expr(expr[0...pos].strip, context)
-        r_val = eval_expr(expr[(pos + op.length)..].strip, context)
-        return apply_math(l_val, op.strip, r_val)
+      split = split_arithmetic(expr)
+      return :not_arithmetic unless split
+
+      op, pos = split
+      l_val = eval_expr(expr[0...pos].strip, context)
+      r_val = eval_expr(expr[(pos + op.length)..].strip, context)
+      apply_math(l_val, op, r_val)
+    end
+
+    # Pick the operator that binds loosest, so it is evaluated last. Within a
+    # left-associative level the RIGHTMOST operator is the split point
+    # (`10 - 2 - 3` is `(10 - 2) - 3`); `**` splits at the leftmost.
+    def split_arithmetic(expr)
+      operators = top_level_arithmetic_operators(expr)
+      ARITHMETIC_LEVELS.each do |level|
+        matches = operators.select { |_pos, op| level.include?(op) }
+        next if matches.empty?
+
+        pos, op = level == %w[**] ? matches.first : matches.last
+        return [op, pos]
       end
-      :not_arithmetic
+      nil
+    end
+
+    # Every position in expr outside quotes and brackets.
+    def top_level_positions(expr)
+      positions = []
+      in_quote = nil
+      depth = 0
+      expr.each_char.with_index do |ch, pos|
+        if in_quote
+          in_quote = nil if ch == in_quote
+        elsif ch == '"' || ch == "'"
+          in_quote = ch
+        elsif "([{".include?(ch)
+          depth += 1
+        elsif ")]}".include?(ch)
+          depth -= 1
+        elsif depth.zero?
+          positions << pos
+        end
+      end
+      positions
+    end
+
+    # True when the text before pos ends in an operand, so an operator there is
+    # binary; the `-` in `n * -1` or `-7` is a sign.
+    def follows_operand?(expr, pos)
+      preceding = expr[0...pos].rstrip
+      !preceding.empty? && preceding[-1].match?(/[\w)\]'"]/)
+    end
+
+    # [position, operator] for every binary arithmetic operator outside quotes
+    # and brackets (`**` and `//` are two characters).
+    def top_level_arithmetic_operators(expr)
+      operators = []
+      skip_until = -1
+      top_level_positions(expr).each do |pos|
+        next if pos < skip_until || !"+-*/%".include?(expr[pos])
+
+        op = %w[** //].include?(expr[pos, 2]) ? expr[pos, 2] : expr[pos]
+        skip_until = pos + op.length
+        operators << [pos, op] if follows_operand?(expr, pos)
+      end
+      operators
+    end
+
+    # ── Range: a..b ──
+
+    # Integers from start to finish inclusive, counting down when start is
+    # greater than finish. Backs both range() and `a..b`; returns [] for a
+    # bound that is not a number or a zero step.
+    def self.frond_range(start, finish, step = 1)
+      numeric = ->(v) { v.is_a?(Numeric) || v.to_s.match?(/\A-?\d+(\.\d+)?\z/) }
+      return [] unless numeric.(start) && numeric.(finish) && numeric.(step)
+
+      start = start.to_i
+      finish = finish.to_i
+      step = step.to_i.abs
+      return [] if step.zero?
+
+      start <= finish ? start.step(finish, step).to_a : start.step(finish, -step).to_a
+    end
+
+    def eval_range(expr, context)
+      pos = find_range_operator(expr)
+      return :not_range unless pos
+
+      Frond.frond_range(eval_expr(expr[0...pos].strip, context), eval_expr(expr[(pos + 2)..].strip, context))
+    end
+
+    # Position of a top-level `..` (not part of `...`), or nil. A pipe after the
+    # range (`1..4|join(",")`) applies to the whole range, so it is left to the
+    # filter step.
+    def find_range_operator(expr)
+      pos = find_outside_quotes(expr, "..")
+      while pos && pos >= 0
+        part_of_ellipsis = expr[pos, 3] == "..." || (pos.positive? && expr[pos - 1] == ".")
+        if pos.positive? && !part_of_ellipsis
+          return find_outside_quotes(expr[(pos + 2)..], "|") >= 0 ? nil : pos
+        end
+
+        next_pos = find_outside_quotes(expr[(pos + 2)..], "..")
+        pos = next_pos >= 0 ? pos + 2 + next_pos : nil
+      end
+      nil
     end
 
     # ── Function call: name(arg1, arg2) ──
@@ -3179,6 +3281,7 @@ module Tina4
       @globals["form_token"] = ->(descriptor = "") { Frond.generate_form_token(descriptor.to_s) }
       @globals["formTokenValue"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
       @globals["form_token_value"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
+      @globals["range"] = ->(start, finish, step = 1) { Frond.frond_range(start, finish, step) }
 
       # Debug helper: {{ dump(x) }} — gated on TINA4_DEBUG=true.
       # Both this global and the |dump filter call Frond.render_dump which
