@@ -261,6 +261,34 @@ RSpec.describe Tina4::Crud do
       expect(html).to include('name="name"')
       expect(html).to include('name="email"')
     end
+
+    # The table id, form id, `required` and `checked` attributes are now emitted
+    # as quoted {% if %} attributes rather than pre-built " id=.."/" required"
+    # fragments injected with |raw. Rendered HTML must be unchanged and no raw
+    # attribute-fragment key may leak.
+    it "emits de-rawed quoted attributes with no |raw fragment leak" do
+      table = Tina4::Crud.generate_table([{ id: 1, name: "Alice" }], table_name: "users", primary_key: "id")
+      expect(table).to match(/<table[^>]*\sid="crud-users"/)
+      expect(table).not_to include("table_id_attr")
+
+      page = Tina4::Crud.to_crud(mock_request, { model: CrudTestModel, title: "Test CRUD" })
+      expect(page).to include('id="form-create"')
+      expect(page).to include('id="form-edit"')
+      %w[required_attr checked_attr table_id_attr form_id_attr].each do |leak|
+        expect(page).not_to include(leak)
+      end
+
+      form = Tina4::Crud.generate_form([
+        { name: "name", type: :string, label: "Full Name", required: true },
+        { name: "email", type: :string, label: "Email" },
+        { name: "active", type: :boolean, label: "Active", value: true }
+      ], action: "/api/users", method: "POST")
+      expect(form).to match(/name="name"[^>]*\srequired/)
+      expect(form).not_to match(/name="email"[^>]*\srequired/)
+      expect(form).to match(/type="checkbox"[^>]*\schecked/)
+      expect(form).not_to include("required_attr")
+      expect(form).not_to include("checked_attr")
+    end
   end
 
   describe "model is required (ADR-0094)" do

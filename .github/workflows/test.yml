@@ -265,7 +265,7 @@ jobs:
           done
           echo "GreenMail did not become ready in 60s"; exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # A committed symlink (git mode 120000) breaks Windows/Composer extraction
       # and is a supply-chain risk. The sibling php framework shipped 134 such
@@ -595,7 +595,7 @@ jobs:
       # those engines aren't exercised here and their native libs aren't installed.
       BUNDLE_WITH: firebird
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Firebird 5.0.2 as a plain container (a GitHub `services:` block cannot
       # wait for Firebird's first-boot DB creation cleanly). FAIL the job if it

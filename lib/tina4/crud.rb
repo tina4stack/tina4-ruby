@@ -112,7 +112,7 @@ module Tina4
         verb = method.to_s.upcase
         Tina4::Template.render("crud/form.twig", {
           "wrap" => true,
-          "form_id_attr" => "",
+          "form_id" => "",
           "action" => h(action),
           "form_method" => h(verb),
           "method_override" => (%w[PUT PATCH DELETE].include?(verb) ? verb : nil),
@@ -204,14 +204,14 @@ module Tina4
             "value" => "",
             "placeholder" => h("Enter #{label.downcase}"),
             "type" => "text",
-            "required_attr" => "",
+            "required" => false,
             "input" => true
           }
         end
 
         Tina4::Template.render("crud/form.twig", {
           "wrap" => true,
-          "form_id_attr" => " id=\"form-#{mode}\"",
+          "form_id" => "form-#{mode}",
           "action" => "",
           "form_method" => "POST",
           "method_override" => nil,
@@ -263,7 +263,7 @@ module Tina4
           "readonly" => !editable,
           "inline_script" => inline_script,
           "table_name" => h(table_name),
-          "table_id_attr" => (table_id ? " id=\"#{h(table_id)}\"" : "")
+          "table_id" => (table_id ? table_id.to_s : "")
         }
       end
 
@@ -309,7 +309,7 @@ module Tina4
         name     = field[:name].to_s
         label    = field[:label] || name.capitalize
         value    = field[:value]
-        required = field[:required] ? " required" : ""
+        required = field[:required] ? true : false
 
         base = {
           "id" => h(name),
@@ -317,14 +317,14 @@ module Tina4
           "label" => h(label.to_s),
           "value" => h(value.to_s),
           "placeholder" => "",
-          "required_attr" => required
+          "required" => required
         }
 
         case (field[:type] || :string).to_sym
         when :text
           base.merge("textarea" => true)
         when :boolean
-          base.merge("checkbox" => true, "checked_attr" => (value ? " checked" : ""))
+          base.merge("checkbox" => true, "checked" => (value ? true : false))
         when :select
           base.merge("select" => true, "options_html" => build_options(field[:options], value))
         when :date
