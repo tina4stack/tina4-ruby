@@ -8,6 +8,8 @@
 
 require "spec_helper"
 require "stringio"
+require "net/http"
+require "uri"
 
 # Behavioural regression suite for the realtime collaboration module
 # (Tina4::Realtime), parity with the Python master's realtime tests and the
@@ -36,7 +38,8 @@ RSpec.describe Tina4::Realtime do
     db.close rescue nil
     FileUtils.rm_rf(tmp_dir)
     %w[TINA4_RTC_STUN_URLS TINA4_RTC_TURN_URL TINA4_RTC_TURN_SECRET TINA4_RTC_TURN_TTL
-       TINA4_STORAGE_BACKEND TINA4_STORAGE_BUCKET].each { |k| ENV.delete(k) }
+       TINA4_STORAGE_BACKEND TINA4_STORAGE_BUCKET TINA4_STORAGE_URL TINA4_STORAGE_KEY
+       TINA4_STORAGE_SECRET TINA4_STORAGE_REGION].each { |k| ENV.delete(k) }
   end
 
   # ── ICE config (STUN + ephemeral TURN) ──────────────────────────────
@@ -93,6 +96,58 @@ RSpec.describe Tina4::Realtime do
       ENV["TINA4_STORAGE_BACKEND"] = "s3"
       ENV.delete("TINA4_STORAGE_BUCKET")
       expect(Tina4::Realtime::Storage.select).to be_a(Tina4::Realtime::LocalStorage)
+    end
+
+    # ── S3Storage against a real S3 server (skipped if unreachable) ──
+    #
+    # CI provisions MinIO on localhost:9100 (minioadmin). The zero-dependency
+    # SigV4 client is also proven against Garage and AWS; only a reachable
+    # endpoint is needed, no gem, and nothing is ever mocked.
+    context "against a real S3 server" do
+      s3_host = "localhost"
+      s3_port = 9100
+      s3_bucket = "tina4-rt-test"
+
+      reachable = begin
+        require "socket"
+        Socket.tcp(s3_host, s3_port, connect_timeout: 0.5, &:close)
+        true
+      rescue StandardError
+        false
+      end
+
+      before do
+        skip "MinIO not reachable at #{s3_host}:#{s3_port} (real S3, never mocked)" unless reachable
+        ENV["TINA4_STORAGE_BACKEND"] = "s3"
+        ENV["TINA4_STORAGE_URL"] = "http://#{s3_host}:#{s3_port}"
+        ENV["TINA4_STORAGE_KEY"] = "minioadmin"
+        ENV["TINA4_STORAGE_SECRET"] = "minioadmin"
+        ENV["TINA4_STORAGE_BUCKET"] = s3_bucket
+        ENV["TINA4_STORAGE_REGION"] = "us-east-1"
+        # Ensure the bucket exists (idempotent) via a direct client — no gem.
+        Tina4::Realtime::S3Client.new(
+          endpoint: "http://#{s3_host}:#{s3_port}",
+          access_key: "minioadmin", secret_key: "minioadmin", region: "us-east-1"
+        ).create_bucket(s3_bucket)
+      end
+
+      it "round-trips put/get/exists/delete and the presigned URL really fetches the object" do
+        store = Tina4::Realtime::Storage.select
+        expect(store).to be_a(Tina4::Realtime::S3Storage)
+        key = Tina4::Realtime::Storage.key("photo.png")
+        blob = "\x89PNG-real-bytes".b
+        store.put(key, blob, "image/png")
+        expect(store.exists?(key)).to be true
+        expect(store.get(key)).to eq(blob)
+
+        url = store.url(key, 120)
+        expect(url).to start_with("http")
+        expect(url).to include(key)
+        expect(Net::HTTP.get(URI(url)).b).to eq(blob)
+
+        store.delete(key)
+        expect(store.exists?(key)).to be false
+      end
     end
 
     it "generates a key with the extension and no path segment" do

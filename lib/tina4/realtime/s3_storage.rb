@@ -8,55 +8,42 @@
 
 module Tina4
   module Realtime
-    # S3-compatible store (AWS S3, MinIO, ...). Opt-in; needs the aws-sdk-s3 gem.
+    # S3-compatible store (AWS S3, MinIO, Garage, ...). Opt-in, zero dependencies.
     #
-    # Presigned GET URLs let clients fetch large blobs straight from object
-    # storage instead of streaming through the app.
+    # Talks to S3 through Tina4's own stdlib SigV4 client ({S3Client}) — no
+    # aws-sdk-s3 gem. Presigned GET URLs let clients fetch large blobs straight
+    # from object storage instead of streaming through the app.
     class S3Storage < StorageBackend
       def initialize(endpoint: nil, key: nil, secret: nil, bucket: nil, region: nil)
         super()
-        begin
-          require "aws-sdk-s3" # optional dependency, loaded lazily
-        rescue LoadError
-          # Storage.select rescues this and falls back to local; its warning
-          # carries this message, so the remedy reaches the operator.
-          raise LoadError,
-                "The 'aws-sdk-s3' gem is required for S3Storage. Install it with: " \
-                "bundle add aws-sdk-s3 (or add gem \"aws-sdk-s3\" to your Gemfile)"
-        end
-
         @bucket = bucket || ENV["TINA4_STORAGE_BUCKET"]
         raise ArgumentError, "S3Storage requires TINA4_STORAGE_BUCKET" if @bucket.nil? || @bucket.empty?
 
-        opts = {
-          access_key_id: key || ENV["TINA4_STORAGE_KEY"],
-          secret_access_key: secret || ENV["TINA4_STORAGE_SECRET"],
-          region: region || ENV["TINA4_STORAGE_REGION"] || "us-east-1",
-          force_path_style: true
-        }
-        ep = endpoint || ENV["TINA4_STORAGE_URL"]
-        opts[:endpoint] = ep if ep && !ep.empty?
-        @client = Aws::S3::Client.new(**opts)
+        @client = S3Client.new(
+          endpoint: endpoint || ENV["TINA4_STORAGE_URL"],
+          access_key: key || ENV["TINA4_STORAGE_KEY"] || "",
+          secret_key: secret || ENV["TINA4_STORAGE_SECRET"] || "",
+          region: region || ENV["TINA4_STORAGE_REGION"] || "us-east-1"
+        )
       end
 
       def put(key, data, mime = "application/octet-stream")
-        @client.put_object(bucket: @bucket, key: key, body: data, content_type: mime)
+        @client.put_object(@bucket, key, data, mime)
         nil
       end
 
       def get(key)
-        @client.get_object(bucket: @bucket, key: key).body.read
+        @client.get_object(@bucket, key)
       rescue StandardError
         nil
       end
 
       def url(key, ttl = 3600)
-        Aws::S3::Presigner.new(client: @client)
-                          .presigned_url(:get_object, bucket: @bucket, key: key, expires_in: ttl)
+        @client.presigned_get_url(@bucket, key, expires: ttl)
       end
 
       def delete(key)
-        @client.delete_object(bucket: @bucket, key: key)
+        @client.delete_object(@bucket, key)
         nil
       rescue StandardError => e
         Tina4::Log.error("S3Storage delete failed for #{key}: #{e.message}")
@@ -64,7 +51,7 @@ module Tina4
       end
 
       def exists?(key)
-        @client.head_object(bucket: @bucket, key: key)
+        @client.head_object(@bucket, key)
         true
       rescue StandardError
         false
