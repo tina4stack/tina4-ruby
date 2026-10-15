@@ -18,7 +18,11 @@ RSpec.describe "Tina4::Realtime::S3Client #229 parity" do
   # A real HTTP/1.1 server on a thread. Each request pops the next entry from
   # +statuses+: an Integer is answered with that code (Retry-After on 429/503);
   # :drop closes the socket mid-request (a dropped connection). Records methods.
-  class RecordingServer
+  #
+  # Uniquely named (not a bare +RecordingServer+): a class declared in a describe
+  # block lands on top-level Object, and spec/api_transfer_spec.rb already defines
+  # its own +RecordingServer+ - a bare name here clobbers it under some seeds.
+  class S3RetryRecordingServer
     attr_reader :seen
     attr_accessor :statuses
 
@@ -72,7 +76,7 @@ RSpec.describe "Tina4::Realtime::S3Client #229 parity" do
     end
   end
 
-  let(:server) { RecordingServer.new }
+  let(:server) { S3RetryRecordingServer.new }
   after { server.stop }
 
   def client(endpoint: nil)
