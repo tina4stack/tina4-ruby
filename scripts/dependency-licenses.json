@@ -635,7 +635,7 @@
     {
       "ecosystem": "gem",
       "name": "tina4ruby",
-      "version": "3.13.150",
+      "version": "3.13.151",
       "platform": "",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "MPL-2.0",
