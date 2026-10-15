@@ -232,12 +232,26 @@ module Tina4
 
       # ── SQL-to-MongoDB translator ──────────────────────────────────────
 
+      # Fiber-local: the driver is shared across threads, the bound values are not.
+      BOUND_VALUES_KEY = :tina4_mongodb_bound_values
+
       def parse_sql(sql, params = [])
         sql_stripped = sql.strip
-        upper = sql_stripped.upcase
 
         # Bind positional ? params
-        bound_sql = bind_params(sql_stripped, params)
+        bound_sql, bound_values = bind_params(sql_stripped, params)
+
+        previous = Thread.current[BOUND_VALUES_KEY]
+        Thread.current[BOUND_VALUES_KEY] = bound_values
+        begin
+          parse_bound_sql(bound_sql)
+        ensure
+          Thread.current[BOUND_VALUES_KEY] = previous
+        end
+      end
+
+      def parse_bound_sql(bound_sql)
+        upper = bound_sql.upcase
 
         if upper.start_with?("SELECT")
           parse_select(bound_sql)
@@ -254,15 +268,34 @@ module Tina4
         end
       end
 
+      # Numbers, booleans and nil are written inline. Anything else is replaced
+      # by a quoted token with no quote, space, comma or keyword inside it, and the
+      # value is looked up again where literals are read (parse_value, LIKE).
+      # The parser splits the text on all of those, so a value pasted into it
+      # could otherwise change the statement it belongs to.
       def bind_params(sql, params)
-        return sql if params.nil? || params.empty?
+        bound_values = {}
+        return [sql, bound_values] if params.nil? || params.empty?
 
         idx = -1
-        sql.gsub("?") do
+        bound_sql = sql.gsub("?") do
           idx += 1
           v = params[idx]
-          v.is_a?(String) ? "'#{v.gsub("'", "\\\\'")}'" : v.to_s
+          case v
+          when Integer, Float, true, false, nil
+            v.to_s
+          else
+            token = "'\0#{bound_values.size}\0'"
+            bound_values[token] = v.to_s
+            token
+          end
         end
+        [bound_sql, bound_values]
+      end
+
+      def bound_value(literal)
+        bound_values = Thread.current[BOUND_VALUES_KEY]
+        bound_values && bound_values[literal]
       end
 
       # ── SELECT parsing ─────────────────────────────────────────────────
@@ -440,13 +473,13 @@ module Tina4
 
         # LIKE → $regex
         if (m = clause.match(/^(\w+)\s+LIKE\s+'(.+)'$/i))
-          pattern = m[2].gsub("%", ".*").gsub("_", ".")
+          pattern = (bound_value("'#{m[2]}'") || m[2]).gsub("%", ".*").gsub("_", ".")
           return { m[1] => { "$regex" => pattern, "$options" => "i" } }
         end
 
         # NOT LIKE → $not $regex
         if (m = clause.match(/^(\w+)\s+NOT\s+LIKE\s+'(.+)'$/i))
-          pattern = m[2].gsub("%", ".*").gsub("_", ".")
+          pattern = (bound_value("'#{m[2]}'") || m[2]).gsub("%", ".*").gsub("_", ".")
           return { m[1] => { "$not" => /#{pattern}/i } }
         end
 
@@ -496,7 +529,9 @@ module Tina4
 
       def parse_value(str)
         str = str.strip
-        if str.start_with?("'") && str.end_with?("'")
+        if (value = bound_value(str))
+          value
+        elsif str.start_with?("'") && str.end_with?("'")
           str[1..-2]
         elsif str =~ /\A-?\d+\z/
           str.to_i
