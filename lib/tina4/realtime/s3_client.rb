@@ -16,12 +16,17 @@ module Tina4
     # An S3 request returned a non-2xx status; +status+ holds the HTTP code.
     class S3Error < StandardError
       attr_reader :status
+      attr_accessor :retry_after
 
       def initialize(status, message)
         super(message)
         @status = status
+        @retry_after = nil
       end
     end
+
+    # The client cannot sign a request: no access key or secret was given.
+    class S3ConfigError < StandardError; end
 
     # Zero-dependency S3 client (AWS Signature Version 4) on the Ruby standard
     # library. Covers exactly what the realtime {S3Storage} backend needs — PUT,
@@ -37,6 +42,17 @@ module Tina4
     class S3Client
       ALGORITHM = "AWS4-HMAC-SHA256"
       SERVICE = "s3"
+      # Retry policy, as for the AI client (ADR-0053): HTTP 429, any 5xx (S3's
+      # SlowDown is a 503) and a dropped connection are sent again, a bounded
+      # number of times, honouring Retry-After. Every operation here is idempotent.
+      MAX_RETRIES = 2
+      BACKOFF_BASE = 0.5   # seconds; retry n waits up to base * 2**n, jittered
+      BACKOFF_CAP = 20.0
+      # A connection refused, reset, dropped or timed out: nothing was answered.
+      RETRYABLE_NETWORK = [
+        Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EPIPE, EOFError,
+        SocketError, IOError, Net::OpenTimeout, Net::ReadTimeout, Timeout::Error
+      ].freeze
 
       def initialize(endpoint: nil, access_key: "", secret_key: "", region: "us-east-1", timeout: 30)
         @region = region && !region.empty? ? region : "us-east-1"
@@ -46,7 +62,14 @@ module Tina4
         base = endpoint && !endpoint.empty? ? endpoint : "https://s3.#{@region}.amazonaws.com"
         base = base.delete_suffix("/") while base.end_with?("/") # strip trailing slashes without a regex
         @scheme = base[%r{\A([a-z][a-z0-9+.\-]*)://}i, 1] || "https"
-        @host = base.sub(%r{\A[a-z][a-z0-9+.\-]*://}i, "") # authority (host[:port]) — matches the Host header
+        authority = base.sub(%r{\A[a-z][a-z0-9+.\-]*://}i, "")
+        # Split authority (host[:port], the Host header + signed `host:`) from a
+        # path an endpoint carries (https://host/s3 -> "/s3"), which is kept in
+        # front of every request path and in what is signed.
+        slash = authority.index("/")
+        @host = slash ? authority[0...slash] : authority
+        @prefix = slash ? authority[slash..].delete_suffix("/") : ""
+        @prefix = @prefix.delete_suffix("/") while @prefix.end_with?("/")
       end
 
       # -- public API (the subset S3Storage uses) ------------------------------
@@ -71,7 +94,7 @@ module Tina4
 
       # Create the bucket (path-style PUT /<bucket>); an already-owned bucket (409) is success.
       def create_bucket(bucket)
-        request("PUT", "/#{self.class.uri_encode(bucket, true)}", "")
+        request("PUT", "#{@prefix}/#{self.class.uri_encode(bucket, true)}", "")
         nil
       rescue S3Error => e
         raise unless e.status == 409
@@ -79,6 +102,7 @@ module Tina4
 
       # A URL that fetches the object directly, signed via SigV4 query params.
       def presigned_get_url(bucket, key, expires: 3600)
+        require_credentials
         now = Time.now.utc
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         datestamp = now.strftime("%Y%m%d")
@@ -112,8 +136,26 @@ module Tina4
 
       private
 
+      # Signing with an empty key only earns a 403 from the server, which says
+      # nothing about the cause. Name the settings instead, before sending.
+      def require_credentials
+        return unless @access_key.empty? || @secret_key.empty?
+
+        raise S3ConfigError, "S3 credentials are not set: set TINA4_STORAGE_KEY and TINA4_STORAGE_SECRET"
+      end
+
+      # Seconds from a Retry-After header in its delta-seconds form, else nil.
+      def retry_after_seconds(raw)
+        return nil if raw.nil?
+
+        value = Float(raw)
+        value.negative? ? 0.0 : value
+      rescue ArgumentError, TypeError
+        nil
+      end
+
       def canonical_uri(bucket, key)
-        "/#{self.class.uri_encode(bucket, true)}/#{self.class.uri_encode(key, true)}"
+        "#{@prefix}/#{self.class.uri_encode(bucket, true)}/#{self.class.uri_encode(key, true)}"
       end
 
       def canonical_query(query)
@@ -133,6 +175,28 @@ module Tina4
       end
 
       def request(method, canonical_uri, body, extra_headers = {})
+        require_credentials
+        attempt = 0
+        loop do
+          last = attempt == MAX_RETRIES
+          delay = nil
+          begin
+            # Signed afresh each attempt: x-amz-date moves on.
+            return send_once(method, canonical_uri, body, extra_headers)
+          rescue S3Error => e
+            raise if last || !(e.status == 429 || e.status >= 500)
+
+            delay = e.retry_after
+          rescue *RETRYABLE_NETWORK
+            raise if last
+          end
+          delay ||= rand * (BACKOFF_BASE * (2**attempt))
+          sleep([delay, BACKOFF_CAP].min)
+          attempt += 1
+        end
+      end
+
+      def send_once(method, canonical_uri, body, extra_headers = {})
         now = Time.now.utc
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         datestamp = now.strftime("%Y%m%d")
@@ -163,7 +227,11 @@ module Tina4
         http.read_timeout = @timeout
         response = http.request(req)
         status = response.code.to_i
-        raise S3Error.new(status, "#{method} #{canonical_uri}: HTTP #{status}") if status < 200 || status >= 300
+        if status < 200 || status >= 300
+          error = S3Error.new(status, "#{method} #{canonical_uri}: HTTP #{status}")
+          error.retry_after = retry_after_seconds(response["retry-after"])
+          raise error
+        end
 
         [status, response.body || ""]
       end
