@@ -39,11 +39,10 @@ module Tina4
         if name == "s3"
           begin
             return S3Storage.new
-          # LoadError (missing aws-sdk-s3 gem) is a ScriptError, NOT a
-          # StandardError, so it must be rescued explicitly or the "graceful
-          # fallback when the driver is absent" contract breaks (the whole mount
-          # would crash instead of degrading to local).
-          rescue StandardError, LoadError => e
+          # S3Storage is zero-dependency now (Tina4's own SigV4 client, no gem),
+          # so the only construction failure is an incomplete config, e.g. a
+          # missing bucket (ArgumentError) — degrade to local rather than crash.
+          rescue StandardError => e
             Tina4::Log.warning(
               "realtime files: S3 storage unavailable (#{e.message}); " \
               "falling back to local filesystem storage."

@@ -7,12 +7,12 @@
 #   bundle add <gem> (or add gem "<gem>" to your Gemfile)
 #
 # MEASURED at v3 HEAD in a real zero-gem subprocess, before this change:
-#   * Tina4::Realtime::S3Storage.new -> bare "cannot load such file -- aws-sdk-s3",
-#     and Realtime::Storage.select logged "S3 storage unavailable (cannot load such
-#     file -- aws-sdk-s3)" - no gem named as a gem, no command.
 #   * the mongodb cache backend rescued LoadError and StandardError TOGETHER, so the
 #     fallback warning could only say "(driver missing or service unreachable)",
 #     whichever it was.
+#
+# (The sibling S3-storage case is gone: S3Storage no longer loads a gem — it uses
+# Tina4's own stdlib SigV4 client — so there is no missing-gem hint to assert.)
 #
 # HOW THE GEM IS MADE GENUINELY UNAVAILABLE, WITHOUT ANY DOUBLE: the same instrument
 # as session_zero_dependency_fallback_spec.rb. A REAL ruby subprocess whose GEM_HOME
@@ -35,10 +35,6 @@ require "rbconfig"
 
 RSpec.describe "Driver-not-installed messages name the gem and the install command" do
   let(:repository_root) { File.expand_path("..", __dir__) }
-  let(:s3_hint) do
-    "The 'aws-sdk-s3' gem is required for S3Storage. Install it with: bundle add aws-sdk-s3 " \
-      "(or add gem \"aws-sdk-s3\" to your Gemfile)"
-  end
   let(:mongo_hint) do
     "The 'mongo' gem is required for the mongodb cache backend. Install it with: bundle add mongo " \
       "(or add gem \"mongo\" to your Gemfile)"
@@ -90,7 +86,6 @@ RSpec.describe "Driver-not-installed messages name the gem and the install comma
         true
       end
       report = {
-        "aws_gone" => gem_gone?("aws-sdk-s3"),
         "mongo_gone" => gem_gone?("mongo"),
         "gem_load_paths" => $LOAD_PATH.grep(/gems/).length
       }
@@ -98,36 +93,8 @@ RSpec.describe "Driver-not-installed messages name the gem and the install comma
   end
 
   def expect_gems_really_unavailable(report)
-    expect(report["aws_gone"]).to be(true), "aws-sdk-s3 still loaded - the missing-gem path was not measured"
     expect(report["mongo_gone"]).to be(true), "mongo still loaded - the missing-gem path was not measured"
     expect(report["gem_load_paths"]).to eq(0), "bundler re-injected #{report["gem_load_paths"]} gem paths"
-  end
-
-  it "S3Storage without aws-sdk-s3 raises a LoadError naming the gem and the command, and select falls back carrying it" do
-    source = <<~RUBY
-      #{instrument_source}
-      require "tina4"
-      begin
-        Tina4::Realtime::S3Storage.new(bucket: "tina4-install-hint")
-        report["s3_error"] = nil
-      rescue LoadError => error
-        report["s3_error_class"] = error.class.name
-        report["s3_error"] = error.message
-      end
-      ENV["TINA4_STORAGE_BACKEND"] = "s3"
-      ENV["TINA4_STORAGE_BUCKET"] = "tina4-install-hint"
-      report["selected"] = Tina4::Realtime::Storage.select.class.name
-      puts "TINA4_REPORT \#{JSON.generate(report)}"
-    RUBY
-
-    report, output = run_ruby(source, gem_free: true)
-    expect_gems_really_unavailable(report)
-
-    expect(report["s3_error_class"]).to eq("LoadError")
-    expect(report["s3_error"]).to eq(s3_hint)
-    # The fallback still works, and its warning now carries the remedy.
-    expect(report["selected"]).to eq("Tina4::Realtime::LocalStorage")
-    expect(output).to include("S3 storage unavailable (#{s3_hint})")
   end
 
   it "the mongodb cache fallback warning appends the install hint when the gem is missing" do
