@@ -783,6 +783,7 @@ module Tina4
   #   TINA4_CSP                 — Content-Security-Policy (default: "default-src 'self'")
   #   TINA4_REFERRER_POLICY     — Referrer-Policy (default: strict-origin-when-cross-origin)
   #   TINA4_PERMISSIONS_POLICY  — Permissions-Policy (default: camera=(), microphone=(), geolocation=())
+  #   TINA4_COOP                — Cross-Origin-Opener-Policy (default: same-origin-allow-popups)
   class SecurityHeadersMiddleware
     class << self
       # Register this middleware in the default chain (secure-by-default).
@@ -815,7 +816,15 @@ module Tina4
           ["Content-Security-Policy", Tina4::Csp.resolve_csp_header(Tina4::Csp.current_nonce)],
           ["Referrer-Policy", ENV["TINA4_REFERRER_POLICY"] || "strict-origin-when-cross-origin"],
           ["X-XSS-Protection", "0"],
-          ["Permissions-Policy", ENV["TINA4_PERMISSIONS_POLICY"] || "camera=(), microphone=(), geolocation=()"]
+          ["Permissions-Policy", ENV["TINA4_PERMISSIONS_POLICY"] || "camera=(), microphone=(), geolocation=()"],
+          # Cross-Origin-Opener-Policy severs the window-reference link to a
+          # cross-origin opener (closing reverse-tab-nabbing + cross-window
+          # XS-Leaks that X-Frame-Options does not). Default same-origin-allow-popups:
+          # isolates the page from its opener while leaving popups IT opens able to
+          # post back, so OAuth/payment popups keep working. TINA4_COOP=same-origin
+          # for full isolation, unsafe-none to opt out. Secure-context only (https
+          # and http://localhost), inert elsewhere.
+          ["Cross-Origin-Opener-Policy", ENV["TINA4_COOP"] || "same-origin-allow-popups"]
         ]
       end
 

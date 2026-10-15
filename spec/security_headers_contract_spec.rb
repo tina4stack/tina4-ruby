@@ -48,7 +48,8 @@ RSpec.describe "Security headers conformance" do
       "x-content-type-options" => "nosniff",
       "referrer-policy" => "strict-origin-when-cross-origin",
       "x-xss-protection" => "0",
-      "permissions-policy" => "camera=(), microphone=(), geolocation=()"
+      "permissions-policy" => "camera=(), microphone=(), geolocation=()",
+      "cross-origin-opener-policy" => "same-origin-allow-popups"
     }
   end
 
@@ -90,7 +91,7 @@ RSpec.describe "Security headers conformance" do
 
   def clear_env
     %w[TINA4_HSTS TINA4_CSP TINA4_FRAME_OPTIONS TINA4_REFERRER_POLICY
-       TINA4_PERMISSIONS_POLICY TINA4_CSRF].each { |k| ENV.delete(k) }
+       TINA4_PERMISSIONS_POLICY TINA4_CSRF TINA4_COOP].each { |k| ENV.delete(k) }
   end
 
   # Drive a REAL request through the REAL Rack app; return lower-cased headers.
@@ -134,6 +135,17 @@ RSpec.describe "Security headers conformance" do
     expect(n1).not_to be_nil
     expect(n2).not_to be_nil
     expect(n1).not_to eq(n2), "nonce was reused across responses: #{n1}"
+  end
+
+  it "coop defaults to same origin allow popups" do
+    # COOP isolates the page from whoever opened it while leaving popups the
+    # page opens (OAuth/payment) able to post back. Full isolation is opt-in.
+    expect(request["cross-origin-opener-policy"]).to eq("same-origin-allow-popups")
+  end
+
+  it "tina4 coop overrides the cross origin opener policy" do
+    ENV["TINA4_COOP"] = "same-origin"
+    expect(request["cross-origin-opener-policy"]).to eq("same-origin")
   end
 
   # ------------------------------------------------------- HSTS HTTPS-guarded
