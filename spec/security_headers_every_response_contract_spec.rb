@@ -35,7 +35,8 @@ require_relative "support/local_oidc_provider"
 
 module SecurityHeadersEveryResponseContract
   CANONICAL = %w[x-frame-options x-content-type-options content-security-policy
-                 referrer-policy x-xss-protection permissions-policy].freeze
+                 referrer-policy x-xss-protection permissions-policy
+                 cross-origin-opener-policy].freeze
   ROUTE_CSP = "default-src 'none'; img-src 'self'"
   ENTRIES = ["app.rb", "Tina4.run!", "config.ru", "tina4ruby serve"].freeze
 
