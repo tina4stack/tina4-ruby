@@ -292,31 +292,47 @@ module Tina4
       short = COMMANDS[command][:short] || {}
       i = 0
       while i < argv.length
-        arg = argv[i]
-        i += 1
-        next unless arg.start_with?("-") && arg != "-"
-
-        if arg.start_with?("--")
-          name, eq, = arg[2..].partition("=")
-          has_value = !eq.empty?
-        else
-          name = short[arg[1]]
-          has_value = arg.length > 2 # -p7147
-        end
-        unless name && accepted.key?(name)
-          bare = arg.sub(/\A-+/, "").partition("=").first
-          close = DidYouMean::SpellChecker.new(dictionary: accepted.keys).correct(bare).first
-          option_error(label, %(Unknown option #{arg.partition('=').first} for "#{label}".) +
-                              (close ? " Did you mean --#{close}?" : ""))
-        end
-        next unless accepted[name] && !has_value
-
-        if i >= argv.length || argv[i].start_with?("-")
-          puts %(Option --#{name} for "#{label}" needs a value: --#{name} <value>)
+        message, consumed = option_problem(argv, i, accepted, short, label)
+        if message
+          puts message
           exit 1
         end
-        i += 1
+        i += consumed
       end
+    end
+
+    # Judge argv[i]: [message, nil] when it is refused, else [nil, args consumed].
+    def option_problem(argv, i, accepted, short, label)
+      arg = argv[i]
+      return [nil, 1] unless arg.start_with?("-") && arg != "-"
+
+      name, has_value = option_name(arg, short)
+      return [unknown_option_message(arg, accepted, label), nil] unless name && accepted.key?(name)
+      return [nil, 1] unless accepted[name] && !has_value
+
+      value = argv[i + 1]
+      return [nil, 2] if value && !value.start_with?("-")
+
+      [%(Option --#{name} for "#{label}" needs a value: --#{name} <value>), nil]
+    end
+
+    # [long name, value attached?] for `--name`, `--name=value`, `-p` or `-p7147`;
+    # the name is nil for a short option the command doesn't alias.
+    def option_name(arg, short)
+      if arg.start_with?("--")
+        name, eq, = arg[2..].partition("=")
+        [name, !eq.empty?]
+      else
+        [short[arg[1]], arg.length > 2]
+      end
+    end
+
+    def unknown_option_message(arg, accepted, label)
+      bare = arg.sub(/\A-+/, "").partition("=").first
+      close = DidYouMean::SpellChecker.new(dictionary: accepted.keys).correct(bare).first
+      %(Unknown option #{arg.partition('=').first} for "#{label}".) +
+        (close ? " Did you mean --#{close}?" : "") +
+        %(\nRun "tina4ruby #{label} --help" for its options.)
     end
 
     # Absolute path of the `tina4` client on PATH, or nil if it isn't there.
