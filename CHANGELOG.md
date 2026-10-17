@@ -6,6 +6,32 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## Unreleased
+
+### Fixed
+- CLI: `--help` / `-h` on any command prints that command's usage and changes
+  nothing. Before, most handlers never looked for it and ran for real:
+  `generate model -h` wrote a model named `-h`, `generate auth --help` wrote the
+  whole auth scaffold, `lint --help` ran `bundle add rubocop`, `migrate:status
+  --help` booted the app. Commands that used OptionParser printed its own banner
+  instead; every command now prints the same format. Exception: `serve` /
+  `start` keep `-h` as `--host` (`-h 127.0.0.1` still works); `--help` is help
+  everywhere. `help --help` prints the full reference.
+- CLI: an unknown option is refused with a did-you-mean (`--feilds` →
+  `--fields`) instead of being silently dropped, and a value option given no
+  value is refused instead of crashing (`serve --port` raised
+  `OptionParser::MissingArgument`, `--fields` generated a model with no fields
+  and exited 1) or being ignored (`--every`). `--name=value` works as well as
+  `--name value`. `test` reads no arguments, so it accepts no options.
+- CLI: `generate` refuses a name that starts with `-`.
+- CLI: `generate crud <Name> --skip-model` works. `generate model` has always
+  suggested it, but no generator had the option; it was silently ignored and
+  would now be refused.
+- CLI: `ai --all` installs every context file; it crashed with
+  `uninitialized constant Tina4::VERSION`. `ai all` works too.
+- CLI: the top-level help reads `Usage: tina4ruby <command> [options]`, the
+  same wording as the Python, PHP and Node CLIs (it said `COMMAND`).
+
 ## 3.13.151 - 2026-10-15
 
 ### Security
