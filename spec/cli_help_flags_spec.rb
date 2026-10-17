@@ -119,7 +119,7 @@ RSpec.describe "tina4ruby --help and option checking" do
     it "top-level #{flag} prints the full reference" do
       stdout, stderr, code = run_cli([flag])
       expect(code).to eq(0), stdout + stderr
-      expect(stdout).to include("Usage: tina4ruby COMMAND")
+      expect(stdout).to include("Usage: tina4ruby <command>")
       expect(stdout).to include("Generators:")
     end
   end
@@ -129,7 +129,7 @@ RSpec.describe "tina4ruby --help and option checking" do
     it "#{argv.join(' ')} prints the full reference and exits 0" do
       stdout, stderr, code = run_cli(argv)
       expect(code).to eq(0), stdout + stderr
-      expect(stdout).to include("Usage: tina4ruby COMMAND")
+      expect(stdout).to include("Usage: tina4ruby <command>")
       expect(stdout).not_to include("Unknown option")
     end
   end

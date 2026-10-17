@@ -29,6 +29,8 @@ https://tina4.com/ruby/36-releases
   would now be refused.
 - CLI: `ai --all` installs every context file; it crashed with
   `uninitialized constant Tina4::VERSION`. `ai all` works too.
+- CLI: the top-level help reads `Usage: tina4ruby <command> [options]`, the
+  same wording as the Python, PHP and Node CLIs (it said `COMMAND`).
 
 ## 3.13.151 - 2026-10-15
 

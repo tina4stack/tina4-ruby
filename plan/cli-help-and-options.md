@@ -101,6 +101,11 @@ Other broken switches found by the same audit:
       before/after and unchanged (66 cases)
 - [x] `--help` / `-h` after the name and options still wins
 - [x] top-level `--help` / `-h`; `help`, `help --help`, `help -h` print the reference
+- [x] top-level usage reads `Usage: tina4ruby <command> [options]`, matching
+      Python/PHP/Node (follow-up commit; `spec/cli_spec.rb` updated with it)
+- [ ] not done: `test` runs Tina4::Testing inline tests, not RSpec, so it has
+      no runner to hand arguments to (Python forwards to pytest, PHP to
+      PHPUnit). Making it wrap `rspec` is a design change, left for its own PR
 - [x] exact per-command format (queue: usage, blank, summary, subcommands)
 - [x] `generate --help` and `generate <unknown> --help` list every generator
 - [x] `serve -h 127.0.0.1` is host: parse continues to the next option; `start -h`

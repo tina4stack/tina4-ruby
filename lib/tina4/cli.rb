@@ -3903,7 +3903,7 @@ module Tina4
         "  #{left.ljust(gap)}  #{summary}"
       end
 
-      lines = ["Tina4 Ruby CLI", "", "Usage: tina4ruby COMMAND [options]", "", "Commands:"]
+      lines = ["Tina4 Ruby CLI", "", "Usage: tina4ruby <command> [options]", "", "Commands:"]
       lines += command_rows.map { |left, summary| row.call(left, summary) }
       lines += ["", "Delegated to the #{CLIENT_BINARY} client (same behaviour in every framework):"]
       lines += delegated_rows.map { |left, summary| row.call(left, summary) }
@@ -3924,7 +3924,7 @@ module Tina4
         "",
         "https://tina4.com",
         "",
-        "Run 'tina4ruby COMMAND --help' for more information on a command.",
+        "Run 'tina4ruby <command> --help' for more information on a command.",
       ]
       puts lines.join("\n")
     end
