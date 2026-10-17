@@ -7,6 +7,7 @@
 
 
 require "optparse"
+require "did_you_mean" # DidYouMean::SpellChecker - suggestions for a mistyped option
 require "fileutils"
 require "set"
 require "json"
@@ -27,32 +28,42 @@ module Tina4
     # mirror of the Python master's COMMANDS / GENERATORS registries
     # (tina4_python/cli/__init__.py).
     #
-    #   GENERATORS[name] = { handler: :method_symbol, usage: str, summary: str }
+    #   GENERATORS[name] = { handler: :method_symbol, flags: {...}, usage: str, summary: str }
     #   COMMANDS[name]   = { handler: :method_symbol, summary: str,
+    #                        flags: { name => bool }, # options #run accepts; true = takes a value.
+    #                                                 # nil = not checked (`help` prints the reference whatever follows)
+    #                        short?: { "p" => "port" }, # single-letter aliases (OptionParser ones)
     #                        usage?: str,          # arg/flag hint for #cmd_help (human only)
     #                        args?: [str],         # positional args for the manifest ("x?" = optional)
     #                        subcommands?: [str] } # sub-names for the manifest (generate)
     #
     # Handlers are instance-method symbols dispatched via #send: GENERATORS
-    # handlers take (name, flags); COMMANDS handlers take (argv).
+    # handlers take (name, flags); COMMANDS handlers take (argv). `flags` is
+    # what #check_options holds argv to before any handler runs; `generate` and
+    # `queue` take theirs from GENERATORS / QUEUE_FLAGS instead.
 
     GENERATORS = {
-      "model"      => { handler: :generate_model,      usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
-      "route"      => { handler: :generate_route,      usage: "<name> [--model Name] [--public]",             summary: "CRUD route file, secure by default (--public opens writes)" },
-      "crud"       => { handler: :generate_crud,       usage: '<Name> [--fields "..."] [--public] [--no-templates]', summary: "Model + migration + AutoCrud-backed admin page (to_crud) + editable crud/ templates + gate test" },
-      "migration"  => { handler: :generate_migration,  usage: "<description>",                                 summary: "Timestamped migration file (UP/DOWN)" },
-      "middleware" => { handler: :generate_middleware, usage: "<Name>",                                        summary: "Middleware with before/after hooks" },
-      "test"       => { handler: :generate_test,       usage: "<name> [--model Name]",                         summary: "RSpec test file" },
-      "form"       => { handler: :generate_form,       usage: '<Name> [--fields "..."]',                       summary: "Form template with inputs matching model fields" },
-      "view"       => { handler: :generate_view,       usage: '<Name> [--fields "..."]',                       summary: "List + detail view templates" },
-      "auth"       => { handler: :generate_auth,       usage: "",                                              summary: "Login/register routes + User model + templates" },
-      "service"    => { handler: :generate_service,    usage: '<Name> [--every 5m | --cron "..."]',            summary: "Scheduled ServiceRunner task (src/services/)" },
-      "queue"      => { handler: :generate_queue,      usage: "<topic>",                                       summary: "Producer + consumer worker (src/services/)" },
-      "validator"  => { handler: :generate_validator,  usage: "<Name>",                                        summary: "Request-body Validator (src/validators/)" },
-      "seeder"     => { handler: :generate_seeder,     usage: "<Model>",                                       summary: "FakeData + seed_orm seeder (seeds/)" },
-      "websocket"  => { handler: :generate_websocket,  usage: "<path>",                                        summary: "Tina4.websocket handler (src/routes/)" },
-      "listener"   => { handler: :generate_listener,   usage: "<event>",                                       summary: "Tina4::Events.on listener (src/listeners/)" },
+      "model"      => { handler: :generate_model,      flags: { "fields" => true, "table-name" => true, "no-migration" => false }, usage: '<Name> [--fields "name:string,price:float"] [--table-name <name>]', summary: "ORM model + matching migration" },
+      "route"      => { handler: :generate_route,      flags: { "model" => true, "public" => false }, usage: "<name> [--model Name] [--public]",             summary: "CRUD route file, secure by default (--public opens writes)" },
+      "crud"       => { handler: :generate_crud,       flags: { "fields" => true, "table-name" => true, "public" => false, "no-templates" => false, "no-migration" => false, "skip-model" => false }, usage: '<Name> [--fields "..."] [--public] [--no-templates] [--skip-model]', summary: "Model + migration + AutoCrud-backed admin page (to_crud) + editable crud/ templates + gate test" },
+      "migration"  => { handler: :generate_migration,  flags: { "fields" => true },                   usage: "<description>",                                 summary: "Timestamped migration file (UP/DOWN)" },
+      "middleware" => { handler: :generate_middleware, flags: {},                                     usage: "<Name>",                                        summary: "Middleware with before/after hooks" },
+      "test"       => { handler: :generate_test,       flags: { "model" => true, "public" => false }, usage: "<name> [--model Name]",                         summary: "RSpec test file" },
+      "form"       => { handler: :generate_form,       flags: { "fields" => true, "table-name" => true }, usage: '<Name> [--fields "..."]',                   summary: "Form template with inputs matching model fields" },
+      "view"       => { handler: :generate_view,       flags: { "fields" => true, "table-name" => true }, usage: '<Name> [--fields "..."]',                   summary: "List + detail view templates" },
+      "auth"       => { handler: :generate_auth,       flags: {},                                     usage: "",                                              summary: "Login/register routes + User model + templates" },
+      "service"    => { handler: :generate_service,    flags: { "every" => true, "cron" => true },    usage: '<Name> [--every 5m | --cron "..."]',            summary: "Scheduled ServiceRunner task (src/services/)" },
+      "queue"      => { handler: :generate_queue,      flags: {},                                     usage: "<topic>",                                       summary: "Producer + consumer worker (src/services/)" },
+      "validator"  => { handler: :generate_validator,  flags: {},                                     usage: "<Name>",                                        summary: "Request-body Validator (src/validators/)" },
+      "seeder"     => { handler: :generate_seeder,     flags: { "table-name" => true },               usage: "<Model>",                                       summary: "FakeData + seed_orm seeder (seeds/)" },
+      "websocket"  => { handler: :generate_websocket,  flags: {},                                     usage: "<path>",                                        summary: "Tina4.websocket handler (src/routes/)" },
+      "listener"   => { handler: :generate_listener,   flags: {},                                     usage: "<event>",                                       summary: "Tina4::Events.on listener (src/listeners/)" },
     }.freeze
+
+    # Generators that emit the ADR-0063 resolution + JSON envelope, and the
+    # options every one of them accepts on top of its own.
+    RESOLUTION_TARGETS = %w[model route migration middleware form view queue].freeze
+    RESOLUTION_FLAGS = { "json" => false, "dry-run" => false }.freeze
 
     # Sub-dispatch table for the top-level `queue` command — the SINGLE source
     # for its subcommands (drives #cmd_queue dispatch AND the manifest's
@@ -65,27 +76,43 @@ module Tina4
       "clear" => :queue_clear,
     }.freeze
 
+    # Options per queue subcommand (name => takes a value), checked by #run.
+    QUEUE_FLAGS = {
+      "work"  => { "once" => false, "poll" => true, "services" => true },
+      "stats" => { "json" => false },
+      "retry" => {},
+      "clear" => {},
+    }.freeze
+
+    # `start` / `serve` options, as cmd_start's OptionParser defines them.
+    # `-h` is --host here (it predates per-command help), so only `--help` is
+    # help for these two.
+    SERVE_FLAGS = { "port" => true, "host" => true, "dev" => false, "managed" => false, "production" => false,
+                    "no-browser" => false, "no-reload" => false, "no-kill" => false }.freeze
+    SERVE_SHORT = { "p" => "port", "h" => "host", "d" => "dev" }.freeze
+    SERVE_USAGE = "[-p PORT] [-h HOST] [--dev] [--no-browser] [--no-reload] [--no-kill] [--production]"
+
     COMMANDS = {
-      "init"             => { handler: :cmd_init,             usage: "[NAME]", args: ["name?"],           summary: "Initialize a new Tina4 project" },
-      "start"            => { handler: :cmd_start,            usage: "[options]",                          summary: "Start the Tina4 web server" },
-      "serve"            => { handler: :cmd_start,                                                         summary: "Alias for start" },
-      "migrate"          => { handler: :cmd_migrate,          usage: "[--create NAME] [--rollback N]",     summary: "Run database migrations" },
-      "migrate:create"   => { handler: :cmd_migrate_create,   usage: "<desc>", args: ["description"],      summary: "Create a new migration file" },
-      "migrate:status"   => { handler: :cmd_migrate_status,                                                summary: "Show migration status (completed and pending)" },
-      "migrate:rollback" => { handler: :cmd_migrate_rollback, usage: "[-n N]",                             summary: "Rollback the last batch of migrations" },
-      "seed"             => { handler: :cmd_seed,             usage: "[--clear]",                          summary: "Run all seed files in seeds/" },
-      "seed:create"      => { handler: :cmd_seed_create,      usage: "NAME", args: ["name"],               summary: "Create a new seed file" },
-      "test"             => { handler: :cmd_test,                                                          summary: "Run inline tests" },
+      "init"             => { handler: :cmd_init,             flags: { "template" => true }, usage: "[NAME]", args: ["name?"],            summary: "Initialize a new Tina4 project" },
+      "start"            => { handler: :cmd_start,            flags: SERVE_FLAGS, short: SERVE_SHORT, usage: SERVE_USAGE, summary: "Start the Tina4 web server" },
+      "serve"            => { handler: :cmd_start,            flags: SERVE_FLAGS, short: SERVE_SHORT, usage: SERVE_USAGE, summary: "Alias for start" },
+      "migrate"          => { handler: :cmd_migrate,          flags: { "create" => true, "rollback" => true }, usage: "[--create NAME] [--rollback N]", summary: "Run database migrations" },
+      "migrate:create"   => { handler: :cmd_migrate_create,   flags: { "fields" => true, **RESOLUTION_FLAGS }, usage: "<desc>", args: ["description"], summary: "Create a new migration file" },
+      "migrate:status"   => { handler: :cmd_migrate_status,   flags: {},                                     summary: "Show migration status (completed and pending)" },
+      "migrate:rollback" => { handler: :cmd_migrate_rollback, flags: { "steps" => true }, short: { "n" => "steps" }, usage: "[-n N]", summary: "Rollback the last batch of migrations" },
+      "seed"             => { handler: :cmd_seed,             flags: { "clear" => false },                   usage: "[--clear]",                          summary: "Run all seed files in seeds/" },
+      "seed:create"      => { handler: :cmd_seed_create,      flags: {},                                     usage: "NAME", args: ["name"],               summary: "Create a new seed file" },
+      "test"             => { handler: :cmd_test,             flags: {},                                     summary: "Run inline tests" },
       "queue"            => { handler: :cmd_queue,            usage: "<work|stats|retry|clear> [topic]", subcommands: QUEUE_SUBCOMMANDS.keys, summary: "Run queue workers and manage jobs" },
-      "build"            => { handler: :cmd_build,            usage: "[--tag NAME] [--file PATH]",         summary: "Build the deployable Docker image" },
-      "lint"             => { handler: :cmd_lint,             usage: "[--fix] [--no-install]",             summary: "Lint src/ + app.rb (rubocop, installed dev-only on demand, else ruby -c)" },
-      "version"          => { handler: :cmd_version,                                                       summary: "Show Tina4 version" },
-      "routes"           => { handler: :cmd_routes,                                                        summary: "List all registered routes" },
-      "console"          => { handler: :cmd_console,                                                       summary: "Start an interactive console" },
+      "build"            => { handler: :cmd_build,            flags: { "tag" => true, "file" => true },      usage: "[--tag NAME] [--file PATH]",         summary: "Build the deployable Docker image" },
+      "lint"             => { handler: :cmd_lint,             flags: { "fix" => false, "no-install" => false }, usage: "[--fix] [--no-install]",          summary: "Lint src/ + app.rb (rubocop, installed dev-only on demand, else ruby -c)" },
+      "version"          => { handler: :cmd_version,          flags: {},                                     summary: "Show Tina4 version" },
+      "routes"           => { handler: :cmd_routes,           flags: {},                                     summary: "List all registered routes" },
+      "console"          => { handler: :cmd_console,          flags: {},                                     summary: "Start an interactive console" },
       "generate"         => { handler: :cmd_generate,         usage: "<what> <name> [options]", subcommands: GENERATORS.keys, summary: "Generate scaffolding (see Generators below)" },
-      "ai"               => { handler: :cmd_ai,               usage: "[--all]",                            summary: "Detect AI tools and install context files" },
-      "commands"         => { handler: :cmd_commands,         usage: "[--json]",                           summary: "List available commands (add --json for machine form)" },
-      "help"             => { handler: :cmd_help,                                                          summary: "Show this help message" },
+      "ai"               => { handler: :cmd_ai,               flags: { "all" => false },                     usage: "[--all]",                            summary: "Detect AI tools and install context files" },
+      "commands"         => { handler: :cmd_commands,         flags: { "json" => false },                    usage: "[--json]",                           summary: "List available commands (add --json for machine form)" },
+      "help"             => { handler: :cmd_help,             flags: nil,                                    summary: "Show this help message" },
     }.freeze
 
     # ── Delegation to the `tina4` client ────────────────────────────────
@@ -160,16 +187,34 @@ module Tina4
       new.run(argv)
     end
 
+    HELP_FLAGS = %w[--help -h].freeze
+
     def run(argv)
       command = argv.shift || "help"
-      command = "help" if %w[-h --help].include?(command)
+      command = "help" if HELP_FLAGS.include?(command)
 
       # Dispatch from the single-source-of-truth COMMANDS registry. The same
       # registry drives #cmd_help and the `commands --json` manifest, so
       # dispatch, help, and discovery never drift.
       spec = COMMANDS[command]
       if spec
-        send(spec[:handler], argv)
+        # `--help` / `-h` anywhere after a command prints that command's usage
+        # and touches nothing. Handlers never looked for it, so it ran the
+        # command for real: `generate model --help` wrote a model named
+        # `--help`, `migrate --help` opened the database. `serve` / `start`
+        # keep `-h` as --host. Delegated commands are left alone - the client
+        # answers --help itself.
+        if command != "help" && argv.any? { |arg| help_flags(command).include?(arg) }
+          command_help(command, argv)
+          return
+        end
+        check_options(command, argv)
+        begin
+          send(spec[:handler], argv)
+        rescue OptionParser::ParseError => e
+          # e.g. `serve --port abc`: say so, no backtrace.
+          option_error(command, "#{e.message}.")
+        end
       elsif DELEGATED.key?(command)
         exit delegate_to_client(command, argv)
       else
@@ -182,6 +227,97 @@ module Tina4
     end
 
     private
+
+    # ── Per-command help and option checking ─────────────────────────────
+
+    def help_flags(command)
+      COMMANDS[command][:short]&.key?("h") ? ["--help"] : HELP_FLAGS
+    end
+
+    # Usage for one command (or one generator), from the same registries.
+    def command_help(command, argv)
+      if command == "generate"
+        kind = argv.find { |arg| !arg.start_with?("-") }&.downcase
+        if (gen = GENERATORS[kind])
+          puts "Usage: tina4ruby generate #{kind} #{gen[:usage]}".rstrip
+          puts "", "  #{gen[:summary]}"
+          return
+        end
+        puts "Usage: tina4ruby generate <what> <name> [options]", "", "Generators:"
+        pad = GENERATORS.keys.map(&:length).max
+        GENERATORS.each { |name, spec| puts "  #{name.ljust(pad)}  #{spec[:summary]}" }
+        return
+      end
+      spec = COMMANDS[command]
+      puts "Usage: tina4ruby #{command} #{spec[:usage]}".rstrip
+      puts "", "  #{spec[:summary]}"
+      puts "  Subcommands: #{spec[:subcommands].join(', ')}" if spec[:subcommands]
+    end
+
+    # The options `command` accepts ({ name => takes_value }), or nil when its
+    # arguments are not checked: `help` (flags: nil), or an unknown generator /
+    # queue subcommand, which its handler reports.
+    def accepted_options(command, argv)
+      kind = argv.first.to_s.downcase
+      case command
+      when "generate"
+        gen = GENERATORS[kind] or return nil
+        RESOLUTION_TARGETS.include?(kind) ? gen[:flags].merge(RESOLUTION_FLAGS) : gen[:flags]
+      when "queue"
+        QUEUE_FLAGS[kind]
+      else
+        COMMANDS[command].fetch(:flags, {})
+      end
+    end
+
+    def option_label(command, argv)
+      %w[generate queue].include?(command) ? "#{command} #{argv.first.downcase}" : command
+    end
+
+    def option_error(label, message)
+      puts message
+      puts %(Run "tina4ruby #{label} --help" for its options.)
+      exit 1
+    end
+
+    # Refuse an option the command doesn't have, or a value option given no
+    # value. Both used to slip through: `--feilds` was silently dropped (the
+    # model came out without its fields) and a bare `--fields` swallowed the
+    # next option or crashed OptionParser.
+    def check_options(command, argv)
+      accepted = accepted_options(command, argv)
+      return if accepted.nil?
+
+      label = option_label(command, argv)
+      short = COMMANDS[command][:short] || {}
+      i = 0
+      while i < argv.length
+        arg = argv[i]
+        i += 1
+        next unless arg.start_with?("-") && arg != "-"
+
+        if arg.start_with?("--")
+          name, eq, = arg[2..].partition("=")
+          has_value = !eq.empty?
+        else
+          name = short[arg[1]]
+          has_value = arg.length > 2 # -p7147
+        end
+        unless name && accepted.key?(name)
+          bare = arg.sub(/\A-+/, "").partition("=").first
+          close = DidYouMean::SpellChecker.new(dictionary: accepted.keys).correct(bare).first
+          option_error(label, %(Unknown option #{arg.partition('=').first} for "#{label}".) +
+                              (close ? " Did you mean --#{close}?" : ""))
+        end
+        next unless accepted[name] && !has_value
+
+        if i >= argv.length || argv[i].start_with?("-")
+          puts %(Option --#{name} for "#{label}" needs a value: --#{name} <value>)
+          exit 1
+        end
+        i += 1
+      end
+    end
 
     # Absolute path of the `tina4` client on PATH, or nil if it isn't there.
     #
@@ -577,7 +713,11 @@ module Tina4
       positional = []
       i = 0
       while i < args.length
-        if args[i].start_with?("--")
+        if args[i].start_with?("--") && args[i].include?("=")
+          key, _, value = args[i][2..].partition("=")
+          flags[key] = value
+          i += 1
+        elsif args[i].start_with?("--")
           key = args[i][2..]
           if boolean_flags.include?(key)
             flags[key] = true
@@ -1444,6 +1584,7 @@ module Tina4
         opts.on("--all", "Install context for ALL AI tools (non-interactive)") { options[:all] = true }
       end
       parser.parse!(argv)
+      options[:all] = true if argv.first&.downcase == "all" # the Python master's bare form
 
       require_relative "ai"
 
@@ -1486,11 +1627,26 @@ module Tina4
         exit 1
       end
 
+      # Dispatch from the GENERATORS registry (single source of truth for the
+      # generate subcommands; also feeds #cmd_help and the manifest).
+      gen_spec = GENERATORS[what]
+      unless gen_spec
+        puts "Unknown generator: #{what}"
+        puts "  Available: #{all}"
+        exit 1
+      end
+
       # Auth doesn't require a name argument
       no_name_generators = %w[auth]
       unless no_name_generators.include?(what)
-        if argv.empty? || argv.first.start_with?("--")
+        if argv.empty?
           puts "Usage: tina4ruby generate #{what} <name> [options]"
+          exit 1
+        end
+        # A name that is really a mistyped option (`--fields` with no name
+        # before it, `-x`) would otherwise become a file called `--fields`.
+        if argv.first.start_with?("-")
+          puts "Invalid #{what} name: '#{argv.first}' - names can't start with '-'."
           exit 1
         end
       end
@@ -1501,21 +1657,11 @@ module Tina4
       json_mode = flags.delete("json") ? true : false
       dry_run   = flags.delete("dry-run") ? true : false
 
-      # Dispatch from the GENERATORS registry (single source of truth for the
-      # generate subcommands; also feeds #cmd_help and the manifest).
-      gen_spec = GENERATORS[what]
-      unless gen_spec
-        puts "Unknown generator: #{what}"
-        puts "  Available: #{all}"
-        exit 1
-      end
-
       # Only the resolution-aware targets emit a resolution + JSON envelope;
       # every other generator keeps its existing behaviour so nothing regresses.
       # ADR-0063 (3.13.121): form + view joined so their baked `{# tina4:edit ... #}`
       # markers surface in resolution.edit_hints[] under the same v1.1 envelope.
-      resolution_aware = %w[model route migration middleware form view queue]
-      if !resolution_aware.include?(what)
+      unless RESOLUTION_TARGETS.include?(what)
         send(gen_spec[:handler], name, flags)
         return
       end
@@ -2169,7 +2315,9 @@ module Tina4
 
       # 1. Model + migration (emit_test: false — crud emits its own broader gate
       #    spec at step 4, so the sub-generators stay quiet to avoid double-emit).
-      generate_model(name, flags, emit_test: false)
+      #    --skip-model: the model already exists (`generate model` suggests
+      #    exactly this), so leave it and its migration alone.
+      generate_model(name, flags, emit_test: false) unless flags["skip-model"]
 
       # 2. Admin page route: registers AutoCrud (secure-by-default; --public
       #    opens writes) and renders the to_crud admin UI at /admin/<table>.
