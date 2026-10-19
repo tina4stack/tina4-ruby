@@ -1068,6 +1068,13 @@ promotion silently drop or conflict with those commits.
 **No code without tests.** Write the spec first or alongside the code — never "later". Route handlers
 get request/response specs; ORM models get CRUD specs; business logic gets unit specs.
 
+### Mobile-first layout
+
+Build the smallest screen first, then enhance upward with `min-width` media queries - the base
+styles ARE the mobile styles, never a desktop layout patched down with `max-width`. Keep every
+interactive control at least 44x44px. Map tokens onto tina4-css; the `tina4-design` skill owns the
+full token + breakpoint detail. This is the default stance for any view you write.
+
 ### Web Push (Feature 140)
 
 Use `references/web-push.md` for the provider-neutral Web Push contract. Treat it as a standalone outbound integration, not WebSocket or Server-Sent Events. Keep it configuration-first, fail loudly on partial VAPID configuration, and use Ruby's OpenSSL capability without adding a Web Push gem.
