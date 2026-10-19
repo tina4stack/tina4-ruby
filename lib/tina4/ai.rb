@@ -9,6 +9,7 @@
 require "fileutils"
 require "net/http"
 require "uri"
+require_relative "version" # the context files name Tina4::VERSION; `ai` runs before lib/tina4 loads
 
 module Tina4
   # Tina4 AI -- Install AI coding assistant context files.
