@@ -24,6 +24,7 @@ module Tina4
       attr_reader :connection
 
       def connect(connection_string, username: nil, password: nil)
+        @connect_args = [connection_string, username, password]
         begin
           require "pg"
         rescue LoadError
@@ -64,12 +65,51 @@ module Tina4
         @connection&.close
       end
 
+      # ── Reconnect after a dropped link (parity with the Python master #236/#242; #244) ──
+      # The pg gem does not reconnect itself: once the server drops the link
+      # (failover, idle reap, pg_terminate_backend) every exec raises until it is
+      # rebuilt. exec_with_reconnect heals a dead link BEFORE running, and on a
+      # connection error (not a real SQL error) reconnects and retries once when
+      # no explicit transaction owns the link. A reconnect that itself fails
+      # leaves @connection nil, so the NEXT statement rebuilds and recovers once
+      # a reachable server returns.
+      def connection_dead?
+        @connection.nil? || @connection.status == PG::CONNECTION_BAD
+      end
+
+      def reconnect
+        begin
+          @connection&.close
+        rescue StandardError
+          # already gone
+        end
+        @connection = nil
+        cs, user, pass = @connect_args
+        connect(cs, username: user, password: pass)
+      end
+
+      def exec_with_reconnect
+        reconnect if !@in_transaction && connection_dead?
+        begin
+          yield
+        rescue PG::Error => e
+          # A real SQL error leaves the link OK; only a dropped link outside an
+          # explicit transaction is reconnected and retried once.
+          raise e if @in_transaction || !connection_dead?
+
+          reconnect
+          yield
+        end
+      end
+
       def execute_query(sql, params = [])
-        result = if params.empty?
-                   @connection.exec(sql) # no params: sent exactly as written
-                 else
-                   @connection.exec_params(convert_placeholders(sql), params)
-                 end
+        result = exec_with_reconnect do
+          if params.empty?
+            @connection.exec(sql) # no params: sent exactly as written
+          else
+            @connection.exec_params(convert_placeholders(sql), params)
+          end
+        end
         track_affected(result)
         symbolize_result(result)
       end
@@ -82,11 +122,13 @@ module Tina4
         # Clear the cache so last_insert_id falls back to the lastval() probe,
         # which is the correct source for a sequence-backed bare INSERT.
         @last_returning_id = nil if sql.lstrip[0, 6].upcase == "INSERT"
-        result = if params.empty?
-                   @connection.exec(sql) # no params: sent exactly as written
-                 else
-                   @connection.exec_params(convert_placeholders(sql), params)
-                 end
+        result = exec_with_reconnect do
+          if params.empty?
+            @connection.exec(sql) # no params: sent exactly as written
+          else
+            @connection.exec_params(convert_placeholders(sql), params)
+          end
+        end
         track_affected(result)
         result
       end
@@ -205,15 +247,18 @@ module Tina4
       end
 
       def begin_transaction
+        @in_transaction = true
         @connection.exec("BEGIN")
       end
 
       def commit
         @connection.exec("COMMIT")
+        @in_transaction = false
       end
 
       def rollback
         @connection.exec("ROLLBACK")
+        @in_transaction = false
       end
 
       # v3.13.14 (#48): to_regclass resolves a (possibly schema-qualified)
