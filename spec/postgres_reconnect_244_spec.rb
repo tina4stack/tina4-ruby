@@ -97,4 +97,27 @@ RSpec.describe "PostgreSQL reconnect after a dropped link (#244)" do
     drop_connection(backend_pid(@db))
     expect(@db.fetch("SELECT 1 AS one")[0][:one].to_i).to eq(1)
   end
+
+  # NEGATIVE: a real SQL error is NOT a dropped link - it surfaces and must not
+  # trigger a reconnect (the backend stays the same).
+  it "surfaces a real SQL error without reconnecting" do
+    before = backend_pid(@db)
+    expect { @db.fetch("SELECT * FROM a_table_that_does_not_exist_244") }.to raise_error(StandardError)
+    expect(backend_pid(@db)).to eq(before)
+  end
+
+  # NEGATIVE: a drop INSIDE an explicit transaction surfaces (never silently
+  # retried on a fresh link); the next statement after rollback recovers.
+  it "surfaces a drop inside a transaction, then recovers after rollback" do
+    @db.start_transaction
+    drop_connection(backend_pid(@db))
+    expect { @db.execute("INSERT INTO pg244_reconnect (note) VALUES (?)", ["in-txn"]) }.to raise_error(StandardError)
+    begin
+      @db.rollback
+    rescue StandardError
+      nil # ROLLBACK on a dead link may fail - recovery must still work
+    end
+    @db.execute("INSERT INTO pg244_reconnect (note) VALUES (?)", ["after-txn-drop"])
+    expect(@db.fetch("SELECT note FROM pg244_reconnect WHERE note = 'after-txn-drop'").count).to eq(1)
+  end
 end

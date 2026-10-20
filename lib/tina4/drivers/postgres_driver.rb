@@ -247,17 +247,22 @@ module Tina4
       end
 
       def begin_transaction
-        @in_transaction = true
         @connection.exec("BEGIN")
+        @in_transaction = true # only after BEGIN actually opened the transaction
       end
 
       def commit
         @connection.exec("COMMIT")
+      ensure
+        # The transaction is over whether COMMIT succeeded or the link died.
+        # Clearing in `ensure` stops a COMMIT/ROLLBACK that raises on a dropped
+        # link from leaving the flag set and wedging every later reconnect (#244).
         @in_transaction = false
       end
 
       def rollback
         @connection.exec("ROLLBACK")
+      ensure
         @in_transaction = false
       end
 
