@@ -6,9 +6,16 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
-## Unreleased
+## 3.13.152 - 2026-10-20
 
 ### Fixed
+- Database: the PostgreSQL adapter recovers after a dropped connection even
+  when the first reconnect attempt itself fails, so a query run over a dead
+  link no longer wedges once a reconnect failed (#242). Transaction control
+  (`BEGIN` / `COMMIT` / `ROLLBACK`) stays raw and surfaces its own failure, and
+  the in-transaction flag is cleared even when a commit or rollback raises.
+  Reconnect-after-drop is now at parity across Python, PHP and Node.js too
+  (#244).
 - CLI: `--help` / `-h` on any command prints that command's usage and changes
   nothing. Before, most handlers never looked for it and ran for real:
   `generate model -h` wrote a model named `-h`, `generate auth --help` wrote the
