@@ -95,9 +95,20 @@ module Tina4
       %w[style-src script-src].each do |directive|
         existing = directives.find { |name, _| name == directive }
         if existing
+          # ADR-0100: the app opted this directive into inline via
+          # 'unsafe-inline'. A browser ignores 'unsafe-inline' the moment a
+          # nonce joins the same directive (CSP Level 2+), so adding the nonce
+          # would silently block the inline the app asked for. The app wins.
+          next if existing[1].split(/\s+/).include?("'unsafe-inline'")
+
           existing[1] = "#{existing[1]} #{token}".strip unless existing[1].split(/\s+/).include?(token)
         else
           base = default_value.empty? ? "'self'" : default_value
+          # ADR-0100: a directive derived from an 'unsafe-inline' default-src
+          # must not be spawned with a nonce - it would cancel the inline the
+          # app allowed through default-src.
+          next if base.split(/\s+/).include?("'unsafe-inline'")
+
           directives << [directive, "#{base} #{token}".strip]
         end
       end
