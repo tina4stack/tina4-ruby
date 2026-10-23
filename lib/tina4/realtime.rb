@@ -114,8 +114,17 @@ module Tina4
 
     # ----- route registration -------------------------------------------------
 
+    # ADR-0101: the config route mints TURN credentials and the signalling socket
+    # relays calls, so both require a valid token UNLESS the app opts out with
+    # TINA4_RTC_REQUIRE_AUTH=false (anonymous calling). Secure-by-default: only an
+    # explicit false/0/no/off opens them.
+    def rtc_require_auth?
+      raw = (ENV["TINA4_RTC_REQUIRE_AUTH"] || "true").strip.downcase
+      !%w[false 0 no off].include?(raw)
+    end
+
     def register_config(paths, features)
-      Tina4::Router.get(paths["config"]) do |_request, response|
+      route = Tina4::Router.get(paths["config"]) do |_request, response|
         body = { "backend" => "mesh" }
         if features.include?("calls")
           body["iceServers"] = Tina4::Realtime.ice_servers
@@ -128,12 +137,14 @@ module Tina4
         body["files"] = paths["files"] if features.include?("files")
         response.json(body, Tina4::HTTP_OK)
       end
+      route.secure if rtc_require_auth? # ADR-0101
     end
 
     def register_calls(paths)
       # WebRTC signalling relay (mesh). Tina4 never parses the SDP; peers filter
-      # by `to`. The signalling room is public - the media is E2E between peers.
-      Tina4::Router.websocket("#{paths['signalling']}/{room}") do |connection, event, data|
+      # by `to`. The media is E2E between peers; the signalling room requires auth
+      # by default (ADR-0101) unless TINA4_RTC_REQUIRE_AUTH=false.
+      route = Tina4::Router.websocket("#{paths['signalling']}/{room}") do |connection, event, data|
         room = connection.params[:room].to_s
         next if room.empty?
 
@@ -145,6 +156,7 @@ module Tina4
           connection.broadcast_to_room(key, data, exclude_self: true)
         end
       end
+      route.secure if rtc_require_auth? # ADR-0101
     end
 
     def register_chat(paths)
