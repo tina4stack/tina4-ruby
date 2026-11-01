@@ -63,7 +63,17 @@ module Tina4
         300.0
       end
 
-      def enqueue(message)
+      def enqueue(message, raw: false)
+        if raw
+          raise NotImplementedError,
+                "The mongodb queue backend cannot honour push(raw: true): raw emits " \
+                "the message with no Tina4 envelope, which only a message bus " \
+                "consumed by non-Tina4 systems (Kafka) needs. This backend stores " \
+                "an internal envelope (payload/priority/attempts) that pop, the " \
+                "retry lifecycle and dead-lettering depend on, so there is nothing " \
+                "to omit. Use the kafka backend for raw external messages."
+        end
+
         # Queue#push already resolved delay_seconds into an available_at (nil when
         # undelayed). Persisting it is what makes a delayed job invisible until
         # its time: dequeue filters on it below. Before 3.13.95 this field was

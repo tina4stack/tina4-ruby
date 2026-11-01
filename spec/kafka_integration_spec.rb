@@ -70,4 +70,47 @@ RSpec.describe "Kafka backend live integration", :kafka do
     backend.acknowledge(got)
     backend.close if backend.respond_to?(:close)
   end
+
+  # #264: push(raw: true) produces the value with NO Tina4 envelope and no
+  # injected id. Read the raw bytes back with a plain rdkafka consumer — exactly
+  # what a non-Tina4 consumer sees off the wire — and assert there is no
+  # payload/id wrapper around the schema.
+  it "produces an un-enveloped value when raw: true" do
+    suffix = "#{Process.pid}_#{rand(1_000_000)}"
+    topic = "tina4_rb_raw_#{suffix}"
+    schema = { "event_type" => "order.created", "order_id" => 4242, "nonce" => suffix }
+
+    kafka = Tina4::QueueBackends::KafkaBackend.new(group_id: "tina4_rb_raw_#{suffix}")
+    job = Tina4::Job.new(topic: topic, payload: schema, id: "rbraw-#{suffix}")
+    kafka.enqueue(job, raw: true)
+
+    reader = Rdkafka::Config.new({
+      "bootstrap.servers" => ENV["TINA4_KAFKA_BROKERS"].to_s.empty? ? "localhost:9092" : ENV["TINA4_KAFKA_BROKERS"],
+      "group.id" => "tina4_rb_rawreader_#{suffix}",
+      "auto.offset.reset" => "earliest",
+      "enable.auto.commit" => "false"
+    }).consumer
+    raw_value = nil
+    begin
+      reader.subscribe(topic)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
+      loop do
+        msg = reader.poll(500)
+        if msg
+          raw_value = msg.payload
+          break
+        end
+        break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      end
+    ensure
+      reader.close
+      kafka.close if kafka.respond_to?(:close)
+    end
+
+    expect(raw_value).not_to be_nil, "nothing produced to the raw topic"
+    parsed = JSON.parse(raw_value)
+    expect(parsed).to eq(schema), "a raw produce must carry the value exactly as given"
+    expect(parsed).not_to have_key("payload")
+    expect(parsed).not_to have_key("id")
+  end
 end

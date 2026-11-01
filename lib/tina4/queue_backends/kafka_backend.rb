@@ -6,6 +6,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 
+require "json"
 require_relative "../parse_json"
 require_relative "republish_retry_policy"
 
@@ -36,7 +37,7 @@ module Tina4
         consumer_config = {
           "bootstrap.servers" => @brokers,
           "group.id" => @group_id,
-          "auto.offset.reset" => "earliest",
+          "auto.offset.reset" => self.class.offset_reset,
           "enable.auto.commit" => "false"
         }.merge(security)
         @consumer = Rdkafka::Config.new(consumer_config).consumer
@@ -73,6 +74,23 @@ module Tina4
         config
       end
 
+      # Resolve the consumer's auto.offset.reset policy from the environment.
+      #
+      # Where a NEW consumer group (one with no committed offset) starts reading:
+      # "earliest" (the default, unchanged) replays the retained backlog;
+      # "latest" skips it. Read from the Tina4-namespaced env var first
+      # (TINA4_KAFKA_AUTO_OFFSET_RESET), then the bare librdkafka-convention name
+      # (KAFKA_AUTO_OFFSET_RESET) — the same precedence the TLS/SASL keys use. A
+      # blank value falls through to the default (tina4-ruby#263). rdkafka honours
+      # it directly, so "latest" takes real effect on the consume path.
+      #
+      # Mirrors tina4_python/queue_backends/kafka_backend.py::_offset_reset.
+      def self.offset_reset
+        env_value("TINA4_KAFKA_AUTO_OFFSET_RESET") ||
+          env_value("KAFKA_AUTO_OFFSET_RESET") ||
+          "earliest"
+      end
+
       # Read an env var, treating empty/blank values as unset (parity with
       # Python's `os.environ.get(...) or ...` truthiness).
       def self.env_value(name)
@@ -83,7 +101,7 @@ module Tina4
       end
       private_class_method :env_value
 
-      def enqueue(message)
+      def enqueue(message, raw: false)
         if message.priority.to_i > 0
           raise NotImplementedError,
                 "The kafka queue backend cannot honour push(priority): Kafka has no " \
@@ -100,9 +118,14 @@ module Tina4
                 "the push itself."
         end
 
+        # raw (tina4-ruby#264): produce the bare payload with NO Tina4 envelope
+        # (the full Job hash) so a non-Tina4 consumer reads the schema it expects.
+        # The id rides as the record KEY only (for partitioning), never in the value.
+        payload = raw ? JSON.generate(message.payload) : message.to_json
+
         @producer.produce(
           topic: message.topic,
-          payload: message.to_json,
+          payload: payload,
           key: message.id
         ).wait
       end

@@ -113,10 +113,14 @@ module Tina4
     # Push a job onto the queue. Returns the Job.
     # priority: higher-priority messages are dequeued first (default 0).
     # delay_seconds: delay before the message becomes available (default 0).
-    def push(payload, priority: 0, delay_seconds: 0)
+    # raw: Kafka-only (tina4-ruby#264) — produce the value with NO Tina4 envelope
+    #   and no injected id, for a non-Tina4 consumer. The file/rabbitmq/mongodb
+    #   backends refuse raw: true by name (the envelope is internal bookkeeping
+    #   pop/retries/dead-lettering depend on). Default false = unchanged.
+    def push(payload, priority: 0, delay_seconds: 0, raw: false)
       available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
       message = Job.new(topic: @topic, payload: payload, priority: priority, available_at: available_at, queue: self)
-      @backend.enqueue(message)
+      @backend.enqueue(message, raw: raw)
       message
     end
 
@@ -247,10 +251,11 @@ module Tina4
     end
 
     # Produce a message onto a topic. Convenience wrapper around push().
-    def produce(topic, payload, priority: 0, delay_seconds: 0)
+    # raw: Kafka-only, un-enveloped produce — see push() (tina4-ruby#264).
+    def produce(topic, payload, priority: 0, delay_seconds: 0, raw: false)
       available_at = delay_seconds > 0 ? Time.now + delay_seconds : nil
       message = Job.new(topic: topic, payload: payload, priority: priority, available_at: available_at, queue: self)
-      @backend.enqueue(message)
+      @backend.enqueue(message, raw: raw)
       message
     end
 

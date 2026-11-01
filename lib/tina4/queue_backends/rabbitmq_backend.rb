@@ -37,7 +37,17 @@ module Tina4
       # Queue propagates its own configuration onto the backend after construction.
       attr_accessor :max_retries
 
-      def enqueue(message)
+      def enqueue(message, raw: false)
+        if raw
+          raise NotImplementedError,
+                "The rabbitmq queue backend cannot honour push(raw: true): raw emits " \
+                "the message with no Tina4 envelope, which only a message bus " \
+                "consumed by non-Tina4 systems (Kafka) needs. This backend stores " \
+                "an internal envelope (payload/priority/attempts) that pop, the " \
+                "retry lifecycle and dead-lettering depend on, so there is nothing " \
+                "to omit. Use the kafka backend for raw external messages."
+        end
+
         if message.priority.to_i > 0
           raise NotImplementedError,
                 "The rabbitmq queue backend cannot honour push(priority): RabbitMQ " \
