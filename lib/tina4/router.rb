@@ -32,6 +32,10 @@ module Tina4
       # PY-10-02. Call .no_auth on the route to opt out explicitly.
       @auth_required = %w[POST PUT PATCH DELETE].include?(@method)
       @cached = false
+      # CSRF is enforced on a write route even when it is public (#265): a form
+      # token proves ORIGIN, not identity. Call .no_csrf to opt a server-to-
+      # server endpoint (webhook, callback) out of the CSRF form-token check.
+      @no_csrf = false
       @roles = []
       @perms = []
       @param_names = []
@@ -51,6 +55,23 @@ module Tina4
     def no_auth
       @auth_required = false
       self
+    end
+
+    # Opt a route OUT of CSRF form-token validation (webhooks / server-to-server
+    # callbacks that carry no browser session). .no_auth no longer skips CSRF
+    # (#265): a public form stays CSRF-protected. CSRF (origin) and auth
+    # (identity) are orthogonal — pair .no_csrf with .no_auth for a public webhook.
+    # Returns self for chaining: Router.post("/webhook") { ... }.no_auth.no_csrf
+    def no_csrf
+      @no_csrf = true
+      self
+    end
+
+    # True when this route opts out of CSRF (set by .no_csrf). Predicate reader,
+    # kept distinct from the chainable .no_csrf setter (same pattern as
+    # auth_required vs .secure/.no_auth) so neither shadows the other.
+    def no_csrf?
+      @no_csrf == true
     end
 
     # RBAC: require ONE of the named roles (OR). Reads the verified JWT `roles`

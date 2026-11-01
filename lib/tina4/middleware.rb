@@ -606,18 +606,20 @@ module Tina4
 
   # CsrfMiddleware -- validates form tokens on state-changing requests.
   #
-  # OFF by default: the middleware is NOT attached unless TINA4_CSRF is truthy
-  # (true/1/yes/on -- see .attach_from_env, called once at boot in
+  # NOT attached by default: the middleware is NOT attached unless TINA4_CSRF is
+  # truthy (true/1/yes/on -- see .attach_from_env, called once at boot in
   # Tina4.initialize!) OR it is registered explicitly via
-  # Router.use(CsrfMiddleware). Once attached, TINA4_CSRF=false (or 0/no) is the
-  # kill switch that disables enforcement again.
+  # Router.use(CsrfMiddleware). Once attached it enforces unless the kill switch
+  # TINA4_CSRF=false (or 0/no) is set -- so with it attached but TINA4_CSRF
+  # unset, enforcement is ON (the attach is the opt-in).
   #
   # Behaviour (identical to the Python master's CsrfMiddleware.before_csrf):
   #   - Skips GET, HEAD, OPTIONS (safe methods).
-  #   - Skips a public write route (.no_auth / auth: false -- auth_required
-  #     false). The matched Route is attached to the request before this
-  #     post-match middleware runs, so a genuinely public endpoint (login,
-  #     webhook) is not gated.
+  #   - Skips a route that opts out with .no_csrf (server-to-server webhooks).
+  #     .no_auth does NOT skip CSRF (#265 / CSRF-DEC-03): a public form can be
+  #     open to anonymous visitors AND still protected against cross-site posts.
+  #     The matched Route is attached to the request before this post-match
+  #     middleware runs.
   #   - Fails CLOSED: with TINA4_SECRET unset the signing secret resolves to
   #     blank (there is NO built-in default), and a blank HMAC key is publicly
   #     reproducible -- so no token can be trusted and every write is rejected
@@ -645,15 +647,18 @@ module Tina4
         method = (request.method || "GET").upcase
         return [request, response] if %w[GET HEAD OPTIONS].include?(method)
 
-        # 3. Public write routes (.no_auth / auth: false) skip CSRF -- a
-        #    genuinely public endpoint has no session to protect. The matched
-        #    Route is attached to the request before this post-match middleware
-        #    runs (DispatchPipeline#prepare_route_request); a public write route
-        #    has auth_required == false -- the SAME signal the auth gate reads.
-        #    (Reading request.handler, as this once did, was dead code: the live
-        #    request never carries a handler, so the no_auth skip never fired.)
+        # 3. A route that opts OUT of CSRF with .no_csrf skips the check -- the
+        #    escape hatch for server-to-server endpoints (webhooks, callbacks)
+        #    that carry no browser session and so have no cross-site-forgery
+        #    surface. .no_auth no longer skips CSRF (#265 / CSRF-DEC-03): a PUBLIC
+        #    form must be open to anonymous visitors AND protected against
+        #    cross-site posts, so a form token is still validated on an anonymous
+        #    write route. no_auth controls IDENTITY (who), CSRF controls ORIGIN
+        #    (did our own form send it) -- orthogonal; a webhook opts out of CSRF
+        #    explicitly. The matched Route is attached to the request before this
+        #    post-match middleware runs (DispatchPipeline#prepare_route_request).
         route = request.respond_to?(:route) ? request.route : nil
-        if route.respond_to?(:auth_required) && route.auth_required == false
+        if route.respond_to?(:no_csrf?) && route.no_csrf?
           return [request, response]
         end
 
