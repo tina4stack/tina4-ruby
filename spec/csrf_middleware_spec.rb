@@ -98,8 +98,14 @@ RSpec.describe Tina4::CsrfMiddleware do
   end
 
   # A REAL public write route (marked .no_auth -> auth_required == false).
+  # #265: .no_auth no longer skips CSRF, so this route is still CSRF-gated.
   def public_route
     Tina4::Route.new("POST", "/__csrf_public", ->(_req, _res) {}).no_auth
+  end
+
+  # A REAL write route that opts OUT of CSRF with .no_csrf (webhook).
+  def no_csrf_route
+    Tina4::Route.new("POST", "/__csrf_webhook", ->(_req, _res) {}).no_csrf
   end
 
   # A REAL secured write route (auth_required stays true by default).
@@ -224,10 +230,29 @@ RSpec.describe Tina4::CsrfMiddleware do
     expect(response.status_code).to eq(403)
   end
 
-  # ── 9. Skips no_auth routes ────────────────────────────────────
+  # ── 9. no_auth stays CSRF-gated; no_csrf is the opt-out (#265) ─────
 
-  it "skips routes marked no_auth" do
+  it "still gates a no_auth write route without a token (403)" do
+    # The #265 regression: a no_auth POST with no token used to pass (CSRF
+    # skipped); it must now be blocked 403 like any other write.
     request = build_request(method: "POST", route: public_route)
+    response = new_response
+
+    Tina4::CsrfMiddleware.before_csrf(request, response)
+    expect(response.status_code).to eq(403)
+  end
+
+  it "passes a no_auth write route carrying a valid form token" do
+    request = build_request(method: "POST", route: public_route, body: { "formToken" => form_token })
+    response = new_response
+
+    result = Tina4::CsrfMiddleware.before_csrf(request, response)
+    expect(result).to eq([request, response])
+    expect(response.status_code).not_to eq(403)
+  end
+
+  it "skips routes marked no_csrf" do
+    request = build_request(method: "POST", route: no_csrf_route)
     response = new_response
 
     result = Tina4::CsrfMiddleware.before_csrf(request, response)
@@ -610,9 +635,27 @@ RSpec.describe Tina4::CsrfMiddleware do
     expect(response.status_code).to eq(403)
   end
 
-  # csrf-noauth-exempt
-  it "a noauth write route skips csrf" do
+  # csrf-noauth-still-gated (CSRF-DEC-03, supersedes csrf-noauth-exempt)
+  it "a noauth write route without a token is rejected" do
     request = build_request(method: "POST", route: public_route)
+    response = new_response
+
+    Tina4::CsrfMiddleware.before_csrf(request, response)
+    expect(response.status_code).to eq(403)
+  end
+
+  it "a noauth write route with a valid form token passes" do
+    request = build_request(method: "POST", route: public_route, body: { "formToken" => form_token })
+    response = new_response
+
+    result = Tina4::CsrfMiddleware.before_csrf(request, response)
+    expect(result).to eq([request, response])
+    expect(response.status_code).not_to eq(403)
+  end
+
+  # csrf-no-csrf-exempt (CSRF-DEC-03)
+  it "a no csrf write route skips csrf" do
+    request = build_request(method: "POST", route: no_csrf_route)
     response = new_response
 
     result = Tina4::CsrfMiddleware.before_csrf(request, response)
@@ -683,25 +726,27 @@ RSpec.describe Tina4::CsrfMiddleware do
 
   # ────────────────────────────────────────────────────────────────
   # Real dispatch pipeline: proves prepare_route_request attaches the matched
-  # Route to the request so the no_auth skip is NOT dead code. Drives the REAL
+  # Route to the request so the no_csrf skip is NOT dead code. Drives the REAL
   # Tina4::RackApp through the in-process TestClient -- the same front controller
   # a live HTTP request goes through. No mocks.
   # ────────────────────────────────────────────────────────────────
 
-  describe "real dispatch pipeline (no_auth route wiring)" do
-    it "a no_auth write route passes the real CSRF middleware while a guarded one is blocked" do
+  describe "real dispatch pipeline (no_csrf route wiring)" do
+    it "a no_csrf write route passes the real CSRF middleware while a guarded one is blocked" do
       ENV["TINA4_CSRF"] = "true"
-      Tina4::Router.post("/__csrf_e2e_public")  { |_req, res| res.json({ ok: true }) }.no_auth
+      # .no_auth opts out of the write-auth gate; .no_csrf opts out of CSRF so the
+      # webhook POST reaches the handler. #265: .no_auth alone would NOT skip CSRF.
+      Tina4::Router.post("/__csrf_e2e_webhook") { |_req, res| res.json({ ok: true }) }.no_auth.no_csrf
       Tina4::Router.post("/__csrf_e2e_guarded") { |_req, res| res.json({ ok: true }) }
       Tina4::Middleware.use(Tina4::CsrfMiddleware)
 
       client = Tina4::TestClient.new
-      public_res  = client.post("/__csrf_e2e_public", json: {})
+      webhook_res = client.post("/__csrf_e2e_webhook", json: {})
       guarded_res = client.post("/__csrf_e2e_guarded", json: {})
 
-      # The no_auth skip fires only because the pipeline attached request.route.
-      expect(public_res.status).to eq(200)
-      expect(public_res.json["ok"]).to eq(true)
+      # The no_csrf skip fires only because the pipeline attached request.route.
+      expect(webhook_res.status).to eq(200)
+      expect(webhook_res.json["ok"]).to eq(true)
 
       # CSRF is active on a guarded write with no token.
       expect(guarded_res.status).to eq(403)

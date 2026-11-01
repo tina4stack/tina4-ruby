@@ -172,8 +172,8 @@ RSpec.describe "Auth-token rules (ADR-0079)" do
   end
 
   it "a form token still passes csrf" do
-    # CSRF skips no_auth routes, so the realistic case is a logged-in user
-    # (auth token in the session) posting a rendered form.
+    # A logged-in user (auth token in the session) posting a rendered form: the
+    # form token satisfies CSRF and the session token provides identity.
     Tina4::Router.post("/contract/csrf") do |req, res|
       res.json({ user: req.user }, 200)
     end.middleware(Tina4::CsrfMiddleware)

@@ -185,6 +185,17 @@ All state-changing browser forms must include a CSRF token. In a Frond template:
 `{{ form_token() }}` renders a hidden `<input name="formToken" value="…">`. `frond.js`'s
 `saveForm` attaches the token automatically for AJAX submissions.
 
+A form token proves ORIGIN (this write came from a form you rendered), not identity. CSRF and
+`.no_auth` are orthogonal:
+
+- **Public form** (contact, sign-up): a `.no_auth` route + `{{ form_token() }}` in the form. It posts
+  with no login AND stays CSRF-protected. `.no_auth` no longer skips CSRF.
+- **Protected form**: a real identity token authenticates the write (frond.js sends it as the
+  `Authorization: Bearer` header). A form token is not an identity, so a protected route 401s without
+  one - send the login token, do not drop `.no_auth`.
+- **Webhook / server-to-server** (no browser, no form): chain `.no_csrf` (with `.no_auth`) to opt out
+  of the form-token check.
+
 **CSRF validation is OFF by default** — it is opt-in. `Tina4::CsrfMiddleware`
 (`lib/tina4/middleware.rb:601`) is NOT attached to the pipeline unless
 `TINA4_CSRF` is truthy (`middleware.rb:603`). To enable it:
