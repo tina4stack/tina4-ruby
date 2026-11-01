@@ -68,7 +68,17 @@ module Tina4
       # configuration onto a backend instance passed directly (legacy path).
       attr_accessor :visibility_timeout
 
-      def enqueue(message)
+      def enqueue(message, raw: false)
+        if raw
+          raise NotImplementedError,
+                "The file queue backend cannot honour push(raw: true): raw emits " \
+                "the message with no Tina4 envelope, which only a message bus " \
+                "consumed by non-Tina4 systems (Kafka) needs. This backend stores " \
+                "an internal envelope (id/status/attempts/available_at) that pop, " \
+                "the retry lifecycle and dead-lettering depend on, so there is " \
+                "nothing to omit. Use the kafka backend for raw external messages."
+        end
+
         @mutex.synchronize do
           topic_dir = topic_path(message.topic)
           FileUtils.mkdir_p(topic_dir)
