@@ -259,6 +259,54 @@ RSpec.describe Tina4::QueryBuilder do
   end
 
   # ---------------------------------------------------------------------------
+  # 10b. #skip / #offset / #take — chainable pagination verbs
+  #      (an AI harness reached for .skip and it did not exist; tina4#skip)
+  # ---------------------------------------------------------------------------
+  describe "#skip / #offset / #take" do
+    def names(result)
+      result.records.map { |r| r["name"] || r[:name] }
+    end
+
+    it "skip skips the leading rows" do
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
+                 .order_by("id ASC").skip(2).limit(2).get
+      # Skips Alice + Bob, returns Charlie + Diana
+      expect(names(result)).to eq(%w[Charlie Diana])
+    end
+
+    it "offset is the SQL-native alias" do
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
+                 .order_by("id ASC").offset(2).limit(2).get
+      expect(names(result)).to eq(%w[Charlie Diana])
+    end
+
+    it "take sets the limit" do
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
+                 .order_by("id ASC").take(3).get
+      expect(names(result)).to eq(%w[Alice Bob Charlie])
+    end
+
+    it "skipping past the end returns empty, not an error" do
+      result = Tina4::QueryBuilder.from_table("users", db: @db_shared)
+                 .order_by("id ASC").skip(99).limit(5).get
+      expect(result.records).to be_empty
+    end
+
+    it "skip flows into to_mongo" do
+      # The Mongo path already names this concept :skip — the SQL verb agrees.
+      mongo = Tina4::QueryBuilder.from_table("users", db: @db_shared).skip(5).to_mongo
+      expect(mongo[:skip]).to eq(5)
+    end
+
+    it "skip / offset / take return the builder for chaining" do
+      qb = Tina4::QueryBuilder.from_table("users", db: @db_shared)
+      expect(qb.skip(1)).to be(qb)
+      expect(qb.offset(1)).to be(qb)
+      expect(qb.take(1)).to be(qb)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # 11. .to_sql() generates correct SQL
   # ---------------------------------------------------------------------------
   describe "#to_sql" do
