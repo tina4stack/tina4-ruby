@@ -130,6 +130,11 @@ module Tina4
       # rescue stays out of #start's cyclomatic complexity.
       bind_auxiliary_ai_port
 
+      # Raw TCP services (feature 142, ADR-0102 D1) run their acceptor threads in
+      # THIS process, beside the HTTP server — one process serves both the device
+      # gateway and its dashboard. Shutdown drains them (see Tina4::Shutdown).
+      Tina4::Tcp.start_all(@host)
+
       @server.start
 
       # Shutdown closes the listener FIRST, so #start returns as soon as the
