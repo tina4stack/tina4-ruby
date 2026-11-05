@@ -28,6 +28,13 @@ module Tina4
   class SafeString < String
   end
 
+  # Raised when a Frond template is malformed and cannot be rendered safely
+  # (ADR-0104) -- an unclosed {% block %} or a cut-short {% endblock % whose
+  # closing %} is missing. Failing loud surfaces the real cause to a developer
+  # (or an AI agent) instead of a page served 200 with its body quietly dropped.
+  class FrondSyntaxError < StandardError
+  end
+
   class Frond
     # -- Class-level registries ------------------------------------------------
     # Persist globals, filters, and tests across hot-reloads and across module
@@ -569,6 +576,62 @@ module Tina4
       @allowed_tags.include?(tag)
     end
 
+    PHP_MONTHS = %w[January February March April May June July August September October November December].freeze
+    # cwday indexing: Monday == 1 .. Sunday == 7, so PHP_DAYS[cwday - 1].
+    PHP_DAYS = %w[Monday Tuesday Wednesday Thursday Friday Saturday Sunday].freeze
+
+    # Format a date/time with Twig/PHP date() letters (English names) — ADR-0103.
+    #
+    # Letters are mapped character by character; a backslash escapes the next
+    # character, and any unmapped character is emitted literally (PHP's rule).
+    # English month/day names are hardcoded so the output matches every other
+    # Tina4 framework regardless of the host locale.
+    def self.php_date(dt, fmt)
+      hour   = dt.respond_to?(:hour) ? dt.hour : 0
+      minute = dt.respond_to?(:min)  ? dt.min  : 0
+      second = dt.respond_to?(:sec)  ? dt.sec  : 0
+      h12 = hour % 12
+      h12 = 12 if h12.zero?
+      cwday = dt.cwday   # 1 == Monday .. 7 == Sunday
+      wday  = dt.wday    # 0 == Sunday .. 6 == Saturday
+      out = +""
+      i = 0
+      n = fmt.length
+      while i < n
+        c = fmt[i]
+        if c == "\\" && i + 1 < n
+          out << fmt[i + 1]
+          i += 2
+          next
+        end
+        out << case c
+               when "Y" then format("%04d", dt.year)
+               when "y" then format("%02d", dt.year % 100)
+               when "m" then format("%02d", dt.month)
+               when "n" then dt.month.to_s
+               when "d" then format("%02d", dt.day)
+               when "j" then dt.day.to_s
+               when "H" then format("%02d", hour)
+               when "G" then hour.to_s
+               when "h" then format("%02d", h12)
+               when "g" then h12.to_s
+               when "i" then format("%02d", minute)
+               when "s" then format("%02d", second)
+               when "A" then hour < 12 ? "AM" : "PM"
+               when "a" then hour < 12 ? "am" : "pm"
+               when "D" then PHP_DAYS[cwday - 1][0, 3]
+               when "l" then PHP_DAYS[cwday - 1]
+               when "M" then PHP_MONTHS[dt.month - 1][0, 3]
+               when "F" then PHP_MONTHS[dt.month - 1]
+               when "N" then cwday.to_s
+               when "w" then wday.to_s
+               else c
+               end
+        i += 1
+      end
+      out
+    end
+
     # Utility: HTML escape
     def self.escape_html(str)
       str.to_s.gsub(HTML_ESCAPE_RE, HTML_ESCAPE_MAP)
@@ -989,7 +1052,14 @@ module Tina4
           end
         end
 
-        pos = content_start unless matched # malformed -- skip forward
+        unless matched
+          # Unclosed {% block %} (or a cut-short {% endblock % whose %} is
+          # missing, so the close regex never matches) -- fail loud
+          # (tina4#286/#290) rather than silently dropping the body. Still
+          # bounded: we raise, we never loop (tina4#271).
+          raise FrondSyntaxError,
+                "{% block #{name} %} is never closed (missing or malformed {% endblock %})"
+        end
       end
 
       blocks
@@ -1061,12 +1131,10 @@ module Tina4
         end
 
         if close_match.nil?
-          # Malformed template (no matching endblock) -- keep the rest
-          # verbatim rather than lose it, the same leniency extract_blocks
-          # applies to this case.
-          pieces << source[m_open.begin(0)..]
-          pos = len
-          break
+          # Unclosed {% block %} -- fail loud (tina4#286/#290), matching
+          # extract_blocks, rather than silently keeping the rest verbatim.
+          raise FrondSyntaxError,
+                "{% block #{name} %} is never closed (missing or malformed {% endblock %})"
         end
 
         parent_content = source[content_start...close_match.begin(0)]
@@ -3195,12 +3263,14 @@ module Tina4
           begin
             if v.is_a?(String)
               dt = DateTime.parse(v)
-              dt.strftime(fmt)
             elsif v.respond_to?(:strftime)
-              v.strftime(fmt)
+              dt = v
             else
-              v.to_s
+              return v.to_s
             end
+            # A strftime-style format (any with %) stays strftime — back-compatible;
+            # any other format is Twig/PHP date() letters (ADR-0103).
+            fmt.include?("%") ? dt.strftime(fmt) : Frond.php_date(dt, fmt)
           rescue
             v.to_s
           end

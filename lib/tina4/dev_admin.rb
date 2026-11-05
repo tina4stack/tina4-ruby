@@ -1727,24 +1727,34 @@ module Tina4
         root = real_path_of(File.expand_path(Dir.pwd))
         resolved = real_path_of(File.expand_path(rel_path.to_s, root))
         roots = [root] + extra_roots.compact.map { |r| real_path_of(File.expand_path(r.to_s)) }
-        unless roots.any? { |r| resolved == r || resolved.start_with?(r.chomp("/") + "/") }
+        unless resolved && roots.any? { |r| r && (resolved == r || resolved.start_with?(r.chomp("/") + "/")) }
           raise ArgumentError, "path escapes project directory"
         end
         resolved
       end
 
       # Real path of +path+: the deepest existing ancestor is realpath'd and the
-      # not-yet-existing tail (a new file being saved) is appended.
-      def real_path_of(path)
+      # not-yet-existing tail (a new file being saved) is appended. A dangling
+      # symlink is followed to the place a write through it would land, the way
+      # McpDevTools.real_path_of does. nil when it cannot be resolved (a link
+      # loop, or an unreadable link), so the caller refuses it.
+      def real_path_of(path, hops = 0)
         existing = path
         tail = []
         until File.exist?(existing) || File.symlink?(existing) || existing == File.dirname(existing)
           tail.unshift(File.basename(existing))
           existing = File.dirname(existing)
         end
-        File.join(File.realpath(existing), *tail)
+        return File.join(File.realpath(existing), *tail) if File.exist?(existing)
+        return nil if hops >= 40
+
+        # A dangling symlink. Its target is joined as text, not normalised, so a
+        # ".." after a linked component is resolved the way the OS will follow it.
+        target = File.readlink(existing)
+        base = target.start_with?("/") ? target : File.join(File.dirname(existing), target)
+        real_path_of(File.join(base, *tail), hops + 1)
       rescue SystemCallError
-        path
+        nil
       end
 
       # Project-relative form of a resolved path, for the secret denylist.

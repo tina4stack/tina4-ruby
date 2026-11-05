@@ -180,9 +180,13 @@ module Tina4
     def self.scrub(text)
       head, separator, rest = text.to_s.partition("://")
 
-      # No "://" - a bare file path, or an ODBC/keyword string. There is no
-      # userinfo to find, so only the keyword form can hide a secret here.
-      return scrub_keywords(text.to_s) if separator.empty?
+      # No "://" - a bare file path, an ODBC/keyword string, or a URL that lost
+      # its ":" or a "/" (`postgres//u:pass@host/app`). An "@" means userinfo may
+      # be in front of it, so take the credential out the same way as below.
+      if separator.empty?
+        text = text.to_s
+        return scrub_keywords(text.include?("@") ? redact_authority(text) : text)
+      end
 
       # A head that is not a scheme is unknown text, and unknown text may BE the
       # secret (the measured Python case was `notaurl-with-SuperSecret123`).

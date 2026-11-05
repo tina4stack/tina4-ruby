@@ -106,8 +106,19 @@ module Tina4
       # otherwise leak on every single shutdown.
       def release_resources
         close_websockets
+        stop_tcp_services
         stop_background_tasks
         close_database
+      end
+
+      # Drain live raw TCP service connections (feature 142) within the deadline,
+      # firing their on_close handlers, alongside the HTTP/WebSocket drain.
+      def stop_tcp_services
+        return unless defined?(Tina4::Tcp)
+
+        Tina4::Tcp.drain_all(timeout: @timeout.to_f)
+      rescue StandardError => e
+        Tina4::Log.error("Error draining TCP services: #{e.message}")
       end
 
       # Block until initiate_shutdown has finished every teardown step.
@@ -158,6 +169,8 @@ module Tina4
         return unless @server.respond_to?(:shutdown)
 
         @server.shutdown
+        # Raw TCP listeners stop accepting at the same moment as HTTP.
+        Tina4::Tcp.stop_accepting_all if defined?(Tina4::Tcp)
         Tina4::Log.info("Stopped accepting new connections")
       rescue StandardError => e
         Tina4::Log.error("Error closing the listening socket: #{e.message}")

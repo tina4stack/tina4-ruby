@@ -530,7 +530,7 @@ module Tina4
       Tina4::Log.info("Database connected: #{@driver_name}")
       @connect_error = nil
     rescue => e
-      Tina4::Log.error("Database connection failed: #{e.message}")
+      Tina4::Log.error("Database connection failed: #{scrub_connection_string(e.message)}")
       @connected = false
       # REMEMBER the cause. Logging alone is not enough: the driver's own
       # connection stays nil, so the next call used to die inside the driver as
@@ -582,8 +582,20 @@ module Tina4
     def connect_error_message
       target = safe_connection_target
       "Database not connected (#{@driver_name}#{target.empty? ? '' : " -> #{target}"}): " \
-        "#{@connect_error.class}: #{@connect_error.message}"
+        "#{@connect_error.class}: #{scrub_connection_string(@connect_error.message)}"
     end
+
+    # The driver's message with the raw connection string taken out. libpq quotes
+    # a scheme-less value whole as the host it could not resolve -
+    #   could not translate host name "postgres//u:pass@h/app" to address
+    # - password included.
+    def scrub_connection_string(text)
+      raw = @connection_string.to_s
+      return text.to_s if raw.empty?
+
+      text.to_s.gsub(raw) { Tina4::DatabaseUrl.redact(raw) }
+    end
+    private :scrub_connection_string
 
     # The connection string with any password stripped, so a raised error can name
     # the target without leaking a credential into a log or an HTTP 500 body.

@@ -186,6 +186,38 @@ module Tina4
       self
     end
 
+    # Set OFFSET (rows to skip) as its own chainable verb.
+    #
+    # `limit(n, offset)` buries the offset as a second positional arg; this
+    # exposes it on its own, so `.offset(20).limit(10)` reads naturally and
+    # matches the SQL keyword.
+    #
+    # @param count [Integer] Number of rows to skip.
+    # @return [self]
+    def offset(count)
+      @offset_val = count
+      self
+    end
+
+    # Alias for {#offset} — the Mongo/Eloquent name for the same thing.
+    #
+    # Mirrors the DocStore cursor's `skip` and the `:skip` key that {#to_mongo}
+    # already emits, so a query reads the same whether it targets SQL or MongoDB.
+    #
+    # @param count [Integer] Number of rows to skip.
+    # @return [self]
+    def skip(count)
+      offset(count)
+    end
+
+    # Alias for {#limit} — the Eloquent name; pairs with {#skip}.
+    #
+    # @param count [Integer] Maximum rows to return.
+    # @return [self]
+    def take(count)
+      limit(count)
+    end
+
     # Build and return the SQL string without executing.
     #
     # @return [String] The constructed SQL query.

@@ -42,6 +42,11 @@ module Tina4
         }.merge(security)
         @consumer = Rdkafka::Config.new(consumer_config).consumer
         @subscribed_topics = []
+        # Records polled but not yet acknowledged, keyed by the id the Queue
+        # hands back to acknowledge(), valued by the rdkafka message (its
+        # topic/partition/offset). acknowledge() commits exactly THAT record's
+        # offset, never a single "last message" slot (ADR-0022 decision 3).
+        @in_flight = {}
       rescue LoadError
         raise "Kafka backend requires the 'rdkafka' gem. Install with: gem install rdkafka"
       end
@@ -157,12 +162,28 @@ module Tina4
         return nil unless msg
 
         data = Tina4.parse_json(msg.payload)
-        @last_message = msg
+        coordinate = "#{topic}:#{msg.partition}:#{msg.offset}"
 
-        # attempts and error MUST be carried back (Job.from_payload does this);
-        # rebuilding from topic/payload/id alone reset attempts to 0 on every
-        # redelivery, so a poison record would be re-produced forever.
-        Tina4::Job.from_payload(data)
+        # A record carrying a "payload" key is a Tina4 envelope: keep its own id
+        # (falling back to the coordinate) and carry attempts/error back so a
+        # redelivery does not reset the count and re-produce a poison record
+        # forever. A record WITHOUT one is externally produced (Debezium/CDC and
+        # friends, no envelope, no id -- tina4#274): its whole value IS the
+        # payload, and the coordinate becomes its id. Either way the job gets the
+        # id acknowledge() maps back to this record's offset.
+        job =
+          if data.is_a?(Hash) && data.key?("payload")
+            id = data["id"].to_s.empty? ? coordinate : data["id"]
+            Tina4::Job.new(
+              topic: topic, payload: data["payload"], id: id,
+              attempts: data["attempts"] || 0, error: data["error"]
+            )
+          else
+            Tina4::Job.new(topic: topic, payload: data, id: coordinate, attempts: 0)
+          end
+
+        @in_flight[job.id.to_s] = msg
+        job
       rescue Rdkafka::RdkafkaError
         nil
       end
@@ -177,8 +198,19 @@ module Tina4
         0
       end
 
-      def acknowledge(_message)
-        @consumer.commit if @last_message
+      # Commit the offset JUST PAST the acknowledged record so the group never
+      # re-reads it, even across a restart (ADR-0022 decisions 2 + 4). The offset
+      # is committed for the specific record dequeue() tracked against this job's
+      # id -- NOT a bare @consumer.commit of the whole polled position, which
+      # would commit past records still in flight when jobs are completed out of
+      # order (decision 3). A job never dequeued (or already acked) is a no-op.
+      def acknowledge(message)
+        msg = @in_flight.delete(message.id.to_s)
+        return unless msg
+
+        tpl = Rdkafka::Consumer::TopicPartitionList.new
+        tpl.add_topic_and_partitions_with_offsets(msg.topic, msg.partition => msg.offset + 1)
+        @consumer.commit(tpl, false)
       end
 
       def requeue(message)
