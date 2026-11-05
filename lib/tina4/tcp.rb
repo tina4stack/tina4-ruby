@@ -185,9 +185,19 @@ module Tina4
     private
 
     def close_socket
-      @socket&.close
+      # Shut the socket down before closing so the peer sees EOF immediately.
+      # A plain close is enough on macOS, but on Linux the FIN can be deferred
+      # while the reader thread still holds the fd in IO.select, so the client
+      # never observes end-of-stream. shutdown(SHUT_RDWR) forces it.
+      @socket&.shutdown(Socket::SHUT_RDWR)
     rescue IOError, SystemCallError
       nil
+    ensure
+      begin
+        @socket&.close
+      rescue IOError, SystemCallError
+        nil
+      end
     end
 
     def monotonic
