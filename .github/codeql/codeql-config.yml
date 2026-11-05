@@ -1,0 +1,11 @@
+name: "tina4-ruby CodeQL config"
+
+# Scan the shipped gem (lib/, exe/). Everything excluded below is non-shipped, so
+# scanning it is only noise:
+#   - spec/        the RSpec suite, not part of the published gem
+#   - benchmarks/  competitor-comparison scripts
+#   - example/     sample app
+paths-ignore:
+  - spec
+  - benchmarks
+  - example
