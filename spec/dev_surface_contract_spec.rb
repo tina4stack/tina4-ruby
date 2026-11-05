@@ -173,6 +173,22 @@ RSpec.describe "Tina4 dev-surface gate contract (release security boundaries)" d
     expect(status).to eq(426)
   end
 
+  it "a remote peer cannot open the reload socket by claiming localhost" do
+    Tina4::RackApp.register_dev_reload_ws
+    upgrade = { "Upgrade" => "websocket", "Connection" => "Upgrade", "Host" => "localhost:7147",
+                "Sec-WebSocket-Key" => "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version" => "13" }
+    status, = dispatch("GET", "/__dev_reload", headers: upgrade, remote_addr: "203.0.113.9")
+    expect(status).to eq(403)
+    # The documented opt-in still lets a listed peer reach the upgrade (426: no rack.hijack here).
+    begin
+      ENV["TINA4_DEV_ALLOWED_PEERS"] = "203.0.113.0/24"
+      status, = dispatch("GET", "/__dev_reload", headers: upgrade, remote_addr: "203.0.113.9")
+      expect(status).to eq(426)
+    ensure
+      ENV.delete("TINA4_DEV_ALLOWED_PEERS")
+    end
+  end
+
   # ── Only TINA4_MCP_TOKEN unlocks the remote dev surface ───────────────────
 
   it "the api key does not unlock dev writes" do

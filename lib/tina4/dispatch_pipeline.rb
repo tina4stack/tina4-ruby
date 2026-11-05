@@ -199,6 +199,11 @@ module Tina4
       if ctx.path.start_with?("/__dev") && !Tina4::DevAdmin.dev_host_allowed?(ctx.env)
         return [403, { "content-type" => "text/plain" }, ["Forbidden: host not allowed"]]
       end
+      # ...and only from a raw socket peer the /__dev HTTP gate would let in, so
+      # a remote caller that claims "Host: localhost" cannot open it.
+      if ctx.path.start_with?("/__dev") && !Tina4::DevAdmin.dev_peer_allowed?((ctx.env["REMOTE_ADDR"] || "").to_s)
+        return [403, { "content-type" => "text/plain" }, ["Forbidden: peer not allowed"]]
+      end
 
       ws_result = Tina4::Router.find_ws_route(ctx.path)
       return nil unless ws_result
