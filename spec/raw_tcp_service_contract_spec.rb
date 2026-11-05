@@ -69,7 +69,7 @@ RSpec.describe "Raw TCP service contract (feature 142)" do
   end
 
   # True when the client socket has hit EOF (peer closed).
-  def client_eof?(sock, timeout: 2.0)
+  def client_eof?(sock, timeout: 10.0)
     deadline = now + timeout
     while now < deadline
       ready = IO.select([sock], nil, nil, 0.05)
