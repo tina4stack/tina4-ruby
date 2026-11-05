@@ -104,6 +104,32 @@ RSpec.describe "Tina4 dev-surface gate contract (release security boundaries)" d
     expect(File.exist?(File.join(File.dirname(@app_dir), "app-sibling", "written.txt"))).to be(false)
   end
 
+  it "a save through a dangling symlink cannot write outside the project" do
+    outside = File.join(File.dirname(@app_dir), "app-sibling")
+    File.symlink(File.join(outside, "dangle.txt"), File.join(@app_dir, "dangle"))
+    File.symlink("dangle-hop", File.join(@app_dir, "chain"))
+    File.symlink(File.join(outside, "chain.txt"), File.join(@app_dir, "dangle-hop"))
+    File.symlink(File.join(outside, "nodir"), File.join(@app_dir, "dangledir"))
+    File.symlink("loop-b", File.join(@app_dir, "loop-a"))
+    File.symlink("loop-a", File.join(@app_dir, "loop-b"))
+    %w[dangle chain dangledir/x.txt loop-a].each do |path|
+      status, = dispatch("POST", "/__dev/api/file/save", headers: { "Sec-Fetch-Site" => "same-origin" },
+                                                          json: { path: path, content: "x" })
+      expect(status).to eq(403), "#{path} -> #{status}"
+    end
+    %w[dangle.txt chain.txt nodir].each do |name|
+      expect(File.exist?(File.join(outside, name))).to be(false), "#{name} was written outside"
+    end
+  end
+
+  it "a dangling symlink to a new file inside the project still saves" do
+    File.symlink(File.join(@app_dir, "src", "new.txt"), File.join(@app_dir, "inside-link"))
+    status, = dispatch("POST", "/__dev/api/file/save", headers: { "Sec-Fetch-Site" => "same-origin" },
+                                                        json: { path: "inside-link", content: "in" })
+    expect(status).to eq(200)
+    expect(File.read(File.join(@app_dir, "src", "new.txt"))).to eq("in")
+  end
+
   it "metrics file refuses a path outside the project" do
     outside = File.join(File.dirname(@app_dir), "app-sibling", "secret.txt")
     expect(dispatch("GET", "/__dev/api/metrics/file?path=#{outside}")[0]).to eq(403)
