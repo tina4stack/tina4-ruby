@@ -235,6 +235,40 @@ RSpec.describe Tina4::Frond do
       data = { "date" => "2024-01-15" }
       expect(engine.render_string("{{ date | date }}", data)).to eq("2024-01-15")
     end
+
+    # ── Twig/PHP letters (ADR-0103, #292). 2026-03-29 14:05:09 is a Sunday. ──
+
+    it "accepts Twig/PHP date() letters instead of printing them literally" do
+      data = { "date" => "2026-03-29" }
+      expect(engine.render_string('{{ date | date("Y-m-d") }}', data)).to eq("2026-03-29")
+    end
+
+    it "gives the same result for PHP letters and the strftime spelling" do
+      data = { "date" => "2026-03-29" }
+      php  = engine.render_string('{{ date | date("Y-m-d") }}', data)
+      strf = engine.render_string('{{ date | date("%Y-%m-%d") }}', data)
+      expect(php).to eq(strf)
+      expect(php).to eq("2026-03-29")
+    end
+
+    it "formats time and English names via PHP letters" do
+      data = { "v" => DateTime.new(2026, 3, 29, 14, 5, 9) }
+      expect(engine.render_string('{{ v | date("d/m/Y") }}', data)).to eq("29/03/2026")
+      expect(engine.render_string('{{ v | date("H:i:s") }}', data)).to eq("14:05:09")
+      expect(engine.render_string('{{ v | date("l, F j, Y") }}', data)).to eq("Sunday, March 29, 2026")
+      expect(engine.render_string('{{ v | date("D M N w") }}', data)).to eq("Sun Mar 7 0")
+      expect(engine.render_string('{{ v | date("g:i A") }}', data)).to eq("2:05 PM")
+    end
+
+    it "keeps the strftime spelling working (back-compatible)" do
+      data = { "date" => "2026-03-29" }
+      expect(engine.render_string('{{ date | date("%Y/%m/%d") }}', data)).to eq("2026/03/29")
+    end
+
+    it "returns an unparseable value unchanged" do
+      data = { "v" => "not a date" }
+      expect(engine.render_string('{{ v | date("Y-m-d") }}', data)).to eq("not a date")
+    end
   end
 
   # ===========================================================================
