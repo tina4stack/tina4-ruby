@@ -199,12 +199,47 @@ module Tina4
       batch = next_batch_number
       results = []
       pending.each do |file|
+        # An empty, unedited scaffold migration — one that still bears a
+        # tina4:edit marker AND has no executable statement (the comment-only
+        # ALTER stub from a non-create migrate:create, or the view stub) — is
+        # unfinished. Applying it (and recording it passed) runs nothing and
+        # leaves the real SQL, written later under the same filename, never
+        # applied, with migrate reporting nothing pending (#288, #297). Keep it
+        # pending until written. A scaffolded CREATE TABLE carries the same hint
+        # but IS real DDL, so it applies — generate-model -> migrate is untouched.
+        if unapplied_scaffold?(file)
+          Tina4::Log.warning(
+            "Migration #{File.basename(file)} is still an unedited scaffold " \
+            "(a 'tina4:edit' placeholder with no SQL yet) — skipped and kept " \
+            "pending. Write the migration and remove the tina4:edit line(s), " \
+            "then run migrate again."
+          )
+          next
+        end
         result = run_migration(file, batch)
         results << result
         # Stop on failure
         break if result[:status] == "failed"
       end
       results
+    end
+
+    # True if a migration file is still the unedited scaffold placeholder: it
+    # bears a tina4:edit marker AND (for a .sql file) has no executable
+    # statement. A .rb scaffold qualifies on the marker alone.
+    def unapplied_scaffold?(file)
+      raw = File.read(file)
+      return false unless raw =~ %r{(?:#|//|--|/\*|\{#)\s*tina4:edit\b}i
+      return true if file.end_with?(".rb")
+      !executable_sql?(raw)
+    rescue SystemCallError
+      false
+    end
+
+    # True if any executable statement remains once SQL comments are stripped.
+    def executable_sql?(sql)
+      body = sql.gsub(%r{/\*.*?\*/}m, "").gsub(/--[^\n]*/, "")
+      !body.gsub(/[;\s]/, "").empty?
     end
 
     # A stable signed-64-bit key for PostgreSQL's pg_advisory_lock, derived from

@@ -2446,10 +2446,23 @@ module Tina4
       fields = fields_override&.any? ? fields_override : parse_fields(flags["fields"])
       is_create = name.start_with?("create_") || !fields_override.nil?
 
+      # A `create_*_view` name is a VIEW, not a table. Emitting a runnable
+      # `CREATE TABLE <name>_view` made migrate build a table and never the
+      # view, silently (#297). A view needs a SELECT, so scaffold it as
+      # commented guidance with tina4:edit markers and no executable SQL, so
+      # startup auto-migrate keeps it pending until it is written (#288).
+      is_view = is_create && fields_override.nil? && table.end_with?("_view")
+
       filename = "#{timestamp}_#{name}.sql"
       path = File.join(dir, filename)
 
-      if is_create
+      if is_view
+        up_sql = "-- tina4:edit  write the CREATE VIEW statement, then remove the\n" \
+                 "-- tina4:edit lines. For example:\n" \
+                 "-- CREATE VIEW #{table} AS\n" \
+                 "--     SELECT id, /* columns */ FROM source_table WHERE /* ... */;"
+        down_sql = "DROP VIEW IF EXISTS #{table};"
+      elsif is_create
         col_lines = ["    id INTEGER PRIMARY KEY AUTOINCREMENT"]
         fields.each do |fname, ftype|
           info = FIELD_TYPE_MAP[ftype] || FIELD_TYPE_MAP["string"]
@@ -2500,9 +2513,10 @@ module Tina4
       File.write(down_path, down_content)
       puts "  Created #{down_path}"
 
-      # Co-emit a real apply-UP/DOWN spec — only for CREATE migrations, whose UP
-      # SQL is real DDL to assert against (a placeholder ALTER has nothing yet).
-      emit_migration_test(name, table, filename, down_filename) if emit_test && is_create
+      # Co-emit a real apply-UP/DOWN spec — only for CREATE TABLE migrations,
+      # whose UP SQL is real DDL to assert against (a placeholder ALTER, or a
+      # VIEW stub that still needs its SELECT, has nothing concrete yet).
+      emit_migration_test(name, table, filename, down_filename) if emit_test && is_create && !is_view
     end
 
     # ── Generator: middleware ────────────────────────────────────────────
@@ -3492,10 +3506,11 @@ module Tina4
         # Routing spec for #{route} — no mocks, real Router.
         #
         # Generated with src/routes/#{route}.rb by `tina4ruby generate route
-        # #{route}` (no --model). The handlers are AI-FILL stubs that raise until
-        # you implement them, so this tests what IS live on generation: all five
-        # routes register on the REAL Router, and the list handler fails loud until
-        # filled. Fill a handler, then assert its real response here.
+        # #{route}` (no --model). The handlers start as AI-FILL stubs that raise
+        # until you implement them. This tests what is live on generation: all
+        # five routes register on the REAL Router, and the list handler is wired
+        # and callable. It stays GREEN whether the stub still raises OR you have
+        # filled it in — implementing the handler never turns this spec red.
         require "spec_helper"
 
         RSpec.describe "#{klass} routing (real Router)" do
@@ -3510,9 +3525,20 @@ module Tina4
             expect(paths).to include(["DELETE", "/api/#{route}/{id:int}"])
           end
 
-          it "the list handler is a live stub (raises until filled)" do
+          it "the list handler is wired (green as a stub AND when filled)" do
+            # It starts as a loud AI-FILL stub (raises NotImplementedError); once
+            # you implement it this spec STILL passes — it asserts wiring, never
+            # that the stub is unfinished, so doing the work never turns red.
             route, = Tina4::Router.match("GET", "/api/#{route}")
-            expect { route.handler.call(nil, nil) }.to raise_error(NotImplementedError)
+            expect(route.handler).to respond_to(:call)
+            request = Tina4::Request.new("REQUEST_METHOD" => "GET",
+                                         "PATH_INFO" => "/api/#{route}", "QUERY_STRING" => "")
+            begin
+              result = route.handler.call(request, Tina4::Response.new)
+            rescue NotImplementedError
+              next # still the scaffold stub — expected until filled in
+            end
+            expect(result).not_to be_nil # filled in: must hand back a response
           end
         end
       RUBY
@@ -3581,8 +3607,15 @@ module Tina4
             expect(Tina4::ServiceRunner.list.any? { |s| s[:name] == "#{snake}" }).to be true
           end
 
-          it "the task is a live stub (raises until filled)" do
-            expect { #{snake}_task(nil) }.to raise_error(NotImplementedError)
+          it "the task is wired (green as a stub AND when filled)" do
+            # Starts as a loud AI-FILL stub (raises NotImplementedError); once
+            # implemented this spec STILL passes, so doing the work never turns red.
+            expect(defined?(#{snake}_task)).to be_truthy
+            begin
+              #{snake}_task(nil)
+            rescue NotImplementedError
+              next # still the scaffold stub — expected until filled in
+            end
           end
         end
       RUBY
@@ -3619,8 +3652,15 @@ module Tina4
             expect(svc[:options][:daemon]).to be true
           end
 
-          it "handle_#{slug} is a live stub (raises until filled)" do
-            expect { handle_#{slug}({}) }.to raise_error(NotImplementedError)
+          it "handle_#{slug} is wired (green as a stub AND when filled)" do
+            # Starts as a loud AI-FILL stub (raises NotImplementedError); once
+            # implemented this spec STILL passes, so doing the work never turns red.
+            expect(defined?(handle_#{slug})).to be_truthy
+            begin
+              handle_#{slug}({})
+            rescue NotImplementedError
+              next # still the scaffold stub — expected until filled in
+            end
           end
         end
       RUBY
@@ -3727,8 +3767,15 @@ module Tina4
             expect(ws_route.handler.call(nil, :close, nil)).to be_nil
           end
 
-          it "the :message branch is a live stub (raises until filled)" do
-            expect { ws_route.handler.call(nil, :message, "hi") }.to raise_error(NotImplementedError)
+          it "the :message branch is wired (green as a stub AND when filled)" do
+            # Starts as a loud AI-FILL stub (raises NotImplementedError); once
+            # implemented this spec STILL passes, so doing the work never turns red.
+            expect(ws_route.handler).to respond_to(:call)
+            begin
+              ws_route.handler.call(nil, :message, "hi")
+            rescue NotImplementedError
+              next # still the scaffold stub — expected until filled in
+            end
           end
         end
       RUBY
@@ -3759,8 +3806,16 @@ module Tina4
             expect(Tina4::Events.listeners("#{event}").length).to be >= 1
           end
 
-          it "emitting reaches the listener (strict re-raises the stub)" do
-            expect { Tina4::Events.emit("#{event}", { "id" => 1 }, strict: true) }.to raise_error(NotImplementedError)
+          it "emitting reaches the listener (green as a stub AND when filled)" do
+            # Starts as a loud AI-FILL stub (strict emit re-raises
+            # NotImplementedError); once implemented this spec STILL passes, so
+            # doing the work never turns red.
+            expect(Tina4::Events.listeners("#{event}").length).to be >= 1
+            begin
+              Tina4::Events.emit("#{event}", { "id" => 1 }, strict: true)
+            rescue NotImplementedError
+              next # still the scaffold stub — expected until filled in
+            end
           end
         end
       RUBY
