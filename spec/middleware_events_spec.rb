@@ -229,6 +229,7 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
     Object.const_set(:BoomMw, boom) unless defined?(BoomMw)
 
     req  = make_request
+    req.headers["accept"] = "application/json" # API client -> JSON envelope (ERR-DEC-02, #342)
     resp = Tina4::Response.new
     halted = nil
 
@@ -244,8 +245,10 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
 
     expect(halted).to be false # handler skipped
     expect(resp.status_code).to eq(500)
-    expect(resp.body).to include("Internal Server Error")
-    expect(JSON.parse(resp.body)).to eq({ "error" => "Internal Server Error", "status" => 500 })
+    body = JSON.parse(resp.body)
+    expect(body["error"]).to be(true)
+    expect(body["code"]).to eq("INTERNAL_SERVER_ERROR")
+    expect(body["status"]).to eq(500)
   ensure
     Object.send(:remove_const, :BoomMw) if defined?(BoomMw)
   end
@@ -262,6 +265,7 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
     end
 
     req  = make_request
+    req.headers["accept"] = "application/json" # API client -> JSON envelope (ERR-DEC-02, #342)
     resp = Tina4::Response.new
     logged = capture_real_log do
       expect { Tina4::Middleware.run_after([klass], req, resp) }.not_to raise_error
@@ -274,7 +278,10 @@ RSpec.describe "TestMiddlewareThrow (M2)" do
     expect(ran).to contain_exactly(:boom, :log)
     expect(logged).to include("RuntimeError") # the throw was logged, never silent (real file)
     expect(resp.status_code).to eq(500)            # clean 500 from the throwing after_*
-    expect(JSON.parse(resp.body)).to eq({ "error" => "Internal Server Error", "status" => 500 })
+    body = JSON.parse(resp.body)
+    expect(body["error"]).to be(true)
+    expect(body["code"]).to eq("INTERNAL_SERVER_ERROR")
+    expect(body["status"]).to eq(500)
   end
 end
 

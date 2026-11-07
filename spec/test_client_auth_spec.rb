@@ -64,9 +64,13 @@ RSpec.describe "TestClient auth gate (PY2 parity)" do
 
   # ── The core contract: a tokenless write is rejected ─────────────
   it "rejects a tokenless write with 401" do
-    r = client.post("/tc-secure-write", json: { name: "Alice" })
+    # An API client (Accept: application/json) gets the negotiated JSON envelope
+    # now (ERR-DEC-02, #342) — `error` is the boolean envelope flag. The
+    # browser-HTML branch is covered in error_negotiation_401_middleware500_spec.
+    r = client.post("/tc-secure-write", json: { name: "Alice" }, headers: { "Accept" => "application/json" })
     expect(r.status).to eq(401)
-    expect(r.json["error"]).to eq("Unauthorized")
+    expect(r.json["error"]).to be(true)
+    expect(r.json["code"]).to eq("UNAUTHORIZED")
   end
 
   # ── A valid Bearer token passes ──────────────────────────────────

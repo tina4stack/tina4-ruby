@@ -114,7 +114,7 @@ module Tina4
           begin
             result = entry[:handler].call(request, response)
           rescue StandardError, ScriptError => error
-            middleware_500(response, "before handler", error)
+            middleware_500(response, "before handler", error, request)
             return false
           end
           return false if result == false
@@ -126,7 +126,7 @@ module Tina4
             begin
               result = klass.send(method_name, request, response)
             rescue StandardError, ScriptError => error
-              middleware_500(response, "#{class_label(klass)}.#{method_name}", error)
+              middleware_500(response, "#{class_label(klass)}.#{method_name}", error, request)
               return false
             end
 
@@ -174,7 +174,7 @@ module Tina4
           begin
             entry[:handler].call(request, response)
           rescue StandardError, ScriptError => error
-            middleware_500(response, "after handler", error)
+            middleware_500(response, "after handler", error, request)
           end
         end
 
@@ -184,7 +184,7 @@ module Tina4
             begin
               result = klass.send(method_name, request, response)
             rescue StandardError, ScriptError => error
-              middleware_500(response, "#{class_label(klass)}.#{method_name}", error)
+              middleware_500(response, "#{class_label(klass)}.#{method_name}", error, request)
               next
             end
             if result.is_a?(Tina4::Response)
@@ -203,7 +203,7 @@ module Tina4
       # (NEVER silent) then sets the response to the canonical error shape —
       # byte-identical to the Python master ({"error":"Internal Server Error",
       # "status":500} + status 500). Returns the response for chaining.
-      def middleware_500(response, label, error)
+      def middleware_500(response, label, error, request = nil)
         begin
           Tina4::Log.error(
             "Middleware #{label} raised #{error.class.name}: #{error.message}"
@@ -216,7 +216,30 @@ module Tina4
             # never let logging break the worker
           end
         end
-        response.json({ error: "Internal Server Error", status: 500 }, 500)
+        # ERR-DEC-02 (#342): answer through the SAME negotiation every other
+        # framework error uses — errors/500.twig for a browser, the JSON envelope
+        # {error, code, message, status, request_id} for an API client. The real
+        # exception stays in the log, never in the body (CWE-209). It used to
+        # return an unconditional {"error":"Internal Server Error","status":500}.
+        # `request` is optional only for backward compatibility; the dispatcher
+        # always passes it, and without it the JSON envelope is used.
+        request_id = Tina4::Log.get_request_id || ""
+        json_body = { error: true, code: "INTERNAL_SERVER_ERROR", message: "Internal Server Error", status: 500, request_id: request_id }
+        accept = request.respond_to?(:headers) ? (request.headers["accept"] || "") : ""
+        return response.json(json_body, 500) if Tina4::Template.wants_json?(accept)
+
+        path = request.respond_to?(:path) ? request.path.to_s : ""
+        html = begin
+          Tina4::Template.render_error(500, { "path" => CGI.escapeHTML(path), "request_id" => request_id, "error_message" => "" })
+        rescue StandardError
+          nil
+        end
+        if html && response.respond_to?(:html)
+          response.html(html, 500)
+        else
+          response.json(json_body, 500)
+        end
+        response
       end
 
       # The `false` row of the return-value table, on its own.
