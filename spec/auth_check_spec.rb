@@ -83,14 +83,17 @@ RSpec.describe "RackApp auth check (header / body / session)" do
   # ── 2. Invalid Bearer header fails with 401 ───────────────────
 
   it "returns 401 for invalid Bearer header" do
+    # An API client (Accept: application/json) so the negotiated 401
+    # (ERR-DEC-02, #342) returns the JSON envelope, not the HTML error page.
     env = mock_env("POST", "/secure/action",
-                   headers: { "AUTHORIZATION" => "Bearer invalid.token.here" })
+                   headers: { "AUTHORIZATION" => "Bearer invalid.token.here", "ACCEPT" => "application/json" })
 
     status, _headers, body = app.call(env)
     expect(status).to eq(401)
 
     parsed = JSON.parse(body.join)
-    expect(parsed["error"]).to eq("Unauthorized")
+    expect(parsed["error"]).to be(true)
+    expect(parsed["code"]).to eq("UNAUTHORIZED")
   end
 
   # ── 3. Valid formToken in body passes ──────────────────────────

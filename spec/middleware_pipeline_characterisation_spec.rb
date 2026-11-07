@@ -399,16 +399,21 @@ RSpec.describe "Middleware pipeline (feature-7 contract)" do
   # ── 8 ──────────────────────────────────────────────────────────────────────
   it "a throwing before hook becomes a clean 500" do
     request, response = real_pair
+    request.headers["accept"] = "application/json" # API client -> JSON envelope (ERR-DEC-02, #342)
     expect(Tina4::Middleware.run_before([MwPipeline::ThrowingBefore], request, response)).to be false
     expect(response.status_code).to eq(500)
-    expect(JSON.parse(response.body)).to eq({ "error" => "Internal Server Error", "status" => 500 })
+    body = JSON.parse(response.body)
+    expect(body["error"]).to be(true)
+    expect(body["code"]).to eq("INTERNAL_SERVER_ERROR")
+    expect(body["status"]).to eq(500)
 
     MwPipeline.reset!
     Tina4::Router.use(MwPipeline::ThrowingBefore)
     handler_route
-    result = client.get("/probe")
+    result = client.get("/probe", headers: { "Accept" => "application/json" })
     expect(result.status).to eq(500)
-    expect(result.json).to eq({ "error" => "Internal Server Error", "status" => 500 })
+    expect(result.json["error"]).to be(true)
+    expect(result.json["code"]).to eq("INTERNAL_SERVER_ERROR")
     expect(handler_ran?).to be false
   end
 

@@ -233,10 +233,12 @@ RSpec.describe "POST route protection" do
         ->(req, res) { res.json({ saved: true }, 201) })
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
-      status, _headers, body = app.call(rack_env("POST", "/api/data"))
+      # An API client so the negotiated 401 (ERR-DEC-02, #342) returns the JSON envelope.
+      status, _headers, body = app.call(rack_env("POST", "/api/data").merge("HTTP_ACCEPT" => "application/json"))
       expect(status).to eq(401)
       data = JSON.parse(body.first)
-      expect(data["error"]).to eq("Unauthorized")
+      expect(data["error"]).to be(true)
+      expect(data["code"]).to eq("UNAUTHORIZED")
     end
 
     it "returns 200 with a valid Bearer token" do
@@ -271,10 +273,12 @@ RSpec.describe "POST route protection" do
         ->(req, res) { res.json({ secret: true }) }).secure
 
       app = Tina4::RackApp.new(root_dir: tmp_dir)
-      status, _headers, body = app.call(rack_env("GET", "/api/protected"))
+      # An API client so the negotiated 401 (ERR-DEC-02, #342) returns the JSON envelope.
+      status, _headers, body = app.call(rack_env("GET", "/api/protected").merge("HTTP_ACCEPT" => "application/json"))
       expect(status).to eq(401)
       data = JSON.parse(body.first)
-      expect(data["error"]).to eq("Unauthorized")
+      expect(data["error"]).to be(true)
+      expect(data["code"]).to eq("UNAUTHORIZED")
     end
   end
 

@@ -422,7 +422,9 @@ module Tina4
     # (error: true, code, message, status) already shared by app-level
     # response.error() calls, plus request_id for correlation (feature 43,
     # ERR-404-REQUESTID) - the SAME shape Python/PHP/Node build.
-    ERROR_CODE_NAMES = { 403 => "FORBIDDEN", 404 => "NOT_FOUND", 500 => "INTERNAL_SERVER_ERROR" }.freeze
+    ERROR_CODE_NAMES = {
+      401 => "UNAUTHORIZED", 403 => "FORBIDDEN", 404 => "NOT_FOUND", 500 => "INTERNAL_SERVER_ERROR"
+    }.freeze
 
     def error_json_body(status, message, request_id)
       Tina4::Response.error_response(
@@ -1236,10 +1238,34 @@ module Tina4
     # in-process TestClient call it, so the test surface enforces the identical
     # gate as production (Python #PY2 parity). Instantiating a RackApp just to
     # reach the check would run full boot/route-discovery — this needs none of it.
+    # Build a negotiated error Rack tuple (ERR-DEC-02, #342): a browser gets
+    # errors/{code}.twig, an API client the JSON envelope, both carrying
+    # request_id. A CLASS method so the class-method auth / RBAC gates
+    # (enforce_route_auth, rbac_forbidden) answer like every other framework
+    # error; the instance handle_403/handle_404/handle_500 paths keep their own
+    # copies (they carry extra template-serving / debug-overlay logic).
+    def self.negotiated_error_tuple(code, message, path = "", accept = "")
+      request_id = Tina4::Log.get_request_id || "-"
+      if Tina4::Template.wants_json?(accept)
+        body = Tina4::Response.error_response(ERROR_CODE_NAMES[code] || "HTTP_#{code}", message, code)
+                              .merge(request_id: request_id)
+        return [code, { "content-type" => "application/json" }, [JSON.generate(body)]]
+      end
+      html = begin
+        Tina4::Template.render_error(code, { "path" => CGI.escapeHTML(path.to_s), "request_id" => request_id, "error_message" => "" })
+      rescue StandardError
+        "#{code} #{message}"
+      end
+      [code, { "content-type" => "text/html" }, [html]]
+    end
+
     def self.enforce_route_auth(env, route)
       return nil unless route.auth_required
 
-      unauthorized = [401, { "content-type" => "application/json" }, [JSON.generate({ error: "Unauthorized" })]]
+      # ERR-DEC-02 (#342): a browser gets errors/401.twig, an API client the JSON
+      # envelope — the same negotiation every other framework error uses. Was an
+      # unconditional JSON tuple.
+      unauthorized = negotiated_error_tuple(401, "Unauthorized", env["PATH_INFO"] || "", env["HTTP_ACCEPT"] || "")
 
       # Token slots in priority order: Authorization Bearer header, then the
       # body formToken (frond.js puts the auth token it received as a
@@ -1283,7 +1309,7 @@ module Tina4
       # ── RBAC guards (Feature 138): authorization AFTER authentication ──
       # Auth has passed (401 ruled out above). If the route carries role/
       # permission guards, the verified payload must satisfy them, else 403.
-      deny = rbac_forbidden(route, env["tina4.auth_payload"])
+      deny = rbac_forbidden(route, env["tina4.auth_payload"], env)
       return deny if deny
 
       nil
@@ -1317,7 +1343,7 @@ module Tina4
     # verified payload, else nil. AND across guard groups, OR within a group.
     # Roles read the `roles` claim (legacy singular `role` coerced); permissions
     # read `permissions` with granted-side wildcards. Feature 138 / ADR-0058.
-    def self.rbac_forbidden(route, payload)
+    def self.rbac_forbidden(route, payload, env = nil)
       required_roles = route.respond_to?(:roles) ? Array(route.roles) : []
       required_perms = route.respond_to?(:perms) ? Array(route.perms) : []
       return nil if required_roles.empty? && required_perms.empty?
@@ -1325,17 +1351,19 @@ module Tina4
       subject = payload.is_a?(Hash) ? payload : {}
       roles = _rbac_claim_list(subject, "roles", "role")
       required_roles.each do |group|
-        return _rbac_forbidden_tuple unless group.any? { |r| roles.include?(r) }
+        return _rbac_forbidden_tuple(env) unless group.any? { |r| roles.include?(r) }
       end
       perms = _rbac_claim_list(subject, "permissions", nil)
       required_perms.each do |group|
-        return _rbac_forbidden_tuple unless group.any? { |req| _rbac_perm_granted(perms, req) }
+        return _rbac_forbidden_tuple(env) unless group.any? { |req| _rbac_perm_granted(perms, req) }
       end
       nil
     end
 
-    def self._rbac_forbidden_tuple
-      [403, { "content-type" => "application/json" }, [JSON.generate({ error: "Forbidden" })]]
+    # ERR-DEC-02 negotiation (#342): HTML page for a browser, JSON envelope for
+    # an API client, both with request_id — instead of the old unconditional JSON.
+    def self._rbac_forbidden_tuple(env = nil)
+      negotiated_error_tuple(403, "Forbidden", env && env["PATH_INFO"] || "", env && env["HTTP_ACCEPT"] || "")
     end
 
     # Read a claim as a list of strings; coerce a legacy singular string.
