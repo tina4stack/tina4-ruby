@@ -23,6 +23,40 @@ require "stringio" # rack.input is a StringIO; require it here so a clean `requi
 require_relative "parse_json"
 
 module Tina4
+  # A Hash whose STRING key lookups are case-insensitive (#300).
+  #
+  # HTTP header names are case-insensitive (RFC 9110), and get_all already
+  # treats them that way. Keys are STORED down-cased, so iteration order, the
+  # key set, and the last-value-per-name view are all unchanged — every reader
+  # sees the same Hash. Only the LOOKUP down-cases the requested name, so
+  # headers["Location"] finds a header emitted as "location" instead of nil.
+  class CaseInsensitiveHeaders < Hash
+    def [](key)
+      super(normalise_key(key))
+    end
+
+    def fetch(key, *args, &block)
+      super(normalise_key(key), *args, &block)
+    end
+
+    def key?(key)
+      super(normalise_key(key))
+    end
+    alias has_key? key?
+    alias include? key?
+    alias member? key?
+
+    def dig(key, *rest)
+      super(normalise_key(key), *rest)
+    end
+
+    private
+
+    def normalise_key(key)
+      key.is_a?(String) ? key.downcase : key
+    end
+  end
+
   class TestResponse
     attr_reader :status, :body, :headers, :content_type
 
@@ -43,7 +77,7 @@ module Tina4
       # (never-repeated) header sees any change (TC-HEADER-COLLAPSE,
       # TC-DEC-02).
       @header_list = {}
-      flat = {}
+      flat = CaseInsensitiveHeaders.new
       raw_headers.each do |name, value|
         key = name.to_s.downcase
         values = value.is_a?(Array) ? value.map(&:to_s) : value.to_s.split("\n")
@@ -97,6 +131,16 @@ module Tina4
     def initialize(app = nil, root_dir: nil)
       @app = app
       @root_dir = root_dir
+
+      # #296: load .env the way the server does, so a TestClient test that never
+      # booted the app still sees TINA4_SECRET etc. load_env is first-wins
+      # (ENV[key] ||= value, .env.local then .env), so a value the test set in
+      # the real environment is never clobbered — the test still wins.
+      begin
+        Tina4::Env.load_env(@root_dir || Tina4.root_dir || Dir.pwd)
+      rescue StandardError
+        # A missing or unreadable .env must never stop a test from running.
+      end
     end
 
     def app
