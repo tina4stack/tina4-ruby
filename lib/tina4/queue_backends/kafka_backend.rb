@@ -161,31 +161,46 @@ module Tina4
         end
         return nil unless msg
 
-        data = Tina4.parse_json(msg.payload)
-        coordinate = "#{topic}:#{msg.partition}:#{msg.offset}"
-
-        # A record carrying a "payload" key is a Tina4 envelope: keep its own id
-        # (falling back to the coordinate) and carry attempts/error back so a
-        # redelivery does not reset the count and re-produce a poison record
-        # forever. A record WITHOUT one is externally produced (Debezium/CDC and
-        # friends, no envelope, no id -- tina4#274): its whole value IS the
-        # payload, and the coordinate becomes its id. Either way the job gets the
-        # id acknowledge() maps back to this record's offset.
-        job =
-          if data.is_a?(Hash) && data.key?("payload")
-            id = data["id"].to_s.empty? ? coordinate : data["id"]
-            Tina4::Job.new(
-              topic: topic, payload: data["payload"], id: id,
-              attempts: data["attempts"] || 0, error: data["error"]
-            )
-          else
-            Tina4::Job.new(topic: topic, payload: data, id: coordinate, attempts: 0)
-          end
+        job = job_from_message(topic, msg)
+        return nil unless job
 
         @in_flight[job.id.to_s] = msg
         job
       rescue Rdkafka::RdkafkaError
         nil
+      end
+
+      # Build a Job from a polled record, or nil for a record that carries no job.
+      #
+      # A null-value record is a tombstone / delete marker: Debezium emits these on
+      # deletes and log-compacted topics use them as delete markers, so they are
+      # normal on Kafka. rdkafka hands back a nil payload for one; return nil (skip
+      # it) so dequeue advances past it. Before this guard, JSON.parse(nil) raised a
+      # TypeError that dequeue's `rescue Rdkafka::RdkafkaError` did NOT catch, so the
+      # tombstone was a poison pill that killed the consumer on every restart
+      # (tina4-python#303, same crash in the rdkafka path).
+      #
+      # A record carrying a "payload" key is a Tina4 envelope: keep its own id
+      # (falling back to the coordinate) and carry attempts/error back so a
+      # redelivery does not reset the count and re-produce a poison record forever.
+      # A record WITHOUT one is externally produced (Debezium/CDC and friends, no
+      # envelope, no id -- tina4#274): its whole value IS the payload, and the
+      # coordinate becomes its id. Either way the job gets the id acknowledge()
+      # maps back to this record's offset.
+      def job_from_message(topic, msg)
+        return nil if msg.payload.nil?
+
+        data = Tina4.parse_json(msg.payload)
+        coordinate = "#{topic}:#{msg.partition}:#{msg.offset}"
+        if data.is_a?(Hash) && data.key?("payload")
+          id = data["id"].to_s.empty? ? coordinate : data["id"]
+          Tina4::Job.new(
+            topic: topic, payload: data["payload"], id: id,
+            attempts: data["attempts"] || 0, error: data["error"]
+          )
+        else
+          Tina4::Job.new(topic: topic, payload: data, id: coordinate, attempts: 0)
+        end
       end
 
       # Kafka has no queue depth: a log is a sequence of offsets, not a queue,
@@ -287,6 +302,11 @@ module Tina4
           loop do
             msg = reader.poll(500)
             if msg
+              # Skip a tombstone / null-value record the same way dequeue does, so
+              # a null-value dead-letter never crashes the reader on JSON.parse(nil)
+              # (tina4-python#303).
+              next if msg.payload.nil?
+
               data = Tina4.parse_json(msg.payload)
               data["status"] = "dead"
               out << data
