@@ -154,6 +154,12 @@ module Tina4
         loop do
           candidate = @consumer.poll(500)
           if candidate
+            # A tombstone carries no job: skip it and poll on. Returning nil here
+            # reads as an empty queue, so a single-pass drain
+            # (consume(poll_interval: 0)) stopped at the tombstone, and a fresh
+            # process resumed at its committed offset and stopped there again.
+            next if candidate.payload.nil?
+
             msg = candidate
             break
           end

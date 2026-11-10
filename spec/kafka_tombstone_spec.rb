@@ -115,4 +115,33 @@ RSpec.describe "Kafka tombstone (null-value) record", :kafka do
       backend.close if backend.respond_to?(:close)
     end
   end
+
+  it "drains past a tombstone in a single pass (consume with poll_interval: 0)" do
+    suffix = "#{Process.pid}_#{rand(1_000_000)}"
+    topic = "tina4_rb_tomb_drain_#{suffix}"
+
+    _produce_tombstone_records(topic, [
+      ["k1", { "n" => 1 }],
+      ["k1", nil],
+      ["k2", { "n" => 2 }]
+    ])
+
+    # Answering a tombstone with nil reads as an empty queue: the drain stopped
+    # at it and left the record after it behind, in every fresh process.
+    backend = Tina4::QueueBackends::KafkaBackend.new(
+      brokers: _tombstone_brokers, group_id: "tina4_rb_tomb_drain_#{suffix}"
+    )
+    queue = Tina4::Queue.new(topic: topic, backend: backend)
+    got = []
+    begin
+      queue.consume(topic, poll_interval: 0) do |job|
+        got << job.payload["n"]
+        job.complete
+      end
+    ensure
+      backend.close if backend.respond_to?(:close)
+    end
+
+    expect(got).to eq([1, 2]), "the drain stopped at the tombstone: #{got.inspect}"
+  end
 end
