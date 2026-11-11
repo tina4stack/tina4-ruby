@@ -8,6 +8,7 @@
 require "spec_helper"
 require "socket"
 require "json"
+require "timeout"
 
 # Live Kafka tombstone regression (tina4-python#303 twin). A tombstone is a record
 # whose value is null: normal on Kafka (Debezium emits them on deletes,
@@ -54,6 +55,22 @@ def _produce_tombstone_records(topic, records)
   handles.each { |h| h.wait(max_wait_timeout: 15) }
 ensure
   producer.close if producer
+end
+
+# The group's durably committed offset for a partition (nil or negative = none).
+def _tombstone_committed(topic, group_id, partition = 0)
+  probe = Rdkafka::Config.new({
+    "bootstrap.servers" => _tombstone_brokers, "group.id" => group_id, "enable.auto.commit" => "false"
+  }).consumer
+  tpl = Rdkafka::Consumer::TopicPartitionList.new
+  tpl.add_topic(topic, [partition])
+  probe.committed(tpl, 15_000).to_h[topic]&.first&.offset
+ensure
+  probe&.close
+end
+
+def _tombstone_mono
+  Process.clock_gettime(Process::CLOCK_MONOTONIC)
 end
 
 RSpec.describe "Kafka tombstone (null-value) record", :kafka do
@@ -143,5 +160,72 @@ RSpec.describe "Kafka tombstone (null-value) record", :kafka do
     end
 
     expect(got).to eq([1, 2]), "the drain stopped at the tombstone: #{got.inspect}"
+  end
+
+  it "keeps dequeue's deadline while a stream of tombstones arrives" do
+    suffix = "#{Process.pid}_#{rand(1_000_000)}"
+    topic = "tina4_rb_tomb_deadline_#{suffix}"
+    _produce_tombstone_records(topic, [["k0", { "n" => 0 }]])
+    backend = Tina4::QueueBackends::KafkaBackend.new(
+      brokers: _tombstone_brokers, group_id: "tina4_rb_tomb_deadline_#{suffix}"
+    )
+    feeder = nil
+    begin
+      expect(backend.dequeue(topic)&.payload).to eq({ "n" => 0 }) # warm: joined + assigned
+      # Skipping went straight back to poll and never reached the deadline
+      # check, so one dequeue blocked for as long as the tombstones kept coming.
+      stop = _tombstone_mono + 6
+      feeder = Thread.new do
+        producer = Rdkafka::Config.new({ "bootstrap.servers" => _tombstone_brokers }).producer
+        while _tombstone_mono < stop
+          producer.produce(topic: topic, payload: nil, partition: 0).wait(max_wait_timeout: 5)
+          sleep 0.1
+        end
+        producer.close
+      end
+      sleep 0.3
+      started = _tombstone_mono
+      got = Timeout.timeout(20) { backend.dequeue(topic) }
+      took = _tombstone_mono - started
+      expect(got).to be_nil
+      expect(took).to be < 1.6, "dequeue took #{took.round(1)}s under a tombstone stream (deadline ~1s)"
+    ensure
+      feeder&.join(10)
+      backend.close if backend.respond_to?(:close)
+    end
+  end
+
+  it "gets a fresh process past a tombstone through the normal acknowledge" do
+    # Nothing commits on the tombstone path; acknowledging the record after it
+    # commits past both, so a restart neither stops at the tombstone nor
+    # redelivers anything.
+    suffix = "#{Process.pid}_#{rand(1_000_000)}"
+    topic = "tina4_rb_tomb_restart_#{suffix}"
+    group = "tina4_rb_tomb_restart_#{suffix}"
+    _produce_tombstone_records(topic, [["k1", { "n" => 1 }], ["k1", nil], ["k2", { "n" => 2 }]])
+    first = Tina4::QueueBackends::KafkaBackend.new(brokers: _tombstone_brokers, group_id: group)
+    begin
+      job = first.dequeue(topic)
+      expect(job&.payload).to eq({ "n" => 1 })
+      first.acknowledge(job)
+      expect(_tombstone_committed(topic, group)).to eq(1) # at the tombstone
+    ensure
+      first.close if first.respond_to?(:close)
+    end
+    second = Tina4::QueueBackends::KafkaBackend.new(brokers: _tombstone_brokers, group_id: group)
+    begin
+      job = second.dequeue(topic)
+      expect(job&.payload).to eq({ "n" => 2 }), "a restart did not get past the tombstone"
+      second.acknowledge(job)
+      expect(_tombstone_committed(topic, group)).to eq(3)
+    ensure
+      second.close if second.respond_to?(:close)
+    end
+    third = Tina4::QueueBackends::KafkaBackend.new(brokers: _tombstone_brokers, group_id: group)
+    begin
+      expect(third.dequeue(topic)).to be_nil
+    ensure
+      third.close if third.respond_to?(:close)
+    end
   end
 end

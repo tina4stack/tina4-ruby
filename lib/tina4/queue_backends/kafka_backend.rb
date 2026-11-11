@@ -150,21 +150,7 @@ module Tina4
         # TINA4_KAFKA_ASSIGN_TIMEOUT, default 15s); steady state stays one ~1s poll.
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) +
                    (first ? (ENV["TINA4_KAFKA_ASSIGN_TIMEOUT"] || "15").to_f : 1.0)
-        msg = nil
-        loop do
-          candidate = @consumer.poll(500)
-          if candidate
-            # A tombstone carries no job: skip it and poll on. Returning nil here
-            # reads as an empty queue, so a single-pass drain
-            # (consume(poll_interval: 0)) stopped at the tombstone, and a fresh
-            # process resumed at its committed offset and stopped there again.
-            next if candidate.payload.nil?
-
-            msg = candidate
-            break
-          end
-          break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-        end
+        msg = poll_past_tombstones(deadline)
         return nil unless msg
 
         job = job_from_message(topic, msg)
@@ -174,6 +160,22 @@ module Tina4
         job
       rescue Rdkafka::RdkafkaError
         nil
+      end
+
+      # Poll until a record with a value arrives or the deadline passes.
+      #
+      # A tombstone carries no job: skip it and poll on. Returning nil at the
+      # first one read as an empty queue, so a single-pass drain
+      # (consume(poll_interval: 0)) stopped at the tombstone. The deadline holds
+      # while skipping too: a steady stream of tombstones must not hold dequeue
+      # past it. Nothing is committed here: acknowledging the next record commits
+      # past the skipped tombstones, as before.
+      def poll_past_tombstones(deadline)
+        loop do
+          candidate = @consumer.poll(500)
+          return candidate if candidate && !candidate.payload.nil?
+          return nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        end
       end
 
       # Build a Job from a polled record, or nil for a record that carries no job.
