@@ -137,7 +137,15 @@ module GracefulShutdownProbe
     app_path
   end
 
-  def boot(slow_seconds: 2.0, shutdown_timeout: nil, background: false)
+  # The directory layout log sink lives here for every booted child. Default
+  # output is dev-gated (DEBUG=false writes no file), so this is inert unless an
+  # example opts into TINA4_LOG_OUTPUT=file/both; the teardown-throw regression
+  # below uses it to make tina4.log an un-writable sink.
+  def log_dir(server)
+    File.join(server.dir, "logs")
+  end
+
+  def boot(slow_seconds: 2.0, shutdown_timeout: nil, background: false, extra_env: {})
     dir = SpecTmpdir.create("tina4-graceful-shutdown")
     port = free_port
     app_path = write_app(dir)
@@ -149,6 +157,7 @@ module GracefulShutdownProbe
       "TINA4_NO_AI_PORT" => "true",
       "TINA4_LOG_LEVEL" => "INFO",
       "TINA4_DEBUG_LEVEL" => nil,
+      "TINA4_LOG_DIR" => File.join(dir, "logs"),
       "TINA4_SHUTDOWN_TIMEOUT" => shutdown_timeout&.to_s,
       "PROBE_PORT" => port.to_s,
       "PROBE_SLOW_SECONDS" => slow_seconds.to_s,
@@ -157,7 +166,7 @@ module GracefulShutdownProbe
       # parent's Bundler env fails to boot. nil deletes the key.
       "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "BUNDLER_SETUP" => nil,
       "LANG" => "en_US.UTF-8", "LC_ALL" => "en_US.UTF-8"
-    }
+    }.merge(extra_env)
 
     # pgroup: true → the child leads its own process group, so cleanup can kill
     # the GROUP and never orphan anything it spawned.
@@ -397,6 +406,63 @@ RSpec.describe "Graceful shutdown", :slow do
       # string, so this doesn't pin one specific log format.
       expect(server.log).to include("TINA4_SHUTDOWN_TIMEOUT").and(include("not-a-number")),
                             "the fallback must name the bad value\n#{server.log}"
+    ensure
+      server.destroy!
+    end
+  end
+
+  # ── A teardown step that THROWS during shutdown still exits 0 ───────────
+  #
+  # Cross-framework parity with tina4-php's
+  # GracefulShutdownTest::testATeardownThrowDuringShutdownStillExitsZero: a
+  # handled signal MUST drain and exit 0, and a throw in ANY teardown step must
+  # degrade to a log line and STILL exit 0 - never fatal, never hung.
+  #
+  # NO MOCKS. The failing sink is REAL. With TINA4_LOG_STRICT=true a log-WRITE
+  # failure RAISES instead of degrading. The directory-layout main sink
+  # (logs/tina4.log) OPENS fine at boot (a writable file, so the child boots and
+  # serves), then - while the server is idle - it is replaced by a real
+  # DIRECTORY, so the FIRST write during shutdown hits EISDIR and raises. That
+  # first write is initiate_shutdown's own "Shutdown signal received" line,
+  # emitted on the trap handler's thread BEFORE the listener closes: without the
+  # guard the raise kills that thread, stop_accepting never runs, the listening
+  # socket stays open and the process HANGS on SIGTERM (the harness then SIGKILLs
+  # it - a signaled, non-zero death). guard_teardown degrades the write failure
+  # (best-effort Tina4::Log.error, falling back to $stderr) and lets
+  # stop_accepting and the drain still run, so the child exits 0.
+  #
+  # Gate by construction: EISDIR on a directory is deterministic and
+  # permission-independent (it bites root too). Remove guard_teardown and this
+  # case goes red (SIGKILLed / non-zero after a hang); restore it and it is
+  # green. The twin mutation runs on Linux CI, where these POSIX specs execute.
+  it "a teardown throw during shutdown still exits 0, never fatal and never hangs" do
+    server = GracefulShutdownProbe.boot(
+      slow_seconds: 0.2,
+      extra_env: { "TINA4_LOG_STRICT" => "true", "TINA4_LOG_OUTPUT" => "file" }
+    )
+    begin
+      main_sink = File.join(GracefulShutdownProbe.log_dir(server), "tina4.log")
+      # The sink opened as a writable file at boot (the child is already
+      # serving). Turn it into a real DIRECTORY now, while the server is idle, so
+      # the NEXT write - the first log line emitted during shutdown - fails with
+      # EISDIR under strict. No request is sent after this, so nothing else
+      # touches the sink until the signal lands.
+      Timeout.timeout(10) { sleep 0.02 until File.file?(main_sink) }
+      File.delete(main_sink)
+      Dir.mkdir(main_sink)
+
+      server.signal("TERM")
+      status = server.wait_for_exit(25)
+
+      expect(status).not_to be_nil,
+                            "process did not exit within 25s of SIGTERM - a teardown throw " \
+                            "escaped the trap and HUNG the shutdown\n#{server.log}"
+      expect(status.signaled?).to be(false),
+                                  "a strict-log write failure during shutdown must be HANDLED, not " \
+                                  "kill the process (termsig #{status.termsig.inspect})\n#{server.log}"
+      expect(status.exitstatus).to eq(0),
+                                   "a teardown step that throws must still drain and exit 0, never " \
+                                   "fatal\n#{server.log}"
     ensure
       server.destroy!
     end

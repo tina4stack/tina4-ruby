@@ -72,17 +72,29 @@ module Tina4
         return if @shutting_down
 
         @shutting_down = true
-        Tina4::Log.info("Shutdown signal received, stopping gracefully...")
 
-        stop_accepting
-        drained = wait_for_in_flight
-        release_resources
+        # The whole teardown runs INSIDE the signal handler's thread
+        # (install_signal_handlers). An exception escaping here - a failing log
+        # sink under TINA4_LOG_STRICT, a half-closed WebSocket, a dead database
+        # driver, Log.reset - would kill that thread mid-teardown. If it dies
+        # BEFORE stop_accepting, the listening socket never closes and the
+        # process HANGS on a signal that MUST drain and exit 0; if it dies
+        # later, resources leak. So every step degrades independently
+        # (guard_teardown) and the critical ones still run even when an earlier
+        # step threw - mirrors the per-step try/catch(\Throwable) in PHP's
+        # Server::cleanup()/stop().
+        guard_teardown { Tina4::Log.info("Shutdown signal received, stopping gracefully...") }
+        guard_teardown { stop_accepting }
 
-        Tina4::Log.info("Shutdown complete")
+        drained = true
+        guard_teardown { drained = wait_for_in_flight }
+        guard_teardown { release_resources }
+
+        guard_teardown { Tina4::Log.info("Shutdown complete") }
         # Graceful shutdown owns the final call to reset() (Decision 24 /
         # LOG-I02): flush+close owned sinks AFTER the shutdown record above,
         # exactly once.
-        Tina4::Log.reset
+        guard_teardown { Tina4::Log.reset }
         @shutdown_complete = true
         return if drained
 
@@ -138,6 +150,23 @@ module Tina4
       end
 
       private
+
+      # Run one teardown step so that NO exception escapes the signal handler's
+      # thread (see initiate_shutdown). On a failure, degrade to a best-effort
+      # Tina4::Log.error; if the logger itself is what failed (a strict log sink
+      # that raises on write), fall back to $stderr so the degrade is never
+      # silent - then carry on, so the shutdown still completes and the process
+      # still exits 0. Keeps shutdown idempotent and exception-safe without
+      # changing the teardown order.
+      def guard_teardown
+        yield
+      rescue StandardError => e
+        begin
+          Tina4::Log.error("Error during graceful shutdown: #{e.class}: #{e.message}")
+        rescue StandardError
+          warn("tina4: graceful shutdown step failed: #{e.class}: #{e.message}")
+        end
+      end
 
       # TINA4_SHUTDOWN_TIMEOUT in seconds (same name and default in all four
       # frameworks). An unparseable or negative value warns and falls back to the

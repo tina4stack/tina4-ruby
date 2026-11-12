@@ -6,6 +6,12 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.162 - 2026-11-10
+
+### Fixed
+
+- Kafka tombstone (null-value) records no longer crash the consumer (tina4-python#303 twin). A tombstone — a record whose value is `null` (Debezium deletes, log-compacted delete markers) — reached `Tina4.parse_json(msg.payload)` on the rdkafka path, and `JSON.parse(nil)` raised `TypeError`, which `rescue Rdkafka::RdkafkaError` did not catch, so it escaped and killed the consumer; because the tombstone sits at the committed offset it was a poison pill that re-crashed on every restart. `dequeue` and the `dead_letters` reader now skip a `nil`-payload record and continue, so a following real record is still delivered. No mocks — driven against a real librdkafka producer/broker (#167).
+
 ## 3.13.161 - 2026-11-09
 
 ### Fixed
