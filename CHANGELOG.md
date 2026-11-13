@@ -6,6 +6,12 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.163 - 2026-11-13
+
+### Fixed
+
+- A Kafka tombstone (a null-value record, such as a Debezium delete marker) no longer stops a consumer short. 3.13.162 stopped the crash but answered a tombstone with `nil`, so a single-pass drain (`consume(poll_interval: 0)`) read it as an empty queue: the records behind it were never reached, and a fresh process stopped at the same offset on every run. The poll loop now skips tombstones and keeps polling, still bounded by `dequeue`'s deadline (1 s steady state, the assign timeout on first subscribe). Nothing is committed on the tombstone path: acknowledging the next record commits past the skipped tombstones, so a restart gets past them. Acknowledge, retry and dead-letter are unchanged. Verified against a live broker producing real tombstones (#169, parity with tina4-python#309, tina4-php#357, tina4-nodejs#194).
+
 ## 3.13.162 - 2026-11-10
 
 ### Fixed
