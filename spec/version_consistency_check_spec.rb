@@ -42,6 +42,9 @@ RSpec.describe "scripts/check_version_consistency.rb" do
     FileUtils.cp(File.join(repo_root, "CLAUDE.md"),   File.join(dir, "CLAUDE.md"))
     FileUtils.cp(File.join(repo_root, "AGENTS.md"),   File.join(dir, "AGENTS.md"))
     FileUtils.cp(File.join(repo_root, "Gemfile.lock"), File.join(dir, "Gemfile.lock"))
+    FileUtils.mkdir_p(File.join(dir, "scripts"))
+    FileUtils.cp(File.join(repo_root, "scripts", "dependency-licenses.json"),
+                 File.join(dir, "scripts", "dependency-licenses.json"))
   end
 
   it "the script and the canonical version file are present" do
@@ -113,6 +116,26 @@ RSpec.describe "scripts/check_version_consistency.rb" do
       expect(output).to include("AGENTS.md")  # names the drifted file
       expect(output).to include("7.7.7")       # shows the stale value
       expect(output).to include(current)       # shows what was expected
+    end
+  end
+
+  it "FAILS and NAMES the licence review list when its tina4ruby entry is left behind" do
+    Dir.mktmpdir do |dir|
+      stage_fixture(dir, repo_root)
+
+      licences = File.join(dir, "scripts", "dependency-licenses.json")
+      original = File.read(licences, encoding: "UTF-8")
+      mutated  = original.sub(/("name":\s*"tina4ruby",\s*"version":\s*")\d+\.\d+\.\d+/, '\16.6.6')
+      expect(mutated).not_to eq(original), "fixture mutation did not change the tina4ruby entry"
+      File.write(licences, mutated)
+
+      stdout, stderr, status = Open3.capture3("ruby", script, current, "--root", dir)
+      output = stdout + stderr
+
+      expect(status.exitstatus).not_to eq(0), "expected non-zero, got 0:\n#{output}"
+      expect(output).to include("dependency-licenses.json")
+      expect(output).to include("6.6.6")
+      expect(output).to include(current)
     end
   end
 
