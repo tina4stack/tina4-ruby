@@ -377,7 +377,11 @@ RSpec.describe "Raw TCP service contract (feature 142)" do
   def boot_child(extra_env = {})
     dir = SpecTmpdir.create("tina4-tcp")
     http_port = ShutdownProbe.free_port
-    tcp_port = http_port + 1
+    # Its own free port, never the HTTP port + 1: on a busy runner that port is
+    # sometimes taken, the framework then (correctly) refuses it as "already
+    # bound by another worker" and the readiness wait times out.
+    tcp_port = ShutdownProbe.free_port
+    tcp_port = ShutdownProbe.free_port while tcp_port == http_port
     lib = ShutdownProbe.worktree_lib
     app_path = File.join(dir, "app.rb")
     File.write(app_path, <<~RUBY)
