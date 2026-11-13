@@ -36,7 +36,13 @@ VERSION_CHECKS = [
   ["CLAUDE.md",            /^Version\s+(\d+\.\d+\.\d+)\b/,        "header 'Version X'"],
   ["CLAUDE.md",            /^-\s*Version:\s*(\d+\.\d+\.\d+)\b/,   "'- Version:' line"],
   ["AGENTS.md",            /^#\s+Tina4\b.*?\b(\d+\.\d+\.\d+)\b/,  "title header 'Tina4 ... X.Y.Z'"],
-  ["Gemfile.lock",         /^\s+tina4ruby \((\d+\.\d+\.\d+)\)/,   "tina4ruby lock pin"]
+  ["Gemfile.lock",         /^\s+tina4ruby \((\d+\.\d+\.\d+)\)/,   "tina4ruby lock pin"],
+  # The licence review list pins tina4ruby's own lock entry, so the release
+  # package's "Check inbound dependency licence policy" step fails the moment the
+  # lock moves without it. 3.13.163's release PR found this in CI after this
+  # checker had passed; the checker is the pre-tag gate, so it checks it too.
+  ["scripts/dependency-licenses.json",
+   /"name":\s*"tina4ruby",\s*"version":\s*"(\d+\.\d+\.\d+)"/, "tina4ruby licence review entry"]
 ].freeze
 
 # Parse `<version> [--root DIR]`. Default root is the repo (scripts/'s parent),
