@@ -913,7 +913,17 @@ module Tina4
       # Gate 3: a database must be resolvable.
       db = Tina4.database
       unless db
-        Tina4::Log.debug("Startup migrations skipped (no database configured)")
+        # Only an unset TINA4_DATABASE_URL is "no database configured". A set
+        # one that Database.new could not open must say so, or the operator
+        # chases a missing setting that is in fact present.
+        configured_url = ENV["TINA4_DATABASE_URL"].to_s.strip
+        if configured_url.empty?
+          Tina4::Log.debug("Startup migrations skipped (no database configured)")
+        else
+          cause = @database_setup_error ? ": #{@database_setup_error}" : ""
+          Tina4::Log.debug("Startup migrations skipped (database configured but could not connect to " \
+                           "#{Tina4::DatabaseUrl.without_credentials(configured_url)})#{cause}")
+        end
         return
       end
 
@@ -982,17 +992,28 @@ module Tina4
 
     def setup_database
       db_url = ENV["TINA4_DATABASE_URL"]
+      @database_setup_error = nil
       if db_url && !db_url.empty?
+        safe_url = Tina4::DatabaseUrl.without_credentials(db_url)
         begin
           database = bind_database(Tina4::Database.new(db_url))
-          # Database.new logs-and-degrades on a failed connect instead of raising,
-          # so only claim a connection the database itself reports.
-          if database.connected
-            Tina4::Log.info("Database connected: #{Tina4::DatabaseUrl.redact(db_url)}")
-          else
-            Tina4::Log.warning("Database not connected: #{Tina4::DatabaseUrl.redact(db_url)}")
+          if database.pool
+            # Pooled mode connects lazily on first use, so `connected` is true
+            # before anything has connected. Say what is actually known: the pool
+            # exists. Verifying a connection here would change boot behaviour
+            # (an unreachable database would cost a connect timeout at boot);
+            # the first query reports a failure with its cause instead.
+            Tina4::Log.info("Database pool configured (#{database.pool_size} connections, " \
+                            "not yet connected - connects on first use): #{safe_url}")
+          elsif !database.connected
+            # Database.new logs-and-degrades on a failed connect instead of
+            # raising, so only claim a connection the database itself reports.
+            Tina4::Log.warning("Database not connected: #{safe_url}")
           end
+          # A successful single connection was already logged, with this URL, by
+          # Database#connect - one "Database connected" line, not two.
         rescue => e
+          @database_setup_error = e.message.to_s.gsub(db_url) { safe_url }.gsub(%r{://[^/\s@]*@}, "://")
           Tina4::Log.error("Database connection failed: #{e.message}")
         end
       end

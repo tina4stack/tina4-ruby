@@ -527,7 +527,10 @@ module Tina4
       # that have no native setter.
       @driver.autocommit = @autocommit if driver_implements?(@driver, :autocommit=)
 
-      Tina4::Log.info("Database connected: #{@driver_name}")
+      # The ONE "connected" line for this database: it names the target (no
+      # credentials), so Tina4.setup_database no longer repeats it at boot.
+      target = Tina4::DatabaseUrl.without_credentials(@connection_string)
+      Tina4::Log.info("Database connected: #{target.empty? ? @driver_name : target}")
       @connect_error = nil
     rescue => e
       Tina4::Log.error("Database connection failed: #{scrub_connection_string(e.message)}")
