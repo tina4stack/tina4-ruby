@@ -25,4 +25,4 @@ Tina4::Router.post("/api/public") { |req, res|
 - snake_case methods: `get_token`, `hash_password`
 - Templates: Twig syntax (not ERB)
 
-See llms.txt for full API reference.
+For the complete API reference, read `CLAUDE.md` in this repo and the docs it links. `llms.txt` is the link index (llmstxt.org format); https://tina4.com/llms-full.txt has the full documentation in one file.

@@ -33,4 +33,4 @@ Tina4::Router.post("/api/public") { |req, res|
 
 Routes in `src/routes/`, ORM in `src/orm/`, templates in `src/templates/`, static in `src/public/`.
 
-See llms.txt for complete API reference.
+For the complete API reference, read `CLAUDE.md` in this repo and the docs it links. `llms.txt` is the link index (llmstxt.org format); https://tina4.com/llms-full.txt has the full documentation in one file.
