@@ -29,7 +29,8 @@ module Tina4
     # Sync custom filters/globals from the user engine
     if @_framework_frond
       user_engine = get_frond
-      @_framework_frond.instance_variable_get(:@filters).merge!(user_engine.instance_variable_get(:@filters))
+      # Instance filters only: class filters reach every engine already.
+      user_engine.instance_variable_get(:@local_filters).each { |name, fn| @_framework_frond.add_filter(name, &fn) }
       @_framework_frond.instance_variable_get(:@globals).merge!(user_engine.instance_variable_get(:@globals))
     end
     @_framework_frond

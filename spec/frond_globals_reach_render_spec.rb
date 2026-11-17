@@ -10,8 +10,10 @@ require "fileutils"
 require "json"
 require "tmpdir"
 
-# A template global registered through the public API reaches every page
-# response.render produces, whenever it is registered.
+# A template global, filter or test registered through the public API reaches
+# every page response.render produces, whenever it is registered (ADR-0106 for
+# globals, ADR-0107 for filters and tests: they too were drained into an engine
+# once, at construction).
 #
 # Tina4.template_global / Tina4::Template.add_global wrote only to the legacy
 # Tina4::Template store, which response.render's Frond engine never reads, so
@@ -32,6 +34,8 @@ RSpec.describe "Frond globals reach response.render" do
       "globals.twig" => "[{{ early }}][{{ late }}][{{ shared }}]",
       "flag.twig" => "{% if is_admin %}admin{% else %}guest{% endif %}",
       "call.twig" => '{{ shout("hi") }}',
+      "filter.twig" => '{{ "hi"|loud }}',
+      "test.twig" => "{% if 4 is quad %}yes{% else %}no{% endif %}",
       "greeting.twig" => '{{ t("greeting") }}',
       "welcome.twig" => '{{ t("welcome", {"name": "Ana"}) }}'
     }
@@ -142,5 +146,51 @@ RSpec.describe "Frond globals reach response.render" do
     Tina4.get_frond.add_global("shared", "instance")
     expect(page("/globals")).to eq("[][][instance]")
     expect(Tina4::Frond.new(template_dir: "src/templates").render("globals.twig")).to eq("[][][class]")
+  end
+
+  it "class filter registered before first render reaches render" do
+    Tina4::Frond.add_filter("loud") { |value| value.to_s.upcase }
+    expect(page("/filter")).to eq("HI")
+  end
+
+  it "class filter registered after first render reaches render" do
+    expect(page("/filter")).to eq("hi") # the response engine now exists
+    Tina4::Frond.add_filter("loud") { |value| value.to_s.upcase }
+    expect(page("/filter")).to eq("HI")
+  end
+
+  it "class test registered before first render reaches render" do
+    Tina4::Frond.add_test("quad") { |value| value == 4 }
+    expect(page("/test")).to eq("yes")
+  end
+
+  it "class test registered after first render reaches render" do
+    expect(page("/test")).to eq("no")
+    Tina4::Frond.add_test("quad") { |value| value == 4 }
+    expect(page("/test")).to eq("yes")
+  end
+
+  it "instance filter on another engine does not leak into render" do
+    other_engine = Tina4::Frond.new(template_dir: "src/templates")
+    other_engine.add_filter("loud") { |_value| "LEAK" }
+    expect(page("/filter")).to eq("hi")
+    expect(other_engine.render("filter.twig")).to eq("LEAK")
+  end
+
+  it "instance test on another engine does not leak into render" do
+    other_engine = Tina4::Frond.new(template_dir: "src/templates")
+    other_engine.add_test("quad") { |_value| true }
+    expect(page("/test")).to eq("no")
+    expect(other_engine.render("test.twig")).to eq("yes")
+  end
+
+  it "instance filter overrides class filter" do
+    Tina4::Frond.add_filter("loud") { |_value| "class" }
+    expect(page("/filter")).to eq("class")
+    Tina4.get_frond.add_filter("loud") { |_value| "instance" }
+    expect(page("/filter")).to eq("instance")
+    Tina4::Frond.add_filter("loud") { |_value| "class again" } # a later class change
+    expect(page("/filter")).to eq("instance")
+    expect(Tina4::Frond.new(template_dir: "src/templates").render("filter.twig")).to eq("class again")
   end
 end

@@ -39,12 +39,10 @@ module Tina4
     # -- Class-level registries ------------------------------------------------
     # Persist globals, filters, and tests across hot-reloads and across module
     # boundaries. When app.rb does ``Tina4::Frond.add_filter("money") { ... }``
-    # at startup before any instance exists, the registration sits here. Every
-    # subsequent ``Tina4::Frond.new`` drains the filters and tests into its
-    # instance-local registries — so hot-reloads (which re-execute
-    # ``frond = Frond.new``) and late-constructed engines inherit them. Globals
-    # are read from here at render time, so they reach existing engines too
-    # (ADR-0106).
+    # at startup (or later), the registration sits here. Every engine reads
+    # it at render time -- globals directly, filters and tests through a merge
+    # rebuilt when this registry changes -- so hot-reloaded, late-constructed
+    # AND already-existing engines all see it (ADR-0106, ADR-0107).
     #
     # The same-name dual-callable (class + instance) methods below let callers
     # write either ``Tina4::Frond.add_filter(...)`` (process-global) or
@@ -53,6 +51,9 @@ module Tina4
     @@class_filters = {}
     @@class_globals = {}
     @@class_tests   = {}
+    # Bumped on every class-level filter/test change, so an engine knows when
+    # to rebuild its merged filter/test maps (see sync_registries).
+    @@class_registry_version = 0
 
     # -- Live-block registries (server-rendered {% live %} regions) -----------
     # A {% live %} block registers three things when its page first renders:
@@ -78,6 +79,7 @@ module Tina4
       @@class_filters = {}
       @@class_globals = {}
       @@class_tests   = {}
+      @@class_registry_version += 1
       @@class_live_fragments = {}
       @@class_live_sources   = {}
       @@class_live_ws_paths  = {}
@@ -324,10 +326,14 @@ module Tina4
 
     def initialize(template_dir: "src/templates")
       @template_dir    = template_dir
-      @filters         = default_filters
+      @builtin_filters = default_filters
+      @builtin_tests   = default_tests
+      @local_filters   = {} # this instance's own add_filter calls (ADR-0052)
+      @local_tests     = {} # this instance's own add_test calls (ADR-0052)
+      @registry_version = -1
+      sync_registries # builds @filters / @tests
       @globals         = {} # this instance's own add_global calls (ADR-0052)
       @builtin_globals = {}
-      @tests           = default_tests
       @auto_escape     = true
 
       # Sandboxing
@@ -355,15 +361,24 @@ module Tina4
       # Built-in global functions
       register_builtin_globals
 
-      # Drain class-level filters/tests into this instance. Filters and tests
-      # registered via ``Tina4::Frond.add_filter`` BEFORE this instance was
-      # constructed flow in here, so every Frond instance created later
-      # (including those born from hot-reloads) inherits the registration.
-      # Class GLOBALS are not copied: with_globals reads @@class_globals at
-      # render time, so a ``Tina4::Frond.add_global`` made after this engine
-      # exists (after the first response.render, say) still reaches it.
-      @filters.merge!(@@class_filters)
-      @tests.merge!(@@class_tests)
+      # Class registrations are never copied in for good: with_globals reads
+      # @@class_globals at render time, and sync_registries re-merges the class
+      # filters/tests whenever they change. So a Tina4::Frond.add_global /
+      # add_filter / add_test made after this engine exists (after the first
+      # response.render, say) still reaches it (ADR-0106, ADR-0107).
+    end
+
+    # Rebuild the merged filter/test maps when the class registry changed.
+    #
+    # Same layering as globals -- built-ins < class < this instance. Filter
+    # lookup is on the hot path, so the merge is a plain Hash rebuilt only
+    # when the class-registry version moves, never a per-lookup chain.
+    def sync_registries
+      return if @registry_version == @@class_registry_version
+
+      @filters = @builtin_filters.merge(@@class_filters, @local_filters)
+      @tests = @builtin_tests.merge(@@class_tests, @local_tests)
+      @registry_version = @@class_registry_version
     end
 
     # Render a template file with data. Uses token caching for performance.
@@ -422,7 +437,11 @@ module Tina4
     # Layer the globals under the render data: built-ins < class globals (read
     # live, so registration order never matters) < this instance's own
     # globals < the data passed to render.
+    #
+    # Every render starts here, so this is also where the filter/test maps
+    # catch up with any class registration made since the last render.
     def with_globals(data)
+      sync_registries
       @builtin_globals.merge(@@class_globals, @globals, stringify_keys(data))
     end
 
@@ -438,11 +457,12 @@ module Tina4
     # Register a custom filter on the class registry only.
     #
     # Callable as ``Tina4::Frond.add_filter("money") { |v| ... }`` at app
-    # startup BEFORE any instance exists. The registration is remembered at
-    # class level so every later ``Tina4::Frond.new`` inherits it. To also
-    # update a live instance's filter map, use the instance method form.
+    # startup or later. The registration is remembered at class level and
+    # every engine -- existing ones included -- merges it at its next render
+    # (ADR-0107). Use the instance method form for an engine-local filter.
     def self.add_filter(name, &blk)
       @@class_filters[name.to_s] = blk
+      @@class_registry_version += 1
     end
 
     # Register a custom test on the class registry only.
@@ -451,6 +471,7 @@ module Tina4
     # the static-facade pattern.
     def self.add_test(name, &blk)
       @@class_tests[name.to_s] = blk
+      @@class_registry_version += 1
     end
 
     # Register a global variable on the class registry only.
@@ -499,6 +520,7 @@ module Tina4
     # Updates this instance's live filter map only. Class calls remain the
     # process-global registration path. tina4: ADR-0052.
     def add_filter(name, &blk)
+      @local_filters[name.to_s] = blk
       @filters[name.to_s] = blk
       self
     end
@@ -507,6 +529,7 @@ module Tina4
     #
     # Updates this instance's live tests map only.
     def add_test(name, &blk)
+      @local_tests[name.to_s] = blk
       @tests[name.to_s] = blk
       self
     end
