@@ -778,11 +778,12 @@ module Tina4
     # holder is signalled ONLY when a Tina4 dev server recorded its PID in the
     # per-port PID file. A foreign holder is left running and a clear message is
     # printed; takeover is also skipped in a container, outside dev mode, and when
-    # opted out (TINA4_NO_TAKEOVER / --no-kill). Returns true only when a Tina4
-    # holder was actually signalled.
-    def kill_process_on_port(port)
+    # opted out (TINA4_NO_TAKEOVER / --no-kill). `host` is the address serve will
+    # bind; when given, a port that binds there is reported as free, not "in use".
+    # Returns true only when a Tina4 holder was actually signalled.
+    def kill_process_on_port(port, host = nil)
       result = Tina4::PortTakeover.take_over_port(
-        port, dev: Tina4::PortTakeover.dev?, no_takeover: Tina4::PortTakeover.no_takeover_opted_out?
+        port, dev: Tina4::PortTakeover.dev?, no_takeover: Tina4::PortTakeover.no_takeover_opted_out?, host: host
       )
       if result.reclaimed?
         puts "  #{result.message}"
@@ -867,7 +868,7 @@ module Tina4
       options[:host] = resolve_config(:host, options[:host])
 
       # Kill existing process on port
-      kill_process_on_port(options[:port])
+      kill_process_on_port(options[:port], options[:host])
 
       require_relative "../tina4"
 
