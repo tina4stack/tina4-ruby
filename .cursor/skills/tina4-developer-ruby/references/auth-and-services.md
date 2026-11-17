@@ -258,21 +258,20 @@ end
 
 ```javascript
 // Client (frond.js)
-const ws = Frond.ws("/ws/chat", {
-  reconnect: true,
-  onMessage: (data) => { document.getElementById("messages").innerHTML += `<p>${data}</p>`; }
-});
+const ws = frond.ws("/ws/chat");   // lowercase: the browser global is `frond`; reconnects by default
+ws.on("message", (data) => { document.getElementById("messages").innerHTML += `<p>${data}</p>`; });   // there is no onMessage option
 document.getElementById("send").onclick = () => ws.send(document.getElementById("input").value);
 ```
 
 ## GraphQL
 
-Auto-generate a GraphQL API from your ORM models:
+Generate a GraphQL API from your ORM models with `schema.from_orm` (there is no `auto_register`):
 
 ```ruby
 gql = Tina4::GraphQL.new
-gql.auto_register(User, Post)
-gql.register_route("/graphql")     # GET = GraphiQL IDE, POST = queries
+gql.schema.from_orm(User)          # user(id), users(limit, offset), create/update/deleteUser
+gql.schema.from_orm(Post)
+gql.register_route("/graphql")     # GET = GraphiQL IDE (queries only), POST = queries + mutations
 ```
 
 Decorator-free resolvers register on the schema:
@@ -282,7 +281,8 @@ Tina4::GraphQL.resolve("Query", "userByEmail") do |root, args, ctx|
 end
 ```
 
-Visit `/graphql` in the browser for the GraphiQL IDE.
+Visit `/graphql` in the browser for the GraphiQL IDE. POST needs `Content-Type: application/json`
+(otherwise 415), and both routes are registered `auth: false`, so enforce access in your resolvers.
 
 ## Events
 
@@ -316,12 +316,23 @@ Translation files go in `src/locales/` as JSON:
 { "welcome": "Welcome, {name}!", "logout": "Sign out" }
 ```
 
-Set the language in `.env` (`TINA4_LOCALE=en`). In code: `Tina4.t("welcome", name: user.name)`. In
-templates:
-```twig
-{{ "welcome" | trans({"name": user.name}) }}
-{{ "logout" | trans }}
+Set the language in `.env` (`TINA4_LOCALE=en`). In code: `Tina4.t("welcome", name: user.name)`.
+
+In templates use a `t()` function global — there is no `trans` filter. Register it on the engine
+`response.render` uses, at boot:
+
+```ruby
+Tina4.get_frond.add_global("t", ->(key, params = {}) { Tina4::Localization.t(key, **params.transform_keys(&:to_sym)) })
 ```
+
+```twig
+{{ t("welcome", {"name": user.name}) }}
+{{ t("logout") }}
+```
+
+Register it yourself: the framework's auto-wired `t` goes to `Tina4::Template`, which
+`response.render` does not read, and its signature `(key, **opts)` rejects the params hash a template
+passes (both verified on v3).
 
 ## Caching
 

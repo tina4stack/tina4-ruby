@@ -25,7 +25,7 @@ Version 3.13.163 - TINA4: The Intelligent Native Application 4ramework. Simple. 
 - Run all tests: `bundle exec rspec`
 - Run single test: `bundle exec rspec spec/file_spec.rb:LINE`
 - Start server: `ruby app.rb` or `tina4ruby` CLI (default host: 0.0.0.0, default port: 7147)
-- CLI: `tina4ruby` (Thor-based, exe in `exe/tina4ruby`)
+- CLI: `tina4ruby` (OptionParser-based, exe in `exe/tina4ruby`)
 
 ## Code Principles
 
@@ -43,7 +43,7 @@ Version 3.13.163 - TINA4: The Intelligent Native Application 4ramework. Simple. 
 - **NO mock testing. Mocks are not acceptable in any circumstances.** A test double (mock, stub, fake, spy, monkeypatch, RSpec double/instance_double, or any in-test object standing in for a real collaborator) may never substitute for a real dependency, under any justification. There is no "supplement" exception and no "hard to reproduce" exception. Any test that touches a dependency (a DB engine, MongoDB, Redis/Valkey/Memcached, RabbitMQ/Kafka, an HTTP/SMTP service, the filesystem, a socket) must exercise the REAL service; if a failure mode is hard to trigger, reproduce it for real, never simulate it. "Verified"/"green" requires a real run; a passing mock test is not verification. CI provisions the services; use them and add any that is missing. The only tests that need no live dependency are pure functions with no dependency and no double; that is not a mock test. (The Node MongoDB queue re-delivered every completed job for two releases because its queue tests were mock-based and never ran against a real Mongo.)
 - **Error handling in routes** — Wrap route logic in `begin/rescue`, log with `Tina4::Log.error()`, return response with appropriate status
 - **All links and references** should point to https://tina4.com
-- **Push to staging only** — Never push to production without explicit approval
+- **Pull requests only (ADR-0073)** — Never push directly to `v3` or `main` (or `v2`); work on a feature branch, open a PR, wait for the required checks, then merge. Never force-push or move a tag. A tag publishes, merging never does
 - Linting: `rubocop`
 
 ## Development Mode (DevReload)
@@ -402,7 +402,7 @@ Max upload size: `TINA4_MAX_UPLOAD_SIZE` env var (default 10MB).
 ### Auth
 
 ```ruby
-# expires_in is in MINUTES (default 60). Reads SECRET from env.
+# expires_in is in MINUTES (default 60). Reads TINA4_SECRET from env.
 Tina4::Auth.get_token(payload, expires_in: 60) -> String
 Tina4::Auth.valid_token(token) -> Hash | nil
 Tina4::Auth.get_payload(token) -> Hash | nil
@@ -1243,7 +1243,7 @@ Response headers (ADR-0068): `Response#header`, `#add_header`, `#redirect`, an e
 - Routes auto-discovered from `routes/`
 - ORM uses DSL methods (`integer_field`, `string_field`) with `FieldTypes` module
 - Templates use ERB and Twig (custom engine)
-- CLI (Thor): `tina4ruby serve` (--dev, --port), `tina4ruby seed` (--clear), `tina4ruby seed_create NAME`, `tina4ruby migrate`, `tina4ruby ai` (--all)
+- CLI (OptionParser, `lib/tina4/cli.rb` `COMMANDS` registry): `tina4ruby serve` (--dev, --port), `tina4ruby seed` (--clear), `tina4ruby seed:create NAME`, `tina4ruby migrate`, `tina4ruby ai` (--all)
 - SCSS compilation is owned by the `tina4` Rust CLI (grass), not the framework
 - JWT auth via stdlib OpenSSL only, NO gem. HS256/HS384/HS512 use `OpenSSL::HMAC`; the opt-in
   RS256 uses `OpenSSL::PKey::RSA#sign`/`#verify`. The `jwt` gem was a declared runtime

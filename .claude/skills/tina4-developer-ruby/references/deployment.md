@@ -1,13 +1,25 @@
 # Deployment Recipes (Ruby)
 
-Tina4 Ruby apps deploy via Docker using a **multi-stage `ruby:3.3-alpine` build**. The dev server and
-the container both listen on port **7147**. Never guess at Docker configuration — use the recipes
-below.
+Tina4 Ruby apps deploy via Docker. The dev server and the container both listen on port **7147**.
+Never guess at Docker configuration — use the recipes below.
 
-## App Dockerfile (canonical)
+## Base image (simplest)
 
-This is the tina4-ruby project's own multi-stage Dockerfile — build gems in a builder stage, copy the
-installed bundle and app into a lean runtime image:
+`docker.io/tina4stack/tina4-ruby` is the published base image (as `tina4stack/tina4-python`,
+`tina4stack/tina4-php` and `tina4stack/tina4-nodejs` are for the other frameworks): the Ruby runtime
+plus the framework and its gems, with `TINA4_OVERRIDE_CLIENT=true`, `TINA4_DEBUG=false` and a
+`--production` CMD already set. Inherit it and copy in only your code:
+
+```dockerfile
+FROM docker.io/tina4stack/tina4-ruby:v3     # prefer an exact version tag; `v3` and `latest` move
+RUN gem install pg --no-document            # only if you use a non-SQLite driver (gem is on PATH)
+COPY src/ /app/src/
+```
+
+## App Dockerfile (own multi-stage build)
+
+When you build from `ruby:3.3-alpine` yourself — gems in a builder stage, the installed bundle and
+app copied into a lean runtime image:
 
 ```dockerfile
 # === Build Stage ===
@@ -42,13 +54,19 @@ COPY --from=builder /app /app
 
 EXPOSE 7147
 
-# Swagger defaults (override via env in compose/k8s)
-ENV SWAGGER_TITLE="Tina4 API"
-ENV SWAGGER_VERSION="0.1.0"
-ENV SWAGGER_DESCRIPTION="Auto-generated API documentation"
+# Swagger defaults (override via env in compose/k8s). These MUST carry the TINA4_ prefix: the legacy
+# SWAGGER_TITLE / SWAGGER_VERSION / SWAGGER_DESCRIPTION names make the app refuse to boot (exit 2).
+ENV TINA4_SWAGGER_TITLE="Tina4 API"
+ENV TINA4_SWAGGER_VERSION="0.1.0"
+ENV TINA4_SWAGGER_DESCRIPTION="Auto-generated API documentation"
 
-# Bind on all interfaces so the container is reachable
-CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]
+# Required: without it the server refuses to start outside the tina4 CLI ("Tina4 must be started
+# with the tina4 CLI") and the container exits 1.
+ENV TINA4_OVERRIDE_CLIENT=true
+ENV TINA4_DEBUG=false
+
+# Bind on all interfaces; --production = production mode (Puma if the app bundles it)
+CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0", "--production"]
 ```
 
 ### .dockerignore
@@ -102,7 +120,8 @@ WORKDIR /app
 COPY --from=builder /usr/local/bundle /usr/local/bundle
 COPY --from=builder /app /app
 EXPOSE 7147
-CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0"]
+ENV TINA4_OVERRIDE_CLIENT=true TINA4_DEBUG=false
+CMD ["bundle", "exec", "tina4ruby", "start", "-p", "7147", "-h", "0.0.0.0", "--production"]
 ```
 
 Add `gem "pg"` to the `Gemfile` and set `TINA4_DATABASE_URL=postgresql://user:pass@host:5432/db`.
@@ -156,11 +175,13 @@ docker run -d \
 | `TINA4_DEBUG` | `false` in production — disables the debug overlay and dev secret generation |
 | `TINA4_SECRET` | JWT signing secret — **must** be set in production (blank = insecure) |
 | `TINA4_DATABASE_URL` | Database connection string |
-| `TINA4_PORT` / `PORT` | Listen port (default 7147) |
+| `TINA4_PORT` | Listen port (default 7147); bare `PORT` is the deprecated legacy name |
+| `TINA4_SWAGGER_*` | Swagger title/version/description — legacy un-prefixed `SWAGGER_*` names abort boot |
 
 ## Production Checklist
 
-1. Use the multi-stage `ruby:3.3-alpine` Dockerfile above; run with `bundle exec tina4ruby start`.
+1. Inherit `tina4stack/tina4-ruby`, or use the multi-stage `ruby:3.3-alpine` Dockerfile above; run
+   with `bundle exec tina4ruby start ... --production`.
 2. Mount a volume for `/app/data` (SQLite database, sessions, queue).
 3. Set `TINA4_DEBUG=false` and `TINA4_OVERRIDE_CLIENT=true`.
 4. Pass `TINA4_SECRET` via the environment (not committed in the image). Generate with

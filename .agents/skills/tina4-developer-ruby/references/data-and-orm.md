@@ -101,14 +101,14 @@ user = User.find_or_fail(1)    # raises if not found
 users = User.find(is_active: true)
 users = User.find({ "email" => "alice@example.com" })
 
-# where(sql_condition, params) — returns an Array of model instances
+# where(sql_condition, params, limit: 100, offset:, order_by:) — a ModelCollection of instances
 active = User.where("is_active = ?", [1])
 
 # A single record: where(...).first   ← the idiomatic "find one by condition"
 user  = User.where("email = ?", ["alice@example.com"]).first
 
-# all(...) — every record, with optional pagination / ordering
-everyone = User.all(limit: 50, offset: 0, order_by: "name ASC")
+# all(...) — the first 100 rows by default (NOT every record); page with limit:/offset:
+first_page = User.all(limit: 50, offset: 0, order_by: "name ASC")
 
 # select(full_sql, params) — run a full SELECT, get model instances back
 recent = User.select("SELECT * FROM users WHERE created_at > ?", ["2026-01-01"])
@@ -214,17 +214,15 @@ Article.with_trashed("1=1", [], limit: 100)   # includes soft-deleted
 
 ## Pagination
 
-`all` and `select` accept `limit:` and `offset:` (and `all` also takes `order_by:`). **`where`
-does NOT** — its only keyword is `include:` (the signature is
-`where(conditions, params = [], include: nil)`, `lib/tina4/orm.rb:305`). To page a *filtered*
-set, use `select` with a full SQL statement, or `all`:
+`all`, `where` and `select` all take `limit:` (default **100** — the shared cross-framework row
+cap) and `offset:`; `all` and `where` also take `order_by:`. The signatures are
+`all(limit: 100, offset: nil, order_by: nil, include: nil)` and
+`where(conditions, params = [], limit: 100, offset: nil, order_by: nil, include: nil)`. They return a
+`Tina4::ModelCollection`, whose `to_paginate` builds the shared paging envelope.
 
 ```ruby
-users = User.all(limit: 20, offset: 40, order_by: "id DESC")   # page 3 at 20/page
-
-# where has no limit:/offset:/order_by: — reach for select for a paged filtered query:
-active = User.select("SELECT * FROM users WHERE is_active = ? ORDER BY id DESC",
-                     [1], limit: 20, offset: 40)
+users  = User.all(limit: 20, offset: 40, order_by: "id DESC")                       # page 3 at 20/page
+active = User.where("is_active = ?", [1], limit: 20, offset: 40, order_by: "id DESC") # paged filtered set
 ```
 
 ## QueryBuilder — Fluent Queries with JOINs
@@ -321,8 +319,8 @@ results.to_csv      # CSV string
 results.map { |row| row["name"] }
 ```
 
-> ORM query methods (`User.all`, `User.where`, `User.select`) return a **plain Ruby Array of model
-> instances**, not a `DatabaseResult`. Serialise with `User.all.map(&:to_h)` (or hand the Array to
+> ORM query methods (`User.all`, `User.where`, `User.select`) return a **`Tina4::ModelCollection`** — an
+> `Array` subclass of model instances (plus `get_total_records` / `to_paginate`), not a `DatabaseResult`. Serialise with `User.all.map(&:to_h)` (or hand the Array to
 > `response.json`, which converts each model). `to_array` / `to_json` / `to_csv` are `DatabaseResult`
 > methods, available on the result of `db.fetch` and `QueryBuilder#get`.
 
@@ -361,10 +359,63 @@ firebird://user:password@localhost:3050/mydb
 ## Migrations
 
 ```bash
-tina4 migrate           # run pending migrations
-tina4 migrate:status    # show migration status
-tina4 migrate:rollback  # roll back the last batch
+tina4 migrate                              # run pending migrations
+tina4 migrate:status                       # show migration status
+tina4 migrate:rollback                     # roll back the last batch
+tina4 migrate:create "add users table"     # scaffold a new migration file
+tina4 generate migration create_users      # scaffold a new migration file (same envelope)
+tina4 generate migration create_users --fields "name:string,email:string"
 ```
+
+**Four surfaces, one envelope.** A new migration can be scaffolded from FOUR
+places, and every one emits the SAME ADR-0063 `generate_v1_1` resolution
+envelope — same `-- tina4:edit` markers baked into the UP + DOWN `.sql`,
+same `edit_hints[]`, same `next[]`. The four paths are:
+
+1. **CLI shortform** — `tina4ruby migrate:create <description>` — the shorter
+   form for a human description (it slugifies "add users table" →
+   `add_users_table` and preserves the raw prose in the file's `-- Migration:`
+   header).
+2. **CLI generator** — `tina4ruby generate migration <name>` — composes with
+   `--fields "name:string,price:float"` for schema-aware `CREATE TABLE`
+   scaffolding when the name starts with `create_X`.
+3. **MCP tool** — `migration_create(description:)` — the same lambda a coding
+   agent (Claude Code / Cursor / etc.) drives through `POST /__dev/mcp`. The
+   tool delegates to the SAME shared resolution-aware helper the CLI uses, so
+   the returned JSON carries `{ok, created, resolution, actions_taken}` where
+   `resolution` is the full v1.1 envelope. Duplicate-slug guard: a second
+   call for the same (or clearly equivalent) description returns
+   `{ok: false, error, existing: [<path>]}` and writes nothing, so an agent
+   edits the existing migration instead of spawning a second file for the
+   same schema change (mirrors PHP + Python MCPs).
+4. **Dev-admin HTTP** — `POST /__dev/api/scaffold/run` with
+   `{kind: "migration", name: "..."}` — shells out to `exe/tina4ruby generate
+   migration <name>` and returns `{ok, kind, name, output}` where `output` is
+   the CLI subprocess's captured stdout + stderr, including the human
+   "Edit these lines:" + "Next:" resolution block. The endpoint also handles
+   `route`, `model`, and `middleware` the same way — mirroring PHP's
+   `shell_exec 'php bin/tina4php generate ...'` and Node's `execFileSync
+   'npx tina4nodejs generate ...'`.
+
+One intentional difference: `generate migration create_X` co-emits a spec at
+`spec/{table}_migration_spec.rb`; `migrate:create` never does (it passes
+`emit_test: false` to the shared generator). The MCP tool follows
+`migrate:create`'s behaviour (no co-emitted spec) — an agent creating a
+migration is not asking for a test file. Nothing is deprecated (3.13.121
+unified all four paths onto the same envelope).
+
+**Twig templates (form, view) participate in `edit_hints[]` from 3.13.121;
+the scanner matches `# tina4:edit`, `-- tina4:edit`, and `{# tina4:edit ... #}`
+styles.** `tina4 generate form <Name>` (writes `src/templates/forms/<name>.twig`)
+and `tina4 generate view <Name>` (writes `src/templates/pages/<plural>.twig` +
+`src/templates/pages/<singular>.twig`) now emit the same `generate_v1_1`
+envelope as model / migration / route / middleware — `--json --dry-run` returns
+a `resolution.edit_hints[]` pointing at the twig `{# tina4:edit <label> #}`
+markers baked into each generated template, with a clean label (the scanner
+strips the closing `#}` before capture). Bare `generate form / view` prints
+the same "Edit these lines:" and "Next:" block to STDERR. This is additive:
+the envelope version is still `1.1`, and Ruby + SQL markers keep firing as
+before.
 
 Migration files are versioned SQL in **`migrations/`** at the project root — the canonical location
 (matches the CLI + auto-migrate + the Python reference); a legacy `src/migrations/` is honoured only
@@ -604,8 +655,8 @@ These bite outside the ORM but hit the same build loop. Verified against source.
 * **`db.fetch` returns a `DatabaseResult`, not an Array.** Rows live on **`.records`**; `.first`
   is a single row Hash accessed by key (`result.first["name"]`). It is `Enumerable`
   (iterable/indexable/`size`), and carries `.to_array` / `.to_json` / `.to_csv`. But an ORM query
-  (`User.all` / `User.where` / `User.select`) returns a **plain Array of model instances** — an
-  Array has **no** `.to_array` / `.to_json` / `.to_csv`; serialise with `User.all.map(&:to_h)` (or
+  (`User.all` / `User.where` / `User.select`) returns a **`Tina4::ModelCollection`** (an `Array` subclass of model instances) — it
+  has **no** `.to_array` / `.to_json` / `.to_csv`; serialise with `User.all.map(&:to_h)` (or
   hand the Array to `response.json`, which converts each model). `database_result.rb`.
 
 * **Periodic work uses `Tina4::Background`, not a raw `Thread`.** Register recurring work with
@@ -676,7 +727,7 @@ against `lib/tina4/`) — don't add the dep:**
 | OpenAPI / Swagger | `Tina4::Swagger` — served at `/swagger` *(`swagger.rb`)* |
 | WebSockets | `Tina4.websocket "/ws/…"`; live regions via Frond `{% live %}` *(`websocket.rb`)* |
 | Real-time (WebRTC signalling, presence) | `Tina4::Realtime.mount` *(`realtime.rb`, `realtime/`)* |
-| GraphQL from models | `Tina4::GraphQL.new.auto_register(...)` → `/graphql` *(don't add graphql-ruby — `graphql.rb`)* |
+| GraphQL from models | `gql = Tina4::GraphQL.new; gql.schema.from_orm(User); gql.register_route` → `/graphql` *(don't add graphql-ruby — `graphql.rb`)* |
 | SOAP / WSDL | `Tina4::WSDL` *(`wsdl.rb`)* |
 | i18n / localization | `Tina4.t(key, **kwargs)`; JSON in `src/locales/` *(`localization.rb`)* |
 | Document store (Mongo-style on SQLite) | `Tina4::DocStore` *(`docstore.rb`)* |
