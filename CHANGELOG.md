@@ -6,6 +6,23 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.164 - 2026-11-17
+
+### Fixed
+
+- Template globals registered with `Tina4.template_global` / `Tina4::Template.add_global` now reach `response.render` (they rendered empty), and so does the auto-wired `t()`, which also accepts a params hash: `{{ t("welcome", {"name": n}) }}` (it raised `ArgumentError`). Class-level filters and tests reach every render whenever they are registered. A function called in a template before it was registered no longer stays a plain (empty) variable after it is registered (#179, #181; ADR-0106, ADR-0107; parity with tina4-python, tina4-php, tina4-nodejs).
+- Boot no longer logs "Database connected" after a failed connect. `Database.new` logs and degrades on a failed connect, and `setup_database` logged success regardless; it now logs the success line only when the database reports a connection, otherwise a warning "Database not connected: <url>" (#172, from a contributor).
+- Pooled mode (`TINA4_DB_POOL>0`) no longer claims "Database connected" before anything connects; it says the pool is configured and connects on first use. A successful connect logs one line, with the URL minus credentials, instead of two (#174).
+- `tina4ruby` serve no longer prints "Port N is in use; takeover is disabled outside dev mode" for a port nothing holds (#173, parity with tina4-php#362, tina4-python#318, tina4-nodejs#198).
+- `/__dev/api/system` sends `memory_mb` (the process's current RSS), so the dashboard no longer always shows "Memory: ?" (#175).
+
+### Changed
+
+- AI skills: the shared tina4-maintainer and tina4-js skills are synced with tina4-python; tina4-developer-ruby's contradictions are fixed against the code (frond.js API, no `{% query %}` tag, `TINA4_SWAGGER_*`, `TINA4_OVERRIDE_CLIENT` in Docker, `request.query` for query strings, realtime auth by default); the skill forbids patching the framework (#177, #180).
+- AI tool files point at `CLAUDE.md` for the full API (#178).
+- `llms.txt` follows the llmstxt.org specification, with link lists to the markdown docs and a CI check (#176).
+- Test-only: the raw-TCP contract tests take their own free port instead of the HTTP port + 1 (#171).
+
 ## 3.13.163 - 2026-11-13
 
 ### Fixed
