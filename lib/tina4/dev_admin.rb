@@ -1012,17 +1012,24 @@ module Tina4
         { routes: routes, count: routes.size }
       end
 
+      # Current resident set size of THIS process in KB: VmRSS from
+      # /proc/self/status on Linux, `ps -o rss=` on macOS. nil where the OS
+      # exposes neither (e.g. Windows) or the read fails. Never the peak.
+      def current_rss_kb
+        kb = if RUBY_PLATFORM.include?("darwin")
+               `ps -o rss= -p #{Process.pid}`.strip.to_i
+             elsif RUBY_PLATFORM.include?("linux")
+               File.read("/proc/self/status")[/VmRSS:\s+(\d+)/, 1].to_i
+             end
+        kb && kb.positive? ? kb : nil
+      rescue StandardError
+        nil
+      end
+
       def system_payload
         gc = GC.stat
-        mem = begin
-          if RUBY_PLATFORM.include?("darwin")
-            `ps -o rss= -p #{Process.pid}`.strip.to_i # KB
-          elsif RUBY_PLATFORM.include?("linux")
-            (File.read("/proc/self/status")[/VmRSS:\s+(\d+)/, 1].to_i rescue 0)
-          else
-            0
-          end
-        end
+        rss_kb = current_rss_kb
+        mem = rss_kb || 0
 
         os_release = (`uname -r`.strip rescue "unknown")
         host_name = (`hostname`.strip rescue "unknown")
@@ -1032,6 +1039,10 @@ module Tina4
           ruby_engine: RUBY_ENGINE,
           os: "#{RUBY_PLATFORM} #{os_release}",
           architecture: RUBY_PLATFORM,
+          # The dashboard's "Memory" figure: the process's current RSS in MB
+          # (parity with tina4-python / tina4-nodejs). nil when unmeasurable,
+          # so the dashboard shows "?" rather than a made-up number.
+          memory_mb: rss_kb ? (rss_kb / 1024.0).round(1) : nil,
           memory: {
             current_mb: (mem / 1024.0).round(1),
             peak_mb: "N/A",
