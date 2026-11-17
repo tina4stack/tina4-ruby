@@ -27,45 +27,37 @@ html = Tina4::Frond.new(template_dir: "src/templates").render("index.twig", data
 
 ### Globals (values available in every template)
 
-Register a value every template can read with `add_global`:
+Register a global on the engine that `response.render` uses, at boot (e.g. in `app.rb`):
 
 ```ruby
-engine = Tina4::Frond.new(template_dir: "src/templates")
-engine.add_global("app_name", "My App")
+Tina4.get_frond.add_global("app_name", "My App")   # the shared render engine
 ```
 
 ```twig
 <title>{{ app_name }}</title>
 ```
 
-**`add_global` takes a VALUE, not a lazy callable.** Whatever you pass is stored
-as-is and merged into the render context unchanged — Frond never calls it for you
-when you name it bare. A lambda or proc is therefore stored uncalled, and in a
-condition it is a plain object, which is truthy. So this section shows to
-everyone:
+Do not register on a throwaway `Tina4::Frond.new(...)` — that instance is discarded and no page ever
+sees the global. The class form `Tina4::Frond.add_global(...)` goes into a class registry that is
+copied into each engine **when the engine is constructed** (ADR-0052), so it reaches the shared
+engine only if it runs before the first render builds it. **`Tina4.template_global(...)` /
+`Tina4::Template.add_global(...)` do not reach `response.render` at all** (verified on v3: a value
+registered there renders empty) — use `Tina4.get_frond.add_global`.
+
+**A zero-argument lambda/proc global is called for you (ADR-0085).** Naming it bare in an
+expression invokes it once and uses its return value, so this works as written:
 
 ```ruby
-frond.add_global("admin_only", -> { Access.admin_only? })   # WRONG for {% if %}
+Tina4.get_frond.add_global("admin_only", -> { Access.admin_only? })
 ```
 
 ```twig
-{% if admin_only %} ...admin link... {% endif %}   {# always true — admin_only is a Proc #}
+{% if admin_only %} ...admin link... {% endif %}   {# calls admin_only — false hides it #}
 ```
 
-Verified on tina4-ruby 3.13.x with `add_global("g", -> { false })`: `{% if g %}`
-is **true** and only `{% if g() %}` calls it (false). Fixes:
-
-- **Resolve it before you pass it:** `frond.add_global("admin_only", Access.admin_only?)` — a real bool.
-- **Or call it in the template:** `{% if admin_only() %}`.
-- **Accept either a proc global or a plain bool from the render context:**
-  `{% if (admin_only is boolean and admin_only) or admin_only() %}`. A name that
-  is not registered, called as `nope()`, renders as false (it does not throw on
-  3.13.x), so this form is safe when the global is missing.
-
-**Tests must register the global the way the app does.** A plain bool passed in
-the render context (`render(tpl, { "admin_only" => false })`) makes
-`{% if admin_only %}` behave correctly, so a test that passes a bool hides the
-closure bug that production hits through `add_global`.
+Verified on tina4-ruby v3: `add_global("g", -> { false })` makes `{% if g %}` false; `{% if g() %}`
+still calls it explicitly. A lambda that declares parameters is NOT auto-called — call it with its
+arguments (`{{ greet(name) }}`). Objects and plain values are used as-is.
 
 ### Basic Syntax
 
@@ -109,8 +101,9 @@ closure bug that production hits through `add_global`.
 {{ price | number_format(2) }}     → 1,234.56
 {{ date | date("Y-m-d") }}         → Formatted date
 {{ text | slug }}                  → url-friendly-slug
-{{ created | timeago }}            → "3 hours ago"
 ```
+
+There is no `timeago` filter — compute the label in the route, or register your own filter.
 
 All filter names use **snake_case**. Register a custom filter in Ruby:
 ```ruby
@@ -131,21 +124,31 @@ Tina4::Frond.new.add_filter("shout") { |value| value.to_s.upcase + "!" }
 {{ forms.input("email", "", "email") }}
 ```
 
-### Inline SQL Queries (Frond-unique)
+### Data comes from the route (there is no `{% query %}` tag)
+
+Frond has no SQL tag — an unknown tag such as `{% query %}` raises `Frond: unknown tag "query"`.
+Fetch in the route and pass the rows in:
+
+```ruby
+Tina4::Router.get("/products") do |request, response|
+  products = Tina4.database.fetch("SELECT * FROM products WHERE active = ?", [1]).to_a
+  response.render("products.twig", { products: products })
+end
+```
 
 ```twig
-{% query "SELECT * FROM products WHERE active = ?" params=[true] as products %}
-{% for product in products.data %}
+{% for product in products %}
     <div>{{ product.name }} — ${{ product.price | number_format(2) }}</div>
 {% endfor %}
-<p>{{ products.total }} products found</p>
 ```
 
 ### Live Blocks (server-rendered, self-refreshing)
 
 A live block renders on the server for first paint, then re-fetches its own HTML and swaps it in
-place. Pick a transport: `poll N` (every N seconds), `sse`, or `ws "path"`. frond.js (already loaded)
-wires the marker and morphs the result, so a focused input survives the swap.
+place. Pick a transport: **`poll N`** (every N seconds) or **`ws "path"`** for live updates. `sse` is
+parsed but frond.js only paints it once (it warns "sse transport is not wired yet (v1 supports poll
+and ws)") — use `poll` or `ws`. frond.js (already loaded) wires the marker and morphs the result,
+so a focused input survives the swap.
 
 ```twig
 {# Poll every 5 seconds #}
@@ -175,8 +178,8 @@ For a `ws` block, push a fresh render the instant data changes with
 
 ```twig
 {% cache "sidebar" 300 %}
-    {% query "SELECT * FROM popular_posts LIMIT 10" as posts %}
-    {% for post in posts.data %}
+    {# cached for 300 seconds — fetch `posts` in the route and pass it in #}
+    {% for post in posts %}
         <a href="/posts/{{ post.id }}">{{ post.title }}</a>
     {% endfor %}
 {% endcache %}
@@ -184,60 +187,69 @@ For a `ws` block, push a fresh render the instant data changes with
 
 ## frond.js — Frontend Helper
 
-A lightweight JavaScript library that works with any Tina4 backend. Include it:
+A lightweight JavaScript library that ships with every Tina4 backend at `/js/frond.js`. It exposes a
+global `frond` object, auto-attaches the current `Authorization: Bearer` token to every request, and
+rotates it from any `FreshToken` response header. Include it:
 ```html
 <script src="/js/frond.js"></script>
 ```
 
-### HTTP Requests
+### HTTP + injecting HTML
 ```javascript
-const users = await Frond.get("/api/users");
-await Frond.post("/api/users", { name: "Alice" });
-await Frond.put("/api/users/1", { name: "Alice Smith" });
-await Frond.delete("/api/users/1");
+// Low-level request — auto-sends the bearer token; parses JSON responses.
+frond.request("/api/users", {
+    method: "POST",
+    body: { name: "Alice" },              // object -> JSON body
+    onSuccess: (data, status) => console.log(data),
+    onError:   (status) => console.warn("failed", status),
+});
+
+// GET a partial and inject its HTML into an element:
+frond.load("/users/list", "usersTable");
+
+// POST data and inject the response HTML into a target element:
+frond.post("/api/users", { name: "Alice" }, "message");
 ```
 
 ### Forms
 ```javascript
-// saveForm collects inputs, attaches the CSRF form token + Bearer, handles file uploads
-saveForm("user-form", "/api/users", "message");
-Frond.fillForm("#user-form", { name: "Alice", email: "alice@example.com" });
-Frond.resetForm("#user-form");
+// Collect a form's fields (fills the formToken automatically) into a FormData:
+const data = frond.form.collect("userForm");
+
+// Collect + POST + inject the response into a target element (default: "message"):
+frond.form.submit("userForm", "/api/users", "message");
+
+// Load an edit/create/delete form into a target element:
+frond.form.show("edit", "/users/1/edit", "form");
 ```
 
-### CRUD Table (auto-generated)
+### Auth token
 ```javascript
-Frond.crud({
-    target: "#users-table",
-    endpoint: "/api/users",
-    columns: ["id", "name", "email"],
-    searchable: true,
-    paginated: true
+frond.token = jwt;      // set the bearer token; all subsequent requests attach it
+const current = frond.token;
+```
+
+### Messages, popups, GraphQL
+```javascript
+frond.message("Saved!", "success");                 // renders into the #message element
+frond.popup("/preview", "Preview", 800, 600);       // centred popup window
+frond.graphql("/graphql", "{ users { id name } }", {}, (res) => console.log(res.data));
+```
+
+### WebSocket / SSE (auto-reconnect)
+```javascript
+const ws = frond.ws("/ws/chat", {
+    onOpen: () => console.log("connected"),   // options: onOpen/onClose/onError, reconnect settings
 });
-```
-
-### Notifications and Modals
-```javascript
-Frond.notify("Saved!", "success");
-Frond.notify("Error!", "error");
-Frond.confirm("Delete this item?").then(ok => { if (ok) { /* delete */ } });
-Frond.modal({ title: "Edit User", body: "<form>...</form>" });
-```
-
-### Authentication
-```javascript
-Frond.config({ auth: true });
-Frond.setToken(jwt);        // stored in memory; all subsequent requests auto-attach Bearer
-```
-
-### WebSocket
-```javascript
-const ws = Frond.ws("/ws/chat", {
-    reconnect: true,
-    onMessage: (data) => console.log(data),
-});
+ws.on("message", (data) => console.log(data));  // messages arrive via .on("message"), not an option
 ws.send({ type: "message", text: "Hello" });
+
+const stream = frond.sse("/events");
+stream.on("message", (data) => console.log(data));
 ```
+
+Live blocks in templates are wired automatically by `frond.live` on `DOMContentLoaded` — you don't
+call it yourself.
 
 ## Tina4CSS
 

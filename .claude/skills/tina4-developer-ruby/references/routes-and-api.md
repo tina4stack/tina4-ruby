@@ -87,11 +87,14 @@ end
 
 # GET /search?q=hello&page=2
 Tina4.get "/search" do |request, response|
-  query = request.params[:q] || ""
-  page  = (request.params[:page] || "1").to_i
-  # request.query is the query string as a Hash; request.body is the parsed body.
+  query = request.query["q"] || ""        # query string: request.query, a plain Hash with STRING keys
+  page  = (request.query["page"] || "1").to_i
+  # request.params holds ROUTE params only; request.body is the parsed body.
 end
 ```
+
+`request.params` is **route-only** — `?q=` never lands there, so `request.params[:q]` is always nil.
+Read the query string from `request.query` (string keys; `request.query[:q]` is nil).
 
 Typed params (`{id:int}`) are cast: an `int`/`integer` param arrives as an Integer, a `float`/`number`
 as a Float. An unknown type name raises `ArgumentError` at route registration (a typo can't silently
@@ -182,8 +185,10 @@ All state-changing browser forms must include a CSRF token. In a Frond template:
 </form>
 ```
 
-`{{ form_token() }}` renders a hidden `<input name="formToken" value="…">`. `frond.js`'s
-`saveForm` attaches the token automatically for AJAX submissions.
+`{{ form_token() }}` renders a hidden `<input name="formToken" value="…">`.
+`frond.form.submit("formId", "/endpoint", "messageId")` collects every input in the form, including
+that hidden field as rendered, so the token travels with AJAX submissions. Posting by hand? Send
+`{{ formTokenValue() }}` as the `X-Form-Token` header.
 
 A form token proves ORIGIN (this write came from a form you rendered), not identity. CSRF and
 `.no_auth` are orthogonal:
@@ -219,7 +224,10 @@ your forms submit without any CSRF check.
 
 ## CORS
 
-Built-in. Configure via `.env`, or add headers per response:
+Built-in. CORS is **deny by default** (ADR-0018), in development too: with `TINA4_CORS_ORIGINS` unset no
+`Access-Control-Allow-Origin` is sent and the browser blocks cross-origin calls. List the origins you
+allow, e.g. `TINA4_CORS_ORIGINS=http://localhost:5173,https://app.example.com` (`*` allows any, and is
+then never paired with credentials). Same-origin requests need nothing. Or add headers per response:
 `response.add_cors_headers(origin: "https://app.example.com", credentials: true)`.
 
 ## Rate Limiting
