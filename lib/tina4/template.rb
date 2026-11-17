@@ -63,7 +63,11 @@ module Tina4
         @globals ||= { "csp_nonce" => -> { Tina4::Csp.current_nonce } }
       end
 
+      # Register a template global. It is also registered on the Frond class,
+      # so it reaches every Frond engine -- response.render's included --
+      # whenever that engine was built.
       def add_global(key, value)
+        Tina4::Frond.add_global(key, value)
         globals[key.to_s] = value
       end
 

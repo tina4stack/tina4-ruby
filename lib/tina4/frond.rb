@@ -40,9 +40,11 @@ module Tina4
     # Persist globals, filters, and tests across hot-reloads and across module
     # boundaries. When app.rb does ``Tina4::Frond.add_filter("money") { ... }``
     # at startup before any instance exists, the registration sits here. Every
-    # subsequent ``Tina4::Frond.new`` drains these into its instance-local
-    # registries — so hot-reloads (which re-execute ``frond = Frond.new``) and
-    # late-constructed engines automatically inherit prior registrations.
+    # subsequent ``Tina4::Frond.new`` drains the filters and tests into its
+    # instance-local registries — so hot-reloads (which re-execute
+    # ``frond = Frond.new``) and late-constructed engines inherit them. Globals
+    # are read from here at render time, so they reach existing engines too
+    # (ADR-0106).
     #
     # The same-name dual-callable (class + instance) methods below let callers
     # write either ``Tina4::Frond.add_filter(...)`` (process-global) or
@@ -323,7 +325,8 @@ module Tina4
     def initialize(template_dir: "src/templates")
       @template_dir    = template_dir
       @filters         = default_filters
-      @globals         = {}
+      @globals         = {} # this instance's own add_global calls (ADR-0052)
+      @builtin_globals = {}
       @tests           = default_tests
       @auto_escape     = true
 
@@ -352,14 +355,14 @@ module Tina4
       # Built-in global functions
       register_builtin_globals
 
-      # Drain class-level registries into this instance. Filters and tests
+      # Drain class-level filters/tests into this instance. Filters and tests
       # registered via ``Tina4::Frond.add_filter`` BEFORE this instance was
-      # constructed flow in here. Globals likewise. This is the key to the
-      # static-facade: ``app.rb`` registers once at startup, and every
-      # Frond instance created later (including those born from hot-reloads)
-      # automatically inherits the registration. Parity with tina4-python.
+      # constructed flow in here, so every Frond instance created later
+      # (including those born from hot-reloads) inherits the registration.
+      # Class GLOBALS are not copied: with_globals reads @@class_globals at
+      # render time, so a ``Tina4::Frond.add_global`` made after this engine
+      # exists (after the first response.render, say) still reaches it.
       @filters.merge!(@@class_filters)
-      @globals.merge!(@@class_globals)
       @tests.merge!(@@class_tests)
     end
 
@@ -370,7 +373,7 @@ module Tina4
     #   * TINA4_TEMPLATE_CACHE_TTL > 0 — cache entries expire after N seconds.
     #   * TINA4_TEMPLATE_CACHE_TTL == 0 (default in production) — permanent cache.
     def render(template, data = {})
-      context = @globals.merge(stringify_keys(data))
+      context = with_globals(data)
 
       path = File.join(@template_dir, template)
       raise "Template not found: #{path}" unless File.exist?(path)
@@ -401,7 +404,7 @@ module Tina4
 
     # Render a template string directly. Uses token caching for performance.
     def render_string(source, data = {})
-      context = @globals.merge(stringify_keys(data))
+      context = with_globals(data)
 
       key = Digest::MD5.hexdigest(source)
       cached_tokens = @compiled_strings[key]
@@ -414,6 +417,13 @@ module Tina4
       cap_cache(@compiled_strings, TEMPLATE_CACHE_MAX)
       @compiled_strings[key] = tokens
       execute_cached(tokens, context)
+    end
+
+    # Layer the globals under the render data: built-ins < class globals (read
+    # live, so registration order never matters) < this instance's own
+    # globals < the data passed to render.
+    def with_globals(data)
+      @builtin_globals.merge(@@class_globals, @globals, stringify_keys(data))
     end
 
     # Clear all compiled template caches.
@@ -449,6 +459,11 @@ module Tina4
     # the static-facade pattern.
     def self.add_global(name, value)
       @@class_globals[name.to_s] = wrap_global(value) # ADR-0085
+    end
+
+    # A snapshot of the class-level globals (registered via Frond.add_global).
+    def self.class_globals
+      @@class_globals.dup
     end
 
     # Wrap a bare zero-argument Proc/lambda/Method so a bare reference to it
@@ -1881,6 +1896,10 @@ module Tina4
 
       result = eval_function_call(expr, context)
       return remember_form(expr, :function, result) unless result == :not_function
+
+      # A call to a name that is not callable YET is not pinned as :resolve: a
+      # global registered after this render must still be called next time.
+      return resolve(expr, context) if expr.match?(FUNC_CALL_RE)
 
       remember_form(expr, :resolve, nil)
       resolve(expr, context)
@@ -3381,22 +3400,22 @@ module Tina4
     # -----------------------------------------------------------------------
 
     def register_builtin_globals
-      @globals["form_token"] = ->(descriptor = "") { Frond.generate_form_token(descriptor.to_s) }
-      @globals["formTokenValue"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
-      @globals["form_token_value"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
-      @globals["range"] = ->(start, finish, step = 1) { Frond.frond_range(start, finish, step) }
+      @builtin_globals["form_token"] = ->(descriptor = "") { Frond.generate_form_token(descriptor.to_s) }
+      @builtin_globals["formTokenValue"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
+      @builtin_globals["form_token_value"] = ->(descriptor = "") { Frond.generate_form_token_value(descriptor.to_s) }
+      @builtin_globals["range"] = ->(start, finish, step = 1) { Frond.frond_range(start, finish, step) }
 
       # Debug helper: {{ dump(x) }} — gated on TINA4_DEBUG=true.
       # Both this global and the |dump filter call Frond.render_dump which
       # returns an empty SafeString in production so dump never leaks state.
-      @globals["dump"] = ->(value = nil) { Frond.render_dump(value) }
+      @builtin_globals["dump"] = ->(value = nil) { Frond.render_dump(value) }
 
       # CSP nonce: {{ csp_nonce() }} returns the current response's nonce so a
       # template can serve an inline <style>/<script> under the strict default
       # Content-Security-Policy — <style nonce="{{ csp_nonce() }}">. The value
       # matches the 'nonce-X' the security middleware puts in the CSP header
       # (ADR-0088).
-      @globals["csp_nonce"] = -> { Tina4::Csp.current_nonce }
+      @builtin_globals["csp_nonce"] = -> { Tina4::Csp.current_nonce }
     end
 
     # Render a value as a pre-formatted inspect() wrapped in <pre> tags.
