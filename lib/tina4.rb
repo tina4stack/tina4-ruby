@@ -984,8 +984,14 @@ module Tina4
       db_url = ENV["TINA4_DATABASE_URL"]
       if db_url && !db_url.empty?
         begin
-          bind_database(Tina4::Database.new(db_url))
-          Tina4::Log.info("Database connected: #{Tina4::DatabaseUrl.redact(db_url)}")
+          database = bind_database(Tina4::Database.new(db_url))
+          # Database.new logs-and-degrades on a failed connect instead of raising,
+          # so only claim a connection the database itself reports.
+          if database.connected
+            Tina4::Log.info("Database connected: #{Tina4::DatabaseUrl.redact(db_url)}")
+          else
+            Tina4::Log.warning("Database not connected: #{Tina4::DatabaseUrl.redact(db_url)}")
+          end
         rescue => e
           Tina4::Log.error("Database connection failed: #{e.message}")
         end
