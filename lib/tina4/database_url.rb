@@ -176,6 +176,13 @@ module Tina4
       end
     end
 
+    # The connection string with the whole `user:pass@` removed, for log lines
+    # that only need to say WHICH database. Stricter than #redact (the user name
+    # goes too), and built on it so a password never survives an odd URL shape.
+    def self.without_credentials(raw)
+      redact(raw).gsub(%r{://[^/\s@]*@}, "://")
+    end
+
     # Structural redaction of a string that did NOT parse.
     def self.scrub(text)
       head, separator, rest = text.to_s.partition("://")

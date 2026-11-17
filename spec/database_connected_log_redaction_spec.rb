@@ -99,7 +99,8 @@ RSpec.describe "Database connected log line redaction (real PostgreSQL + ODBC)" 
 
       expect(probe_ok?(report)).to be(true), "did not really connect: #{report.inspect}\n#{output}"
       expect(output).to include("Database connected: ")
-      expect(output).to include(":***@")
+      # The connected line drops the whole user:pass@ (stricter than ":***@").
+      expect(output).not_to match(%r{Database connected: \w+://[^/\s]*@})
       expect(output).not_to include(password)
       expect(output).not_to include(password.split(":").first + ":") # the prefix the old regex left
       expect(output).not_to include(password.split(":").last)
@@ -135,8 +136,8 @@ RSpec.describe "Database connected log line redaction (real PostgreSQL + ODBC)" 
       report, output = boot_setup_database("odbc:///#{odbc_dsn}")
 
       expect(probe_ok?(report)).to be(true), "did not really connect: #{report.inspect}\n#{output}"
-      # Tina4.setup_database's line carries the URL; Database#initialize logs a
-      # separate "Database connected: odbc" (driver name only).
+      # The one "Database connected" line (from Database#connect) carries the
+      # redacted URL.
       connected = output.lines.find { |line| line.include?("Database connected: odbc:") }
       expect(connected).not_to be_nil, output
       expect(connected).to match(/pwd=\*\*\*/i)
