@@ -984,9 +984,13 @@ module Tina4
       return if Tina4::Localization.translations.empty?
 
       # Don't overwrite a user-registered t() global
-      return if Tina4::Template.globals.key?("t")
+      return if Tina4::Template.globals.key?("t") || Tina4::Frond.class_globals.key?("t")
 
-      Tina4::Template.add_global("t", ->(key, **opts) { Tina4::Localization.t(key, **opts) })
+      # Templates call t("key") or t("key", {"name" => n}): Frond passes the
+      # params map positionally, so the global takes it as a positional hash.
+      Tina4::Template.add_global("t", lambda { |key, params = nil, locale: nil, **interpolations|
+        Tina4::Localization.t(key, locale: locale, **(params || {}), **interpolations)
+      })
       Tina4::Log.debug("Auto-wired i18n t() as template global")
     end
 
