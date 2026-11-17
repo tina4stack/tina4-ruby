@@ -6,6 +6,8 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 
+require "socket"
+
 module Tina4
   # Identity-checked port takeover, shared by the CLI and the runtime paths.
   #
@@ -153,21 +155,43 @@ module Tina4
       []
     end
 
-    # Reclaim *port* ONLY from an identity-confirmed Tina4 dev server. The single
-    # guarded path for both the CLI (`tina4 serve`) and the runtime bind-failure
-    # fallback. `dev`/`no_takeover` are passed in so this stays pure and directly
-    # testable; callers resolve them from #dev? / #no_takeover_opted_out?.
-    def take_over_port(port, dev:, no_takeover:, base_dir: nil, grace: 0.5)
+    # True when a plain TCP listener on *host*:*port* binds right now. TCPServer
+    # sets SO_REUSEADDR off Windows only, as the server's own bind does.
+    def bindable?(host, port)
+      TCPServer.new(host, port).close
+      true
+    rescue StandardError
+      false
+    end
+
+    # The result to return before any holder lookup, or nil to carry on.
+    #
+    # Takeover is refused when opted out or outside dev mode. Before a bind, the
+    # caller passes the host it will bind: if that bind succeeds, nothing holds
+    # the port, so there is nothing to refuse and nothing to say.
+    def refusal(port, dev, no_takeover, host)
+      return nil if dev && !no_takeover
+      return Result.new(NOTHING, port, [], "") if host && bindable?(host, port)
+
       if no_takeover
         return Result.new(REFUSED_OPTOUT, port, [],
                           "Port #{port} is in use and takeover is disabled " \
                           "(TINA4_NO_TAKEOVER/--no-kill) -- free it or choose another port.")
       end
-      unless dev
-        return Result.new(REFUSED_PROD, port, [],
-                          "Port #{port} is in use; takeover is disabled outside dev mode " \
-                          "-- free it or choose another port.")
-      end
+      Result.new(REFUSED_PROD, port, [],
+                 "Port #{port} is in use; takeover is disabled outside dev mode " \
+                 "-- free it or choose another port.")
+    end
+
+    # Reclaim *port* ONLY from an identity-confirmed Tina4 dev server. The single
+    # guarded path for both the CLI (`tina4 serve`) and the runtime bind-failure
+    # fallback. `dev`/`no_takeover` are passed in so this stays pure and directly
+    # testable; callers resolve them from #dev? / #no_takeover_opted_out?.
+    # Before a bind, the caller passes the `host` it will bind, so a free port
+    # is reported as NOTHING rather than refused as "in use".
+    def take_over_port(port, dev:, no_takeover:, base_dir: nil, grace: 0.5, host: nil)
+      early = refusal(port, dev, no_takeover, host)
+      return early if early
       return Result.new(SKIPPED_CONTAINER, port, [], "") if in_container?
 
       tokens = port_holders(port)
