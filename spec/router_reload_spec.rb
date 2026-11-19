@@ -98,6 +98,19 @@ RSpec.describe "Tina4::Router reload-aware discovery" do
     expect(payload).to include("broken.rb")
   end
 
+  # An absolute Windows path starts with a drive letter. A ":" in an NTFS file
+  # name writes an alternate data stream instead of a file, so the marker
+  # vanished from every data/.broken/*.broken listing. Linux allows the ":", so
+  # the name itself is the check there; on Windows the glob is.
+  it "names the broken-import marker without the drive-letter colon" do
+    Tina4::Router.record_broken_route_import("C:\\app\\src\\routes\\broken.rb", SyntaxError.new("boom"))
+
+    markers = Dir.glob(File.join(tmp_dir, "data", ".broken", "discover_*.broken"))
+    expect(markers.length).to eq(1)
+    expect(File.basename(markers.first)).not_to include(":")
+    expect(File.read(markers.first)).to include("broken.rb")
+  end
+
   # ── mtime-tracked hot reload ───────────────────────────────────
   # The dev pain point: editing an EXISTING route file should serve the
   # fresh handler after POST /__dev/api/reload, not the stale one. Ruby's

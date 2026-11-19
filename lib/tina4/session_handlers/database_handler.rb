@@ -177,6 +177,21 @@ module Tina4
         db.execute("DELETE FROM #{TABLE_NAME} WHERE expires_at > 0 AND expires_at < ?", [Time.now.to_f])
       end
 
+      # Release the connection this handler opened itself from
+      # TINA4_DATABASE_URL. An injected :db belongs to the caller and is never
+      # closed here. Idempotent; the next read or write reopens the connection.
+      # Without it a SQLite session file stayed open for the life of the
+      # process, and on Windows an open file cannot be deleted or replaced.
+      def close
+        return if @db_option || @db.nil?
+
+        begin
+          @db.close
+        ensure
+          @db = nil
+        end
+      end
+
       private
 
       # The database connection, resolved on FIRST USE. An explicit :db option
