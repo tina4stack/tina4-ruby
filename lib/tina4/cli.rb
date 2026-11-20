@@ -552,8 +552,8 @@ module Tina4
           "Edit #{file_path} to add columns beyond id + created_at",
           "Mirror the change in:  #{down_path}",
           "Apply it:              tina4ruby migrate",
-          "Check status:          tina4ruby migrate status",
-          "Rollback if wrong:     tina4ruby migrate rollback",
+          "Check status:          tina4ruby migrate:status",
+          "Rollback if wrong:     tina4ruby migrate:rollback",
         ]
       end,
       "middleware" => lambda do |res|
