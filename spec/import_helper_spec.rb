@@ -151,7 +151,9 @@ RSpec.describe "Tina4::ImportHelper (import-hint hooks)" do
     # Ruby's stock NameError.
     it "goes red when the import_helper is stubbed out, green when restored" do
       helper_path = File.join(REPO_LIB, "tina4", "import_helper.rb")
-      backup      = File.read(helper_path)
+      # Bytes, not text: a text-mode write on Windows turns every LF into CRLF,
+      # so restoring the backup would leave the framework file modified.
+      backup      = File.binread(helper_path)
 
       stub = <<~RUBY
         # frozen_string_literal: true
@@ -177,8 +179,10 @@ RSpec.describe "Tina4::ImportHelper (import-hint hooks)" do
         # compute. With our hook stubbed, the message never mentions Router.)
         expect(stderr_mut).not_to include("Did you mean Tina4::Router?")
       ensure
-        File.write(helper_path, backup)
+        File.binwrite(helper_path, backup)
       end
+      expect(File.binread(helper_path)).to eq(backup),
+        "the stashed import_helper.rb must come back byte-identical"
 
       # Restore-and-verify the gate reopens: our hint is back on the same
       # input, in a fresh child (no leaked state from the mutation run).

@@ -835,7 +835,10 @@ module Tina4
       def record_broken_route_import(file, error)
         broken_dir = File.join(Dir.pwd, "data", ".broken")
         FileUtils.mkdir_p(broken_dir) unless Dir.exist?(broken_dir)
-        slug = file.gsub(%r{[/\\]}, "_")
+        # ":" too: an absolute Windows path starts with a drive letter, and on
+        # NTFS a colon in a file name writes an alternate data stream instead of
+        # a file, so no data/.broken/*.broken listing would see the marker.
+        slug = file.gsub(%r{[/\\:]}, "_")
         payload = JSON.generate(
           type: "auto_discover_failure",
           file: file,
