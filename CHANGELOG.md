@@ -6,6 +6,19 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.165 - 2026-11-22
+
+### Fixed
+
+- Windows: the broken-import marker name drops the drive letter's colon. It kept `C:` in the filename, so NTFS wrote an alternate data stream and no `data/.broken/*.broken` listing found the marker (#183; same rule in tina4-python#328, tina4-php#372, tina4-nodejs#211).
+- `SessionHandlers::DatabaseHandler#close` is new. It releases a connection the handler opened itself, which nothing could release before. An injected connection is never closed; `close` is idempotent and the next use reopens lazily (#183; same rule as tina4-php and tina4-nodejs).
+- After `tina4ruby generate migration`, the next steps name `tina4ruby migrate:status` and `tina4ruby migrate:rollback`. They said `migrate status` and `migrate rollback`, which ran a plain `migrate` and exited 0, so nothing was reported and nothing was rolled back (#184).
+
+### Changed
+
+- AI skills: tina4-developer-ruby carries `updated_for_version: 3.13.165`. Its content changed in 3.13.164 while the field still said 3.13.147, so an older install reported itself current; it now reports itself out of date.
+- Test-only: `spec/import_helper_spec.rb` restores the file it stashes byte for byte; on Windows every full run rewrote `lib/tina4/import_helper.rb` with CRLF line endings (#183).
+
 ## 3.13.164 - 2026-11-17
 
 ### Fixed
