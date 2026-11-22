@@ -54,11 +54,24 @@ module Tina4
 
     # One argument, quoted and escaped for a batch file run by cmd.exe.
     def escape_argument(arg)
-      # Backslashes before a quote double and the quote is backslash-escaped;
-      # backslashes before the closing quote we are about to add double too.
-      quoted = arg.to_s.gsub(/(\\*)"/) { "#{Regexp.last_match(1) * 2}\\\"" }
-                  .sub(/(\\*)\z/) { Regexp.last_match(1) * 2 }
-      %("#{quoted}").gsub(CMD_META, '^\1').gsub(CMD_META, '^\1')
+      quote_argument(arg.to_s).gsub(CMD_META, '^\1').gsub(CMD_META, '^\1')
+    end
+
+    # C-runtime quoting, in one linear pass (no backtracking regex): backslashes
+    # before a quote double and the quote is backslash-escaped; backslashes
+    # before the closing quote we add double too; any other backslash is kept.
+    def quote_argument(arg)
+      quoted = +'"'
+      backslashes = 0
+      arg.each_char do |char|
+        if char == "\\"
+          backslashes += 1
+          next
+        end
+        quoted << ("\\" * (char == '"' ? (backslashes * 2) + 1 : backslashes)) << char
+        backslashes = 0
+      end
+      quoted << ("\\" * backslashes * 2) << '"'
     end
 
     # The batch file and its escaped arguments, as one cmd.exe command line.
@@ -92,8 +105,9 @@ module Tina4
       raise ArgumentError, "cannot pass these arguments to #{program} through cmd.exe intact"
     end
 
-    # Port of `has_redirection()` from Ruby's win32/win32.c (unchanged from
-    # Ruby 2.x through 3.4): true when Ruby's single-string spawn will run
+    # Port of `has_redirection()` from Ruby's win32/win32.c (the same logic in
+    # Ruby 3.1, 3.3 and 3.4; master only adds an end-of-string check that does
+    # not change the answer): true when Ruby's single-string spawn will run
     # +cmd+ through `%COMSPEC% /c` rather than pass it to CreateProcess as is.
     # Byte-wise like the C: a multibyte UTF-8 character never contains one of
     # the ASCII bytes it looks for.
@@ -102,42 +116,41 @@ module Tina4
       quote = nil
       i = 0
       while i < bytes.bytesize
-        char = bytes[i]
-        case char
-        when "'", '"'
-          if quote.nil? then quote = char
-          elsif quote == char then quote = nil
-          end
-          i += 1
-        when ">", "<", "|", "&", "\n"
-          return true unless quote
-
-          i += 1
-        when "%"
-          # `%NAME%` counts as redirection, quoted or not.
-          i += 1
-          next unless identifier_start?(bytes[i])
-
-          i += 1 while identifier_char?(bytes[i + 1])
-          i += 1
-          return true if bytes[i] == "%"
-
-          i += 1
-        when "\\"
-          i += 2
-        else
-          i += 1
-        end
+        found, i, quote = redirection_step(bytes, i, quote)
+        return true if found
       end
       false
     end
 
-    def identifier_start?(char)
-      !char.nil? && char.match?(/[A-Za-z_]/)
+    # One step of has_redirection() at byte +i+: [redirection found?, next
+    # index, quote state].
+    def redirection_step(bytes, i, quote)
+      char = bytes[i]
+      case char
+      when "'", '"' then [false, i + 1, toggle_quote(quote, char)]
+      when ">", "<", "|", "&", "\n" then [quote.nil?, i + 1, quote]
+      when "%" then [*environment_reference(bytes, i), quote]
+      when "\\" then [false, i + 2, quote]
+      else [false, i + 1, quote]
+      end
     end
 
-    def identifier_char?(char)
-      !char.nil? && char.match?(/[A-Za-z0-9_]/)
+    # A quote opens a quoted run, and only the same quote character closes it.
+    def toggle_quote(quote, char)
+      return char if quote.nil?
+
+      quote == char ? nil : quote
+    end
+
+    # `%NAME%` counts as redirection, quoted or not. +i+ is at the `%`; returns
+    # [found?, where the scan resumes], exactly where the C leaves its pointer.
+    def environment_reference(bytes, i)
+      j = i + 1
+      return [false, j] unless bytes[j]&.match?(/[A-Za-z_]/)
+
+      j += 1
+      j += 1 while bytes[j]&.match?(/\w/)
+      [bytes[j] == "%", j + 1]
     end
   end
 end
