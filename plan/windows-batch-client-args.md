@@ -30,6 +30,6 @@ and tina4-python (`tina4_python/core/batch_spawn.py`, branch
 - [ ] dev-admin `deps_install` / `run_tests_payload` probe `command -v bundle`, which cmd.exe lacks, so Windows never uses bundler there (functional gap, reported, not fixed here)
 
 ## Commits
-- (see PR)
+- b04bb3d  fix: run a tina4.cmd client with its arguments intact on Windows (PR #187)
 
 ## Status: In Review
