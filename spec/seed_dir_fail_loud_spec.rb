@@ -69,6 +69,8 @@ RSpec.describe "Tina4.seed_dir fails loud (ADR-0108)" do
     File.write(second, record("002_second"))
     File.write(first, record("001_first"))
     File.write(File.join(@seeds, "_helper.rb"), "raise \"a helper must never run\"\n")
+    # Not a .rb seed file: a runner that loads every file would run it.
+    File.write(File.join(@seeds, "README.txt"), "raise \"a README must never run\"\n")
 
     expect(Tina4.seed_dir(seed_folder: @seeds)).to eq([first, second])
     expect(ran).to eq(%w[001_first 002_second])
