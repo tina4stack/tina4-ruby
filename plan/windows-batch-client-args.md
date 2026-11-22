@@ -31,5 +31,7 @@ and tina4-python (`tina4_python/core/batch_spawn.py`, branch
 
 ## Commits
 - b04bb3d  fix: run a tina4.cmd client with its arguments intact on Windows (PR #187)
+- 32a7952  fix: linear argument quoting and a flatter has_redirection port (CodeQL rb/polynomial-redos + metrics gate)
+- CI on 32a7952: all checks green; Linux test 7152 examples, 0 failures, 108 pending (v3 baseline 7139 / 108 pending: +13 new, no new skips)
 
 ## Status: In Review
