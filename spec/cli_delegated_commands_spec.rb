@@ -77,9 +77,17 @@ RSpec.describe "tina4ruby delegated client commands" do
   # code has — "whatever executable named tina4 is first on PATH" — so the
   # example exercises the real PATH lookup, real spawn and real exit-status
   # propagation, with no in-process substitution anywhere.
+  #
+  # Windows runs neither a shebang nor an extensionless file, so there the same
+  # program is a `tina4.cmd` (one of the names find_client looks up) that hands
+  # its arguments to a Ruby recorder with %*, the way a batch wrapper forwards
+  # them. cmd.exe re-parses that command line, which is what makes the hostile
+  # arguments example below mean something on Windows.
   def path_with_real_client(exit_code: 0)
     dir = File.join(@tmp, "clientbin")
     FileUtils.mkdir_p(dir)
+    return windows_batch_client(dir, exit_code) if Tina4::BatchSpawn.windows?
+
     client = File.join(dir, "tina4")
     File.write(client, <<~SH)
       #!/bin/sh
@@ -92,6 +100,22 @@ RSpec.describe "tina4ruby delegated client commands" do
     dir
   end
 
+  def windows_batch_client(dir, exit_code)
+    recorder = File.join(dir, "client.rb")
+    source = <<~'RUBY'
+      File.open(ARGV_FILE, "ab") { |f| ARGV.each { |arg| f.write(arg.b + "\n") } }
+      File.write(GUARD_FILE, "#{ENV["TINA4_CLI_DELEGATED"]}\n")
+      puts "REAL-CLIENT-RAN #{ARGV.join(" ")}"
+      exit EXIT_CODE
+    RUBY
+    File.write(recorder, source.sub("ARGV_FILE", argv_file.inspect).sub("GUARD_FILE", guard_file.inspect)
+                               .sub("EXIT_CODE", exit_code.to_s))
+    windows = ->(path) { path.tr("/", "\\") }
+    File.write(File.join(dir, "tina4.cmd"),
+               %(@"#{windows.call(RUBY_BIN)}" "#{windows.call(recorder)}" %*\r\n@exit /b %ERRORLEVEL%\r\n))
+    dir
+  end
+
   def argv_file
     File.join(@tmp, "argv.txt")
   end
@@ -100,8 +124,12 @@ RSpec.describe "tina4ruby delegated client commands" do
     File.join(@tmp, "guard.txt")
   end
 
+  # One argument per line. chomp + split(-1) keeps an empty argument, even a
+  # trailing one, which a plain split("\n") would drop.
   def recorded_argv
-    File.exist?(argv_file) ? File.read(argv_file).split("\n") : []
+    return [] unless File.exist?(argv_file)
+
+    File.binread(argv_file).force_encoding("UTF-8").chomp("\n").split("\n", -1)
   end
 
   def recorded_guard
@@ -143,6 +171,36 @@ RSpec.describe "tina4ruby delegated client commands" do
 
       expect(status).to eq(0)
       expect(recorded_argv).to eq(["deploy", "docker", "--force"])
+    end
+
+    # Each of these is mangled or executed when cmd.exe re-parses a batch
+    # client's command line without escaping (BatBadBut): `%PATH%` expands, `^`
+    # vanishes, `x|y` runs `y`, and `cd.>marker` creates the marker file if an
+    # `&` or `|` is obeyed. `say "x|y"` and `q"&cd.>marker` put a metacharacter
+    # outside the argument's own quotes, which on Windows takes the other of the
+    # two command lines Tina4::BatchSpawn can hand Ruby's spawn.
+    hostile_args = ["a&b", "100%PATH%", 'say "hi"', "a^b", "x|y", "<in", "(p)", "!bang!", "",
+                    "tail\\", "x&cd.>marker", "x|cd.>marker", 'say "x|y"', 'q"&cd.>marker'].freeze
+
+    it "passes hostile arguments through verbatim and never runs one as a command" do
+      marker = File.join(@tmp, "marker")
+      broken = hostile_args.filter_map do |arg|
+        FileUtils.rm_f([argv_file, marker])
+        output, status = run_cli(["deploy", arg], path: path_with_real_client)
+        got = recorded_argv
+        executed = File.exist?(marker)
+        next if status.zero? && got == ["deploy", arg] && !executed
+
+        "#{arg.inspect} -> exit #{status}, client got #{got.inspect}" \
+          "#{' (MARKER CREATED)' if executed} #{output.strip[0, 120]}"
+      end
+      expect(broken).to be_empty, "mangled or executed:\n  #{broken.join("\n  ")}"
+
+      FileUtils.rm_f([argv_file, marker])
+      _output, status = run_cli(["deploy", *hostile_args], path: path_with_real_client)
+      expect(status).to eq(0)
+      expect(recorded_argv).to eq(["deploy", *hostile_args])
+      expect(File.exist?(marker)).to be(false), "an argument ran as a command"
     end
 
     it "propagates the client's exit code instead of swallowing it" do

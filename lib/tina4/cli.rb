@@ -15,6 +15,7 @@ require "tmpdir"    # Dir.mktmpdir — used by the ADR-0063 sandbox edit-hint sc
 require "stringio"  # StringIO — captures generator stdout during the sandbox run
 require "open3"     # Open3.capture2e — captures `ruby -c` output+status for `lint`
 require_relative "port_takeover"
+require_relative "batch_spawn" # Tina4::BatchSpawn - runs a tina4.cmd client with its arguments intact
 require_relative "env"       # Tina4::Env.is_truthy -- resolve_config runs before lib/tina4 loads
 
 module Tina4
@@ -377,10 +378,12 @@ module Tina4
         return EXIT_CLIENT_UNAVAILABLE
       end
 
-      # Array form => no shell, so no quoting/injection surface. stdio is
+      # No shell of our own, so no quoting/injection surface: the array form
+      # everywhere, except a tina4.cmd / tina4.bat on Windows, which cmd.exe
+      # always runs and BatchSpawn escapes every argument for. stdio is
       # inherited, so the client's interactive prompts (setup) and colour output
       # work exactly as if it had been invoked directly.
-      system({ DELEGATION_GUARD_ENV => command }, client, command, *args)
+      BatchSpawn.system({ DELEGATION_GUARD_ENV => command }, client, command, *args)
       $?&.exitstatus || EXIT_CLIENT_UNAVAILABLE
     end
 
