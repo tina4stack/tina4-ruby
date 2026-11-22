@@ -550,9 +550,9 @@ RSpec.describe "Tina4.seed_dir (auto-discovery)" do
     expect(order).to eq(%w[001_first 002_second 003_third])
   end
 
-  it "catches errors in seed files" do
+  it "raises Tina4::SeedError naming a failing seed file (ADR-0108)" do
     File.write(File.join(tmp_dir, "001_broken.rb"), 'raise "test error"')
-    expect { Tina4.seed_dir(seed_folder: tmp_dir) }.not_to raise_error
+    expect { Tina4.seed_dir(seed_folder: tmp_dir) }.to raise_error(Tina4::SeedError, /001_broken.rb: test error/)
   end
 end
 

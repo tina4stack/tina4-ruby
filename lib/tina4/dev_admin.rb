@@ -1147,25 +1147,19 @@ module Tina4
 
       # POST /__dev/api/seed/run — run every seed file in seeds/ for real
       # (each file `load`ed in the project context, exactly like `tina4ruby
-      # seed`). Counts files that ran vs. files that raised.
+      # seed`). Stops at the first file that raises and names it (ADR-0108).
       def run_seeds_payload
         seed_folder = File.join(Dir.pwd, "seeds")
         return { seeded: 0, failed: 0, error: "No seeds folder" } unless Dir.exist?(seed_folder)
 
-        files = Dir.glob(File.join(seed_folder, "*.rb")).sort
-                   .reject { |f| File.basename(f).start_with?("_") }
-        seeded = 0
-        failed = 0
-        files.each do |filepath|
-          begin
-            load filepath
-            seeded += 1
-          rescue StandardError => e
-            failed += 1
-            Tina4::Log.error("Seed failed: #{File.basename(filepath)} - #{e.message}") if defined?(Tina4::Log)
-          end
-        end
-        { seeded: seeded, failed: failed }
+        # ADR-0108: the same runner as `tina4ruby seed`; the first failing file
+        # stops the run and is reported by name. seeder.rb is autoloaded only
+        # through Tina4::FakeData, so load it before calling Tina4.seed_dir.
+        require_relative "seeder"
+        executed = Tina4.seed_dir(seed_folder: seed_folder)
+        { seeded: executed.length, failed: 0 }
+      rescue Tina4::SeedError => e
+        { seeded: e.completed.length, failed: 1, error: "#{File.basename(e.seed_file)}: #{e.cause&.message}" }
       rescue => e
         { seeded: 0, failed: 0, error: e.message }
       end
