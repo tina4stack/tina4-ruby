@@ -998,13 +998,31 @@ module Tina4
     seed_dir(seed_folder: seed_folder, clear: clear)
   end
 
-  # Run all seed files in the given folder.
+  # Raised when a seed file raises, so the seed run stopped at it (ADR-0108).
+  # +seed_file+ is the failing file, +completed+ the files that ran before it,
+  # and +cause+ (set by Ruby on a raise inside rescue) the original error.
+  class SeedError < StandardError
+    attr_reader :seed_file, :completed
+
+    def initialize(seed_file, completed, error)
+      @seed_file = seed_file
+      @completed = completed.dup
+      super("Seed file failed: #{File.basename(seed_file)}: #{error.message}")
+    end
+  end
+
+  # Run the seed files in +seed_folder+ in name order, skipping files that
+  # start with "_". Returns the files executed, in order ([] when the folder is
+  # missing). A seed file that raises stops the run: it is logged and a
+  # Tina4::SeedError naming it is raised, and no later file runs (ADR-0108).
   #
   # @param seed_folder [String] path to seed files (default: "seeds")
+  # @return [Array<String>] the seed files executed, in order
+  # @raise [Tina4::SeedError] when a seed file raises
   def self.seed_dir(seed_folder: "seeds", clear: false)
     unless Dir.exist?(seed_folder)
       Tina4::Log.info("Seeder: No seeds folder found at #{seed_folder}")
-      return
+      return []
     end
 
     files = Dir.glob(File.join(seed_folder, "*.rb")).sort
@@ -1012,19 +1030,23 @@ module Tina4
 
     if files.empty?
       Tina4::Log.info("Seeder: No seed files found in #{seed_folder}")
-      return
+      return []
     end
 
     Tina4::Log.info("Seeder: Found #{files.length} seed file(s) in #{seed_folder}")
 
+    executed = []
     files.each do |filepath|
       begin
         Tina4::Log.info("Seeder: Running #{File.basename(filepath)}...")
         load filepath
         Tina4::Log.info("Seeder: Completed #{File.basename(filepath)}")
-      rescue => e
-        Tina4::Log.error("Seeder: Failed to run #{File.basename(filepath)}: #{e.message}")
+      rescue StandardError, ScriptError => e
+        Tina4::Log.error("Seeder: #{File.basename(filepath)} failed, seeding stopped: #{e.message}")
+        raise SeedError.new(filepath, executed, e)
       end
+      executed << filepath
     end
+    executed
   end
 end

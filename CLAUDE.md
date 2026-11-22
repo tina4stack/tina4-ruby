@@ -674,7 +674,10 @@ Tina4.seed_orm(orm_class, count: 10, overrides: {}, clear: false, seed: nil, str
 Tina4.seed_table(table_name, columns, count: 10, overrides: {}, clear: false, seed: nil, strict: false) -> SeedSummary
 Tina4.seed_models(orm_classes, count: 10, overrides: {}, clear: false, seed: nil, strict: false) -> { "ModelName" => SeedSummary }
 Tina4.seed_batch(tasks, clear: false, strict: false) -> { "ClassName" => SeedSummary }
-Tina4.run_seeds(seed_folder: "seeds", clear: false)
+Tina4.run_seeds(seed_folder: "seeds", clear: false) -> Array<String>
+# Runs seeds/*.rb in name order (skips _*). The first file that raises stops the
+# run and raises Tina4::SeedError (#seed_file, #completed); `tina4ruby seed`
+# then exits 1 (ADR-0108).
 ```
 
 **Seeding is visible-but-resilient.** `seed_orm` / `seed_table` wrap each row:

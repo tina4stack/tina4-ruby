@@ -1090,7 +1090,20 @@ module Tina4
       require_relative "../tina4"
       Tina4.initialize!(Dir.pwd)
       load_routes(Dir.pwd)
-      Tina4.seed_dir(seed_folder: "seeds", clear: options[:clear])
+      # seeder.rb is autoloaded only through Tina4::FakeData, so Tina4.seed_dir
+      # does not exist until it is loaded: without this line `tina4ruby seed`
+      # died with NoMethodError before running a single seed file.
+      require_relative "seeder"
+      # ADR-0108: the first seed file that raises stops the run and exits 1,
+      # so a failed seeder fails `tina4 seed` (the client propagates the code).
+      begin
+        executed = Tina4.seed_dir(seed_folder: "seeds", clear: options[:clear])
+      rescue Tina4::SeedError => e
+        e.completed.each { |path| puts "  Seeded: #{File.basename(path)}" }
+        warn "  #{e.message}"
+        exit 1
+      end
+      executed.each { |path| puts "  Seeded: #{File.basename(path)}" }
     end
 
     # ── seed:create ───────────────────────────────────────────────────────
