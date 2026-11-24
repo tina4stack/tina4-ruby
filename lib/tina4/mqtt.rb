@@ -170,6 +170,13 @@ module Tina4
       raw = url.to_s.strip
       raise ArgumentError, "MQTT url is empty — set TINA4_MQTT_URL (e.g. #{DEFAULT_URL})" if raw.empty?
 
+      # A scheme that lost its ":" or a "/" (`mqtt:/u:pw@h`, `mqtt//u:pw@h`) is
+      # a typo, not a bare host: refused without echoing it
+      # (GHSA-h2mr-m3v3-cq8c), since the credential sits where the host is read.
+      if raw.match?(%r{\A[A-Za-z][A-Za-z0-9+.\-]*(?::/(?!/)|//)})
+        raise ArgumentError.new("MQTT url: #{Tina4::DatabaseUrl::AMBIGUOUS_URL}"), cause: nil
+      end
+
       scheme = raw[%r{\A([A-Za-z][A-Za-z0-9+.-]*)://}, 1]&.downcase
       unless scheme.nil? || %w[mqtt tcp mqtts].include?(scheme)
         raise ArgumentError,
@@ -182,10 +189,11 @@ module Tina4
       rest = scheme ? raw.sub(%r{\A[A-Za-z][A-Za-z0-9+.-]*://}, "") : raw
 
       # Split on the LAST "@" so a password containing an un-encoded "@" still
-      # leaves the host intact.
+      # leaves the host intact. The shared split also refuses an "@" that
+      # cannot be ending a userinfo (one in the path or query).
       username = password = nil
-      if rest.include?("@")
-        userinfo, _, rest = rest.rpartition("@")
+      userinfo, rest = Tina4::DatabaseUrl.split_userinfo(rest, "MQTT url")
+      if userinfo
         raw_username, has_password, raw_password = userinfo.partition(":")
         username = percent_decode(raw_username)
         password = percent_decode(raw_password) unless has_password.empty?

@@ -304,7 +304,7 @@ module Tina4
       # server, which is far worse than any parse error.
       def parse_host_port(uri)
         remainder = uri.to_s.sub(%r{\Amongodb://}, "")
-        remainder = remainder.split("@", 2).last.to_s   # credentials
+        remainder = remainder.rpartition("@").last.to_s # credentials end at the LAST "@" (GHSA-h2mr-m3v3-cq8c)
         remainder = remainder.split("/", 2).first.to_s  # path + query
         remainder = remainder.split(",", 2).first.to_s  # first seed host
         host, port = remainder.split(":", 2)

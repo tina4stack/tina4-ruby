@@ -888,6 +888,11 @@ module Tina4
         sensitive = %w[secret password token key credential api_key]
         if sensitive.any? { |s| key.downcase.include?(s) }
           "***REDACTED***"
+        elsif key.match?(/(?:_URL|_URI|_DSN)\z/i)
+          # A connection URL carries its password inline (TINA4_DATABASE_URL,
+          # TINA4_CACHE_URL, TINA4_GRAPH_URL...), and no key-name test catches
+          # it. Masked by the shared primitive (GHSA-h2mr-m3v3-cq8c).
+          Tina4::DatabaseUrl.redact(value)
         else
           value
         end

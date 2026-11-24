@@ -82,21 +82,37 @@ module Tina4
     attr_reader :raw, :scheme, :engine, :host, :port, :graph, :username,
                 :password, :params, :use_tls
 
+    INVALID = "GraphUrl: Invalid URL format — expected scheme://[user[:password]@]host:port/graph. " \
+              "The URL itself is not shown because it can contain a password."
+
+    # GHSA-h2mr-m3v3-cq8c: the same rule as DatabaseUrl, through the same
+    # shared helpers. URI.parse on the whole value accepted `bolt:/u:pw@h`
+    # (password in the path, so in the graph name) and `bolt://u:12?q@h`, and
+    # the InvalidURIError it raised - message holding the raw URL - was kept as
+    # this error's `cause`. Now "scheme://" is required, userinfo is split at
+    # the LAST "@", only the userinfo-free rest goes through URI.parse, and
+    # every refusal is raised with `cause: nil`.
     def initialize(url)
       @raw = url
-      parsed = begin
-        URI.parse(url.to_s)
-      rescue URI::InvalidURIError
-        raise ArgumentError, "GraphUrl: Invalid URL format — expected scheme://host:port/graph"
-      end
+      text = url.to_s
+      match = text.match(Tina4::DatabaseUrl::URL_PREFIX)
+      raise ArgumentError.new(INVALID), cause: nil if match.nil?
 
-      scheme = (parsed.scheme || "").downcase
+      scheme = match[1].downcase
       engine = SCHEME_ENGINE[scheme]
       if engine.nil?
-        raise ArgumentError,
-              "GraphUrl: Unsupported graph URL scheme '#{scheme}'. Supported: " \
-              "#{SCHEME_ENGINE.keys.sort.join(', ')} (e.g. ultipa://host:60061/mygraph)."
+        raise ArgumentError.new("GraphUrl: Unsupported graph URL scheme '#{scheme}'. Supported: " \
+                                "#{SCHEME_ENGINE.keys.sort.join(', ')} (e.g. ultipa://host:60061/mygraph)."),
+              cause: nil
       end
+
+      userinfo, hostpart = Tina4::DatabaseUrl.split_userinfo(text[match[0].length..], "GraphUrl")
+      parsed = begin
+        URI.parse("#{scheme}://#{hostpart}")
+      rescue URI::InvalidURIError
+        nil
+      end
+      raise ArgumentError.new(INVALID), cause: nil if parsed.nil?
 
       @scheme = scheme
       @engine = engine
@@ -105,11 +121,28 @@ module Tina4
       # The path is the graph/database name (one leading slash stripped).
       graph = (parsed.path || "").sub(%r{\A/}, "")
       @graph = graph.empty? ? nil : graph
-      @username = parsed.user ? URI.decode_www_form_component(parsed.user) : nil
-      @password = parsed.password ? URI.decode_www_form_component(parsed.password) : nil
+      if userinfo
+        user, colon, pass = userinfo.partition(":")
+        @username = Tina4::DatabaseUrl.decode_userinfo(user)
+        @password = colon.empty? ? nil : Tina4::DatabaseUrl.decode_userinfo(pass)
+      end
       @params = URI.decode_www_form(parsed.query || "").to_h
       # TLS if the scheme says so (…s) or ?tls=1.
       @use_tls = scheme.end_with?("s") || %w[1 true].include?(@params["tls"])
+    end
+
+    # The URL with the password masked - the only form for a log line.
+    def to_safe_string
+      Tina4::DatabaseUrl.redact(@raw)
+    end
+
+    # inspect lands in consoles and backtraces; the default dumps @password.
+    def inspect
+      "#<Tina4::GraphUrl #{to_safe_string}>"
+    end
+
+    def to_s
+      to_safe_string
     end
 
     # host:port/graph — for messages, never carrying credentials.

@@ -75,15 +75,33 @@ module Tina4
     # on it and a reader recognises it on sight.
     REDACTED = "***"
 
+    # sqlite's in-memory spellings. ":memory:" looks like host:port to the
+    # credential locator, and is not one.
+    SQLITE_MEMORY_FORMS = ["sqlite::memory:", "sqlite:///:memory:", "sqlite://:memory:"].freeze
+
     # RFC 3986 scheme grammar. A scheme cannot contain ":", "@", "/" or a space,
     # which is what makes it the ONLY part of an unparseable string that is
     # provably not a password.
     SCHEME = /\A[A-Za-z][A-Za-z0-9+.\-]*\z/.freeze
 
-    # host[:port][/path] with a NUMERIC port. The digit requirement is what does
-    # the work: it is why "user:secret" (a URL with the host left off) fails to
-    # match and gets redacted, while "192.168.88.99:55432/tina4_py" is echoed.
-    HOST_PORT = %r{\A(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::\d+)?(?:/.*)?\z}m.freeze
+    # Where the authority starts (GHSA-h2mr-m3v3-cq8c): after "scheme://", and
+    # ALSO after the two typos "scheme:/" and "scheme//". A URL that lost a "/"
+    # or its ":" still carries the password in the same place, and treating the
+    # rest as an opaque path is how `postgres:/u:pw@h` was printed verbatim.
+    AUTHORITY_START = %r{\A[A-Za-z][A-Za-z0-9+.\-]*(?:://|:/|//)}.freeze
+
+    # "scheme:" alone - only trusted as a prefix when an "@" follows.
+    OPAQUE_SCHEME = /\A[A-Za-z][A-Za-z0-9+.\-]*:/.freeze
+
+    # The only prefix a PARSER accepts. Anything else is refused.
+    URL_PREFIX = %r{\A([A-Za-z][A-Za-z0-9+.\-]*)://}.freeze
+
+    # The generic refusal: it never echoes the value, because a value whose
+    # shape the parser cannot trust is exactly one where the password could be
+    # anywhere.
+    AMBIGUOUS_URL = "Invalid URL format - the value is not scheme://[user[:password]@]host[:port][/path], " \
+                    "or an '@' appears outside the user:password part (percent-encode it as %40). " \
+                    "The URL itself is not shown because it can contain a password."
 
     # Credential KEYWORDS in the two keyword=value forms that carry one: the
     # ODBC connection string (";"-separated) and the libpq/JDBC query string
@@ -161,20 +179,92 @@ module Tina4
     #     URL, and detect_driver raises it on the BOOT path, so one typo in
     #     TINA4_DATABASE_URL wrote the password into the boot log and CI output.
     # One primitive means the next such bug is fixed once, not four times.
+    #
+    # GHSA-h2mr-m3v3-cq8c: this used to trust URI.parse, which ACCEPTS
+    # `postgres:/u:pw@h` (password in the path), `u:p@/q@h` and `u:12?q@h`
+    # (password in the query), and its fallback cut the authority at the first
+    # "?" or "#" - so a password holding / ? # @ % or a space, a URL with one
+    # slash or no colon after the scheme, a URL with no host, and a non-numeric
+    # port were all printed in clear. It is now purely structural: the ONE
+    # locator, #password_span, decides what the password is, and every caller
+    # in the framework goes through it.
     def self.redact(raw)
       text = raw.to_s
       return "" if text.empty?
 
-      begin
-        # A URL that PARSES gets the round-tripping form rebuilt from the parsed
-        # FIELDS. That form cannot leak: the password is never copied into it.
-        new(text).to_safe_string
-      rescue StandardError
-        # Unparseable - fall back to the structural scrub. Redaction must never
-        # raise; a raise here would mask the error we were called to describe.
-        scrub(text)
-      end
+      # A head before "://" that is not a scheme is unknown text, and unknown
+      # text may BE the secret (the measured Python case was
+      # `notaurl-with-SuperSecret123://`). Say nothing about it rather than guess.
+      head, separator, = text.partition("://")
+      return REDACTED if !separator.empty? && !head.match?(SCHEME)
+
+      span = password_span(text)
+      text = "#{text[0, span.first]}#{REDACTED}#{text[span.last..]}" if span
+      scrub_keywords(text)
+    rescue StandardError
+      # Redaction must never raise - a raise here would mask the error we were
+      # called to describe - and must never fall back to the input.
+      REDACTED
     end
+
+    # Where the password is in a raw connection string, as [start, stop)
+    # character offsets, or nil when there is none. THE rule, shared by every
+    # redaction and every parser in the framework:
+    #
+    # * The authority starts after "scheme://", "scheme:/" or "scheme//".
+    # * Userinfo ends at the LAST "@" on the value (RFC 3986); the password
+    #   starts at the first ":" after the authority start. A "/" before that
+    #   ":" means the text is a path, not a password.
+    # * With no "@", a non-numeric port is the password of a URL that lost its
+    #   host (`postgres://u:secret`), masked to the end of the value - except a
+    #   trailing "?key=value" query, which is kept.
+    #
+    # KNOWN LIMIT: a host-less URL whose password is all digits
+    # (`postgres://u:123/x`) cannot be told apart from host:port, so it stays
+    # unmasked. Likewise in `postgres://u:pw@word` the text after the last "@"
+    # IS the host, by the RFC, and is shown as one.
+    def self.password_span(raw)
+      text = raw.to_s
+      prefix = text[AUTHORITY_START]
+      at_any = text.rindex("@")
+      start = if prefix
+                prefix.length
+              elsif at_any && (opaque = text[OPAQUE_SCHEME])
+                opaque.length
+              elsif at_any
+                0
+              end
+      return nil if start.nil?
+
+      rest = text[start..]
+      at = rest.rindex("@")
+      if at
+        colon = rest.index(":")
+        return nil if colon.nil? || colon > at
+        return nil if path_before?(rest, colon)
+
+        return [start + colon + 1, start + at]
+      end
+
+      # No "@": only a non-numeric PORT can be a password. Skip an IPv6 literal.
+      host_end = rest.start_with?("[") ? (rest.index("]") || rest.length) : 0
+      colon = rest.index(":", host_end)
+      return nil if colon.nil? || path_before?(rest, colon)
+
+      port = rest[(colon + 1)..][%r{\A[^/?#\\]*}]
+      return nil if port.match?(/\A\d*\z/)
+
+      stop = text.length
+      query = rest.rindex("?")
+      stop = start + query if query && query > colon && rest[(query + 1)..].match?(/\A[A-Za-z_][A-Za-z0-9_.\-]*=/)
+      [start + colon + 1, stop]
+    end
+
+    def self.path_before?(rest, colon)
+      separator = rest.index(%r{[/\\]})
+      !separator.nil? && separator < colon
+    end
+    private_class_method :path_before?
 
     # The connection string with the whole `user:pass@` removed, for log lines
     # that only need to say WHICH database. Stricter than #redact (the user name
@@ -183,53 +273,9 @@ module Tina4
       redact(raw).gsub(%r{://[^/\s@]*@}, "://")
     end
 
-    # Structural redaction of a string that did NOT parse.
+    # Kept for callers of the old name; it is #redact.
     def self.scrub(text)
-      head, separator, rest = text.to_s.partition("://")
-
-      # No "://" - a bare file path, an ODBC/keyword string, or a URL that lost
-      # its ":" or a "/" (`postgres//u:pass@host/app`). An "@" means userinfo may
-      # be in front of it, so take the credential out the same way as below.
-      if separator.empty?
-        text = text.to_s
-        return scrub_keywords(text.include?("@") ? redact_authority(text) : text)
-      end
-
-      # A head that is not a scheme is unknown text, and unknown text may BE the
-      # secret (the measured Python case was `notaurl-with-SuperSecret123`).
-      # Say nothing about it rather than guess.
-      return REDACTED unless head.match?(SCHEME)
-
-      # The authority is taken to the first "?" or "#", NOT to the first "/".
-      # An unencoded "/" inside a password would otherwise cut the region short,
-      # push the "@" outside it, and let the password prefix survive.
-      cut = rest.index(/[?#]/) || rest.length
-      "#{head}://#{redact_authority(rest[0, cut])}#{scrub_keywords(rest[cut..].to_s)}"
-    end
-
-    # Take the credential out of a URL authority.
-    #
-    #   user:pass@host:5432/db -> user:***@host:5432/db
-    #   host:5432/db           -> host:5432/db   (no credential present)
-    #   user:pass              -> user:***       (host left off - a real typo,
-    #                                             and the only reason the no-"@"
-    #                                             branch cannot echo blindly)
-    def self.redact_authority(authority)
-      # The LAST "@", because userinfo ends at the last "@" (RFC 3986). Splitting
-      # on the FIRST one is how an unencoded "@" inside a password leaves a tail
-      # in the output.
-      at = authority.rindex("@")
-      if at
-        userinfo = authority[0, at]
-        host = authority[(at + 1)..].to_s
-        name, colon, = userinfo.partition(":")
-        return colon.empty? ? "#{name}@#{host}" : "#{name}:#{REDACTED}@#{host}"
-      end
-
-      return authority if authority.match?(HOST_PORT)
-
-      name, colon, = authority.partition(":")
-      colon.empty? ? name : "#{name}:#{REDACTED}"
+      redact(text)
     end
 
     # Redact the value side of a credential keyword, leaving every other
@@ -238,16 +284,121 @@ module Tina4
       text.gsub(CREDENTIAL_KEYWORDS) { "#{Regexp.last_match(1)}=#{REDACTED}" }
     end
 
+    # A third party's error message (a driver, a client gem) with the
+    # connection string taken out. The whole raw value is replaced by its
+    # redacted form, and so is the password itself and every piece of it: a
+    # driver that splits the value on its own terms (libpq splits a conninfo on
+    # whitespace, the mongo gem quotes "the database name" after a "/") quotes a
+    # PART of it, which a whole-string replace never finds. Pieces shorter than
+    # three characters are left alone - masking them would shred the message.
+    def self.scrub_message(message, raw, replacement = nil)
+      text = message.to_s
+      raw = raw.to_s
+      return text if raw.empty?
+
+      text = text.gsub(raw) { replacement || redact(raw) }
+      secrets = []
+      span = password_span(raw)
+      secrets << raw[span.first...span.last] if span
+      begin
+        secrets << new(raw).password
+      rescue StandardError
+        nil
+      end
+      pieces = secrets.compact.flat_map { |s| [s, *s.split(%r{[\s/?#@:%]+})] }
+      pieces.select { |p| p.length >= 3 }.uniq.sort_by { |p| -p.length }.each do |piece|
+        text = text.gsub(piece, REDACTED)
+      end
+      text
+    rescue StandardError
+      REDACTED
+    end
+
+    # Split what follows "scheme://" into [userinfo, host_and_rest]. Userinfo
+    # ends at the LAST "@". REFUSES (generic message, nothing echoed, no cause)
+    # when that "@" cannot be ending a userinfo - a "/", "?", "#" or a bracket
+    # before the user name's end means it sits in the path or query - because
+    # then the parser and the redaction would disagree about where the password
+    # is. Shared by every URL parser in the framework.
+    def self.split_userinfo(rest, label = "DatabaseUrl")
+      at = rest.rindex("@")
+      return [nil, rest] if at.nil?
+
+      userinfo = rest[0, at]
+      name = userinfo.partition(":").first
+      raise ArgumentError.new("#{label}: #{AMBIGUOUS_URL}"), cause: nil if name.match?(%r{[/?#\[\]\\]})
+
+      [userinfo, rest[(at + 1)..]]
+    end
+
+    # Percent-decode one userinfo part. A "%" that does not start a valid %XX
+    # is a literal "%": URI.decode_www_form_component RAISES on it with the
+    # value in the message, which put the password in the exception.
+    def self.decode_userinfo(part)
+      URI.decode_www_form_component(part.gsub(/%(?![0-9A-Fa-f]{2})/, "%25"))
+    end
+
+    # Characters a userinfo part cannot carry literally. Encoding them is what
+    # lets a driver that re-parses the URL itself see the same password the
+    # framework did, instead of cutting it at the first "/" or "@". ":" is
+    # encoded too: the mongo gem refuses an unencoded ":" inside a password,
+    # and every driver decodes %3A back to ":".
+    USERINFO_UNSAFE = %r{[:/?#@\[\]\s"<>^`{|}\\]|%(?![0-9A-Fa-f]{2})}.freeze
+
+    # The URL a DRIVER should be handed: identical to the input except that the
+    # userinfo's unsafe characters are percent-encoded. A value that does not
+    # parse, or needs nothing encoding, is returned unchanged.
+    def self.driver_url(raw)
+      text = raw.to_s
+      prefix = text[URL_PREFIX]
+      return text if prefix.nil? || text.start_with?("sqlite", "odbc:")
+
+      userinfo, hostpart = split_userinfo(text[prefix.length..])
+      return text if userinfo.nil?
+
+      user, colon, pass = userinfo.partition(":")
+      encode = ->(s) { s.gsub(USERINFO_UNSAFE) { |c| c.bytes.map { |b| format("%%%02X", b) }.join } }
+      "#{prefix}#{encode.call(user)}#{colon}#{encode.call(pass)}@#{hostpart}"
+    rescue StandardError
+      text
+    end
+
+    # Raise unless +url+ is a URL whose userinfo a URI.parse-based client (the
+    # redis gem, nats-pure) will read the way #password_span does: it has
+    # "scheme://", URI.parse accepts it, and every "@" is accounted for by the
+    # userinfo URI took. `redis://u:12?q@h` parses as host "u", port 12, query
+    # "q@h" - a client would dial "u" and quote the password tail - so it is
+    # refused. No "scheme://", or an "@" that cannot end the userinfo, gets the
+    # generic message; a URL URI.parse merely rejects (a space, a bad port) is
+    # named in its redacted form so it stays diagnosable. Never a cause.
+    def self.assert_client_url!(url, label)
+      text = url.to_s
+      prefix = text[URL_PREFIX]
+      raise ArgumentError.new("#{label}: #{AMBIGUOUS_URL}"), cause: nil if prefix.nil?
+
+      split_userinfo(text[prefix.length..], label)
+      parsed = begin
+        URI.parse(text)
+      rescue URI::InvalidURIError
+        nil
+      end
+      raise ArgumentError.new("#{label}: #{redact(text)}"), cause: nil if parsed.nil?
+      raise ArgumentError.new("#{label}: #{AMBIGUOUS_URL}"), cause: nil if text.count("@") != (parsed.userinfo ? 1 : 0)
+
+      parsed
+    end
+
     # The invalid-URL message, with the credential taken OUT.
     #
     # It still has to be diagnosable, so it keeps the scheme, the host, the port
     # as written (the usual fault) and the database name - only the password
-    # becomes ***. When the value has no "://" there is no structure to trust,
-    # so the value is not shown at all and the message says why.
+    # becomes ***. When the value does not start with "scheme://" there is no
+    # structure to trust, so the value is not shown at all and the message says
+    # why.
     def self.invalid_url_error(url)
       text = url.to_s
-      if text.include?("://")
-        "DatabaseUrl: Invalid URL format '#{scrub(text)}' - expected " \
+      if text.match?(URL_PREFIX)
+        "DatabaseUrl: Invalid URL format '#{redact(text)}' - expected " \
           "scheme://user:password@host:port/database"
       else
         "DatabaseUrl: Invalid URL format - no '://', so there is no scheme to " \
@@ -330,7 +481,18 @@ module Tina4
       @engine = "sqlite"
       url = "sqlite:#{url[("sqlite3:".length)..]}" if url.start_with?("sqlite3:")
 
-      @database = if ["sqlite::memory:", "sqlite:///:memory:"].include?(url)
+      # A sqlite URL names a FILE and carries no credentials. One that has a
+      # user:password part anyway (`sqlite://u:secret@host/db`) would otherwise
+      # become a filename - and a filename is printed in the connected line, in
+      # the "resolves outside the project" refusal and in the driver's own
+      # error. Refused, generically. The in-memory forms are not credentials.
+      if !SQLITE_MEMORY_FORMS.include?(url) && self.class.password_span(url)
+        raise ArgumentError.new("DatabaseUrl: a sqlite URL names a file and carries no " \
+                                "user:password, but this one has one. The URL itself is not " \
+                                "shown because it can contain a password."), cause: nil
+      end
+
+      @database = if SQLITE_MEMORY_FORMS.include?(url)
                     ":memory:"
                   elsif url.start_with?("sqlite:///")
                     strip_one_slash(url[("sqlite://".length)..])
@@ -341,32 +503,45 @@ module Tina4
                   end
     end
 
+    # GHSA-h2mr-m3v3-cq8c: no longer URI.parse on the whole value. URI.parse
+    # accepts `postgres:/u:pw@h` (password in the path) and `u:12?q@h` (host
+    # "u", port 12, password tail in the query), and its InvalidURIError quotes
+    # the raw URL - which used to be kept as this error's `cause`. Now:
+    #   * "scheme://" is required; anything else is refused, generically;
+    #   * userinfo is split off at the LAST "@" by the shared #split_userinfo,
+    #     which refuses an "@" that cannot be ending a userinfo;
+    #   * only the userinfo-free remainder goes through URI.parse, and every
+    #     refusal is raised with `cause: nil`.
     def parse_standard(url)
-      parsed = begin
-        URI.parse(url)
-      rescue URI::InvalidURIError
-        # NEVER interpolate the raw URL here. Measured 2026-08-02: a malformed
-        # TINA4_DATABASE_URL put the password verbatim into this ArgumentError,
-        # and Database#detect_driver raises it during boot - so the credential
-        # reached the boot log, the error overlay, a crash report and CI output.
-        raise ArgumentError, self.class.invalid_url_error(url)
-      end
+      match = url.match(URL_PREFIX)
+      raise ArgumentError.new(self.class.invalid_url_error(url)), cause: nil if match.nil?
 
-      scheme = parsed.scheme.to_s.downcase
-      raise ArgumentError, self.class.invalid_url_error(url) if scheme.empty?
-
+      prefix = match[0]
+      scheme = match[1].downcase
       engine = ENGINE_ALIASES[scheme]
       if engine.nil?
-        raise ArgumentError,
-              "DatabaseUrl: Unsupported database scheme '#{scheme}'. " \
-              "Supported: #{ENGINE_ALIASES.keys.join(', ')}"
+        raise ArgumentError.new("DatabaseUrl: Unsupported database scheme '#{scheme}'. " \
+                                "Supported: #{ENGINE_ALIASES.keys.join(', ')}"), cause: nil
       end
+
+      userinfo, hostpart = self.class.split_userinfo(url[prefix.length..])
+      parsed = begin
+        URI.parse("#{scheme}://#{hostpart}")
+      rescue URI::InvalidURIError
+        nil
+      end
+      # Raised OUTSIDE the rescue, and with cause: nil, so the InvalidURIError
+      # (whose message holds the value) is never chained onto this one.
+      raise ArgumentError.new(self.class.invalid_url_error(url)), cause: nil if parsed.nil?
 
       @engine = engine
       @host = parsed.host && !parsed.host.empty? ? parsed.host : nil
       @port = parsed.port || DEFAULT_PORTS[engine]
-      @username = parsed.user ? URI.decode_www_form_component(parsed.user) : nil
-      @password = parsed.password ? URI.decode_www_form_component(parsed.password) : nil
+      if userinfo
+        user, colon, pass = userinfo.partition(":")
+        @username = self.class.decode_userinfo(user)
+        @password = colon.empty? ? nil : self.class.decode_userinfo(pass)
+      end
 
       # Strip EXACTLY ONE leading slash - the URL path separator. Stripping every
       # slash turns the documented absolute Firebird form

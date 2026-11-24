@@ -89,16 +89,26 @@ module Tina4
       end
 
       @url = url || ENV.fetch("TINA4_WS_BACKPLANE_URL", "redis://localhost:6379")
+      # GHSA-h2mr-m3v3-cq8c: the redis gem re-parses the URL with URI.parse,
+      # which reads `redis://u:12?q@h` as host "u", port 12 and then quotes that
+      # host in its connection errors. Refuse (generically) any URL whose
+      # userinfo URI.parse would not take the way the shared redaction does.
+      Tina4::DatabaseUrl.assert_client_url!(@url, "Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane")
+      failure = nil
       begin
         @redis = Redis.new(url: @url)
         @subscriber = Redis.new(url: @url)
       rescue StandardError => e
+        failure = e
+      end
+      if failure
         # A URL the client cannot parse raises URI::InvalidURIError quoting the
         # WHOLE raw URL, password included, and WebSocket#ensure_backplane logs
-        # e.message. Re-raise naming only the redacted form.
-        raise ArgumentError,
-              "Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane: " \
-              "#{Tina4::DatabaseUrl.redact(@url)} (#{e.class})"
+        # e.message. Re-raise naming only the redacted form - with cause: nil,
+        # because a chained cause carries that raw message into every crash
+        # report and full_message.
+        raise ArgumentError.new("Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane: " \
+                                "#{Tina4::DatabaseUrl.redact(@url)} (#{failure.class})"), cause: nil
       end
       @threads = {}
       @running = true
@@ -162,6 +172,13 @@ module Tina4
       @threads = {}
       @running = true
       @mutex = Mutex.new
+
+      # Same rule as RedisBackplane (GHSA-h2mr-m3v3-cq8c): refuse a URL whose
+      # userinfo the client would read differently from the shared redaction.
+      # nats-pure takes a comma-separated server list, so each is checked.
+      @url.to_s.split(",").each do |server|
+        Tina4::DatabaseUrl.assert_client_url!(server.strip, "Invalid TINA4_WS_BACKPLANE_URL for the NATS backplane")
+      end
 
       # Connect to NATS in a background thread with its own event loop
       @nats = NATS::IO::Client.new

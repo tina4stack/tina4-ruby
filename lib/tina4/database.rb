@@ -503,7 +503,7 @@ module Tina4
         @pool = ConnectionPool.new(
           @pool_size,
           driver_factory: method(:create_driver),
-          connection_string: @connection_string,
+          connection_string: driver_connection_string,
           username: @username,
           password: @password
         )
@@ -518,7 +518,7 @@ module Tina4
     end
 
     def connect
-      @driver.connect(@connection_string, username: @username, password: @password)
+      @driver.connect(driver_connection_string, username: @username, password: @password)
       @connected = true
 
       # Push the resolved autocommit setting down to the driver when it exposes a
@@ -592,13 +592,39 @@ module Tina4
     # a scheme-less value whole as the host it could not resolve -
     #   could not translate host name "postgres//u:pass@h/app" to address
     # - password included.
+    #
+    # GHSA-h2mr-m3v3-cq8c: a driver can also quote a PART of the value (libpq
+    # splits a conninfo on whitespace; the mongo gem quotes "the database name"
+    # after a "/"), which a whole-string replace never finds, and it is handed
+    # the percent-encoded #driver_connection_string, not the raw value. Both
+    # forms, and the password itself, go through the shared primitive.
     def scrub_connection_string(text)
       raw = @connection_string.to_s
       return text.to_s if raw.empty?
 
-      text.to_s.gsub(raw) { Tina4::DatabaseUrl.redact(raw) }
+      replacement = Tina4::DatabaseUrl.redact(raw)
+      out = Tina4::DatabaseUrl.scrub_message(text, raw, replacement)
+      driver_url = driver_connection_string
+      driver_url == raw ? out : Tina4::DatabaseUrl.scrub_message(out, driver_url, replacement)
     end
     private :scrub_connection_string
+
+    # The value a DRIVER is handed: the configured one with its userinfo
+    # percent-encoded (GHSA-h2mr-m3v3-cq8c). Drivers re-parse the URL
+    # themselves, and libpq, the mongo gem and URI.parse all cut a userinfo at
+    # the first "/" or "@" - so `postgres://u:a/b@h/db`, which the framework
+    # parses as password "a/b", reached the driver as host "u", port "a" and
+    # came back in its error message. Unchanged when nothing needs encoding.
+    def driver_connection_string
+      Tina4::DatabaseUrl.driver_url(@connection_string)
+    end
+    private :driver_connection_string
+
+    # inspect lands in consoles, backtraces and error pages. The default one
+    # dumps @connection_string and @password.
+    def inspect
+      "#<Tina4::Database #{@driver_name} #{safe_connection_target}>"
+    end
 
     # The connection string with any password stripped, so a raised error can name
     # the target without leaking a credential into a log or an HTTP 500 body.
@@ -1988,6 +2014,8 @@ module Tina4
       drv.respond_to?(name)
     end
 
+    SCHEME_TYPO = %r{\A(?:#{Tina4::DatabaseUrl::ENGINE_ALIASES.keys.map { |k| Regexp.escape(k) }.join("|")})//}i.freeze
+
     def detect_driver(conn)
       # A real URL is decided by its SCHEME, through DatabaseUrl, which resolves
       # aliases once and RAISES on a scheme it does not know.
@@ -1999,8 +2027,13 @@ module Tina4
       # and nobody learns the real database was never reached. It also matched
       # on substrings, so a postgres database named "mysqldata" could be
       # detected as MySQL.
+      #
+      # A known scheme followed by "//" (the ":" lost, `postgres//u:pw@h/db`)
+      # is a URL typo, not a bare path: the parser refuses it, generically.
+      # Before GHSA-h2mr-m3v3-cq8c it fell through to the substring match and
+      # the raw value went to the driver, whose error quoted part of it.
       text = conn.to_s
-      if text.match?(/\A[a-zA-Z][a-zA-Z0-9+.-]*:/)
+      if text.match?(/\A[a-zA-Z][a-zA-Z0-9+.-]*:/) || text.match?(SCHEME_TYPO)
         return Tina4::DatabaseUrl.new(text).engine
       end
 
