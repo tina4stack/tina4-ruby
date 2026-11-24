@@ -1018,8 +1018,12 @@ module Tina4
           # A successful single connection was already logged, with this URL, by
           # Database#connect - one "Database connected" line, not two.
         rescue => e
-          @database_setup_error = e.message.to_s.gsub(db_url) { safe_url }.gsub(%r{://[^/\s@]*@}, "://")
-          Tina4::Log.error("Database connection failed: #{e.message}")
+          # GHSA-h2mr-m3v3-cq8c: this logged e.message RAW. Whatever raised here
+          # (a driver, the sqlite path resolver) can quote the URL or a part of
+          # it, so the logged line is the scrubbed one too.
+          @database_setup_error = Tina4::DatabaseUrl.scrub_message(e.message, db_url, safe_url)
+                                                    .gsub(%r{://[^/\s@]*@}, "://")
+          Tina4::Log.error("Database connection failed: #{@database_setup_error}")
         end
       end
     end

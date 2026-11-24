@@ -558,8 +558,11 @@ module Tina4
       config = {}
       url = url.sub("amqp://", "").sub("amqps://", "")
 
+      # Userinfo ends at the LAST "@" (GHSA-h2mr-m3v3-cq8c). Splitting at the
+      # first one turned `u:p@ss@host` into password "p" and host "ss@host",
+      # which Bunny then printed in its connection error.
       if url.include?("@")
-        creds, rest = url.split("@", 2)
+        creds, _, rest = url.rpartition("@")
         if creds.include?(":")
           config[:username], config[:password] = creds.split(":", 2)
         else
@@ -596,6 +599,12 @@ module Tina4
 
       if hostport.include?(":")
         host, port = hostport.split(":", 2)
+        # A non-numeric port is the password of a URL that lost its host
+        # (`amqp://u:secret`) - and whatever followed a "/" in it became the
+        # vhost. Refused without echoing the value (GHSA-h2mr-m3v3-cq8c).
+        unless port.match?(/\A\d*\z/)
+          raise ArgumentError.new("TINA4_QUEUE_URL: #{Tina4::DatabaseUrl::AMBIGUOUS_URL}"), cause: nil
+        end
         config[:host] = host
         config[:port] = port.to_i
       elsif hostport && !hostport.empty?

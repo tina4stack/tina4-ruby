@@ -82,34 +82,51 @@ module Tina4
     attr_reader :raw, :scheme, :engine, :host, :port, :graph, :username,
                 :password, :params, :use_tls
 
+    INVALID = "GraphUrl: Invalid URL format — expected scheme://[user[:password]@]host:port/graph. " \
+              "The URL itself is not shown because it can contain a password."
+
+    # GHSA-h2mr-m3v3-cq8c: the same rule as DatabaseUrl, through the same
+    # shared helpers. URI.parse on the whole value accepted `bolt:/u:pw@h`
+    # (password in the path, so in the graph name) and `bolt://u:12?q@h`, and
+    # the InvalidURIError it raised - message holding the raw URL - was kept as
+    # this error's `cause`. Now "scheme://" is required, userinfo is split at
+    # the LAST "@", only the userinfo-free rest goes through URI.parse, and
+    # every refusal is raised with `cause: nil`.
     def initialize(url)
       @raw = url
-      parsed = begin
-        URI.parse(url.to_s)
-      rescue URI::InvalidURIError
-        raise ArgumentError, "GraphUrl: Invalid URL format — expected scheme://host:port/graph"
-      end
+      text = url.to_s
+      match = text.match(Tina4::DatabaseUrl::URL_PREFIX)
+      raise ArgumentError.new(INVALID), cause: nil if match.nil?
 
-      scheme = (parsed.scheme || "").downcase
-      engine = SCHEME_ENGINE[scheme]
-      if engine.nil?
-        raise ArgumentError,
-              "GraphUrl: Unsupported graph URL scheme '#{scheme}'. Supported: " \
-              "#{SCHEME_ENGINE.keys.sort.join(', ')} (e.g. ultipa://host:60061/mygraph)."
-      end
+      @scheme = match[1].downcase
+      @engine = engine_for!(@scheme)
+      userinfo, hostpart = Tina4::DatabaseUrl.split_userinfo(text[match[0].length..], "GraphUrl")
+      parsed = Tina4::DatabaseUrl.parse_hostpart(@scheme, hostpart)
+      raise ArgumentError.new(INVALID), cause: nil if parsed.nil?
 
-      @scheme = scheme
-      @engine = engine
-      @host = parsed.host && !parsed.host.empty? ? parsed.host : "localhost"
-      @port = parsed.port || ENGINE_DEFAULT_PORT[engine]
+      @host = parsed.host.to_s.empty? ? "localhost" : parsed.host
+      @port = parsed.port || ENGINE_DEFAULT_PORT[@engine]
       # The path is the graph/database name (one leading slash stripped).
-      graph = (parsed.path || "").sub(%r{\A/}, "")
+      graph = parsed.path.to_s.sub(%r{\A/}, "")
       @graph = graph.empty? ? nil : graph
-      @username = parsed.user ? URI.decode_www_form_component(parsed.user) : nil
-      @password = parsed.password ? URI.decode_www_form_component(parsed.password) : nil
+      @username, @password = Tina4::DatabaseUrl.split_credentials(userinfo)
       @params = URI.decode_www_form(parsed.query || "").to_h
       # TLS if the scheme says so (…s) or ?tls=1.
-      @use_tls = scheme.end_with?("s") || %w[1 true].include?(@params["tls"])
+      @use_tls = @scheme.end_with?("s") || %w[1 true].include?(@params["tls"])
+    end
+
+    # The URL with the password masked - the only form for a log line.
+    def to_safe_string
+      Tina4::DatabaseUrl.redact(@raw)
+    end
+
+    # inspect lands in consoles and backtraces; the default dumps @password.
+    def inspect
+      "#<Tina4::GraphUrl #{to_safe_string}>"
+    end
+
+    def to_s
+      to_safe_string
     end
 
     # host:port/graph — for messages, never carrying credentials.
@@ -122,6 +139,18 @@ module Tina4
     def self.from_env(env_key = "TINA4_GRAPH_URL")
       url = (ENV[env_key] || "").strip
       url.empty? ? nil : new(url)
+    end
+
+    private
+
+    # The canonical engine for a scheme, or a refusal naming the scheme only.
+    def engine_for!(scheme)
+      engine = SCHEME_ENGINE[scheme]
+      return engine if engine
+
+      raise ArgumentError.new("GraphUrl: Unsupported graph URL scheme '#{scheme}'. Supported: " \
+                              "#{SCHEME_ENGINE.keys.sort.join(', ')} (e.g. ultipa://host:60061/mygraph)."),
+            cause: nil
     end
   end
 
