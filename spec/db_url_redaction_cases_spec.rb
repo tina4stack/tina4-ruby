@@ -495,6 +495,25 @@ RSpec.describe "GHSA-h2mr-m3v3-cq8c: connection URL redaction (shared cases)" do
     end
   end
 
+  # The scrub must not shred the message it is protecting. CI measured this on
+  # live PostgreSQL: the wrong password "s3ntinel-Pa55 word" split into the
+  # piece "word", and "password authentication failed" became
+  # "pass*** authentication failed" - the reason was gone.
+  it "a password piece is masked only where it stands alone, never inside a word" do
+    db = Tina4::Database.allocate
+    db.instance_variable_set(:@connection_string, "postgres://tina4:s3ntinel-Pa55%20word@localhost:55432/tina4_rb")
+    db.instance_variable_set(:@driver_name, "postgres")
+    db.instance_variable_set(:@connect_error, RuntimeError.new(
+      'connection to server at "::1", port 55432 failed: FATAL:  password authentication failed for user "tina4"'
+    ))
+    message = db.send(:connect_error_message)
+    expect(message).to include("password authentication failed")
+    expect(message).to include("postgres://tina4:***@localhost:55432/tina4_rb")
+    expect(message).not_to include("s3ntinel")
+    quoted = db.send(:scrub_connection_string, 'missing "=" after "word" in connection info string')
+    expect(quoted).not_to include('"word"')
+  end
+
   # `postgres//u:pw@h` (the ":" lost) is a URL typo: refused by the parser,
   # never handed to a driver that would quote part of it.
   DbUrlRedactionCases::DB_SCHEMES.reject { |s| s.start_with?("sqlite") }.each do |scheme|

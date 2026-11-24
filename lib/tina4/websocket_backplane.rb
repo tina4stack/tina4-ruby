@@ -94,22 +94,7 @@ module Tina4
       # host in its connection errors. Refuse (generically) any URL whose
       # userinfo URI.parse would not take the way the shared redaction does.
       Tina4::DatabaseUrl.assert_client_url!(@url, "Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane")
-      failure = nil
-      begin
-        @redis = Redis.new(url: @url)
-        @subscriber = Redis.new(url: @url)
-      rescue StandardError => e
-        failure = e
-      end
-      if failure
-        # A URL the client cannot parse raises URI::InvalidURIError quoting the
-        # WHOLE raw URL, password included, and WebSocket#ensure_backplane logs
-        # e.message. Re-raise naming only the redacted form - with cause: nil,
-        # because a chained cause carries that raw message into every crash
-        # report and full_message.
-        raise ArgumentError.new("Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane: " \
-                                "#{Tina4::DatabaseUrl.redact(@url)} (#{failure.class})"), cause: nil
-      end
+      @redis, @subscriber = open_clients
       @threads = {}
       @running = true
     end
@@ -146,6 +131,28 @@ module Tina4
       @threads.clear
       @subscriber.close
       @redis.close
+    end
+
+    private
+
+    # The publisher and subscriber clients. A URL the client cannot parse
+    # raises URI::InvalidURIError quoting the WHOLE raw URL, password included,
+    # and WebSocket#ensure_backplane logs e.message. Re-raised naming only the
+    # redacted form - outside the rescue and with cause: nil, because a chained
+    # cause carries that raw message into every crash report and full_message.
+    def open_clients
+      clients = new_clients
+      return clients if clients.is_a?(Array)
+
+      raise ArgumentError.new("Invalid TINA4_WS_BACKPLANE_URL for the Redis backplane: " \
+                              "#{Tina4::DatabaseUrl.redact(@url)} (#{clients.class})"), cause: nil
+    end
+
+    # Both clients, or the error building them raised (returned, not raised).
+    def new_clients
+      [Redis.new(url: @url), Redis.new(url: @url)]
+    rescue StandardError => e
+      e
     end
   end
 

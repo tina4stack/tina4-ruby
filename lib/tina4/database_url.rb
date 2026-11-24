@@ -225,40 +225,55 @@ module Tina4
     # IS the host, by the RFC, and is shown as one.
     def self.password_span(raw)
       text = raw.to_s
-      prefix = text[AUTHORITY_START]
-      at_any = text.rindex("@")
-      start = if prefix
-                prefix.length
-              elsif at_any && (opaque = text[OPAQUE_SCHEME])
-                opaque.length
-              elsif at_any
-                0
-              end
+      start = authority_start(text)
       return nil if start.nil?
 
       rest = text[start..]
+      span = rest.include?("@") ? userinfo_span(rest) : port_span(rest)
+      span && [start + span.first, start + span.last]
+    end
+
+    # Offset where the authority starts: after "scheme://", "scheme:/" or
+    # "scheme//"; when the value has an "@" but none of those, after a bare
+    # "scheme:" or at the very start. nil when there is nothing to look in.
+    def self.authority_start(text)
+      prefix = text[AUTHORITY_START]
+      return prefix.length if prefix
+      return nil unless text.include?("@")
+
+      text[OPAQUE_SCHEME].to_s.length
+    end
+    private_class_method :authority_start
+
+    # With an "@": the password runs from the first ":" to the LAST "@".
+    def self.userinfo_span(rest)
       at = rest.rindex("@")
-      if at
-        colon = rest.index(":")
-        return nil if colon.nil? || colon > at
-        return nil if path_before?(rest, colon)
+      colon = rest.index(":")
+      return nil if colon.nil? || colon > at || path_before?(rest, colon)
 
-        return [start + colon + 1, start + at]
-      end
+      [colon + 1, at]
+    end
+    private_class_method :userinfo_span
 
-      # No "@": only a non-numeric PORT can be a password. Skip an IPv6 literal.
+    # No "@": only a non-numeric PORT can be a password (an IPv6 literal is
+    # skipped). Masked to the end, keeping a trailing "?key=value" query.
+    def self.port_span(rest)
       host_end = rest.start_with?("[") ? (rest.index("]") || rest.length) : 0
       colon = rest.index(":", host_end)
       return nil if colon.nil? || path_before?(rest, colon)
+      return nil if rest[(colon + 1)..][%r{\A[^/?#\\]*}].match?(/\A\d*\z/)
 
-      port = rest[(colon + 1)..][%r{\A[^/?#\\]*}]
-      return nil if port.match?(/\A\d*\z/)
-
-      stop = text.length
-      query = rest.rindex("?")
-      stop = start + query if query && query > colon && rest[(query + 1)..].match?(/\A[A-Za-z_][A-Za-z0-9_.\-]*=/)
-      [start + colon + 1, stop]
+      [colon + 1, kept_query_start(rest, colon) || rest.length]
     end
+    private_class_method :port_span
+
+    def self.kept_query_start(rest, colon)
+      query = rest.rindex("?")
+      return nil if query.nil? || query < colon
+
+      query if rest[(query + 1)..].match?(/\A[A-Za-z_][A-Za-z0-9_.\-]*=/)
+    end
+    private_class_method :kept_query_start
 
     def self.path_before?(rest, colon)
       separator = rest.index(%r{[/\\]})
@@ -305,14 +320,34 @@ module Tina4
       rescue StandardError
         nil
       end
-      pieces = secrets.compact.flat_map { |s| [s, *s.split(%r{[\s/?#@:%]+})] }
-      pieces.select { |p| p.length >= 3 }.uniq.sort_by { |p| -p.length }.each do |piece|
-        text = text.gsub(piece, REDACTED)
-      end
-      text
+      mask_pieces(text, secrets.compact)
     rescue StandardError
       REDACTED
     end
+
+    # Replace each secret, and each piece of it, with the marker. A piece is
+    # only masked where it is not part of a longer word: the driver quotes it
+    # cut at a delimiter, so it stands alone there - while "word" from a
+    # password "my word" must not turn "password authentication failed" into
+    # "pass*** authentication failed".
+    def self.mask_pieces(text, secrets)
+      pieces = secrets.flat_map { |s| [s, *s.split(%r{[\s/?#@:%]+})] }
+      pieces.select { |p| p.length >= 3 }.uniq.sort_by { |p| -p.length }.each do |piece|
+        text = text.gsub(standalone(piece), REDACTED)
+      end
+      text
+    end
+    private_class_method :mask_pieces
+
+    # A pattern for +piece+ that does not match inside a longer alphanumeric
+    # run (a boundary is only required on a side where the piece itself ends
+    # in a letter or digit).
+    def self.standalone(piece)
+      left = piece.match?(/\A[[:alnum:]]/) ? "(?<![[:alnum:]])" : ""
+      right = piece.match?(/[[:alnum:]]\z/) ? "(?![[:alnum:]])" : ""
+      Regexp.new("#{left}#{Regexp.escape(piece)}#{right}")
+    end
+    private_class_method :standalone
 
     # Split what follows "scheme://" into [userinfo, host_and_rest]. Userinfo
     # ends at the LAST "@". REFUSES (generic message, nothing echoed, no cause)
@@ -329,6 +364,23 @@ module Tina4
       raise ArgumentError.new("#{label}: #{AMBIGUOUS_URL}"), cause: nil if name.match?(%r{[/?#\[\]\\]})
 
       [userinfo, rest[(at + 1)..]]
+    end
+
+    # URI.parse of the userinfo-free remainder, or nil. Never raises, so a
+    # caller's refusal cannot chain the InvalidURIError (which quotes it).
+    def self.parse_hostpart(scheme, hostpart)
+      URI.parse("#{scheme}://#{hostpart}")
+    rescue URI::InvalidURIError
+      nil
+    end
+
+    # [user, password] decoded from a userinfo, [nil, nil] without one. No
+    # ":" means no password (nil); "user:" is an explicitly EMPTY one ("").
+    def self.split_credentials(userinfo)
+      return [nil, nil] if userinfo.nil?
+
+      user, colon, pass = userinfo.partition(":")
+      [decode_userinfo(user), colon.empty? ? nil : decode_userinfo(pass)]
     end
 
     # Percent-decode one userinfo part. A "%" that does not start a valid %XX
@@ -524,32 +576,17 @@ module Tina4
       match = url.match(URL_PREFIX)
       raise ArgumentError.new(self.class.invalid_url_error(url)), cause: nil if match.nil?
 
-      prefix = match[0]
       scheme = match[1].downcase
-      engine = ENGINE_ALIASES[scheme]
-      if engine.nil?
-        raise ArgumentError.new("DatabaseUrl: Unsupported database scheme '#{scheme}'. " \
-                                "Supported: #{ENGINE_ALIASES.keys.join(', ')}"), cause: nil
-      end
-
-      userinfo, hostpart = self.class.split_userinfo(url[prefix.length..])
-      parsed = begin
-        URI.parse("#{scheme}://#{hostpart}")
-      rescue URI::InvalidURIError
-        nil
-      end
-      # Raised OUTSIDE the rescue, and with cause: nil, so the InvalidURIError
+      @engine = engine_for!(scheme)
+      userinfo, hostpart = self.class.split_userinfo(url[match[0].length..])
+      parsed = self.class.parse_hostpart(scheme, hostpart)
+      # Raised OUTSIDE any rescue, and with cause: nil, so the InvalidURIError
       # (whose message holds the value) is never chained onto this one.
       raise ArgumentError.new(self.class.invalid_url_error(url)), cause: nil if parsed.nil?
 
-      @engine = engine
-      @host = parsed.host && !parsed.host.empty? ? parsed.host : nil
-      @port = parsed.port || DEFAULT_PORTS[engine]
-      if userinfo
-        user, colon, pass = userinfo.partition(":")
-        @username = self.class.decode_userinfo(user)
-        @password = colon.empty? ? nil : self.class.decode_userinfo(pass)
-      end
+      @host = parsed.host.to_s.empty? ? nil : parsed.host
+      @port = parsed.port || DEFAULT_PORTS[@engine]
+      @username, @password = self.class.split_credentials(userinfo)
 
       # Strip EXACTLY ONE leading slash - the URL path separator. Stripping every
       # slash turns the documented absolute Firebird form
@@ -557,7 +594,16 @@ module Tina4
       # `var/lib/db.fdb`. Verified against live Firebird 5.0.4: the driver takes
       # one or two leading slashes and rejects a relative path outright.
       database = strip_one_slash(parsed.path.to_s)
-      @database = database.empty? && engine == "mongodb" ? "tina4" : database
+      @database = database.empty? && @engine == "mongodb" ? "tina4" : database
+    end
+
+    # The canonical engine for a scheme, or a refusal naming the scheme only.
+    def engine_for!(scheme)
+      engine = ENGINE_ALIASES[scheme]
+      return engine if engine
+
+      raise ArgumentError.new("DatabaseUrl: Unsupported database scheme '#{scheme}'. " \
+                              "Supported: #{ENGINE_ALIASES.keys.join(', ')}"), cause: nil
     end
   end
 end
