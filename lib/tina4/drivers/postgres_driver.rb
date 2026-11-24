@@ -23,6 +23,20 @@ module Tina4
       include SchemaSplit
       attr_reader :connection
 
+      # The URL handed to libpq, with the separately-passed credentials in its
+      # userinfo. They are percent-encoded: URI#password= REFUSES "/", "@", "%"
+      # and a space (URI::InvalidComponentError), so such a password could never
+      # connect - even spelled percent-encoded in the URL, because Tina4 decodes
+      # it and passes the decoded value here. libpq decodes the userinfo.
+      def self.connection_url(connection_string, username, password)
+        return connection_string unless username || password
+
+        uri = URI.parse(connection_string)
+        uri.user = Tina4::DatabaseUrl.encode_credential(username) if username
+        uri.password = Tina4::DatabaseUrl.encode_credential(password) if password
+        uri.to_s
+      end
+
       def connect(connection_string, username: nil, password: nil)
         @connect_args = [connection_string, username, password]
         begin
@@ -33,13 +47,7 @@ module Tina4
                 "    bundle add pg     # if your project uses Bundler\n" \
                 "    gem install pg    # bare driver"
         end
-        url = connection_string
-        if username || password
-          uri = URI.parse(url)
-          uri.user = username if username
-          uri.password = password if password
-          url = uri.to_s
-        end
+        url = self.class.connection_url(connection_string, username, password)
         # libpq's OWN connect_timeout, in whole seconds. MEASURED: it bounds the
         # entire connect INCLUDING the startup handshake - 3.01s against a
         # TCPServer that accepts and never replies, where the same connect with

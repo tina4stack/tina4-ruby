@@ -345,6 +345,14 @@ module Tina4
     # and every driver decodes %3A back to ":".
     USERINFO_UNSAFE = %r{[:/?#@\[\]\s"<>^`{|}\\]|%(?![0-9A-Fa-f]{2})}.freeze
 
+    # Percent-encode a DECODED user name or password for a URL's userinfo:
+    # every byte outside RFC 3986 "unreserved", "%" included, so the receiver
+    # decodes exactly the original. #driver_url leaves an existing %XX alone
+    # because its input is already a URL; this takes a raw credential.
+    def self.encode_credential(value)
+      value.to_s.gsub(/[^A-Za-z0-9\-._~]/) { |c| c.bytes.map { |b| format("%%%02X", b) }.join }
+    end
+
     # The URL a DRIVER should be handed: identical to the input except that the
     # userinfo's unsafe characters are percent-encoded. A value that does not
     # parse, or needs nothing encoding, is returned unchanged.
