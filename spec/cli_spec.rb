@@ -72,6 +72,9 @@ RSpec.describe Tina4::CLI do
         gemfile = File.read(File.join(tmpdir, "testproject", "Gemfile"))
         expect(gemfile).to match(/^gem "tina4ruby"/)
         expect(gemfile).to match(/^gem "sqlite3"/)
+        # sqlite3-ruby <= 2.10.1 truncates a SQL string of 4 GiB or more
+        # (CVE-2026-128084); a new project must never resolve one.
+        expect(gemfile).to include(%(gem "sqlite3", ">= 2.10.2"))
         expect(gemfile).not_to include("tina4-ruby")
       end
     end
