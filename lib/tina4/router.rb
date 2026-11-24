@@ -14,6 +14,9 @@ module Tina4
     attr_reader :method, :path, :handler, :auth_handler, :swagger_meta,
                 :path_regex, :param_names, :template
     attr_accessor :auth_required, :cached
+    # True on a bare ANY route: reads are public, writes need a token. See
+    # #auth_required_for?.
+    attr_reader :auth_write_methods
     # RBAC guard groups (Feature 138 / ADR-0058). Each is an array of arrays:
     # OR within a group, AND across groups (stacking).
     attr_reader :roles, :perms
@@ -31,6 +34,13 @@ module Tina4
       # Middleware is additive, never an auth bypass. tina4-book#141
       # PY-10-02. Call .no_auth on the route to opt out explicitly.
       @auth_required = %w[POST PUT PATCH DELETE].include?(@method)
+      # An ANY route serves reads AND writes from one entry, so one boolean
+      # cannot say "public GET, secured POST". With no explicit choice it is
+      # write-secured: the gate requires a token when the request method is a
+      # write, exactly as if each method had its own route (ADR-0019; tina4-php
+      # and tina4-nodejs register any() as one route per method). .secure /
+      # .role / .can lock every method; .no_auth opens every method.
+      @auth_write_methods = @method == "ANY"
       @cached = false
       # CSRF is enforced on a write route even when it is public (#265): a form
       # token proves ORIGIN, not identity. Call .no_csrf to opt a server-to-
@@ -54,7 +64,15 @@ module Tina4
     # Returns self for chaining: Router.post("/login") { ... }.no_auth
     def no_auth
       @auth_required = false
+      @auth_write_methods = false
       self
+    end
+
+    # Whether a request with +http_method+ must carry a token on this route.
+    def auth_required_for?(http_method)
+      return true if @auth_required
+
+      @auth_write_methods && !%w[GET HEAD OPTIONS].include?(http_method.to_s.upcase)
     end
 
     # Opt a route OUT of CSRF form-token validation (webhooks / server-to-server
