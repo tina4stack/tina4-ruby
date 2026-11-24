@@ -1921,7 +1921,7 @@ module Tina4
       def read_project_bytes(target)
         flags = File::RDONLY
         flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        flags |= Tina4::SecretFile::OPEN_NONBLOCK
         File.open(target, flags) do |file|
           file.binmode
           info = file.stat
