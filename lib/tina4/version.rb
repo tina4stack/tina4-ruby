@@ -7,5 +7,5 @@
 
 
 module Tina4
-  VERSION = "3.13.165"
+  VERSION = "3.13.166"
 end

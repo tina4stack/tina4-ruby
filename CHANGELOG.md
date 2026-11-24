@@ -6,6 +6,21 @@ number means the same thing everywhere.
 **The authoritative release notes for every shipped version live in the documentation:**
 https://tina4.com/ruby/36-releases
 
+## 3.13.166 - 2026-11-24
+
+### Security
+
+- Database URL redaction never prints the password (GHSA-h2mr-m3v3-cq8c, reported by Michael Smit). A password containing `/ ? # @ %` or a space, a URL with one slash or no colon after the scheme, a URL with no host, or a non-numeric port printed the password, or part of it, in startup logs, connection errors and exception messages, and `URI::InvalidURIError` (which quotes the URL) was kept as the raised error's `cause`. One rule now finds the password (userinfo ends at the last `@`), parsers refuse a malformed URL with a generic message and no cause, drivers are handed the userinfo percent-encoded, and a driver message that quotes part of the URL is scrubbed. Graph, the websocket backplanes, MQTT, AMQP, the Mongo session handler and the dev MCP `env_list` are covered. An unencoded `@` in a query is refused (encode it as `%40`); a value without `scheme://`, or a sqlite URL with a user:password, is refused (#192).
+- A bare `any()` route keeps writes secure by default (ADR-0019). `Router.any` and group `any` registered one ANY route that was public for every method, so anonymous POST, PUT, PATCH and DELETE reached it where `Router.post` on the same path answers 401. Reads stay public; writes need a token unless the route says `.no_auth`. An app that relied on anonymous writes to a bare `any()` route must add `.no_auth` (#191; same in tina4-python#333).
+- sqlite3 2.10.2 (CVE-2026-128084: sqlite3-ruby 2.10.1 and earlier truncated a SQL string or bound value of 4 GiB or more). The lockfile moves to 2.10.2, and `tina4ruby init` writes `gem "sqlite3", ">= 2.10.2"` (#189).
+
+### Fixed
+
+- PostgreSQL: a password containing `/`, `@`, `%` or a space can connect. `URI#password=` refused it, so such a password never worked, even percent-encoded in the URL (#192).
+- A failing seed file fails loud (ADR-0108). `seed_dir` logged a failing file, carried on and returned `nil`; it now stops at it and raises `Tina4::SeedError` naming the file, the files that ran before it and the cause, and returns the executed list. `tina4ruby seed` never ran a seed file at all (it died with `NoMethodError`); it now runs through `seed_dir` and exits 1 on a failure. Dev-admin's run-seeds uses the same runner (#186, #188).
+- Windows: `Auth.setup` can write the RSA key pair, the generated development `TINA4_SECRET` reaches `.env.local`, and dev-admin can edit `.env` and show a project file. Ruby on Windows rejects `File::NONBLOCK`, which every one of those opens passed (#190).
+- Windows: `tina4ruby doctor`, `setup` and `deploy` pass their arguments intact to a `tina4.cmd` client (#187).
+
 ## 3.13.165 - 2026-11-22
 
 ### Fixed
