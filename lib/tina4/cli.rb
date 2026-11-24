@@ -4195,7 +4195,7 @@ module Tina4
 
           # SQLite driver for the default database (TINA4_DATABASE_URL=sqlite:...).
           # tina4ruby loads it lazily; it is an app dependency, like pg or mysql2.
-          gem "sqlite3"
+          gem "sqlite3", ">= 2.10.2"
         RUBY
       end
 

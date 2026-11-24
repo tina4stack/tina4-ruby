@@ -563,65 +563,65 @@
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "aarch64-linux-gnu",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "aarch64-linux-musl",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "arm-linux-gnu",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "arm64-darwin",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "x86_64-darwin",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "x86_64-linux-gnu",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
       "name": "sqlite3",
-      "version": "2.9.6",
+      "version": "2.10.2",
       "platform": "x86_64-linux-musl",
       "lock_license": "NOASSERTION",
       "upstream_declaration": "BSD-3-Clause",
-      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.9.6.json"
+      "evidence": "https://rubygems.org/api/v2/rubygems/sqlite3/versions/2.10.2.json"
     },
     {
       "ecosystem": "gem",
