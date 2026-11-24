@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    tina4ruby (3.13.165)
+    tina4ruby (3.13.166)
 
 GEM
   remote: https://rubygems.org/
@@ -251,7 +251,7 @@ CHECKSUMS
   sqlite3 (2.10.2-x86_64-linux-gnu) sha256=ca92731ab464df9cae503fa1a439a549e2724f6953c8c05a7769b59366e38f15
   sqlite3 (2.10.2-x86_64-linux-musl) sha256=b9f8fc62f3e0eb8966b41de251b492b4c8e9d1b23559beb6e150ad7f8d590941
   tina4-ultipa (0.2.1) sha256=6b6ca677b44347f55439ec85d07c1d56b5b7c94a435b038e18e28fb92e00126c
-  tina4ruby (3.13.165)
+  tina4ruby (3.13.166)
   tiny_tds (3.4.0) sha256=b43e1475cc4b2fa6674847a6a5b72aed99d3332840e1a9f195ca8b1f68653688
   tiny_tds (3.4.0-aarch64-linux-gnu) sha256=2bfad37bfd894b520e7998dbdc6811fbe7a9f40b4803d30b1307aca3e777fc39
   tiny_tds (3.4.0-aarch64-linux-musl) sha256=a5ef22dde32998dcba1b75e17bb6419ea80dd52b8bc17d152a8aa6c96f26663d
