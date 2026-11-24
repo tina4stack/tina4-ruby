@@ -1260,12 +1260,8 @@ module Tina4
     end
 
     def self.enforce_route_auth(env, route)
-      required = if route.respond_to?(:auth_required_for?)
-                   route.auth_required_for?(env["REQUEST_METHOD"])
-                 else
-                   route.auth_required
-                 end
-      return nil unless required
+      # A bare ANY route is public for reads and secured for writes (ADR-0019).
+      return nil unless route.auth_required_for?(env["REQUEST_METHOD"])
 
       # ERR-DEC-02 (#342): a browser gets errors/401.twig, an API client the JSON
       # envelope — the same negotiation every other framework error uses. Was an
