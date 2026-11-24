@@ -8,6 +8,14 @@
 module Tina4
   # Internal credential persistence: validate and read/write the same descriptor.
   module SecretFile
+    # O_NONBLOCK keeps an open from hanging on a FIFO planted at a credential
+    # path. Windows has no FIFOs at file paths, and Ruby on Windows rejects the
+    # flag outright: File.open answers EACCES for a read-write open and IOError
+    # for a read-only one. Passing it there broke every secret write (RSA keys
+    # from Auth.setup, the dev TINA4_SECRET in .env.local, dev-admin .env edits)
+    # and the dev-admin file viewer. Zero on Windows; the flag elsewhere.
+    OPEN_NONBLOCK = defined?(File::NONBLOCK) && !Gem.win_platform? ? File::NONBLOCK : 0
+
     def self.update(path)
       begin
         before = File.lstat(path)
@@ -17,7 +25,7 @@ module Tina4
       end
       flags = File::RDWR | File::CREAT
       flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-      flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+      flags |= OPEN_NONBLOCK
       File.open(path, flags, 0o600) do |file|
         file.flock(File::LOCK_EX)
         stat = file.stat
